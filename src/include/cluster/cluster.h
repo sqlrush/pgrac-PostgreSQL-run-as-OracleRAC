@@ -37,6 +37,12 @@
 #ifdef USE_PGRAC_CLUSTER
 
 /*
+ * Pure version-string accessor (no PG deps).  Defined in
+ * cluster_version.c so that unit tests can link it standalone.
+ */
+#include "cluster/cluster_version.h"
+
+/*
  * cluster_init -- Initialize the pgrac cluster subsystem.
  *
  *	Stub function in stage 0.2.  Real implementation lands in stage 0.3+
@@ -52,16 +58,6 @@ extern void cluster_init(void);
  *	when wired into postmaster shutdown.
  */
 extern void cluster_shutdown(void);
-
-/*
- * pgrac_version_string -- Return the pgrac version string.
- *
- *	Returns a static null-terminated string identifying the pgrac
- *	build (e.g. "pgrac v0.1.0-stage0.3 (based on PostgreSQL 16.13)").
- *
- *	The returned pointer must not be freed or modified by the caller.
- */
-extern const char *pgrac_version_string(void);
 
 #endif							/* USE_PGRAC_CLUSTER */
 

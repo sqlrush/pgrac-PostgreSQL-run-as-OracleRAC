@@ -100,31 +100,12 @@ cluster_shutdown(void)
 }
 
 /*
- * pgrac_version_string -- Return the pgrac version string.
+ * pgrac_version_string -- moved to cluster_version.c (stage 0.4).
  *
- *	Returns a static null-terminated string identifying the pgrac
- *	build.  Used by future SQL function pgrac_version() (stage 0.30+)
- *	and by diagnostic tooling.
+ *	The implementation now lives in src/backend/cluster/cluster_version.c
+ *	to allow unit tests to link the version string accessor without
+ *	pulling in the full PG backend (cluster_version.c has no PG deps).
  *
- * Inputs:
- *	(none)
- *
- * Returns:
- *	A pointer to a static string.  The caller must not free or modify
- *	the returned memory.
- *
- * Side Effects:
- *	None.
- *
- * NOTES
- *	The version string format is:
- *	  pgrac v<MAJOR>.<MINOR>.<PATCH>-stage<S>.<N> (based on PostgreSQL <X.Y>)
- *	See CLAUDE.md rule 19 for version-numbering policy.
- *
- * Author: SqlRush <sqlrush@gmail.com>
+ *	The declaration is forwarded via cluster.h -> cluster_version.h so
+ *	external callers see no API change.
  */
-const char *
-pgrac_version_string(void)
-{
-	return "pgrac v0.1.0-stage0.3 (based on PostgreSQL 16.13)";
-}

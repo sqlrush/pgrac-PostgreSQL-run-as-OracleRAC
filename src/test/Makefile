@@ -7,12 +7,52 @@
 # src/test/Makefile
 #
 #-------------------------------------------------------------------------
+#
+# PGRAC MODIFICATIONS by SqlRush <sqlrush@gmail.com>
+#
+# What changed:
+#     Conditionally append cluster_unit and cluster_regress to SUBDIRS
+#     when --enable-cluster is set.  cluster_unit hosts the pgrac
+#     C unit-test framework (no PG runtime needed).  cluster_regress
+#     hosts SQL regression tests (placeholder in stage 0.4).
+#
+# Why:
+#     Wires the two new test directories into PG's build/test system
+#     so that "make -C src/test" recurses into them when cluster mode
+#     is enabled.  Disabled mode keeps the binary identical to native
+#     PG, so cluster tests are skipped.
+#
+#     See spec-0.4-unit-test-framework.md §5.1.
+#
+#-------------------------------------------------------------------------
 
 subdir = src/test
 top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = perl regress isolation modules authentication recovery subscription
+
+# PGRAC: cluster tests included only when --enable-cluster
+ifeq ($(enable_pgrac_cluster), yes)
+SUBDIRS += cluster_unit cluster_regress
+endif
+
+# PGRAC: convenience targets for cluster test suites (spec-0.4 §2.4)
+# Available in both enable and disable modes; disable mode no-ops cleanly.
+ifeq ($(enable_pgrac_cluster), yes)
+cluster-unit:
+	$(MAKE) -C cluster_unit check
+
+cluster-regress:
+	$(MAKE) -C cluster_regress check
+
+cluster-check: cluster-unit cluster-regress
+else
+cluster-unit cluster-regress cluster-check:
+	@echo "# cluster tests skipped (rebuild with --enable-cluster to run)"
+endif
+
+.PHONY: cluster-unit cluster-regress cluster-check
 
 ifeq ($(with_icu),yes)
 SUBDIRS += icu
