@@ -51,7 +51,7 @@
 #include "cluster/cluster_views.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_guc.h"		/* cluster_node_id */
+#include "cluster/cluster_guc.h" /* cluster_node_id */
 #endif
 
 

@@ -64,12 +64,13 @@
  */
 #include "funcapi.h"
 #include "utils/builtins.h"
-#include "utils/wait_event.h"			 /* prototypes for pgstat_get_wait_event* */
+#include "utils/wait_event.h" /* prototypes for pgstat_get_wait_event* */
 
 void
 InitMaterializedSRF(FunctionCallInfo fcinfo pg_attribute_unused(),
 					bits32 flags pg_attribute_unused())
 {
+	/* Stub: real impl in src/backend/utils/fmgr/funcapi.c */
 }
 
 void
@@ -77,23 +78,27 @@ tuplestore_putvalues(Tuplestorestate *state pg_attribute_unused(),
 					 TupleDesc tdesc pg_attribute_unused(), Datum *values pg_attribute_unused(),
 					 bool *isnull pg_attribute_unused())
 {
+	/* Stub: real impl in src/backend/utils/sort/tuplestore.c */
 }
 
 text *
 cstring_to_text(const char *s pg_attribute_unused())
 {
+	/* Stub: real impl in src/backend/utils/adt/varlena.c */
 	return NULL;
 }
 
 const char *
 pgstat_get_wait_event(uint32 wait_event_info pg_attribute_unused())
 {
+	/* Stub: real impl in src/backend/utils/activity/wait_event.c */
 	return "";
 }
 
 const char *
 pgstat_get_wait_event_type(uint32 wait_event_info pg_attribute_unused())
 {
+	/* Stub: real impl in src/backend/utils/activity/wait_event.c */
 	return "";
 }
 
