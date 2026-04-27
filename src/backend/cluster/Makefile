@@ -24,6 +24,15 @@ subdir = src/backend/cluster
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
+# In --enable-cluster builds we compile every cluster source file.  In
+# --disable-cluster builds we still need cluster_views.o so that
+# pg_proc.dat's reference to cluster_get_wait_events resolves at link
+# time (the SRF body itself is gated by #ifdef USE_PGRAC_CLUSTER and
+# returns an empty result set in disable mode).  All other cluster_*.o
+# objects are skipped so that the disable-mode postgres binary remains
+# symbol-equivalent to vanilla PG -- the spec-0.3 contract verified by
+# the CI "Verify postgres binary has NO cluster symbols" step.
+ifeq ($(enable_pgrac_cluster), yes)
 OBJS = \
 	cluster.o \
 	cluster_elog.o \
@@ -32,5 +41,8 @@ OBJS = \
 	cluster_signal.o \
 	cluster_version.o \
 	cluster_views.o
+else
+OBJS = cluster_views.o
+endif
 
 include $(top_srcdir)/src/backend/common.mk
