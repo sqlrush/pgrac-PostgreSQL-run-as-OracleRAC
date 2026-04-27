@@ -26,10 +26,16 @@ include $(top_builddir)/src/Makefile.global
 
 # Test source files (each becomes a standalone executable)
 TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
-        test_cluster_wait_events test_cluster_errcodes
+        test_cluster_wait_events test_cluster_errcodes test_cluster_guc
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
+
+# Path to cluster_guc.o + cluster_elog.o (needed by test_cluster_guc only).
+# These reference PG backend symbols (DefineCustomIntVariable, etc.) that
+# the test stubs out locally.
+CLUSTER_GUC_O = $(top_builddir)/src/backend/cluster/cluster_guc.o
+CLUSTER_ELOG_O = $(top_builddir)/src/backend/cluster/cluster_elog.o
 
 # Include path for unit_test.h (this dir) and cluster headers.
 override CPPFLAGS := -I. -I$(top_srcdir)/src/include $(CPPFLAGS)
@@ -40,9 +46,19 @@ override CPPFLAGS := -I. -I$(top_srcdir)/src/include $(CPPFLAGS)
 # ----------
 all: $(TESTS)
 
-# Each test depends on its own .c, the framework header, and cluster_version.o
-$(TESTS): %: %.c unit_test.h $(CLUSTER_VERSION_O)
+# Most tests link only cluster_version.o.  test_cluster_guc has a
+# separate rule below because it also needs cluster_guc.o + cluster_elog.o.
+SIMPLE_TESTS = $(filter-out test_cluster_guc,$(TESTS))
+
+$(SIMPLE_TESTS): %: %.c unit_test.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(CLUSTER_VERSION_O) -o $@
+
+# test_cluster_guc additionally links cluster_guc.o + cluster_elog.o
+# (the test stubs DefineCustomIntVariable so no PG backend is needed).
+test_cluster_guc: test_cluster_guc.c unit_test.h $(CLUSTER_VERSION_O) \
+		$(CLUSTER_GUC_O) $(CLUSTER_ELOG_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_GUC_O) $(CLUSTER_ELOG_O) -o $@
 
 
 # ----------

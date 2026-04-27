@@ -39,6 +39,25 @@
  * IDENTIFICATION
  *	  src/backend/postmaster/postmaster.c
  *
+ *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS
+ *	  Modified by: SqlRush <sqlrush@gmail.com>
+ *	  Stage:        0.13
+ *
+ *	  Added a comment in PostmasterMain explaining where pgrac cluster
+ *	  GUCs are registered.  The actual registration call site is in
+ *	  process_shared_preload_libraries() (miscinit.c) because PG forbids
+ *	  defining PGC_POSTMASTER custom GUCs outside that phase.  This file
+ *	  records the cross-reference so a developer reading PostmasterMain
+ *	  finds the explanation in context.
+ *
+ *	  Related design:
+ *	    docs/cluster-guc-design.md v1.0 §2 (registration entry-point policy)
+ *	    specs/spec-0.13-guc-framework.md
+ *
+ *-------------------------------------------------------------------------
+ *
  * NOTES
  *
  * Initialization:
@@ -681,6 +700,13 @@ PostmasterMain(int argc, char *argv[])
 	 * Options setup
 	 */
 	InitializeGUCOptions();
+
+	/*
+	 * PGRAC: cluster GUC registration happens inside
+	 * process_shared_preload_libraries() (see miscinit.c) -- PG requires
+	 * PGC_POSTMASTER custom GUCs to be defined during the preload-libraries
+	 * phase, after which PG forbids further additions.
+	 */
 
 	opterr = 1;
 

@@ -31,7 +31,7 @@
  *
  *	  Stage 0.10 only registers the enum identifiers; postmaster fork
  *	  paths for these processes land in stage 0.13+ (ProcessAux + GUC).
- *	  No #ifdef USE_CLUSTER guard around the new values: keeping the
+ *	  No #ifdef USE_PGRAC_CLUSTER guard around the new values: keeping the
  *	  identifiers always defined avoids #ifdef sprawl across every site
  *	  that references BackendType (matching PG's treatment of
  *	  B_AUTOVAC_LAUNCHER even when autovacuum is off).

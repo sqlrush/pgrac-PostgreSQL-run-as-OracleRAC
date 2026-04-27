@@ -57,12 +57,15 @@
 
 
 /*
- * Cluster logging context (placeholder values in stage 0.9).
+ * Cluster logging context.
  *
- * cluster_node_id: -1 == "not configured" (will be a GUC in stage 0.13+)
+ * cluster_node_id: GUC since stage 0.13 (storage in cluster_guc.c).
+ *                  -1 == "not configured" (default; running outside a cluster).
+ *                  Range: -1..127.  See docs/cluster-guc-design.md §3.1.
  * cluster_phase:   short tag describing the current lifecycle phase.
  *                  Common values: "init", "running", "shutdown",
  *                  "reconfig".  NULL is tolerated (rendered "(unset)").
+ *                  Set by cluster lifecycle code; deliberately NOT a GUC.
  */
 extern int cluster_node_id;
 extern const char *cluster_phase;

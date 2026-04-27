@@ -3,16 +3,21 @@
  * cluster_elog.c
  *	  Storage for the pgrac cluster logging context (CLUSTER_LOG macro).
  *
- *	  Defines the placeholder globals that the CLUSTER_LOG macro reads
- *	  every time a cluster log line is emitted:
- *	      cluster_node_id = -1   (will become a GUC in stage 0.13+)
- *	      cluster_phase   = "init"
+ *	  Defines the lifecycle phase global that the CLUSTER_LOG macro
+ *	  reads on every log line:
+ *	      cluster_phase = "init"
  *
  *	  Callers are expected to update cluster_phase when crossing
  *	  lifecycle boundaries (e.g. set "running" after cluster_init,
  *	  "shutdown" before cluster_shutdown).  The variable is shared
  *	  process-wide; in the long run it will become per-process state
  *	  populated from the postmaster startup phase machine.
+ *
+ *	  cluster_node_id was originally defined here in stage 0.9 as a
+ *	  placeholder global.  Stage 0.13 promoted it to a real GUC, with
+ *	  storage now owned by src/backend/cluster/cluster_guc.c.  The
+ *	  CLUSTER_LOG macro continues to read it via the same extern
+ *	  declaration in cluster_elog.h, so call sites do not change.
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -26,8 +31,10 @@
  *
  * NOTES
  *	  This is a pgrac-original file (no derivation from PostgreSQL).
- *	  Globals defined here are intentionally simple in stage 0.9.
- *	  Stage 0.13+ will replace them with GUC-backed state.
+ *	  cluster_phase is intentionally NOT a GUC: the value is set by
+ *	  the cluster lifecycle (cluster_init / cluster_shutdown / future
+ *	  reconfig handlers), not by users.  Exposing it via SHOW/SET
+ *	  would be misleading.
  *
  *-------------------------------------------------------------------------
  */
@@ -37,17 +44,7 @@
 
 
 /*
- * Placeholder cluster node id.
- *
- * -1 means "not configured".  Stage 0.13+ will wire this to a
- * cluster_node_id GUC that is set per-instance via postgresql.conf
- * (or pgrac.conf).
- */
-int cluster_node_id = -1;
-
-
-/*
- * Placeholder lifecycle phase tag.
+ * Lifecycle phase tag.
  *
  * Conventional values:
  *   "init"     - initialisation in progress (default at process start)

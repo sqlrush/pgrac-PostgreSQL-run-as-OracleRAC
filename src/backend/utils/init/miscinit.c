@@ -73,6 +73,10 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_guc.h"	/* PGRAC: cluster_init_guc() */
+#endif
+
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
@@ -1960,11 +1964,28 @@ load_libraries(const char *libraries, const char *gucname, bool restricted)
 
 /*
  * process any libraries that should be preloaded at postmaster start
+ *
+ * PGRAC modifications by SqlRush:
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, register all pgrac
+ *	               cluster custom GUCs (currently cluster_node_id) before
+ *	               loading user shared_preload_libraries.
+ *	Why:           PG forbids creating PGC_POSTMASTER custom GUCs outside
+ *	               this phase (see add_guc_variable in guc.c).  Calling
+ *	               cluster_init_guc() here piggybacks on the same flag and
+ *	               makes the registration valid.  Loading order matters:
+ *	               we register pgrac GUCs FIRST so user preload libraries
+ *	               can read or override them if desired.
+ *	               See docs/cluster-guc-design.md §2 and
+ *	               specs/spec-0.13-guc-framework.md.
  */
 void
 process_shared_preload_libraries(void)
 {
 	process_shared_preload_libraries_in_progress = true;
+#ifdef USE_PGRAC_CLUSTER
+	/* PGRAC: register cluster GUCs (PGC_POSTMASTER) before user preload libs. */
+	cluster_init_guc();
+#endif
 	load_libraries(shared_preload_libraries_string,
 				   "shared_preload_libraries",
 				   false);

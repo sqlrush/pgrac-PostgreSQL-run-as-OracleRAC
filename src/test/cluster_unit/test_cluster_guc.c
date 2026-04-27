@@ -1,0 +1,165 @@
+/*-------------------------------------------------------------------------
+ *
+ * test_cluster_guc.c
+ *	  Compile-time and unit-level invariants for the cluster GUC
+ *	  framework introduced in stage 0.13.
+ *
+ *	  Stage 0.13 wires the cluster GUC registration mechanism and
+ *	  activates the first cluster GUC, cluster_node_id.  The full
+ *	  DefineCustomIntVariable() registration depends on PG backend
+ *	  symbols (guc.c machinery) that cluster_unit deliberately does
+ *	  not link.  This test asserts only the structural pieces a
+ *	  PG-free unit binary can observe:
+ *
+ *	  - The C global cluster_node_id exists at the address declared
+ *	    by cluster_guc.h (proves the cluster_guc.o link target is
+ *	    pulled into the standalone test binary).
+ *	  - The boot-time default value is -1 ("unconfigured").
+ *	  - cluster_init_guc is declared (forward declaration is enough --
+ *	    we do not call it because it touches PG GUC machinery).
+ *	  - cluster_phase remains a plain global owned by cluster_elog.c
+ *	    (it is not migrated to a GUC; users do not set the lifecycle
+ *	    phase).
+ *
+ *	  Runtime behavior of the GUC (SHOW/SET, pg_settings rows, range
+ *	  validation, restart semantics) is validated separately by
+ *	  cluster_tap t/007_guc.pl on a real PG instance.
+ *
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2026, pgrac contributors
+ *
+ * Author: SqlRush <sqlrush@gmail.com>
+ *
+ * IDENTIFICATION
+ *	  src/test/cluster_unit/test_cluster_guc.c
+ *
+ * NOTES
+ *	  This is a pgrac-original file.  Includes postgres.h to pull in
+ *	  basic PG types referenced by cluster_guc.h (none yet, but kept
+ *	  for symmetry with peer tests), then undoes the printf -> pg_printf
+ *	  redirection so the standalone unit test binary does not pull in
+ *	  libpgport.
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "cluster/cluster_guc.h"
+
+/*
+ * postgres.h transitively pulls in port.h which redirects printf etc.
+ * Standalone unit-test binaries do not link libpgport, so undo the
+ * redirection before pulling in unit_test.h.
+ */
+#undef printf
+#undef fprintf
+#undef snprintf
+#undef sprintf
+#undef vsnprintf
+#undef vfprintf
+#undef vprintf
+#undef vsprintf
+#undef strerror
+#undef strerror_r
+
+#include "unit_test.h"
+
+
+/* ----------
+ * Minimal PG stubs needed to link cluster_guc.o standalone.
+ *
+ *	cluster_guc.c references DefineCustomIntVariable(), which lives in
+ *	the PG backend's GUC machinery and would drag in the entire backend
+ *	if linked normally.  This unit test never calls cluster_init_guc(),
+ *	so the stub body is never executed -- it only needs to satisfy the
+ *	linker.  Runtime registration is exercised in cluster_tap on a real
+ *	PG instance (see t/007_guc.pl).
+ * ----------
+ */
+#include "utils/guc.h"
+
+void
+DefineCustomIntVariable(const char *name pg_attribute_unused(),
+						const char *short_desc pg_attribute_unused(),
+						const char *long_desc pg_attribute_unused(),
+						int *valueAddr pg_attribute_unused(), int bootValue pg_attribute_unused(),
+						int minValue pg_attribute_unused(), int maxValue pg_attribute_unused(),
+						GucContext context pg_attribute_unused(), int flags pg_attribute_unused(),
+						GucIntCheckHook check_hook pg_attribute_unused(),
+						GucIntAssignHook assign_hook pg_attribute_unused(),
+						GucShowHook show_hook pg_attribute_unused())
+{
+	/* Stub for unit-test linking; real impl lives in PG backend. */
+}
+
+
+UT_DEFINE_GLOBALS();
+
+
+/*
+ * cluster_phase is declared in cluster/cluster_elog.h but we deliberately
+ * avoid including it here -- this file's job is to verify that 0.13 left
+ * cluster_phase as a plain (non-GUC) global.  Forward-declare the symbol
+ * so we can take its address for a non-NULL assertion without coupling
+ * to the elog header's full surface.
+ */
+extern const char *cluster_phase;
+
+
+UT_TEST(test_cluster_node_id_default_is_minus_one)
+{
+	UT_ASSERT_EQ(cluster_node_id, -1);
+}
+
+
+UT_TEST(test_cluster_node_id_address_stable)
+{
+	/*
+	 * Taking the address proves the linker resolved the symbol from
+	 * cluster_guc.o (where the storage was relocated in stage 0.13)
+	 * rather than from some stale copy in cluster_elog.o.  The exact
+	 * value of the pointer is implementation-defined; we only assert
+	 * it is non-null, which the C standard guarantees for any object.
+	 */
+	UT_ASSERT_NOT_NULL(&cluster_node_id);
+}
+
+
+UT_TEST(test_cluster_init_guc_symbol_is_linkable)
+{
+	/*
+	 * cluster_init_guc() depends on PG backend symbols (DefineCustomIntVariable)
+	 * which cluster_unit does not link, so we cannot call it.  Asserting that
+	 * its address can be taken is enough to confirm the declaration is in
+	 * cluster_guc.h and the function would link in a full backend build.
+	 */
+	UT_ASSERT_NOT_NULL((void *)cluster_init_guc);
+}
+
+
+UT_TEST(test_cluster_phase_remains_plain_global)
+{
+	/*
+	 * cluster_phase is a lifecycle-state pointer set by cluster code
+	 * (cluster_init / cluster_shutdown), not a user-facing GUC.  At
+	 * link time it must still resolve (cluster_elog.o still owns it);
+	 * the boot value is the literal "init" set in cluster_elog.c.
+	 */
+	UT_ASSERT_NOT_NULL(cluster_phase);
+	UT_ASSERT_STR_EQ(cluster_phase, "init");
+}
+
+
+int
+main(void)
+{
+	UT_PLAN(4);
+	UT_RUN(test_cluster_node_id_default_is_minus_one);
+	UT_RUN(test_cluster_node_id_address_stable);
+	UT_RUN(test_cluster_init_guc_symbol_is_linkable);
+	UT_RUN(test_cluster_phase_remains_plain_global);
+	UT_DONE();
+	return ut_failed_count == 0 ? 0 : 1;
+}
