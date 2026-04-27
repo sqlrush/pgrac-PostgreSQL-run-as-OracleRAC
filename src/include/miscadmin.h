@@ -19,6 +19,29 @@
  *	  some of the information in this file should be moved to other files.
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS
+ *	  Modified by: SqlRush <sqlrush@gmail.com>
+ *	  Stage:        0.10
+ *
+ *	  Extended BackendType enum with 14 pgrac cluster background process
+ *	  types (B_CLUSTER_STATS .. B_UNDO_CLEANER), appended after the 13
+ *	  PG-native values to preserve PG ABI for the original numeric
+ *	  positions.  BACKEND_NUM_TYPES updated to 28 (14 PG + 14 pgrac).
+ *
+ *	  Stage 0.10 only registers the enum identifiers; postmaster fork
+ *	  paths for these processes land in stage 0.13+ (ProcessAux + GUC).
+ *	  No #ifdef USE_CLUSTER guard around the new values: keeping the
+ *	  identifiers always defined avoids #ifdef sprawl across every site
+ *	  that references BackendType (matching PG's treatment of
+ *	  B_AUTOVAC_LAUNCHER even when autovacuum is off).
+ *
+ *	  Related design:
+ *	    docs/background-process-design.md §8.2  (the 14-process roster)
+ *	    docs/background-process-design.md §8.3  (ps display names)
+ *	    specs/spec-0.10-backend-type-extension.md
+ *
+ *-------------------------------------------------------------------------
  */
 #ifndef MISCADMIN_H
 #define MISCADMIN_H
@@ -340,9 +363,31 @@ typedef enum BackendType
 	B_WAL_RECEIVER,
 	B_WAL_SENDER,
 	B_WAL_WRITER,
+
+	/*
+	 * PGRAC: pgrac cluster background process types (stage 0.10).
+	 * Appended in alphabetic order; see docs/background-process-design.md
+	 * §8.2.  Stage 0.10 registers identifiers only -- spawning paths
+	 * land in stage 0.13+.
+	 */
+	B_CLUSTER_STATS,
+	B_DIAG,
+	B_HEARTBEAT,
+	B_INTERCONNECT,
+	B_LCK,
+	B_LMD,
+	B_LMON,
+	B_LMS_WORKER,
+	B_MRP,
+	B_RECOVERY_COORD,
+	B_RECOVERY_WORKER,
+	B_SINVAL_BCAST,
+	B_TT_GC,
+	B_UNDO_CLEANER,
 } BackendType;
 
-#define BACKEND_NUM_TYPES (B_WAL_WRITER + 1)
+/* PGRAC: anchored on the last pgrac value so additions stay correct.    */
+#define BACKEND_NUM_TYPES (B_UNDO_CLEANER + 1)
 
 extern PGDLLIMPORT BackendType MyBackendType;
 

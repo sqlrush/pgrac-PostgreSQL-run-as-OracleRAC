@@ -25,7 +25,7 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 # Test source files (each becomes a standalone executable)
-TESTS = test_cluster_basic test_cluster_version
+TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o

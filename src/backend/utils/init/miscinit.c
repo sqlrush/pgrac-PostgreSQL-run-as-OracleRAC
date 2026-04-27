@@ -11,6 +11,23 @@
  *	  src/backend/utils/init/miscinit.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS
+ *	  Modified by: SqlRush <sqlrush@gmail.com>
+ *	  Stage:        0.10
+ *
+ *	  Extended GetBackendTypeDesc() with 14 cases for the pgrac cluster
+ *	  process types added to BackendType in miscadmin.h.  The descriptor
+ *	  strings follow PG's lowercase short-name convention (e.g.
+ *	  "lms worker", "undo cleaner") matching docs/background-process-design.md
+ *	  §8.3.  Stage 0.10 only registers the strings; the processes are not
+ *	  yet fork()'d -- those code paths land in stage 0.13+.
+ *
+ *	  Related design:
+ *	    docs/background-process-design.md §8.2 / §8.3
+ *	    specs/spec-0.10-backend-type-extension.md
+ *
+ *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
@@ -308,6 +325,55 @@ GetBackendTypeDesc(BackendType backendType)
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
+			break;
+
+		/*
+		 * PGRAC: pgrac cluster background process descriptors.
+		 * Strings are lowercase short names per docs/background-process-design.md
+		 * §8.3 to match PG's "walwriter" / "checkpointer" / "autovacuum launcher"
+		 * style.  Listed in BackendType enum order for easy review.
+		 */
+		case B_CLUSTER_STATS:
+			backendDesc = "cluster stats";
+			break;
+		case B_DIAG:
+			backendDesc = "diag";
+			break;
+		case B_HEARTBEAT:
+			backendDesc = "heartbeat";
+			break;
+		case B_INTERCONNECT:
+			backendDesc = "interconnect listener";
+			break;
+		case B_LCK:
+			backendDesc = "lck";
+			break;
+		case B_LMD:
+			backendDesc = "lmd";
+			break;
+		case B_LMON:
+			backendDesc = "lmon";
+			break;
+		case B_LMS_WORKER:
+			backendDesc = "lms worker";
+			break;
+		case B_MRP:
+			backendDesc = "managed recovery process";
+			break;
+		case B_RECOVERY_COORD:
+			backendDesc = "recovery coordinator";
+			break;
+		case B_RECOVERY_WORKER:
+			backendDesc = "recovery worker";
+			break;
+		case B_SINVAL_BCAST:
+			backendDesc = "sinval broadcaster";
+			break;
+		case B_TT_GC:
+			backendDesc = "tt gc";
+			break;
+		case B_UNDO_CLEANER:
+			backendDesc = "undo cleaner";
 			break;
 	}
 
