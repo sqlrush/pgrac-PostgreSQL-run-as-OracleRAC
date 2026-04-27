@@ -19,6 +19,27 @@
  * more work than it saves.
  *
  * ----------
+ *
+ * PGRAC MODIFICATIONS
+ *	  Modified by: SqlRush <sqlrush@gmail.com>
+ *	  Stage:        0.11
+ *
+ *	  Wired the 10 cluster wait classes (PG_WAIT_CLUSTER_* defined in
+ *	  cluster_wait_events.h) into pgstat_get_wait_event_type() and
+ *	  pgstat_get_wait_event(), and added 10 sub-helpers
+ *	  (pgstat_get_wait_cluster_ges .. pgstat_get_wait_cluster_adg) that
+ *	  return the human-readable name for each event in their owning
+ *	  category.  All 46 event names match docs/wait-events-design.md
+ *	  §3-§12 verbatim.
+ *
+ *	  Stage 0.11 only registers names; the call sites that emit these
+ *	  events live in the spec for each owning subsystem.
+ *
+ *	  Related design:
+ *	    docs/wait-events-design.md v1.1 §14
+ *	    specs/spec-0.11-wait-events-framework.md
+ *
+ * ----------
  */
 #include "postgres.h"
 
@@ -32,6 +53,18 @@ static const char *pgstat_get_wait_client(WaitEventClient w);
 static const char *pgstat_get_wait_ipc(WaitEventIPC w);
 static const char *pgstat_get_wait_timeout(WaitEventTimeout w);
 static const char *pgstat_get_wait_io(WaitEventIO w);
+
+/* PGRAC: 10 cluster sub-helpers, each returning name for one category. */
+static const char *pgstat_get_wait_cluster_ges(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_pcm(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_buffership(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_scn(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_reconfig(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_recovery(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_sinval(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_interconnect(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_undo(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_adg(WaitEventCluster w);
 
 
 static uint32 local_my_wait_event_info;
@@ -111,6 +144,37 @@ pgstat_get_wait_event_type(uint32 wait_event_info)
 		case PG_WAIT_IO:
 			event_type = "IO";
 			break;
+		/* PGRAC: 10 cluster wait classes (stage 0.11). */
+		case PG_WAIT_CLUSTER_GES:
+			event_type = "Cluster: GES";
+			break;
+		case PG_WAIT_CLUSTER_PCM:
+			event_type = "Cluster: PCM";
+			break;
+		case PG_WAIT_CLUSTER_BUFFERSHIP:
+			event_type = "Cluster: BufferShip";
+			break;
+		case PG_WAIT_CLUSTER_SCN:
+			event_type = "Cluster: SCN";
+			break;
+		case PG_WAIT_CLUSTER_RECONFIG:
+			event_type = "Cluster: Reconfig";
+			break;
+		case PG_WAIT_CLUSTER_RECOVERY:
+			event_type = "Cluster: Recovery";
+			break;
+		case PG_WAIT_CLUSTER_SINVAL:
+			event_type = "Cluster: Sinval";
+			break;
+		case PG_WAIT_CLUSTER_INTERCONNECT:
+			event_type = "Cluster: Interconnect";
+			break;
+		case PG_WAIT_CLUSTER_UNDO:
+			event_type = "Cluster: Undo";
+			break;
+		case PG_WAIT_CLUSTER_ADG:
+			event_type = "Cluster: ADG";
+			break;
 		default:
 			event_type = "???";
 			break;
@@ -188,6 +252,47 @@ pgstat_get_wait_event(uint32 wait_event_info)
 				event_name = pgstat_get_wait_io(w);
 				break;
 			}
+		/* PGRAC: 10 cluster wait classes (stage 0.11). */
+		case PG_WAIT_CLUSTER_GES:
+			event_name = pgstat_get_wait_cluster_ges(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_PCM:
+			event_name = pgstat_get_wait_cluster_pcm(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_BUFFERSHIP:
+			event_name = pgstat_get_wait_cluster_buffership(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_SCN:
+			event_name = pgstat_get_wait_cluster_scn(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_RECONFIG:
+			event_name = pgstat_get_wait_cluster_reconfig(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_RECOVERY:
+			event_name = pgstat_get_wait_cluster_recovery(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_SINVAL:
+			event_name = pgstat_get_wait_cluster_sinval(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_INTERCONNECT:
+			event_name = pgstat_get_wait_cluster_interconnect(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_UNDO:
+			event_name = pgstat_get_wait_cluster_undo(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_ADG:
+			event_name = pgstat_get_wait_cluster_adg(
+				(WaitEventCluster) wait_event_info);
+			break;
 		default:
 			event_name = "unknown wait event";
 			break;
@@ -761,6 +866,297 @@ pgstat_get_wait_io(WaitEventIO w)
 			break;
 
 			/* no default case, so that compiler will warn */
+	}
+
+	return event_name;
+}
+
+
+/* ----------
+ * PGRAC: 10 cluster sub-helpers (stage 0.11).
+ *
+ * Each sub-helper covers one of the 10 cluster categories declared in
+ * src/include/cluster/cluster_wait_events.h.  Event names match
+ * docs/wait-events-design.md §3-§12 verbatim.
+ *
+ * Stage 0.11 only registers names; pgstat_report_wait_start() call
+ * sites for each event live in the spec for its owning subsystem.
+ * ----------
+ */
+
+static const char *
+pgstat_get_wait_cluster_ges(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_GES_ENQUEUE_ACQUIRE:
+			event_name = "GesEnqueueAcquire";
+			break;
+		case WAIT_EVENT_GES_ENQUEUE_CONVERT:
+			event_name = "GesEnqueueConvert";
+			break;
+		case WAIT_EVENT_GES_ENQUEUE_RELEASE_ACK:
+			event_name = "GesEnqueueReleaseAck";
+			break;
+		case WAIT_EVENT_GES_MASTER_QUERY:
+			event_name = "GesMasterQuery";
+			break;
+		case WAIT_EVENT_GES_LOCAL_FAST_PATH:
+			event_name = "GesLocalFastPath";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_pcm(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_PCM_BLOCK_READ_N_S:
+			event_name = "PcmBlockReadNS";
+			break;
+		case WAIT_EVENT_PCM_BLOCK_READ_N_X:
+			event_name = "PcmBlockReadNX";
+			break;
+		case WAIT_EVENT_PCM_BLOCK_WRITE_S_X:
+			event_name = "PcmBlockWriteSX";
+			break;
+		case WAIT_EVENT_PCM_BLOCK_CONVERT_WAIT:
+			event_name = "PcmBlockConvertWait";
+			break;
+		case WAIT_EVENT_PCM_BLOCK_DOWNGRADE:
+			event_name = "PcmBlockDowngrade";
+			break;
+		case WAIT_EVENT_PCM_ITL_CLEANOUT:
+			event_name = "PcmItlCleanout";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_buffership(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_BUFFER_SHIP_CR_BUILD:
+			event_name = "BufferShipCrBuild";
+			break;
+		case WAIT_EVENT_BUFFER_SHIP_CR_SEND:
+			event_name = "BufferShipCrSend";
+			break;
+		case WAIT_EVENT_BUFFER_SHIP_CR_RECEIVE:
+			event_name = "BufferShipCrReceive";
+			break;
+		case WAIT_EVENT_BUFFER_SHIP_CURRENT_SEND:
+			event_name = "BufferShipCurrentSend";
+			break;
+		case WAIT_EVENT_BUFFER_SHIP_CURRENT_RECEIVE:
+			event_name = "BufferShipCurrentReceive";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_scn(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_SCN_BOC_FLUSH_WAIT:
+			event_name = "ScnBocFlushWait";
+			break;
+		case WAIT_EVENT_SCN_PIGGYBACK_MERGE:
+			event_name = "ScnPiggybackMerge";
+			break;
+		case WAIT_EVENT_SCN_CROSS_NODE_COMPARE:
+			event_name = "ScnCrossNodeCompare";
+			break;
+		case WAIT_EVENT_SCN_ADVANCE_BROADCAST:
+			event_name = "ScnAdvanceBroadcast";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_reconfig(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_RECONFIG_GRD_REBUILD:
+			event_name = "ReconfigGrdRebuild";
+			break;
+		case WAIT_EVENT_RECONFIG_LOCK_RECOVERY:
+			event_name = "ReconfigLockRecovery";
+			break;
+		case WAIT_EVENT_RECONFIG_FENCE_WAIT:
+			event_name = "ReconfigFenceWait";
+			break;
+		case WAIT_EVENT_RECONFIG_MASTER_SELECTION:
+			event_name = "ReconfigMasterSelection";
+			break;
+		case WAIT_EVENT_RECONFIG_BARRIER_WAIT:
+			event_name = "ReconfigBarrierWait";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_recovery(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_RECOVERY_WAL_FETCH:
+			event_name = "RecoveryWalFetch";
+			break;
+		case WAIT_EVENT_RECOVERY_KWAY_MERGE:
+			event_name = "RecoveryKwayMerge";
+			break;
+		case WAIT_EVENT_RECOVERY_APPLY_PER_THREAD:
+			event_name = "RecoveryApplyPerThread";
+			break;
+		case WAIT_EVENT_RECOVERY_UNDO_REPLAY:
+			event_name = "RecoveryUndoReplay";
+			break;
+		case WAIT_EVENT_RECOVERY_PCM_STATE_RESTORE:
+			event_name = "RecoveryPcmStateRestore";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_sinval(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_SINVAL_BROADCAST_SEND:
+			event_name = "SinvalBroadcastSend";
+			break;
+		case WAIT_EVENT_SINVAL_BROADCAST_RECEIVE:
+			event_name = "SinvalBroadcastReceive";
+			break;
+		case WAIT_EVENT_SINVAL_INJECT_LOCAL_QUEUE:
+			event_name = "SinvalInjectLocalQueue";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_interconnect(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_INTERCONNECT_RDMA_SEND:
+			event_name = "InterconnectRdmaSend";
+			break;
+		case WAIT_EVENT_INTERCONNECT_RDMA_RECV:
+			event_name = "InterconnectRdmaRecv";
+			break;
+		case WAIT_EVENT_INTERCONNECT_TCP_FALLBACK:
+			event_name = "InterconnectTcpFallback";
+			break;
+		case WAIT_EVENT_INTERCONNECT_TIER_SWITCH:
+			event_name = "InterconnectTierSwitch";
+			break;
+		case WAIT_EVENT_INTERCONNECT_CONNECT_RETRY:
+			event_name = "InterconnectConnectRetry";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_undo(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_UNDO_REMOTE_READ:
+			event_name = "UndoRemoteRead";
+			break;
+		case WAIT_EVENT_UNDO_TT_LOOKUP_REMOTE:
+			event_name = "UndoTtLookupRemote";
+			break;
+		case WAIT_EVENT_UNDO_SEGMENT_FETCH:
+			event_name = "UndoSegmentFetch";
+			break;
+		case WAIT_EVENT_UNDO_RETENTION_WAIT:
+			event_name = "UndoRetentionWait";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_adg(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_ADG_MRP_APPLY_WAIT:
+			event_name = "AdgMrpApplyWait";
+			break;
+		case WAIT_EVENT_ADG_WAL_RECEIVE_LAG:
+			event_name = "AdgWalReceiveLag";
+			break;
+		case WAIT_EVENT_ADG_READ_SNAPSHOT_WAIT:
+			event_name = "AdgReadSnapshotWait";
+			break;
+		case WAIT_EVENT_ADG_SCN_SYNC_WAIT:
+			event_name = "AdgScnSyncWait";
+			break;
+		default:
+			break;
 	}
 
 	return event_name;

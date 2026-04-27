@@ -6,9 +6,32 @@
  *
  * src/include/utils/wait_event.h
  * ----------
+ *
+ * PGRAC MODIFICATIONS
+ *	  Modified by: SqlRush <sqlrush@gmail.com>
+ *	  Stage:        0.11
+ *
+ *	  Added the WaitEventCluster enum (46 entries spread across 10
+ *	  class IDs 0x10000000..0x19000000) and pulled in
+ *	  cluster/cluster_wait_events.h for the class-ID macros.  No PG
+ *	  native enum is touched; the cluster enum is independent.
+ *
+ *	  Stage 0.11 only registers identifiers; the call sites that emit
+ *	  these wait events are wired up in the spec for each owning
+ *	  subsystem (GES events in spec-1.X-ges, PCM events in
+ *	  spec-2.X-pcm, ...).
+ *
+ *	  Related design:
+ *	    docs/wait-events-design.md v1.1 §14.1 / §14.2
+ *	    specs/spec-0.11-wait-events-framework.md
+ *
+ *-------------------------------------------------------------------------
  */
 #ifndef WAIT_EVENT_H
 #define WAIT_EVENT_H
+
+/* PGRAC: pull in cluster wait class IDs (10 PG_WAIT_CLUSTER_* macros). */
+#include "cluster/cluster_wait_events.h"
 
 
 /* ----------
@@ -237,6 +260,89 @@ typedef enum
 	WAIT_EVENT_WAL_WRITE,
 	WAIT_EVENT_VERSION_FILE_SYNC
 } WaitEventIO;
+
+
+/* ----------
+ * Wait Events - Cluster (PGRAC, stage 0.11)
+ *
+ * pgrac cluster wait events span 10 categories, each with its own class
+ * ID in the upper byte (PG_WAIT_CLUSTER_* macros from cluster_wait_events.h).
+ * Within a category, events are densely packed.  See
+ * docs/wait-events-design.md §3-§12 for per-event semantics and
+ * specs/spec-0.11-wait-events-framework.md for the registration policy.
+ *
+ * Stage 0.11 registers identifiers only; pgstat_report_wait_start() call
+ * sites land in the spec for each owning subsystem.
+ * ----------
+ */
+typedef enum
+{
+	/* Cluster: GES (5 events) -- subsystem #8 */
+	WAIT_EVENT_GES_ENQUEUE_ACQUIRE = PG_WAIT_CLUSTER_GES,
+	WAIT_EVENT_GES_ENQUEUE_CONVERT,
+	WAIT_EVENT_GES_ENQUEUE_RELEASE_ACK,
+	WAIT_EVENT_GES_MASTER_QUERY,
+	WAIT_EVENT_GES_LOCAL_FAST_PATH,
+
+	/* Cluster: PCM (6 events) -- subsystem #6 */
+	WAIT_EVENT_PCM_BLOCK_READ_N_S = PG_WAIT_CLUSTER_PCM,
+	WAIT_EVENT_PCM_BLOCK_READ_N_X,
+	WAIT_EVENT_PCM_BLOCK_WRITE_S_X,
+	WAIT_EVENT_PCM_BLOCK_CONVERT_WAIT,
+	WAIT_EVENT_PCM_BLOCK_DOWNGRADE,
+	WAIT_EVENT_PCM_ITL_CLEANOUT,
+
+	/* Cluster: BufferShip (5 events) -- subsystem #5 */
+	WAIT_EVENT_BUFFER_SHIP_CR_BUILD = PG_WAIT_CLUSTER_BUFFERSHIP,
+	WAIT_EVENT_BUFFER_SHIP_CR_SEND,
+	WAIT_EVENT_BUFFER_SHIP_CR_RECEIVE,
+	WAIT_EVENT_BUFFER_SHIP_CURRENT_SEND,
+	WAIT_EVENT_BUFFER_SHIP_CURRENT_RECEIVE,
+
+	/* Cluster: SCN (4 events) -- subsystem #7 */
+	WAIT_EVENT_SCN_BOC_FLUSH_WAIT = PG_WAIT_CLUSTER_SCN,
+	WAIT_EVENT_SCN_PIGGYBACK_MERGE,
+	WAIT_EVENT_SCN_CROSS_NODE_COMPARE,
+	WAIT_EVENT_SCN_ADVANCE_BROADCAST,
+
+	/* Cluster: Reconfig (5 events) -- #14 / #20 */
+	WAIT_EVENT_RECONFIG_GRD_REBUILD = PG_WAIT_CLUSTER_RECONFIG,
+	WAIT_EVENT_RECONFIG_LOCK_RECOVERY,
+	WAIT_EVENT_RECONFIG_FENCE_WAIT,
+	WAIT_EVENT_RECONFIG_MASTER_SELECTION,
+	WAIT_EVENT_RECONFIG_BARRIER_WAIT,
+
+	/* Cluster: Recovery (5 events) -- #86 */
+	WAIT_EVENT_RECOVERY_WAL_FETCH = PG_WAIT_CLUSTER_RECOVERY,
+	WAIT_EVENT_RECOVERY_KWAY_MERGE,
+	WAIT_EVENT_RECOVERY_APPLY_PER_THREAD,
+	WAIT_EVENT_RECOVERY_UNDO_REPLAY,
+	WAIT_EVENT_RECOVERY_PCM_STATE_RESTORE,
+
+	/* Cluster: Sinval (3 events) -- subsystem #9 */
+	WAIT_EVENT_SINVAL_BROADCAST_SEND = PG_WAIT_CLUSTER_SINVAL,
+	WAIT_EVENT_SINVAL_BROADCAST_RECEIVE,
+	WAIT_EVENT_SINVAL_INJECT_LOCAL_QUEUE,
+
+	/* Cluster: Interconnect (5 events) -- AD-007 */
+	WAIT_EVENT_INTERCONNECT_RDMA_SEND = PG_WAIT_CLUSTER_INTERCONNECT,
+	WAIT_EVENT_INTERCONNECT_RDMA_RECV,
+	WAIT_EVENT_INTERCONNECT_TCP_FALLBACK,
+	WAIT_EVENT_INTERCONNECT_TIER_SWITCH,
+	WAIT_EVENT_INTERCONNECT_CONNECT_RETRY,
+
+	/* Cluster: Undo (4 events) -- AD-010 */
+	WAIT_EVENT_UNDO_REMOTE_READ = PG_WAIT_CLUSTER_UNDO,
+	WAIT_EVENT_UNDO_TT_LOOKUP_REMOTE,
+	WAIT_EVENT_UNDO_SEGMENT_FETCH,
+	WAIT_EVENT_UNDO_RETENTION_WAIT,
+
+	/* Cluster: ADG (4 events) -- #95 */
+	WAIT_EVENT_ADG_MRP_APPLY_WAIT = PG_WAIT_CLUSTER_ADG,
+	WAIT_EVENT_ADG_WAL_RECEIVE_LAG,
+	WAIT_EVENT_ADG_READ_SNAPSHOT_WAIT,
+	WAIT_EVENT_ADG_SCN_SYNC_WAIT,
+} WaitEventCluster;
 
 
 extern const char *pgstat_get_wait_event(uint32 wait_event_info);
