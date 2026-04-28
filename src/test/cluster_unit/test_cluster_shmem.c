@@ -123,6 +123,9 @@ DefineCustomEnumVariable(const char *name pg_attribute_unused(),
 	/* Stub: real impl in src/backend/utils/misc/guc.c (stage 0.18) */
 }
 
+/* Forward decl to silence -Wmissing-prototypes. */
+extern void cluster_ic_init(void);
+
 void
 cluster_ic_init(void)
 {

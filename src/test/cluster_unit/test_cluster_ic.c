@@ -164,6 +164,16 @@ pg_comp_crc32c_armv8(pg_crc32c crc, const void *data pg_attribute_unused(),
 	return crc;
 }
 
+/*
+ * Linux x86_64 PG configure picks USE_SSE42_CRC32C_WITH_RUNTIME_CHECK,
+ * making COMP_CRC32C expand to a call through the pg_comp_crc32c
+ * function pointer.  The real backend initialises this pointer in
+ * src/port/pg_crc32c_sse42_choose.c at startup; the unit test never
+ * triggers the path, but the linker still needs the variable to
+ * resolve.  Initialise to the local sse42 stub above for safety.
+ */
+pg_crc32c (*pg_comp_crc32c)(pg_crc32c crc, const void *data, size_t len) = pg_comp_crc32c_sse42;
+
 
 UT_DEFINE_GLOBALS();
 
