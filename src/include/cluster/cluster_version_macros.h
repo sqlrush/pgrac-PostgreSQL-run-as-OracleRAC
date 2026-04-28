@@ -47,7 +47,7 @@
 #define PGRAC_VERSION_PATCH 0
 
 #define PGRAC_STAGE_NUM 0
-#define PGRAC_STAGE_STEP 17
+#define PGRAC_STAGE_STEP 18
 
 /* PostgreSQL version this fork is based on. */
 #define PGRAC_PG_BASE_VERSION "16.13"

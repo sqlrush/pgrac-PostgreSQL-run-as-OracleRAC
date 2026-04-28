@@ -37,6 +37,7 @@ OBJS = \
 	cluster.o \
 	cluster_elog.o \
 	cluster_guc.o \
+	cluster_ic.o \
 	cluster_shmem.o \
 	cluster_signal.o \
 	cluster_version.o \

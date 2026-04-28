@@ -52,6 +52,7 @@
 
 #include "cluster/cluster_guc.h"  /* cluster_node_id */
 #include "cluster/cluster_elog.h" /* CLUSTER_LOG */
+#include "cluster/cluster_ic.h"	  /* cluster_ic_init / shutdown (stage 0.18) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_version_macros.h"
 
@@ -122,6 +123,16 @@ cluster_init_shmem(void)
 {
 	cluster_ctl_shmem_init();
 	/* Future: grd_shmem_init(); pcm_shmem_init(); ... */
+
+	/*
+	 * Stage 0.18: bind the cluster_ic vtable for the configured tier.
+	 * Stub mode allocates no shmem; tier1+ (Stage 2+) will piggyback
+	 * its own *_shmem_init helper above.  Done here -- inside
+	 * cluster_init_shmem -- because (a) GUCs are already loaded and
+	 * (b) Stage 2+ will need shmem to be ready when the tier_init
+	 * hook fires.
+	 */
+	cluster_ic_init();
 }
 
 

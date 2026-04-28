@@ -85,4 +85,22 @@ extern void cluster_init_guc(void);
 extern int cluster_node_id;
 
 
+/*
+ * cluster_interconnect_tier -- which interconnect tier vtable to bind
+ *	in cluster_ic_init.  Stored as int because PG's enum GUC machinery
+ *	stores enum values in an int variable and maps them via the
+ *	config_enum_entry array registered in cluster_guc.c.
+ *
+ *	0 (stub)  = no real wire traffic; target=self is no-op success,
+ *	            target!=self ereports ERRCODE_FEATURE_NOT_SUPPORTED.
+ *	1 (tier1) = TCP, lands in Stage 2.
+ *	2 (tier2) = RDMA optimized, lands in Stage 6+.
+ *	3 (tier3) = RDMA production-grade, lands in Stage 6+.
+ *
+ *	context: PGC_POSTMASTER (tier change requires reinitialising the
+ *	         interconnect stack; runtime SET is rejected).
+ */
+extern int cluster_interconnect_tier;
+
+
 #endif /* CLUSTER_GUC_H */

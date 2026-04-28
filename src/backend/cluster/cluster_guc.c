@@ -39,6 +39,7 @@
 #include "utils/guc.h"
 
 #include "cluster/cluster_guc.h"
+#include "cluster/cluster_ic.h" /* ClusterICTier enum values */
 
 
 /*
@@ -50,6 +51,25 @@
  * early postmaster code) see a sane default.
  */
 int cluster_node_id = -1;
+int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
+
+
+/*
+ * Mapping from the cluster.interconnect_tier GUC enum string to the
+ * ClusterICTier C enum.  PG's GUC machinery copies the int into
+ * cluster_interconnect_tier; cluster_ic_init then dispatches.  The
+ * "hidden" flag is false because we want SHOW / pg_settings to display
+ * every legal value to the DBA (even tiers that are not yet implemented
+ * are shown -- attempting to use one fails at startup with a precise
+ * errhint pointing to the Stage where it lands).
+ */
+static const struct config_enum_entry cluster_interconnect_tier_options[] = {
+	{"stub", CLUSTER_IC_TIER_STUB, false},
+	{"tier1", CLUSTER_IC_TIER_1, false},
+	{"tier2", CLUSTER_IC_TIER_2, false},
+	{"tier3", CLUSTER_IC_TIER_3, false},
+	{NULL, 0, false}
+};
 
 
 /*
@@ -89,4 +109,25 @@ cluster_init_guc(void)
 							NULL,				  /* check_hook */
 							NULL,				  /* assign_hook */
 							NULL);				  /* show_hook */
+
+	/*
+	 * cluster.interconnect_tier -- selects the cluster_ic vtable.
+	 * Stage 0.18 only ships the stub vtable; tier1 / tier2 / tier3
+	 * are accepted by GUC parsing but rejected at cluster_ic_init
+	 * with a precise errhint.  See cluster_ic.c::cluster_ic_init and
+	 * docs/cluster-ic-design.md §3.
+	 */
+	DefineCustomEnumVariable("cluster.interconnect_tier",
+							 gettext_noop("Cluster interconnect tier vtable selection."),
+							 gettext_noop("stub (default) keeps cross-node IPC disabled; tier1 (TCP) "
+										  "lands in Stage 2; tier2 / tier3 (RDMA) land in Stage 6+. "
+										  "See docs/cluster-ic-design.md."),
+							 &cluster_interconnect_tier,
+							 CLUSTER_IC_TIER_STUB, /* boot value */
+							 cluster_interconnect_tier_options,
+							 PGC_POSTMASTER, /* tier change requires restart */
+							 0,				 /* flags */
+							 NULL,			 /* check_hook */
+							 NULL,			 /* assign_hook */
+							 NULL);			 /* show_hook */
 }
