@@ -52,6 +52,7 @@
  */
 int cluster_node_id = -1;
 int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
+char *cluster_config_file = NULL; /* boot value filled by DefineCustomStringVariable */
 
 
 /*
@@ -127,4 +128,24 @@ cluster_init_guc(void)
 		NULL,											   /* check_hook */
 		NULL,											   /* assign_hook */
 		NULL);											   /* show_hook */
+
+	/*
+	 * cluster.config_file -- path to pgrac.conf.  Default "pgrac.conf"
+	 * is interpreted relative to postmaster cwd (which is PGDATA after
+	 * ChangeToDataDir).  Stage 2+ multi-node setups typically point
+	 * this at shared storage.  See spec-0.19-conf-framework.md §2.4
+	 * and docs/cluster-conf-design.md §4.
+	 */
+	DefineCustomStringVariable(
+		"cluster.config_file",
+		gettext_noop("Path to the pgrac cluster topology configuration file."),
+		gettext_noop("Default \"pgrac.conf\" is resolved relative to PGDATA. "
+					 "Set to an absolute path to use shared storage for "
+					 "multi-node deployments."),
+		&cluster_config_file, "pgrac.conf", /* boot value */
+		PGC_POSTMASTER,						/* topology reload requires restart */
+		0,									/* flags */
+		NULL,								/* check_hook */
+		NULL,								/* assign_hook */
+		NULL);								/* show_hook */
 }

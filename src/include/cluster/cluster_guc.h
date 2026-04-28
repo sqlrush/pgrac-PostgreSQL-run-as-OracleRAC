@@ -103,4 +103,18 @@ extern int cluster_node_id;
 extern int cluster_interconnect_tier;
 
 
+/*
+ * cluster_config_file -- path to the pgrac.conf cluster topology file.
+ *
+ *	Default "pgrac.conf" (relative to postmaster cwd, typically PGDATA).
+ *	Stage 2+ deployments often point this at shared storage (NFS / cloud
+ *	multi-attach) so all nodes see an identical topology.
+ *
+ *	context: PGC_POSTMASTER (reload of topology is part of the future
+ *	         reconfig protocol, not a simple file re-read; see
+ *	         docs/cluster-conf-design.md §10 FAQ).
+ */
+extern char *cluster_config_file;
+
+
 #endif /* CLUSTER_GUC_H */

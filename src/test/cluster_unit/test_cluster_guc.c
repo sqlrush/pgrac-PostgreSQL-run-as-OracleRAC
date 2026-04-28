@@ -108,6 +108,18 @@ DefineCustomEnumVariable(const char *name pg_attribute_unused(),
 	/* Stub for unit-test linking; real impl lives in PG backend. */
 }
 
+void
+DefineCustomStringVariable(
+	const char *name pg_attribute_unused(), const char *short_desc pg_attribute_unused(),
+	const char *long_desc pg_attribute_unused(), char **valueAddr pg_attribute_unused(),
+	const char *bootValue pg_attribute_unused(), GucContext context pg_attribute_unused(),
+	int flags pg_attribute_unused(), GucStringCheckHook check_hook pg_attribute_unused(),
+	GucStringAssignHook assign_hook pg_attribute_unused(),
+	GucShowHook show_hook pg_attribute_unused())
+{
+	/* Stub for unit-test linking; real impl lives in PG backend. */
+}
+
 
 UT_DEFINE_GLOBALS();
 

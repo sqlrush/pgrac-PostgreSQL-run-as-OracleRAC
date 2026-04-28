@@ -123,6 +123,49 @@ DefineCustomEnumVariable(const char *name pg_attribute_unused(),
 	/* Stub: real impl in src/backend/utils/misc/guc.c (stage 0.18) */
 }
 
+void
+DefineCustomStringVariable(
+	const char *name pg_attribute_unused(), const char *short_desc pg_attribute_unused(),
+	const char *long_desc pg_attribute_unused(), char **valueAddr pg_attribute_unused(),
+	const char *bootValue pg_attribute_unused(), GucContext context pg_attribute_unused(),
+	int flags pg_attribute_unused(), GucStringCheckHook check_hook pg_attribute_unused(),
+	GucStringAssignHook assign_hook pg_attribute_unused(),
+	GucShowHook show_hook pg_attribute_unused())
+{
+	/* Stub: real impl in src/backend/utils/misc/guc.c (stage 0.19) */
+}
+
+/* Forward decl to silence -Wmissing-prototypes (stage 0.19). */
+extern void cluster_conf_shmem_init(void);
+extern void cluster_conf_shmem_request(void);
+extern Size cluster_conf_shmem_size(void);
+extern void cluster_conf_load(void);
+
+void
+cluster_conf_shmem_init(void)
+{
+	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
+}
+
+void
+cluster_conf_shmem_request(void)
+{
+	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
+}
+
+Size
+cluster_conf_shmem_size(void)
+{
+	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
+	return 0;
+}
+
+void
+cluster_conf_load(void)
+{
+	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
+}
+
 /* Forward decl to silence -Wmissing-prototypes. */
 extern void cluster_ic_init(void);
 

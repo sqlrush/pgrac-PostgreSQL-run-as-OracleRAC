@@ -28,7 +28,7 @@ include $(top_builddir)/src/Makefile.global
 TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_wait_events test_cluster_errcodes test_cluster_guc \
         test_cluster_shmem test_cluster_signal test_cluster_views \
-        test_cluster_gviews test_cluster_ic
+        test_cluster_gviews test_cluster_ic test_cluster_conf
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -52,13 +52,15 @@ CLUSTER_SHMEM_O = $(top_builddir)/src/backend/cluster/cluster_shmem.o
 CLUSTER_SIGNAL_O = $(top_builddir)/src/backend/cluster/cluster_signal.o
 CLUSTER_VIEWS_O = $(top_builddir)/src/backend/cluster/cluster_views.o
 CLUSTER_IC_O = $(top_builddir)/src/backend/cluster/cluster_ic.o
+CLUSTER_CONF_O = $(top_builddir)/src/backend/cluster/cluster_conf.o
 
 # Most tests link only cluster_version.o.  test_cluster_guc /
 # test_cluster_shmem / test_cluster_signal / test_cluster_views /
-# test_cluster_gviews / test_cluster_ic have separate rules because
-# they also link additional cluster_*.o objects (the test files stub
-# the PG backend symbols those objects reference).
-SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic,$(TESTS))
+# test_cluster_gviews / test_cluster_ic / test_cluster_conf have
+# separate rules because they also link additional cluster_*.o
+# objects (the test files stub the PG backend symbols those
+# objects reference).
+SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf,$(TESTS))
 
 $(SIMPLE_TESTS): %: %.c unit_test.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(CLUSTER_VERSION_O) -o $@
@@ -110,6 +112,16 @@ test_cluster_ic: test_cluster_ic.c unit_test.h $(CLUSTER_VERSION_O) \
 		$(CLUSTER_IC_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_IC_O) -o $@
+
+# test_cluster_conf links cluster_conf.o standalone.  cluster_conf.c
+# references ereport / ShmemInitStruct / AllocateFile / FreeFile /
+# cluster_node_id / cluster_config_file / fmgr glue; all stubbed in
+# test_cluster_conf.c since the unit test only takes addresses and
+# reads constants (never invokes the parser body or SRF body).
+test_cluster_conf: test_cluster_conf.c unit_test.h $(CLUSTER_VERSION_O) \
+		$(CLUSTER_CONF_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_CONF_O) -o $@
 
 
 # ----------

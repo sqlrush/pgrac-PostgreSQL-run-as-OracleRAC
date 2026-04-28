@@ -35,6 +35,7 @@ include $(top_builddir)/src/Makefile.global
 ifeq ($(enable_pgrac_cluster), yes)
 OBJS = \
 	cluster.o \
+	cluster_conf.o \
 	cluster_elog.o \
 	cluster_guc.o \
 	cluster_ic.o \
@@ -43,7 +44,7 @@ OBJS = \
 	cluster_version.o \
 	cluster_views.o
 else
-OBJS = cluster_views.o
+OBJS = cluster_conf.o cluster_views.o
 endif
 
 include $(top_srcdir)/src/backend/common.mk

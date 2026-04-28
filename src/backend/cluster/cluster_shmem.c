@@ -50,8 +50,9 @@
 #include "storage/shmem.h"
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_guc.h"  /* cluster_node_id */
+#include "cluster/cluster_conf.h" /* cluster_conf_shmem_* / load (stage 0.19) */
 #include "cluster/cluster_elog.h" /* CLUSTER_LOG */
+#include "cluster/cluster_guc.h"  /* cluster_node_id */
 #include "cluster/cluster_ic.h"	  /* cluster_ic_init / shutdown (stage 0.18) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_version_macros.h"
@@ -89,6 +90,7 @@ cluster_shmem_size(void)
 	Size total = 0;
 
 	total = add_size(total, cluster_ctl_shmem_size());
+	total = add_size(total, cluster_conf_shmem_size());
 	/* Future: total = add_size(total, grd_shmem_size()); ... */
 
 	return total;
@@ -105,6 +107,7 @@ void
 cluster_request_shmem(void)
 {
 	cluster_ctl_shmem_request();
+	cluster_conf_shmem_request();
 	/* Future: grd_shmem_request(); pcm_shmem_request(); ... */
 }
 
@@ -122,7 +125,18 @@ void
 cluster_init_shmem(void)
 {
 	cluster_ctl_shmem_init();
+	cluster_conf_shmem_init();
 	/* Future: grd_shmem_init(); pcm_shmem_init(); ... */
+
+	/*
+	 * Stage 0.19: parse pgrac.conf into ClusterConfShmem.  Must run
+	 * after the conf shmem region is allocated (above) and before
+	 * cluster_ic_init (below) -- Stage 2+ TCP vtable.tier_init will
+	 * read interconnect_addr from the topology.  Stub mode at 0.18
+	 * does not consume the topology, so the relative ordering is for
+	 * forward symmetry.
+	 */
+	cluster_conf_load();
 
 	/*
 	 * Stage 0.18: bind the cluster_ic vtable for the configured tier.

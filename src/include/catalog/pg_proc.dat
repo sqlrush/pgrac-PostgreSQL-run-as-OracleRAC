@@ -12,7 +12,7 @@
 #
 # PGRAC MODIFICATIONS
 #   Modified by: SqlRush <sqlrush@gmail.com>
-#   Stage:        0.16, 0.17
+#   Stage:        0.16, 0.17, 0.19
 #
 #   Appended pgrac cluster catalog functions at the end of this file
 #   under a clearly-marked "PGRAC: cluster catalog functions" section.
@@ -25,15 +25,20 @@
 #   Stage 0.17 added cluster_get_gcluster_wait_events (OID 8899), backing
 #   the pg_stat_gcluster_wait_events view (cross-node placeholder; emits
 #   46 rows for the local node only at 0.17, evolves to a multi-node
-#   RPC fan-out at Stage 6+).  Future cluster SRFs land here together
-#   with their owning subsystem spec; CATALOG_VERSION_NO must bump for
-#   every catalog change.
+#   RPC fan-out at Stage 6+).
+#   Stage 0.19 added cluster_get_nodes (OID 8900), backing the
+#   pg_cluster_nodes view (cluster topology from pgrac.conf; SSOT for
+#   Stage 2+ Interconnect / Heartbeat / Reconfig membership lookup).
+#   Future cluster SRFs land here together with their owning subsystem
+#   spec; CATALOG_VERSION_NO must bump for every catalog change.
 #
 #   Related design:
 #     docs/cluster-views-impl-design.md v1.1 (registration policy + OIDs)
 #     docs/performance-views-design.md v1.1 §2.2 (full view roster)
+#     docs/cluster-conf-design.md v1.0 (topology framework)
 #     specs/spec-0.16-views-framework.md
 #     specs/spec-0.17-gviews-skeleton.md
+#     specs/spec-0.19-conf-framework.md
 #
 #----------------------------------------------------------------------
 
@@ -12098,5 +12103,19 @@
   proargmodes => '{o,o,o}',
   proargnames => '{node_id,type,name}',
   prosrc => 'cluster_get_gcluster_wait_events' },
+
+# Stage 0.19: cluster topology (parsed from pgrac.conf at startup).
+# Reflects the in-memory ClusterConfShmem region; no I/O is performed
+# at SELECT time.  Single-node degraded fallback when the file is
+# absent (LOG); FATAL on parse / consistency errors.  See
+# specs/spec-0.19-conf-framework.md and docs/cluster-conf-design.md.
+{ oid => '8900', descr => 'list cluster nodes from pgrac.conf topology',
+  proname => 'cluster_get_nodes', prorows => '16',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int4,text,text,text,text,text,bool}',
+  proargmodes => '{o,o,o,o,o,o,o}',
+  proargnames => '{node_id,hostname,interconnect_addr,public_addr,role,region,is_self}',
+  prosrc => 'cluster_get_nodes' },
 
 ]

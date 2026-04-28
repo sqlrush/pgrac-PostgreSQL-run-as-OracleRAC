@@ -17,14 +17,16 @@
 /*
  * PGRAC MODIFICATIONS
  *   Modified by: SqlRush <sqlrush@gmail.com>
- *   Stage:        0.16, 0.17
+ *   Stage:        0.16, 0.17, 0.19
  *
  *   Appended pgrac cluster views at the end of this file under a
  *   clearly marked "PGRAC: cluster views" section.  Stage 0.16 added
  *   pg_stat_cluster_wait_events (OID 8898 SRF).  Stage 0.17 added
  *   pg_stat_gcluster_wait_events (OID 8899 SRF) -- the first pgrac
- *   "global" view (cross-node placeholder; emits 46 rows for the local
- *   node only at 0.17, evolves to a multi-node RPC fan-out at Stage 6+).
+ *   "global" view.  Stage 0.19 added pg_cluster_nodes (OID 8900 SRF)
+ *   -- the cluster topology view, parsed from pgrac.conf at postmaster
+ *   startup; SSOT for Stage 2+ Interconnect / Heartbeat / Reconfig
+ *   membership lookup.
  *
  *   The cluster views block is currently UNCONDITIONAL: when
  *   --disable-cluster is used the SRFs are still present in pg_proc
@@ -38,8 +40,10 @@
  *
  *   Related design:
  *     docs/cluster-views-impl-design.md v1.1
+ *     docs/cluster-conf-design.md v1.0
  *     specs/spec-0.16-views-framework.md
  *     specs/spec-0.17-gviews-skeleton.md
+ *     specs/spec-0.19-conf-framework.md
  */
 
 CREATE VIEW pg_roles AS
@@ -1396,3 +1400,24 @@ CREATE VIEW pg_stat_gcluster_wait_events AS
 
 REVOKE ALL ON pg_stat_gcluster_wait_events FROM PUBLIC;
 GRANT SELECT ON pg_stat_gcluster_wait_events TO PUBLIC;
+
+/*
+ * pg_cluster_nodes -- cluster topology, parsed from pgrac.conf at
+ * postmaster startup.  Stage 0.19 ships the framework + single-node
+ * fallback (one row, the local node, when pgrac.conf is absent).
+ * Stage 2+ adds last_heartbeat_at / state / weight columns (append
+ * only; the seven 0.19 columns are a stable contract).  See
+ * docs/cluster-conf-design.md §5.
+ */
+CREATE VIEW pg_cluster_nodes AS
+    SELECT node_id,
+           hostname,
+           interconnect_addr,
+           public_addr,
+           role,
+           region,
+           is_self
+      FROM cluster_get_nodes();
+
+REVOKE ALL ON pg_cluster_nodes FROM PUBLIC;
+GRANT SELECT ON pg_cluster_nodes TO PUBLIC;
