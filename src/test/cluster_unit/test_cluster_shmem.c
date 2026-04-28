@@ -113,11 +113,9 @@ void
 DefineCustomEnumVariable(const char *name pg_attribute_unused(),
 						 const char *short_desc pg_attribute_unused(),
 						 const char *long_desc pg_attribute_unused(),
-						 int *valueAddr pg_attribute_unused(),
-						 int bootValue pg_attribute_unused(),
+						 int *valueAddr pg_attribute_unused(), int bootValue pg_attribute_unused(),
 						 const struct config_enum_entry *options pg_attribute_unused(),
-						 GucContext context pg_attribute_unused(),
-						 int flags pg_attribute_unused(),
+						 GucContext context pg_attribute_unused(), int flags pg_attribute_unused(),
 						 GucEnumCheckHook check_hook pg_attribute_unused(),
 						 GucEnumAssignHook assign_hook pg_attribute_unused(),
 						 GucShowHook show_hook pg_attribute_unused())

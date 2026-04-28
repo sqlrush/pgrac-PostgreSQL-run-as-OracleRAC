@@ -63,13 +63,12 @@ int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
  * are shown -- attempting to use one fails at startup with a precise
  * errhint pointing to the Stage where it lands).
  */
-static const struct config_enum_entry cluster_interconnect_tier_options[] = {
-	{"stub", CLUSTER_IC_TIER_STUB, false},
-	{"tier1", CLUSTER_IC_TIER_1, false},
-	{"tier2", CLUSTER_IC_TIER_2, false},
-	{"tier3", CLUSTER_IC_TIER_3, false},
-	{NULL, 0, false}
-};
+static const struct config_enum_entry cluster_interconnect_tier_options[]
+	= { { "stub", CLUSTER_IC_TIER_STUB, false },
+		{ "tier1", CLUSTER_IC_TIER_1, false },
+		{ "tier2", CLUSTER_IC_TIER_2, false },
+		{ "tier3", CLUSTER_IC_TIER_3, false },
+		{ NULL, 0, false } };
 
 
 /*

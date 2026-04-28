@@ -61,8 +61,7 @@
  *	vtable.  Stage 0.18 only supports CLUSTER_IC_TIER_STUB; tier1
  *	lands in Stage 2, tier2/tier3 in Stage 6+.
  */
-typedef enum ClusterICTier
-{
+typedef enum ClusterICTier {
 	CLUSTER_IC_TIER_STUB = 0,
 	CLUSTER_IC_TIER_1 = 1,
 	CLUSTER_IC_TIER_2 = 2,
@@ -77,7 +76,7 @@ typedef enum ClusterICTier
  * codes like 'R' / 'S' / 'E').  Stage 6+ may rev this only via
  * protocol_version, never the magic itself.
  */
-#define PGRAC_IC_MAGIC				((uint32) 0x47435249)
+#define PGRAC_IC_MAGIC ((uint32)0x47435249)
 
 /*
  * Wire protocol version.  Bumped when ClusterMsgHeader changes shape.

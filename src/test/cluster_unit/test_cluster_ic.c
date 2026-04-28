@@ -70,8 +70,8 @@
  */
 #include "utils/elog.h"
 
-int			cluster_node_id = -1;
-int			cluster_interconnect_tier = 0; /* CLUSTER_IC_TIER_STUB */
+int cluster_node_id = -1;
+int cluster_interconnect_tier = 0; /* CLUSTER_IC_TIER_STUB */
 
 void
 ExceptionalCondition(const char *conditionName pg_attribute_unused(),
@@ -110,14 +110,14 @@ errcode(int sqlerrcode pg_attribute_unused())
 }
 
 int
-errmsg(const char *fmt pg_attribute_unused(),...)
+errmsg(const char *fmt pg_attribute_unused(), ...)
 {
 	/* Stub: real impl in src/backend/utils/error/elog.c */
 	return 0;
 }
 
 int
-errhint(const char *fmt pg_attribute_unused(),...)
+errhint(const char *fmt pg_attribute_unused(), ...)
 {
 	/* Stub: real impl in src/backend/utils/error/elog.c */
 	return 0;

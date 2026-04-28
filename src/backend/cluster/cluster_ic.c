@@ -47,7 +47,7 @@
 #include "port/pg_crc32c.h"
 #include "utils/elog.h"
 
-#include "cluster/cluster_guc.h"	/* cluster_node_id, cluster_interconnect_tier */
+#include "cluster/cluster_guc.h" /* cluster_node_id, cluster_interconnect_tier */
 #include "cluster/cluster_ic.h"
 
 
@@ -74,8 +74,7 @@ const ClusterICOps *ClusterICOps_Active = NULL;
  * ============================================================ */
 
 static bool
-stub_send_bytes(int32 target_node_id,
-				const void *buf pg_attribute_unused(),
+stub_send_bytes(int32 target_node_id, const void *buf pg_attribute_unused(),
 				size_t len pg_attribute_unused())
 {
 	if (target_node_id == cluster_node_id)
