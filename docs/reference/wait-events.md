@@ -1,0 +1,156 @@
+# Cluster wait events
+
+linkdb registers 46 cluster-specific wait events distributed across
+10 classes.  Each row in `pg_stat_cluster_wait_events` corresponds
+to one entry in this table.
+
+The values appear in the standard `pg_stat_activity.wait_event_type`
+and `pg_stat_activity.wait_event` columns when a backend is waiting
+on a cluster operation.
+
+In the current release most events are registered but not yet
+emitted by code (because the corresponding cross-node subsystems
+are not yet implemented; cross-node sends raise
+`ERRCODE_FEATURE_NOT_SUPPORTED` rather than blocking on a wait).
+The events become observable as the corresponding subsystem ships.
+
+## Cluster: GES (5 events)
+
+Global Enqueue Service — distributed lock manager events.
+
+| Name | Description |
+|---|---|
+| `GesEnqueueAcquire` | Waiting for a GES lock acquire to be granted by the master node |
+| `GesEnqueueConvert` | Waiting for a GES lock conversion (e.g. shared → exclusive) |
+| `GesEnqueueReleaseAck` | Waiting for the master to acknowledge a GES lock release |
+| `GesMasterQuery` | Waiting for a GES master lookup response |
+| `GesLocalFastPath` | Local-only GES fast-path serialisation |
+
+## Cluster: PCM (6 events)
+
+Parallel Cache Management — block-level cluster locks.
+
+| Name | Description |
+|---|---|
+| `PcmBlockReadNS` | Waiting for a block read with shared mode (Null → Shared) |
+| `PcmBlockReadNX` | Waiting for a block read with exclusive mode (Null → Exclusive) |
+| `PcmBlockWriteSX` | Waiting for shared → exclusive lock upgrade for write |
+| `PcmBlockConvertWait` | Waiting for a PCM lock conversion to complete |
+| `PcmBlockDowngrade` | Waiting for downgrade ack from current holder |
+| `PcmItlCleanout` | Waiting for ITL slot cleanout / commit-SCN backfill |
+
+## Cluster: BufferShip (5 events)
+
+Cache Fusion buffer transfer between nodes.
+
+| Name | Description |
+|---|---|
+| `BufferShipCrBuild` | Waiting for consistent-read snapshot construction on the source node |
+| `BufferShipCrSend` | Waiting for the consistent-read block send to complete |
+| `BufferShipCrReceive` | Waiting for an incoming consistent-read block |
+| `BufferShipCurrentSend` | Waiting for the current-version block send to complete |
+| `BufferShipCurrentReceive` | Waiting for an incoming current-version block |
+
+## Cluster: SCN (4 events)
+
+System Change Number propagation across nodes.
+
+| Name | Description |
+|---|---|
+| `ScnBocFlushWait` | Waiting for batch-of-commits SCN flush |
+| `ScnPiggybackMerge` | Waiting for piggyback SCN merge with peer message |
+| `ScnCrossNodeCompare` | Waiting for cross-node SCN compare round-trip |
+| `ScnAdvanceBroadcast` | Waiting for SCN advance broadcast to acknowledge |
+
+## Cluster: Reconfig (5 events)
+
+Cluster reconfiguration after membership changes.
+
+| Name | Description |
+|---|---|
+| `ReconfigGrdRebuild` | Waiting for global resource directory rebuild |
+| `ReconfigLockRecovery` | Waiting for distributed lock recovery |
+| `ReconfigFenceWait` | Waiting for fence (eviction) of a stale node |
+| `ReconfigMasterSelection` | Waiting for new master selection round |
+| `ReconfigBarrierWait` | Waiting at a reconfig protocol barrier |
+
+## Cluster: Recovery (5 events)
+
+Cluster-level recovery / WAL apply.
+
+| Name | Description |
+|---|---|
+| `RecoveryWalFetch` | Waiting for WAL fetch from peer node |
+| `RecoveryKwayMerge` | Waiting for k-way WAL merge from multiple peers |
+| `RecoveryApplyPerThread` | Waiting for per-thread WAL apply slot |
+| `RecoveryUndoReplay` | Waiting for undo segment replay |
+| `RecoveryPcmStateRestore` | Waiting for PCM lock state restoration |
+
+## Cluster: Sinval (3 events)
+
+Cross-node shared invalidation broadcast.
+
+| Name | Description |
+|---|---|
+| `SinvalBroadcastSend` | Waiting for sinval broadcast send to all peers |
+| `SinvalBroadcastReceive` | Waiting for incoming sinval broadcast |
+| `SinvalInjectLocalQueue` | Waiting to inject received sinval into local queue |
+
+## Cluster: Interconnect (5 events)
+
+Network transport layer.
+
+| Name | Description |
+|---|---|
+| `InterconnectRdmaSend` | Waiting for an RDMA send completion |
+| `InterconnectRdmaRecv` | Waiting for an RDMA receive |
+| `InterconnectTcpFallback` | Waiting on the TCP fallback transport |
+| `InterconnectTierSwitch` | Waiting for transport tier switch (e.g. RDMA → TCP fallback) |
+| `InterconnectConnectRetry` | Waiting for an interconnect reconnection attempt |
+
+## Cluster: Undo (4 events)
+
+Cross-node undo segment access.
+
+| Name | Description |
+|---|---|
+| `UndoRemoteRead` | Waiting for a remote undo segment read |
+| `UndoTtLookupRemote` | Waiting for a remote transaction-table lookup |
+| `UndoSegmentFetch` | Waiting for an undo segment fetch |
+| `UndoRetentionWait` | Waiting on undo retention to expire |
+
+## Cluster: ADG (4 events)
+
+Active Data Guard / read-only standby coordination.
+
+| Name | Description |
+|---|---|
+| `AdgMrpApplyWait` | Waiting for the managed recovery process apply |
+| `AdgWalReceiveLag` | Waiting for WAL receive to catch up |
+| `AdgReadSnapshotWait` | Waiting for a read snapshot to be released |
+| `AdgScnSyncWait` | Waiting for SCN sync between primary and standby |
+
+## Querying
+
+```sql
+-- Total registered (46):
+SELECT count(*) FROM pg_stat_cluster_wait_events;
+
+-- Per-class counts:
+SELECT type, count(*)
+  FROM pg_stat_cluster_wait_events
+ GROUP BY type ORDER BY type;
+
+-- Find an event by name:
+SELECT * FROM pg_stat_cluster_wait_events
+ WHERE name = 'PcmBlockReadNS';
+
+-- Currently-active waits (joins with pg_stat_activity):
+SELECT pid, wait_event_type, wait_event, query
+  FROM pg_stat_activity
+ WHERE wait_event_type LIKE 'Cluster:%';
+```
+
+## Reporting issues
+
+File issues at <https://github.com/sqlrush/linkdb/issues>.
