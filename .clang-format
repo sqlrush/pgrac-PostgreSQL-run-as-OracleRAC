@@ -1,0 +1,109 @@
+# pgrac .clang-format
+# Style for pgrac cluster subsystem (src/src/backend/cluster/,
+# src/src/include/cluster/, src/src/test/cluster_unit/).
+#
+# Author: SqlRush <sqlrush@gmail.com>
+#
+# Approximates PostgreSQL upstream pgindent behavior; see PG's
+# src/tools/pgindent for the canonical formatter (we don't reformat
+# PG-original files -- only pgrac-original cluster code).
+#
+# Compatible with clang-format >= 14 (Linux apt) and >= 22 (homebrew).
+
+---
+Language: Cpp
+BasedOnStyle: GNU
+
+# ====================================================================
+# Indentation: hard tabs at 4 columns (PG convention)
+# ====================================================================
+IndentWidth: 4
+TabWidth: 4
+UseTab: Always
+ContinuationIndentWidth: 4
+
+# ====================================================================
+# Line length and breaks
+# ====================================================================
+ColumnLimit: 100
+
+# Function definition: return type on its own line (PG style)
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+
+# Function definition '{' on its own line; control-flow '{' on same line
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterClass: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterEnum: false
+  AfterControlStatement: Never
+  BeforeElse: false
+  BeforeCatch: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+
+# ====================================================================
+# Pointer / cast spacing (PG style: `int *p`, not `int* p`)
+# ====================================================================
+PointerAlignment: Right
+DerivePointerAlignment: false
+SpaceAfterCStyleCast: false
+
+# ====================================================================
+# Function arguments / parameters: pack tightly
+# ====================================================================
+AlignAfterOpenBracket: Align
+BinPackArguments: true
+BinPackParameters: true
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+
+# ====================================================================
+# Control flow: PG style is verbose (each on its own line)
+# ====================================================================
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+SpaceBeforeParens: ControlStatements
+
+# ====================================================================
+# Empty lines / blank lines
+# ====================================================================
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+
+# ====================================================================
+# Comments: keep author's word wrapping; one space before trailing
+# ====================================================================
+ReflowComments: false
+SpacesBeforeTrailingComments: 1
+
+# ====================================================================
+# Includes: PG requires postgres.h before all other headers; do not
+# resort across blocks
+# ====================================================================
+SortIncludes: false
+
+# ====================================================================
+# case label indentation
+# ====================================================================
+IndentCaseLabels: false
+
+# ====================================================================
+# Preprocessor: do not indent #if blocks
+# ====================================================================
+IndentPPDirectives: None
+
+# ====================================================================
+# Other PG-style touches
+# ====================================================================
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignTrailingComments: true
+SpaceAfterLogicalNot: false
+SpaceBeforeAssignmentOperators: true
