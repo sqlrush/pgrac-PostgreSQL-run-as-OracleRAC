@@ -60,7 +60,16 @@ CLUSTER_DIRS=(
 
 # Suppressions file: every entry must have a "Reason:" comment above
 # (enforced by check-comment-headers.sh).  See spec-0.27.5 §3.4.
+#
+# cppcheck 2.13+ rejects comment-only suppression files with "Failed
+# to add suppression.  No id."  We pass the file via --suppressions-list
+# only when it contains at least one non-comment, non-blank line.
 SUPPRESSIONS=scripts/ci/cppcheck-suppressions.txt
+SUPPRESSIONS_ARG=()
+if [ -f "$SUPPRESSIONS" ] && \
+   grep -E -q '^[[:space:]]*[A-Za-z]' "$SUPPRESSIONS"; then
+  SUPPRESSIONS_ARG=(--suppressions-list="$SUPPRESSIONS")
+fi
 
 echo "## cppcheck $(cppcheck --version)"
 echo "Scanning: ${CLUSTER_DIRS[*]}"
@@ -72,8 +81,9 @@ cppcheck \
   --suppress=unusedFunction \
   --suppress=missingInclude \
   --suppress=missingIncludeSystem \
+  --suppress=unmatchedSuppression \
   --inline-suppr \
-  --suppressions-list="$SUPPRESSIONS" \
+  "${SUPPRESSIONS_ARG[@]}" \
   --error-exitcode=0 \
   --xml --xml-version=2 \
   -I src/include \
