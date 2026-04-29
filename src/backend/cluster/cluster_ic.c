@@ -68,8 +68,9 @@ PG_FUNCTION_INFO_V1(cluster_ic_mock_recv_test);
 
 #ifdef USE_PGRAC_CLUSTER
 
-#include "cluster/cluster_conf.h" /* CLUSTER_MAX_NODES */
-#include "cluster/cluster_guc.h"  /* cluster_node_id, cluster_interconnect_tier */
+#include "cluster/cluster_conf.h"	/* CLUSTER_MAX_NODES */
+#include "cluster/cluster_guc.h"	/* cluster_node_id, cluster_interconnect_tier */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (stage 0.27) */
 
 
 /*
@@ -190,6 +191,8 @@ cluster_ic_init(void)
 
 	Assert(ClusterICOps_Active != NULL);
 	ClusterICOps_Active->tier_init();
+
+	CLUSTER_INJECTION_POINT("cluster-ic-tier-selected");
 }
 
 void
@@ -492,6 +495,8 @@ mock_require_mock_tier(const char *fname)
 static bool
 mock_send_bytes(int32 target_node_id, const void *buf, size_t len)
 {
+	CLUSTER_INJECTION_POINT("cluster-ic-mock-send-pre-enqueue");
+
 	mock_state_init();
 
 	if (target_node_id < 0 || target_node_id >= CLUSTER_MAX_NODES)

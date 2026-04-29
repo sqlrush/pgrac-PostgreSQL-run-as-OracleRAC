@@ -56,8 +56,9 @@
 #include "cluster/cluster_conf.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_elog.h" /* CLUSTER_LOG */
-#include "cluster/cluster_guc.h"  /* cluster_node_id, cluster_config_file */
+#include "cluster/cluster_elog.h"	/* CLUSTER_LOG */
+#include "cluster/cluster_guc.h"	/* cluster_node_id, cluster_config_file */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (stage 0.27) */
 #endif
 
 
@@ -537,6 +538,8 @@ cluster_conf_load(void)
 	int32 cur_node_id = -1;
 	ClusterNodeInfo *cur_node = NULL;
 
+	CLUSTER_INJECTION_POINT("cluster-conf-parse-fail");
+
 	Assert(ClusterConfShmem != NULL);
 	Assert(ClusterConfShmem->magic == PGRAC_CLUSTER_CONF_MAGIC);
 
@@ -640,6 +643,8 @@ cluster_conf_load(void)
 	FreeFile(f);
 
 	post_validate(path);
+
+	CLUSTER_INJECTION_POINT("cluster-conf-load-success");
 
 	ereport(LOG, (errmsg("cluster_conf: loaded %d node(s) from \"%s\"",
 						 ClusterConfShmem->node_count, path)));

@@ -43,6 +43,11 @@
 #    instance with cluster.interconnect_tier = 'mock'; see
 #    specs/spec-0.26-mock-framework.md.
 #
+#    Stage 0.27 added two thin helpers (arm_injection,
+#    get_injection_hits) wrapping the cluster_inject_fault SRF and
+#    pg_stat_cluster_injections view; see
+#    specs/spec-0.27-error-injection.md.
+#
 #-------------------------------------------------------------------------
 
 package PgracClusterNode;
@@ -314,6 +319,51 @@ sub mock_clear_all
 	my ($self) = @_;
 
 	return $self->safe_psql('postgres', 'SELECT cluster_ic_mock_clear_all()');
+}
+
+
+#-----------------------------------------------------------------------
+# arm_injection -- Arm or disarm a cluster injection point.
+#
+#	Wraps SELECT cluster_inject_fault(name, fault_type, param).  Sets
+#	the named point's armed_type atomically; subsequent
+#	CLUSTER_INJECTION_POINT(name) hits trigger fault_type.  Pass
+#	fault_type='none' to disarm.
+#
+#	Caller must connect as superuser; the SRF rejects non-superusers.
+#
+# Args:
+#	$name:   injection point name (e.g. 'cluster-init-pre-shmem')
+#	$type:   one of 'none' / 'error' / 'warning' / 'sleep' / 'crash' /
+#	         'skip' (case-insensitive)
+#	$param:  optional integer (sleep us / SKIP cookie); default 0
+#
+# Returns:
+#	't' on success (point found), 'f' if name unknown.
+#-----------------------------------------------------------------------
+sub arm_injection
+{
+	my ($self, $name, $type, $param) = @_;
+	$param //= 0;
+
+	return $self->safe_psql('postgres',
+		qq{SELECT cluster_inject_fault('$name', '$type', $param)});
+}
+
+
+#-----------------------------------------------------------------------
+# get_injection_hits -- Read the lifetime hit counter of an injection point.
+#
+#	Wraps SELECT hits FROM pg_stat_cluster_injections WHERE name=$name.
+#	Returns the hit count as a string (psql cast); '0' means the point
+#	has never fired in this backend.
+#-----------------------------------------------------------------------
+sub get_injection_hits
+{
+	my ($self, $name) = @_;
+
+	return $self->safe_psql('postgres',
+		qq{SELECT hits FROM pg_stat_cluster_injections WHERE name='$name'});
 }
 
 

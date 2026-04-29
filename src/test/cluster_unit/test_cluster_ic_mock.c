@@ -176,6 +176,17 @@ tuplestore_putvalues(Tuplestorestate *state pg_attribute_unused(),
 					 bool *isnull pg_attribute_unused())
 {}
 
+/*
+ * Stage 0.27 injection-framework symbols used by cluster_ic.o
+ * (cluster_ic_init + mock_send_bytes expand CLUSTER_INJECTION_POINT).
+ * cluster_inject.o is not linked here; stub the symbols.
+ */
+int cluster_injection_armed_count = 0;
+
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
+
 
 UT_DEFINE_GLOBALS();
 

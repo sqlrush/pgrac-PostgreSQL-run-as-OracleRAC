@@ -1421,3 +1421,17 @@ CREATE VIEW pg_cluster_nodes AS
 
 REVOKE ALL ON pg_cluster_nodes FROM PUBLIC;
 GRANT SELECT ON pg_cluster_nodes TO PUBLIC;
+
+-- PGRAC: pg_stat_cluster_injections (stage 0.27).
+--   Lists every compile-time cluster injection point with its current
+--   armed fault_type, param, and lifetime hit counter (per-process).
+--   Backed by cluster_get_injection_state (OID 8906); arm/disarm via
+--   cluster_inject_fault (OID 8905, superuser only).  See
+--   specs/spec-0.27-error-injection.md and
+--   docs/error-injection-design.md.
+CREATE VIEW pg_stat_cluster_injections AS
+    SELECT name, fault_type, param, hits
+      FROM cluster_get_injection_state();
+
+REVOKE ALL ON pg_stat_cluster_injections FROM PUBLIC;
+GRANT SELECT ON pg_stat_cluster_injections TO PUBLIC;

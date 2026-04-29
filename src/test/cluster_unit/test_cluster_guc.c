@@ -120,6 +120,16 @@ DefineCustomStringVariable(
 	/* Stub for unit-test linking; real impl lives in PG backend. */
 }
 
+/*
+ * cluster_init_guc references cluster_injection_assign_hook (from
+ * cluster_inject.o) when registering cluster.injection_points (stage 0.27).
+ * This unit test does not link cluster_inject.o, so stub the symbol.
+ */
+void
+cluster_injection_assign_hook(const char *newval pg_attribute_unused(),
+							  void *extra pg_attribute_unused())
+{}
+
 
 UT_DEFINE_GLOBALS();
 

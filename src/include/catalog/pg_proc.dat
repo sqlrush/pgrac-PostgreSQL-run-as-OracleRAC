@@ -12,7 +12,7 @@
 #
 # PGRAC MODIFICATIONS
 #   Modified by: SqlRush <sqlrush@gmail.com>
-#   Stage:        0.16, 0.17, 0.19, 0.26
+#   Stage:        0.16, 0.17, 0.19, 0.26, 0.27
 #
 #   Appended pgrac cluster catalog functions at the end of this file
 #   under a clearly-marked "PGRAC: cluster catalog functions" section.
@@ -25,9 +25,12 @@
 #   Stage 0.19 added cluster_get_nodes (OID 8900).
 #   Stage 0.26 added cluster_ic_mock_inject / drain_outbound /
 #   clear_all / recv_test (OIDs 8901..8904), used by the mock-tier
-#   test surface.  Future cluster SRFs land here together with their
-#   owning subsystem spec; CATALOG_VERSION_NO must bump for every
-#   catalog change.
+#   test surface.
+#   Stage 0.27 added cluster_inject_fault (OID 8905) +
+#   cluster_get_injection_state (OID 8906), powering
+#   pg_stat_cluster_injections.  Future cluster SRFs land here
+#   together with their owning subsystem spec; CATALOG_VERSION_NO
+#   must bump for every catalog change.
 #
 #   Related design:
 #     docs/cluster-views-impl-design.md v1.1 (registration policy + OIDs)
@@ -12147,5 +12150,25 @@
   proargmodes => '{o,o}',
   proargnames => '{sender,payload}',
   prosrc => 'cluster_ic_mock_recv_test' },
+
+# Stage 0.27: error-injection framework.  Six compile-time injection
+# points cover cluster_init_shmem / cluster_ic_init / cluster_conf_load.
+# Each point has a per-process armed_type + lifetime hit counter; the
+# pg_stat_cluster_injections view materialises the registry.  Require
+# superuser to arm (prevent DBA-level DoS).
+{ oid => '8905', descr => 'arm or disarm a cluster injection point',
+  proname => 'cluster_inject_fault', provolatile => 'v', proparallel => 'u',
+  prorettype => 'bool', proargtypes => 'text text int8',
+  proargnames => '{name,fault_type,param}',
+  prosrc => 'cluster_inject_fault' },
+
+{ oid => '8906', descr => 'list cluster injection-point arm state and hit counters',
+  proname => 'cluster_get_injection_state', prorows => '6',
+  proretset => 't', provolatile => 'v', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{text,text,int8,int8}',
+  proargmodes => '{o,o,o,o}',
+  proargnames => '{name,fault_type,param,hits}',
+  prosrc => 'cluster_get_injection_state' },
 
 ]

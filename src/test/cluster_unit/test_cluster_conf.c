@@ -184,6 +184,17 @@ cstring_to_text(const char *s pg_attribute_unused())
 	return NULL;
 }
 
+/*
+ * Stage 0.27 injection-framework symbols used by cluster_conf.o
+ * (cluster_conf_load expands CLUSTER_INJECTION_POINT).
+ * cluster_inject.o is not linked here; stub the symbols.
+ */
+int cluster_injection_armed_count = 0;
+
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
+
 
 UT_DEFINE_GLOBALS();
 

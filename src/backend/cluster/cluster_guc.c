@@ -39,7 +39,8 @@
 #include "utils/guc.h"
 
 #include "cluster/cluster_guc.h"
-#include "cluster/cluster_ic.h" /* ClusterICTier enum values */
+#include "cluster/cluster_ic.h"		/* ClusterICTier enum values */
+#include "cluster/cluster_inject.h" /* cluster_injection_assign_hook (stage 0.27) */
 
 
 /*
@@ -52,7 +53,8 @@
  */
 int cluster_node_id = -1;
 int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
-char *cluster_config_file = NULL; /* boot value filled by DefineCustomStringVariable */
+char *cluster_config_file = NULL;	   /* boot value filled by DefineCustomStringVariable */
+char *cluster_injection_points = NULL; /* boot value filled by DefineCustomStringVariable */
 
 
 /*
@@ -146,4 +148,25 @@ cluster_init_guc(void)
 		NULL,								/* check_hook */
 		NULL,								/* assign_hook */
 		NULL);								/* show_hook */
+
+	/*
+	 * cluster.injection_points -- comma-separated list of injection point
+	 * names to auto-arm at startup with fault_type=WARNING (counter-only +
+	 * warn).  Runtime arming via the cluster_inject_fault() SRF is
+	 * independent and not gated by this GUC.  PGC_SUSET so DBAs can flip
+	 * it on a running server via ALTER SYSTEM + SIGHUP without a restart.
+	 * See spec-0.27-error-injection.md §2.5 and docs/error-injection-design.md.
+	 */
+	DefineCustomStringVariable(
+		"cluster.injection_points",
+		gettext_noop("Comma-separated list of cluster injection points to auto-arm at startup."),
+		gettext_noop("Each named point is armed with fault_type=WARNING (counter + warn). "
+					 "Names not in the registry yield a WARNING and are ignored. "
+					 "Default empty (no auto-arm)."),
+		&cluster_injection_points, "", /* boot value */
+		PGC_SUSET,					   /* superuser, runtime SET allowed */
+		GUC_LIST_INPUT,				   /* comma-separated list */
+		NULL,						   /* check_hook */
+		cluster_injection_assign_hook, /* assign_hook */
+		NULL);						   /* show_hook */
 }

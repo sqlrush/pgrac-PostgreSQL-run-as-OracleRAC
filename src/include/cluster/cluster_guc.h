@@ -117,4 +117,18 @@ extern int cluster_interconnect_tier;
 extern char *cluster_config_file;
 
 
+/*
+ * cluster_injection_points -- comma-separated names to auto-arm at startup.
+ *
+ *	Empty by default.  Each name is armed with fault_type=WARNING; the
+ *	cluster_inject_fault() SRF can later override per-point behaviour.
+ *
+ *	context: PGC_SUSET (runtime SET allowed for testing; auto-arm on
+ *	         next backend startup).
+ *
+ *	See docs/error-injection-design.md §6 and spec-0.27-error-injection.md.
+ */
+extern char *cluster_injection_points;
+
+
 #endif /* CLUSTER_GUC_H */

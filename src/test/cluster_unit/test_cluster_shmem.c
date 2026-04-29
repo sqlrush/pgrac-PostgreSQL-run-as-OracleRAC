@@ -227,6 +227,22 @@ add_size(Size s1, Size s2)
 	return s1 + s2;
 }
 
+/*
+ * Stage 0.27 injection-framework symbols used by cluster_shmem.o
+ * (cluster_init_shmem expands CLUSTER_INJECTION_POINT macros).
+ * cluster_inject.o is not linked here, so stub the symbols.
+ */
+int cluster_injection_armed_count = 0;
+
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
+
+void
+cluster_injection_assign_hook(const char *newval pg_attribute_unused(),
+							  void *extra pg_attribute_unused())
+{}
+
 
 UT_DEFINE_GLOBALS();
 

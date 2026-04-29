@@ -50,10 +50,11 @@
 #include "storage/shmem.h"
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_conf.h" /* cluster_conf_shmem_* / load (stage 0.19) */
-#include "cluster/cluster_elog.h" /* CLUSTER_LOG */
-#include "cluster/cluster_guc.h"  /* cluster_node_id */
-#include "cluster/cluster_ic.h"	  /* cluster_ic_init / shutdown (stage 0.18) */
+#include "cluster/cluster_conf.h"	/* cluster_conf_shmem_* / load (stage 0.19) */
+#include "cluster/cluster_elog.h"	/* CLUSTER_LOG */
+#include "cluster/cluster_guc.h"	/* cluster_node_id */
+#include "cluster/cluster_ic.h"		/* cluster_ic_init / shutdown (stage 0.18) */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (stage 0.27) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_version_macros.h"
 
@@ -124,6 +125,8 @@ cluster_request_shmem(void)
 void
 cluster_init_shmem(void)
 {
+	CLUSTER_INJECTION_POINT("cluster-init-pre-shmem");
+
 	cluster_ctl_shmem_init();
 	cluster_conf_shmem_init();
 	/* Future: grd_shmem_init(); pcm_shmem_init(); ... */
@@ -147,6 +150,8 @@ cluster_init_shmem(void)
 	 * hook fires.
 	 */
 	cluster_ic_init();
+
+	CLUSTER_INJECTION_POINT("cluster-init-post-shmem");
 }
 
 
