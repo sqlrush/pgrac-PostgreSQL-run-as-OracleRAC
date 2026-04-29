@@ -58,18 +58,29 @@ CLUSTER_DIRS=(
   src/test/cluster_unit
 )
 
-# Suppressions file: every entry must have a "Reason:" comment above
-# (enforced by check-comment-headers.sh).  See spec-0.27.5 §3.4.
-#
-# cppcheck 2.13+ rejects comment-only suppression files with "Failed
-# to add suppression.  No id."  We pass the file via --suppressions-list
-# only when it contains at least one non-comment, non-blank line.
-SUPPRESSIONS=scripts/ci/cppcheck-suppressions.txt
-SUPPRESSIONS_ARG=()
-if [ -f "$SUPPRESSIONS" ] && \
-   grep -E -q '^[[:space:]]*[A-Za-z]' "$SUPPRESSIONS"; then
-  SUPPRESSIONS_ARG=(--suppressions-list="$SUPPRESSIONS")
-fi
+# Suppressions: passed as --suppress= CLI flags (one per finding).
+# We avoid --suppressions-list because cppcheck 2.13's file-parser is
+# very strict about format and rejects mixed-comment files with "Failed
+# to add suppression. No id." even when valid entries are present.
+# Each suppression below has a one-line "Reason:" comment.  See
+# pgrac/docs/ci-static-analysis-baseline-stage0.27.md for the baseline
+# scan that generated each entry.
+
+# Reason: PG framework noise -- skip checks that fire on PG conventions.
+GLOBAL_SUPP=(
+  --suppress=unusedFunction
+  --suppress=missingInclude
+  --suppress=missingIncludeSystem
+  --suppress=unmatchedSuppression
+)
+
+# Reason: PG-upstream headers reachable via -I src/include but outside
+# spec-0.27.5 §1.2 scope (pgrac is only responsible for cluster code).
+PG_HEADER_SUPP=(
+  --suppress=preprocessorErrorDirective:src/include/storage/s_lock.h
+  --suppress=nullPointerRedundantCheck:src/include/nodes/pg_list.h
+  --suppress=nullPointerRedundantCheck:src/include/storage/bufpage.h
+)
 
 echo "## cppcheck $(cppcheck --version)"
 echo "Scanning: ${CLUSTER_DIRS[*]}"
@@ -78,12 +89,9 @@ echo "Scanning: ${CLUSTER_DIRS[*]}"
 # go to cppcheck.xml; a human-readable summary is built downstream.
 cppcheck \
   --enable=warning,style,performance,portability \
-  --suppress=unusedFunction \
-  --suppress=missingInclude \
-  --suppress=missingIncludeSystem \
-  --suppress=unmatchedSuppression \
+  "${GLOBAL_SUPP[@]}" \
+  "${PG_HEADER_SUPP[@]}" \
   --inline-suppr \
-  "${SUPPRESSIONS_ARG[@]}" \
   --error-exitcode=0 \
   --xml --xml-version=2 \
   -I src/include \

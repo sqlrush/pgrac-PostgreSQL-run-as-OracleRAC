@@ -1,45 +1,50 @@
-# ----------------------------------------------------------------------
 # cppcheck-suppressions.txt
 #
-# External suppression list for cppcheck, consumed by
-# scripts/ci/run-cppcheck.sh via --suppressions-list.
+# Authoritative registry of every cppcheck suppression in the linkdb
+# CI pipeline.  Spec-0.27.5 §3.4 (suppression maintenance rules)
+# requires every suppression to have a one-line "Reason:" comment
+# explaining why the cppcheck warning is wrong or unactionable.
 #
-# Spec:   pgrac/specs/spec-0.27.5-static-analysis.md
-# Design: pgrac/docs/ci-static-analysis.md
+# Implementation note: the suppressions are NOT loaded from this file
+# by scripts/ci/run-cppcheck.sh -- they are passed as --suppress= CLI
+# flags directly because cppcheck 2.13's --suppressions-list parser
+# rejects mixed-comment files with "Failed to add suppression. No id."
+# even when valid entries are present.  This file is kept as the
+# human-facing registry; run-cppcheck.sh is the executable copy.
+# Whenever you add a suppression, update both files in lockstep.
 #
-# Format: <id>[:<file>[:<line>]]
-#   id      : cppcheck rule id (e.g. unreachableCode, nullPointer)
-#   file    : path relative to repo root, optional
-#   line    : line number, optional (use only when narrow match needed)
+# Spec:    pgrac/specs/spec-0.27.5-static-analysis.md
+# Design:  pgrac/docs/ci-static-analysis.md
+# Baseline: pgrac/docs/ci-static-analysis-baseline-stage0.27.md
 #
-# RULE: every suppression entry MUST be preceded by a one-line
-# "Reason:" comment explaining why the cppcheck warning is wrong or
-# unactionable.  See spec-0.27.5 §3.4 (suppression maintenance) and
-# CLAUDE.md rule 21 (no silent design overrides).
-#
-# Stage 0.30 verification re-reviews every entry to confirm the Reason
-# is still valid.
-#
-# ----------------------------------------------------------------------
-#
-# Stage 0.27 baseline scan results (run 25118920428, linkdb commit
-# 5439140590).  All findings are false positives; see
-# pgrac:docs/ci-static-analysis-baseline-stage0.27.md for the full
-# review.
+# Format: <id>[:<file>[:<line>]]   id is a cppcheck rule name.
 
+# === Global PG framework noise (apply to all files) ===
+# Reason: cppcheck flags every PG SRF function as "never used"
+# because it cannot resolve the PG_FUNCTION_INFO_V1 macro registration.
+unusedFunction
+# Reason: cppcheck cannot resolve PG's hand-rolled include layout
+# reliably with -I; missingInclude noise is not actionable.
+missingInclude
+missingIncludeSystem
+# Reason: future inline /* cppcheck-suppress xxx */ removals should
+# not fire unmatched-suppression warnings during the transition.
+unmatchedSuppression
+
+# === PG-upstream headers reachable via -I src/include ===
 # Reason: cppcheck transitively follows -I src/include and warns on
-# PG-upstream headers that are not pgrac's responsibility (PG has its
-# own static analysis).  Spec-0.27.5 §1.2 limits scan scope to cluster
-# subsystem code only.  PG header s_lock.h emits #error for
-# unsupported-platform builds; cppcheck cannot evaluate the platform
-# conditionals correctly.
+# PG-upstream headers; spec-0.27.5 §1.2 limits scope to cluster code.
+# PG header s_lock.h emits #error for unsupported-platform builds;
+# cppcheck cannot evaluate the platform conditionals correctly.
 preprocessorErrorDirective:src/include/storage/s_lock.h
-
-# Reason: PG-upstream pg_list.h has a defensive null check that
-# cppcheck reports as redundant; this is PG idiom, not pgrac code.
+# Reason: PG-upstream defensive null check; pg_list.h is not pgrac code.
 nullPointerRedundantCheck:src/include/nodes/pg_list.h
-
-# Reason: PG-upstream bufpage.h has a defensive null check that
-# cppcheck reports as redundant; this is PG idiom, not pgrac code.
+# Reason: PG-upstream defensive null check; bufpage.h is not pgrac code.
 nullPointerRedundantCheck:src/include/storage/bufpage.h
 
+# === Inline suppressions ===
+# All inline /* cppcheck-suppress xxx */ comments must include a
+# "Reason:" line on the next line.  Currently:
+#   src/test/cluster_unit/test_cluster_basic.c:33 duplicateExpression
+#     (intentional UT_ASSERT(1==1) tautology; verifies macro accepts
+#      a true expression without firing the failure path)
