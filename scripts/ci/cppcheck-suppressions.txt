@@ -22,9 +22,24 @@
 #
 # ----------------------------------------------------------------------
 #
-# (No entries yet.  Populated at spec-0.27.5 §8.7 after the first
-# baseline scan review.  scripts/ci/run-cppcheck.sh skips the
-# --suppressions-list flag automatically while this file contains only
-# comments / blank lines, because cppcheck 2.13+ rejects a comment-only
-# suppression file with "Failed to add suppression. No id.")
+# Stage 0.27 baseline scan results (run 25118920428, linkdb commit
+# 5439140590).  All findings are false positives; see
+# pgrac:docs/ci-static-analysis-baseline-stage0.27.md for the full
+# review.
+
+# Reason: cppcheck transitively follows -I src/include and warns on
+# PG-upstream headers that are not pgrac's responsibility (PG has its
+# own static analysis).  Spec-0.27.5 §1.2 limits scan scope to cluster
+# subsystem code only.  PG header s_lock.h emits #error for
+# unsupported-platform builds; cppcheck cannot evaluate the platform
+# conditionals correctly.
+preprocessorErrorDirective:src/include/storage/s_lock.h
+
+# Reason: PG-upstream pg_list.h has a defensive null check that
+# cppcheck reports as redundant; this is PG idiom, not pgrac code.
+nullPointerRedundantCheck:src/include/nodes/pg_list.h
+
+# Reason: PG-upstream bufpage.h has a defensive null check that
+# cppcheck reports as redundant; this is PG idiom, not pgrac code.
+nullPointerRedundantCheck:src/include/storage/bufpage.h
 

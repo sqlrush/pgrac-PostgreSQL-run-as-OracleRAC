@@ -30,6 +30,10 @@ UT_DEFINE_GLOBALS();
 
 UT_TEST(test_framework_assert_true)
 {
+	/* cppcheck-suppress duplicateExpression
+	 * Reason: intentional tautology to verify the UT_ASSERT macro
+	 * accepts a true expression without firing the failure path.
+	 */
 	UT_ASSERT(1 == 1);
 }
 

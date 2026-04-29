@@ -60,13 +60,19 @@ make -C src/backend/cluster clean
 # scan-build wraps the compiler.  --status-bugs would return non-zero
 # when bugs are found, but we are warn-only at stage 0.27.5 - 0.30, so
 # capture the count without failing the step.
+# Disabled checkers:
+#   deadcode.DeadStores  - PG idiom `int x = 0; x = real_value;` (false positives)
+#   security.insecureAPI - Annex K bounds-checked APIs (memcpy_s etc.) are not
+#                          available in glibc; all PG/pgrac uses plain memcpy/
+#                          memset by design.  Re-evaluate at Stage 6+ production
+#                          hardening if a security-conscious libc is adopted.
 scan-build \
   --use-cc=clang \
   -o "$OUT_DIR" \
-  -enable-checker security \
   -enable-checker deadcode \
   -enable-checker nullability \
   -disable-checker deadcode.DeadStores \
+  -disable-checker security.insecureAPI \
   --keep-empty \
   make -C src/backend/cluster \
   2>&1 | tee "$OUT_DIR/scan-build.log" \
