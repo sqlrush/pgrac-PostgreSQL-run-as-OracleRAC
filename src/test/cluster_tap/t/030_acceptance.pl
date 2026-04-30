@@ -50,6 +50,8 @@ use warnings;
 use FindBin;
 use lib "$FindBin::RealBin/../lib";
 
+use IPC::Cmd qw(can_run);
+use IPC::Run qw(run);
 use PostgreSQL::Test::Cluster;
 use Test::More;
 use PgracClusterNode;
@@ -283,13 +285,12 @@ ok($node->get_cluster_state_value('conf', 'self_in_topology') =~ /^(t|f)$/,
 # §L  pgrac-init / pgrac-start (1 test)
 # ============================================================
 
-# postgres binary is on PATH thanks to the cluster_tap Makefile installcheck
-# rule (PATH="$installdir/bin:..."), so a `command -v` lookup is portable
-# across local trees and CI runners.
-my $postgres_bin = `command -v postgres`;
-chomp $postgres_bin;
-ok($postgres_bin ne '' && -x $postgres_bin,
-	"L1 postgres binary present and executable ($postgres_bin)");
+# Resolve postgres via IPC::Cmd::can_run (walks PATH in Perl, no shell):
+# robust across local make-check and CI runners (Ubuntu /bin/sh = dash
+# behaves differently from macOS bash for backtick env propagation).
+my $postgres_bin = can_run('postgres');
+ok(defined $postgres_bin && -x $postgres_bin,
+	"L1 postgres binary present and executable (" . ($postgres_bin // '<undef>') . ")");
 
 
 # ============================================================
@@ -387,9 +388,13 @@ ok($node->safe_psql('postgres',
 # ============================================================
 
 # Run postgres binary with --pgrac-version and capture output.
-# Reuse $postgres_bin (resolved via PATH in §L1) so this works in both
-# local make-check and CI environments.
-my $version_out = `'$postgres_bin' --pgrac-version 2>&1`;
+# Reuse $postgres_bin (resolved via PATH in §L1) and execute through
+# IPC::Run with array-form argv so we don't depend on shell PATH semantics.
+my $version_out = '';
+my $version_err = '';
+if (defined $postgres_bin) {
+	run [ $postgres_bin, '--pgrac-version' ], '>', \$version_out, '2>', \$version_err;
+}
 chomp $version_out;
 like($version_out, qr/^pgrac v\d+\.\d+\.\d+-stage\d+\.\d+ \(based on PostgreSQL \d+\.\d+\)$/,
 	"P1 --pgrac-version output matches semver format (got: $version_out)");
