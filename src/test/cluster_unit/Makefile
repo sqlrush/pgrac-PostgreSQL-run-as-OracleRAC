@@ -29,7 +29,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_wait_events test_cluster_errcodes test_cluster_guc \
         test_cluster_shmem test_cluster_signal test_cluster_views \
         test_cluster_gviews test_cluster_ic test_cluster_conf \
-        test_cluster_ic_mock test_cluster_inject
+        test_cluster_ic_mock test_cluster_inject test_cluster_pgstat
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -55,6 +55,7 @@ CLUSTER_VIEWS_O = $(top_builddir)/src/backend/cluster/cluster_views.o
 CLUSTER_IC_O = $(top_builddir)/src/backend/cluster/cluster_ic.o
 CLUSTER_CONF_O = $(top_builddir)/src/backend/cluster/cluster_conf.o
 CLUSTER_INJECT_O = $(top_builddir)/src/backend/cluster/cluster_inject.o
+CLUSTER_PGSTAT_O = $(top_builddir)/src/backend/cluster/cluster_pgstat.o
 
 # Most tests link only cluster_version.o.  test_cluster_guc /
 # test_cluster_shmem / test_cluster_signal / test_cluster_views /
@@ -62,7 +63,7 @@ CLUSTER_INJECT_O = $(top_builddir)/src/backend/cluster/cluster_inject.o
 # separate rules because they also link additional cluster_*.o
 # objects (the test files stub the PG backend symbols those
 # objects reference).
-SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject,$(TESTS))
+SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat,$(TESTS))
 
 $(SIMPLE_TESTS): %: %.c unit_test.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(CLUSTER_VERSION_O) -o $@
@@ -146,6 +147,18 @@ test_cluster_inject: test_cluster_inject.c unit_test.h $(CLUSTER_VERSION_O) \
 		$(CLUSTER_INJECT_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_INJECT_O) -o $@
+
+# test_cluster_pgstat links cluster_pgstat.o standalone.  cluster_pgstat.c
+# references cluster_injection_armed_count (mirror sync) + ereport +
+# fmgr / tuplestore machinery; all stubbed locally.  Tests pin the
+# helper API (lookup / inc / set / read), lazy-init idempotency,
+# sequential atomic accumulation, NULL safety, and SRF entry-point
+# linkability.  End-to-end SQL behaviour is covered by cluster_tap
+# t/016_perfmon.pl.
+test_cluster_pgstat: test_cluster_pgstat.c unit_test.h $(CLUSTER_VERSION_O) \
+		$(CLUSTER_PGSTAT_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_PGSTAT_O) -o $@
 
 
 # ----------

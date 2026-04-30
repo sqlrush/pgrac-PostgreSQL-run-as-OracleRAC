@@ -40,17 +40,19 @@ OBJS = \
 	cluster_guc.o \
 	cluster_ic.o \
 	cluster_inject.o \
+	cluster_pgstat.o \
 	cluster_shmem.o \
 	cluster_signal.o \
 	cluster_version.o \
 	cluster_views.o
 else
-# cluster_conf.o, cluster_views.o, cluster_ic.o, cluster_inject.o are
-# always linked because pg_proc.dat references their SRF entry points
-# unconditionally.  In disable-cluster builds the SRF bodies #ifdef out
-# and raise ERRCODE_FEATURE_NOT_SUPPORTED, but the function symbols
-# must still resolve at link time.
-OBJS = cluster_conf.o cluster_ic.o cluster_inject.o cluster_views.o
+# cluster_conf.o, cluster_views.o, cluster_ic.o, cluster_inject.o,
+# cluster_pgstat.o are always linked because pg_proc.dat references
+# their SRF entry points unconditionally.  In disable-cluster builds
+# the SRF bodies #ifdef out and raise ERRCODE_FEATURE_NOT_SUPPORTED,
+# but the function symbols must still resolve at link time.
+OBJS = cluster_conf.o cluster_ic.o cluster_inject.o \
+	cluster_pgstat.o cluster_views.o
 endif
 
 include $(top_srcdir)/src/backend/common.mk

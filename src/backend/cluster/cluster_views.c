@@ -46,12 +46,16 @@
 #include "pgstat.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "cluster/cluster_views.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_guc.h" /* cluster_node_id */
+#include "cluster/cluster_conf.h"			/* cluster_conf_lookup_node, role helpers */
+#include "cluster/cluster_guc.h"			/* cluster_node_id */
+#include "cluster/cluster_shmem.h"			/* ClusterShmem->created_at */
+#include "cluster/cluster_version_macros.h" /* PGRAC_VERSION_STRING */
 #endif
 
 
@@ -250,6 +254,73 @@ cluster_get_gcluster_wait_events(PG_FUNCTION_ARGS)
 				tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 			}
 		}
+	}
+#endif
+
+	return (Datum)0;
+}
+
+
+/* ============================================================
+ * cluster_get_stat_nodes -- backing SRF for pg_stat_cluster_nodes
+ * (stage 0.28).
+ *
+ *	Returns runtime metadata for each cluster node.  Stage 0 always
+ *	emits exactly one row (the local node).  Stage 2+ extends to all
+ *	nodes by iterating cluster_conf topology; the column shape is
+ *	stable from this stage onward.
+ *
+ *	role     joined from pgrac.conf via cluster_conf_lookup_node;
+ *	         "unknown" if the configured cluster_node_id has no
+ *	         matching pgrac.conf entry (e.g. fallback single-node).
+ *	state    hardcoded "online" -- the only legitimate state for a
+ *	         backend that is actively serving SQL.  Stage 4+ recovery
+ *	         expands to {online, recovering, down, starting}.
+ *
+ *	See specs/spec-0.28-perfmon-framework.md §2.5 / §3.3.
+ * ============================================================ */
+
+PG_FUNCTION_INFO_V1(cluster_get_stat_nodes);
+
+Datum
+cluster_get_stat_nodes(PG_FUNCTION_ARGS)
+{
+	InitMaterializedSRF(fcinfo, 0);
+
+#ifdef USE_PGRAC_CLUSTER
+	{
+		ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+		Datum values[6];
+		bool nulls[6] = { false, false, false, false, false, false };
+		const ClusterNodeInfo *node_info;
+		const char *role_str;
+
+		node_info = cluster_conf_lookup_node((int32)cluster_node_id);
+		if (node_info != NULL)
+			role_str = cluster_conf_role_to_string(node_info->role);
+		else
+			role_str = "unknown";
+
+		values[0] = Int32GetDatum((int32)cluster_node_id);
+		values[1] = CStringGetTextDatum(role_str ? role_str : "unknown");
+		values[2] = CStringGetTextDatum("online");
+
+		/*
+		 * ClusterShmem->created_at is set in cluster_init_shmem when
+		 * the postmaster first allocated the control block (see
+		 * cluster_shmem.c::cluster_ctl_shmem_init).  Backend-local
+		 * pointer dereference; no locking required (immutable after
+		 * postmaster init, before any backend forks).
+		 */
+		if (ClusterShmem != NULL)
+			values[3] = TimestampTzGetDatum(ClusterShmem->created_at);
+		else
+			nulls[3] = true;
+
+		values[4] = CStringGetTextDatum(PGRAC_VERSION_STRING);
+		values[5] = CStringGetTextDatum(PG_VERSION);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 #endif
 

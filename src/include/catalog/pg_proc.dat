@@ -12,7 +12,7 @@
 #
 # PGRAC MODIFICATIONS
 #   Modified by: SqlRush <sqlrush@gmail.com>
-#   Stage:        0.16, 0.17, 0.19, 0.26, 0.27
+#   Stage:        0.16, 0.17, 0.19, 0.26, 0.27, 0.28
 #
 #   Appended pgrac cluster catalog functions at the end of this file
 #   under a clearly-marked "PGRAC: cluster catalog functions" section.
@@ -28,9 +28,13 @@
 #   test surface.
 #   Stage 0.27 added cluster_inject_fault (OID 8905) +
 #   cluster_get_injection_state (OID 8906), powering
-#   pg_stat_cluster_injections.  Future cluster SRFs land here
-#   together with their owning subsystem spec; CATALOG_VERSION_NO
-#   must bump for every catalog change.
+#   pg_stat_cluster_injections.
+#   Stage 0.28 added cluster_get_stat_nodes (OID 8907) +
+#   cluster_get_pgstat_counters (OID 8908), powering
+#   pg_stat_cluster_nodes + pg_stat_cluster_counters (perfmon
+#   framework skeleton).  Future cluster SRFs land here together with
+#   their owning subsystem spec; CATALOG_VERSION_NO must bump for
+#   every catalog change.
 #
 #   Related design:
 #     docs/cluster-views-impl-design.md v1.1 (registration policy + OIDs)
@@ -12170,5 +12174,27 @@
   proargmodes => '{o,o,o,o}',
   proargnames => '{name,fault_type,param,hits}',
   prosrc => 'cluster_get_injection_state' },
+
+# Stage 0.28: performance-monitoring framework skeleton.  Two SRFs back
+# pg_stat_cluster_nodes (single-node metadata, stage 0 verification
+# requirement) and pg_stat_cluster_counters (cluster_pgstat framework
+# atomic counter registry).
+{ oid => '8907', descr => 'list cluster nodes with runtime metadata',
+  proname => 'cluster_get_stat_nodes', prorows => '1',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int4,text,text,timestamptz,text,text}',
+  proargmodes => '{o,o,o,o,o,o}',
+  proargnames => '{node_id,role,state,startup_time,pgrac_version,pg_version}',
+  prosrc => 'cluster_get_stat_nodes' },
+
+{ oid => '8908', descr => 'list cluster pgstat atomic counters',
+  proname => 'cluster_get_pgstat_counters', prorows => '8',
+  proretset => 't', provolatile => 'v', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{text,int8}',
+  proargmodes => '{o,o}',
+  proargnames => '{name,value}',
+  prosrc => 'cluster_get_pgstat_counters' },
 
 ]

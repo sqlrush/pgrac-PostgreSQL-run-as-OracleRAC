@@ -1435,3 +1435,28 @@ CREATE VIEW pg_stat_cluster_injections AS
 
 REVOKE ALL ON pg_stat_cluster_injections FROM PUBLIC;
 GRANT SELECT ON pg_stat_cluster_injections TO PUBLIC;
+
+-- PGRAC: pg_stat_cluster_nodes (stage 0.28).
+--   Runtime metadata for each cluster node.  Stage 0 returns exactly
+--   one row (the local node, single-node pseudo-cluster).  Companion
+--   to spec-0.19's pg_cluster_nodes (configuration view) -- this view
+--   answers "how is this node doing", that one answers "which nodes
+--   are configured".  See specs/spec-0.28-perfmon-framework.md.
+CREATE VIEW pg_stat_cluster_nodes AS
+    SELECT node_id, role, state, startup_time, pgrac_version, pg_version
+      FROM cluster_get_stat_nodes();
+
+REVOKE ALL ON pg_stat_cluster_nodes FROM PUBLIC;
+GRANT SELECT ON pg_stat_cluster_nodes TO PUBLIC;
+
+-- PGRAC: pg_stat_cluster_counters (stage 0.28).
+--   Lists every registered cluster_pgstat atomic counter and its
+--   current value.  Stage 0 includes a single demo entry
+--   (cluster.inject.armed_count).  Stage 1+ subsystems extend the
+--   registry by appending entries to cluster_pgstat_counters[]
+--   in src/backend/cluster/cluster_pgstat.c.
+CREATE VIEW pg_stat_cluster_counters AS
+    SELECT name, value FROM cluster_get_pgstat_counters();
+
+REVOKE ALL ON pg_stat_cluster_counters FROM PUBLIC;
+GRANT SELECT ON pg_stat_cluster_counters TO PUBLIC;

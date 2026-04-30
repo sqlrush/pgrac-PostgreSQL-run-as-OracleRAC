@@ -48,6 +48,11 @@
 #    pg_stat_cluster_injections view; see
 #    specs/spec-0.27-error-injection.md.
 #
+#    Stage 0.28 added two thin helpers (get_cluster_node_state,
+#    get_pgstat_counter) wrapping pg_stat_cluster_nodes and
+#    pg_stat_cluster_counters views (the cluster_pgstat framework);
+#    see specs/spec-0.28-perfmon-framework.md.
+#
 #-------------------------------------------------------------------------
 
 package PgracClusterNode;
@@ -364,6 +369,50 @@ sub get_injection_hits
 
 	return $self->safe_psql('postgres',
 		qq{SELECT hits FROM pg_stat_cluster_injections WHERE name='$name'});
+}
+
+
+#-----------------------------------------------------------------------
+# get_cluster_node_state -- Read this node's runtime state from the
+#	pg_stat_cluster_nodes view (stage 0.28).
+#
+#	Stage 0 always returns 'online' (single-node pseudo-cluster).
+#	Stage 4+ recovery extension may return 'recovering' / 'down' /
+#	'starting' depending on lifecycle phase.
+#
+# Returns:
+#	State as a string ('online' at stage 0).
+#-----------------------------------------------------------------------
+sub get_cluster_node_state
+{
+	my ($self) = @_;
+
+	return $self->safe_psql('postgres',
+		'SELECT state FROM pg_stat_cluster_nodes');
+}
+
+
+#-----------------------------------------------------------------------
+# get_pgstat_counter -- Read a named counter from pg_stat_cluster_counters
+#	(stage 0.28 cluster_pgstat framework).
+#
+#	The framework exposes per-process atomic counters; values reset
+#	on backend exit.  Stage 1+ subsystems append entries to
+#	cluster_pgstat_counters[] in cluster_pgstat.c.
+#
+# Args:
+#	$name: counter name (e.g. 'cluster.inject.armed_count')
+#
+# Returns:
+#	Counter value as a string; empty string if name not found
+#	(safe_psql empty result).
+#-----------------------------------------------------------------------
+sub get_pgstat_counter
+{
+	my ($self, $name) = @_;
+
+	return $self->safe_psql('postgres',
+		qq{SELECT value FROM pg_stat_cluster_counters WHERE name='$name'});
 }
 
 

@@ -67,6 +67,9 @@
 /*  - 202604290: cluster_ic_mock_* test SRFs (spec-0.26, stage 0.26). */
 /*  - 202604300: cluster_inject_fault + cluster_get_injection_state SRFs */
 /*               + pg_stat_cluster_injections view (spec-0.27, stage 0.27). */
-#define CATALOG_VERSION_NO	202604300
+/*  - 202604310: cluster_get_stat_nodes + cluster_get_pgstat_counters SRFs */
+/*               + pg_stat_cluster_nodes + pg_stat_cluster_counters views */
+/*               (spec-0.28, stage 0.28). */
+#define CATALOG_VERSION_NO	202604310
 
 #endif

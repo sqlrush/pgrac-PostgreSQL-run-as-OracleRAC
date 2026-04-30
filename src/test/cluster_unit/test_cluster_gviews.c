@@ -109,6 +109,28 @@ pgstat_get_wait_event_type(uint32 wait_event_info pg_attribute_unused())
  */
 int cluster_node_id = -1;
 
+/*
+ * Stage 0.28 stubs: cluster_views.c::cluster_get_stat_nodes references
+ * ClusterShmem + cluster_conf_lookup_node / cluster_conf_role_to_string.
+ * Provide minimal stubs so the linker resolves the SRF symbol address.
+ */
+#include "cluster/cluster_conf.h"
+#include "cluster/cluster_shmem.h"
+
+ClusterShmemCtl *ClusterShmem = NULL;
+
+const ClusterNodeInfo *
+cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
+{
+	return NULL;
+}
+
+const char *
+cluster_conf_role_to_string(ClusterNodeRole role pg_attribute_unused())
+{
+	return "unknown";
+}
+
 
 UT_DEFINE_GLOBALS();
 

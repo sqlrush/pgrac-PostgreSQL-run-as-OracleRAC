@@ -84,4 +84,28 @@ extern Datum cluster_get_wait_events(PG_FUNCTION_ARGS);
 extern Datum cluster_get_gcluster_wait_events(PG_FUNCTION_ARGS);
 
 
+/*
+ * cluster_get_stat_nodes -- SRF backing pg_stat_cluster_nodes (stage 0.28).
+ *
+ *	Returns one row per cluster node with runtime metadata (state /
+ *	startup_time / pgrac_version / pg_version) joined with the
+ *	configured role from pgrac.conf (looked up by node_id).  Stage 0
+ *	always returns exactly one row (the local node, single-node
+ *	pseudo-cluster); Stage 2+ extends to all nodes by iterating the
+ *	cluster_conf topology.
+ *
+ *	Output columns (column contract anchor; stable from 0.28 onward):
+ *	    node_id       int4
+ *	    role          text     -- "primary" / "standby" / "arbiter" / "unknown"
+ *	    state         text     -- "online" hardcoded at stage 0
+ *	    startup_time  timestamptz
+ *	    pgrac_version text
+ *	    pg_version    text
+ *
+ *	See specs/spec-0.28-perfmon-framework.md §2.5 for the full
+ *	field-source mapping and stage 1+ extension plan.
+ */
+extern Datum cluster_get_stat_nodes(PG_FUNCTION_ARGS);
+
+
 #endif /* CLUSTER_VIEWS_H */
