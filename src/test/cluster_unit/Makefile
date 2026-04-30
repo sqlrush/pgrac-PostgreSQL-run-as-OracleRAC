@@ -29,7 +29,8 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_wait_events test_cluster_errcodes test_cluster_guc \
         test_cluster_shmem test_cluster_signal test_cluster_views \
         test_cluster_gviews test_cluster_ic test_cluster_conf \
-        test_cluster_ic_mock test_cluster_inject test_cluster_pgstat
+        test_cluster_ic_mock test_cluster_inject test_cluster_pgstat \
+        test_cluster_debug
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -56,6 +57,7 @@ CLUSTER_IC_O = $(top_builddir)/src/backend/cluster/cluster_ic.o
 CLUSTER_CONF_O = $(top_builddir)/src/backend/cluster/cluster_conf.o
 CLUSTER_INJECT_O = $(top_builddir)/src/backend/cluster/cluster_inject.o
 CLUSTER_PGSTAT_O = $(top_builddir)/src/backend/cluster/cluster_pgstat.o
+CLUSTER_DEBUG_O = $(top_builddir)/src/backend/cluster/cluster_debug.o
 
 # Most tests link only cluster_version.o.  test_cluster_guc /
 # test_cluster_shmem / test_cluster_signal / test_cluster_views /
@@ -63,7 +65,7 @@ CLUSTER_PGSTAT_O = $(top_builddir)/src/backend/cluster/cluster_pgstat.o
 # separate rules because they also link additional cluster_*.o
 # objects (the test files stub the PG backend symbols those
 # objects reference).
-SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat,$(TESTS))
+SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat test_cluster_debug,$(TESTS))
 
 $(SIMPLE_TESTS): %: %.c unit_test.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(CLUSTER_VERSION_O) -o $@
@@ -159,6 +161,18 @@ test_cluster_pgstat: test_cluster_pgstat.c unit_test.h $(CLUSTER_VERSION_O) \
 		$(CLUSTER_PGSTAT_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_PGSTAT_O) -o $@
+
+# test_cluster_debug links cluster_debug.o standalone.  cluster_debug.c
+# is a cross-module aggregator that reads from seven other cluster_*.o
+# files; the test stubs every public symbol it references (the SRF
+# body itself is never invoked, so the stubs return inert defaults).
+# Tests pin SRF entry-point linkability and the iterator API contracts
+# (out-of-range index returns false; NULL out-pointers do not crash).
+# End-to-end behaviour is covered by cluster_tap t/017_debug.pl.
+test_cluster_debug: test_cluster_debug.c unit_test.h $(CLUSTER_VERSION_O) \
+		$(CLUSTER_DEBUG_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_DEBUG_O) -o $@
 
 
 # ----------

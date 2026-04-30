@@ -70,6 +70,8 @@
 /*  - 202604310: cluster_get_stat_nodes + cluster_get_pgstat_counters SRFs */
 /*               + pg_stat_cluster_nodes + pg_stat_cluster_counters views */
 /*               (spec-0.28, stage 0.28). */
-#define CATALOG_VERSION_NO	202604310
+/*  - 202604320: cluster_dump_state SRF + pg_cluster_state view */
+/*               (spec-0.29, stage 0.29). */
+#define CATALOG_VERSION_NO	202604320
 
 #endif

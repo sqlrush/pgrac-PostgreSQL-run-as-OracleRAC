@@ -96,8 +96,8 @@ is( $node->safe_psql(
 # ----------
 my $version = $node->safe_psql('postgres',
 	'SELECT pgrac_version FROM pg_stat_cluster_nodes');
-like($version, qr/pgrac v\d+\.\d+\.\d+-stage0\.28/,
-	"pgrac_version matches v0.1.0-stage0.28 pattern (got: $version)");
+like($version, qr/pgrac v\d+\.\d+\.\d+-stage\d+\.\d+/,
+	"pgrac_version matches semver-with-stage pattern (got: $version)");
 
 
 # ----------

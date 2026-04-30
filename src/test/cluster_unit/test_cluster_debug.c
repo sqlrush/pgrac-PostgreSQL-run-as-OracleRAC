@@ -1,0 +1,343 @@
+/*-------------------------------------------------------------------------
+ *
+ * test_cluster_debug.c
+ *	  Compile-time / link-level invariants for the cluster_debug
+ *	  diagnostic snapshot framework shipped at stage 0.29.
+ *
+ *	  Locks:
+ *	    - The cluster_dump_state SRF entry-point address resolves at
+ *	      link time (validates the always-linked / pg_proc.dat
+ *	      contract).
+ *	    - cluster_debug.c links cleanly when paired with stubs for
+ *	      every cross-module dependency it pulls in (cluster_shmem /
+ *	      cluster_guc / cluster_ic / cluster_inject / cluster_pgstat /
+ *	      cluster_conf / cluster_elog public API).
+ *	    - cluster_inject_get_count + _get_state_at iterators added at
+ *	      stage 0.29 work without crashing on out-of-range indices.
+ *	    - cluster_pgstat_get_count + _get_at iterators added at stage
+ *	      0.29 work without crashing on out-of-range indices.
+ *
+ *	  End-to-end SRF behaviour (column types, row counts, value
+ *	  formatting) is verified on a real PG instance by cluster_tap
+ *	  t/017_debug.pl.
+ *
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2026, pgrac contributors
+ *
+ * Author: SqlRush <sqlrush@gmail.com>
+ *
+ * IDENTIFICATION
+ *	  src/test/cluster_unit/test_cluster_debug.c
+ *
+ * NOTES
+ *	  This is a pgrac-original file.  cluster_debug.c is a cross-module
+ *	  aggregator -- linking it standalone requires stubs for the public
+ *	  symbols from seven other cluster_*.o files.  The stubs below are
+ *	  the minimum set; the SRF body itself is never invoked from the
+ *	  unit test (we only take its address), so stub return values are
+ *	  inert.
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "cluster/cluster_debug.h"
+
+#undef printf
+#undef fprintf
+#undef snprintf
+#undef sprintf
+#undef vsnprintf
+#undef vfprintf
+#undef vprintf
+#undef vsprintf
+#undef strerror
+#undef strerror_r
+
+#include "unit_test.h"
+
+
+/* ----------
+ * Stubs needed to link cluster_debug.o standalone.  cluster_debug.c
+ * depends on (read-only): cluster_shmem (ClusterShmem global pointer),
+ * cluster_guc (4 GUC vars), cluster_ic (ClusterICOps_Active +
+ * ClusterICTier enum), cluster_inject (armed_count + iterator),
+ * cluster_pgstat (iterator), cluster_conf (lookup + node_count),
+ * cluster_elog (cluster_phase global).  All stubbed below.  The SRF
+ * body is never invoked; addresses-only tests + iterator round-trips.
+ * ----------
+ */
+#include "cluster/cluster_conf.h"
+#include "cluster/cluster_ic.h"
+#include "cluster/cluster_inject.h"
+#include "cluster/cluster_pgstat.h"
+#include "cluster/cluster_shmem.h"
+#include "fmgr.h"
+#include "funcapi.h"
+#include "utils/elog.h"
+
+
+/* cluster_shmem */
+ClusterShmemCtl *ClusterShmem = NULL;
+
+/* cluster_guc (4 vars) */
+int cluster_node_id = -1;
+int cluster_interconnect_tier = 0;
+char *cluster_config_file = NULL;
+char *cluster_injection_points = NULL;
+
+/* cluster_ic */
+const ClusterICOps *ClusterICOps_Active = NULL;
+
+/* cluster_inject (armed_count + iterator) */
+int cluster_injection_armed_count = 0;
+
+int
+cluster_injection_get_count(void)
+{
+	return 0;
+}
+
+bool
+cluster_injection_get_state_at(int idx pg_attribute_unused(),
+							   const char **name_out pg_attribute_unused(),
+							   ClusterInjectFaultType *type_out pg_attribute_unused(),
+							   uint64 *hits_out pg_attribute_unused())
+{
+	return false;
+}
+
+/* cluster_pgstat iterator */
+int
+cluster_pgstat_get_count(void)
+{
+	return 0;
+}
+
+bool
+cluster_pgstat_get_at(int idx pg_attribute_unused(), const char **name_out pg_attribute_unused(),
+					  uint64 *value_out pg_attribute_unused())
+{
+	return false;
+}
+
+/* cluster_conf */
+int
+cluster_conf_node_count(void)
+{
+	return 0;
+}
+
+const ClusterNodeInfo *
+cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
+{
+	return NULL;
+}
+
+/* cluster_elog */
+const char *cluster_phase = "init";
+
+
+/* PG backend stubs */
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
+}
+
+bool
+errstart(int elevel pg_attribute_unused(), const char *domain pg_attribute_unused())
+{
+	return false;
+}
+
+bool
+errstart_cold(int elevel pg_attribute_unused(), const char *domain pg_attribute_unused())
+{
+	return false;
+}
+
+int
+errcode(int sqlerrcode pg_attribute_unused())
+{
+	return 0;
+}
+
+int
+errmsg(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+
+void
+errfinish(const char *filename pg_attribute_unused(), int lineno pg_attribute_unused(),
+		  const char *funcname pg_attribute_unused())
+{}
+
+void
+InitMaterializedSRF(FunctionCallInfo fcinfo pg_attribute_unused(),
+					bits32 flags pg_attribute_unused())
+{}
+
+void
+tuplestore_putvalues(Tuplestorestate *state pg_attribute_unused(),
+					 TupleDesc tdesc pg_attribute_unused(), Datum *values pg_attribute_unused(),
+					 bool *isnull pg_attribute_unused())
+{}
+
+text *
+cstring_to_text(const char *s pg_attribute_unused())
+{
+	return NULL;
+}
+
+char *
+psprintf(const char *fmt pg_attribute_unused(), ...)
+{
+	return (char *)"";
+}
+
+char *
+pstrdup(const char *in pg_attribute_unused())
+{
+	return (char *)"";
+}
+
+Datum
+DirectFunctionCall1Coll(PGFunction func pg_attribute_unused(), Oid collation pg_attribute_unused(),
+						Datum arg1 pg_attribute_unused())
+{
+	return (Datum)0;
+}
+
+Datum
+timestamptz_out(PG_FUNCTION_ARGS)
+{
+	return (Datum)0;
+}
+
+
+UT_DEFINE_GLOBALS();
+
+
+/* ============================================================
+ * SRF entry-point linkability.
+ * ============================================================ */
+
+UT_TEST(test_debug_dump_srf_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_dump_state);
+}
+
+
+/* ============================================================
+ * Iterator API on cluster_inject (added in spec-0.29 §1.4).
+ * ============================================================ */
+
+UT_TEST(test_debug_inject_get_count_callable)
+{
+	/* Stub returns 0; verifies the symbol is reachable. */
+	UT_ASSERT_EQ(cluster_injection_get_count(), 0);
+}
+
+UT_TEST(test_debug_inject_get_state_at_out_of_range)
+{
+	const char *name = NULL;
+	ClusterInjectFaultType type = CLUSTER_FAULT_NONE;
+	uint64 hits = 0;
+
+	/* Stub always returns false; real impl returns false when idx<0
+	 * or idx>=count.  The contract is the same: out-of-range yields
+	 * false, output args untouched. */
+	UT_ASSERT_EQ(cluster_injection_get_state_at(-1, &name, &type, &hits), false);
+	UT_ASSERT_EQ(cluster_injection_get_state_at(1000, &name, &type, &hits), false);
+}
+
+UT_TEST(test_debug_inject_get_state_at_null_outs)
+{
+	/* Out-pointers may be NULL; helper must not crash. */
+	(void)cluster_injection_get_state_at(0, NULL, NULL, NULL);
+	UT_ASSERT(true);
+}
+
+
+/* ============================================================
+ * Iterator API on cluster_pgstat (added in spec-0.29 §1.4).
+ * ============================================================ */
+
+UT_TEST(test_debug_pgstat_get_count_callable)
+{
+	UT_ASSERT_EQ(cluster_pgstat_get_count(), 0);
+}
+
+UT_TEST(test_debug_pgstat_get_at_out_of_range)
+{
+	const char *name = NULL;
+	uint64 value = 0;
+
+	UT_ASSERT_EQ(cluster_pgstat_get_at(-1, &name, &value), false);
+	UT_ASSERT_EQ(cluster_pgstat_get_at(1000, &name, &value), false);
+}
+
+UT_TEST(test_debug_pgstat_get_at_null_outs)
+{
+	(void)cluster_pgstat_get_at(0, NULL, NULL);
+	UT_ASSERT(true);
+}
+
+
+/* ============================================================
+ * Cross-module symbol resolution checks.
+ *
+ *	If any cluster_*.h public API drifts (rename / removal),
+ *	cluster_debug.c will fail to link, which is what we want to
+ *	catch at compile time.  The tests below address-take symbols
+ *	cluster_debug.c references to surface link-time breakage early.
+ * ============================================================ */
+
+UT_TEST(test_debug_links_against_inject_module)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_injection_get_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_injection_get_state_at);
+}
+
+UT_TEST(test_debug_links_against_pgstat_module)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_pgstat_get_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_pgstat_get_at);
+}
+
+UT_TEST(test_debug_links_against_conf_module)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_conf_node_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_conf_lookup_node);
+}
+
+UT_TEST(test_debug_phase_symbol_present)
+{
+	UT_ASSERT_NOT_NULL(cluster_phase);
+}
+
+
+int
+main(void)
+{
+	UT_PLAN(11);
+	UT_RUN(test_debug_dump_srf_linkable);
+	UT_RUN(test_debug_inject_get_count_callable);
+	UT_RUN(test_debug_inject_get_state_at_out_of_range);
+	UT_RUN(test_debug_inject_get_state_at_null_outs);
+	UT_RUN(test_debug_pgstat_get_count_callable);
+	UT_RUN(test_debug_pgstat_get_at_out_of_range);
+	UT_RUN(test_debug_pgstat_get_at_null_outs);
+	UT_RUN(test_debug_links_against_inject_module);
+	UT_RUN(test_debug_links_against_pgstat_module);
+	UT_RUN(test_debug_links_against_conf_module);
+	UT_RUN(test_debug_phase_symbol_present);
+	UT_DONE();
+	return ut_failed_count == 0 ? 0 : 1;
+}

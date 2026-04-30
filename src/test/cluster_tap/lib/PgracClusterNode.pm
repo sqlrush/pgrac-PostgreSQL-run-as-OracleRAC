@@ -53,6 +53,10 @@
 #    pg_stat_cluster_counters views (the cluster_pgstat framework);
 #    see specs/spec-0.28-perfmon-framework.md.
 #
+#    Stage 0.29 added one thin helper (get_cluster_state_value)
+#    wrapping the pg_cluster_state diagnostic snapshot view; see
+#    specs/spec-0.29-debug-tools.md.
+#
 #-------------------------------------------------------------------------
 
 package PgracClusterNode;
@@ -413,6 +417,32 @@ sub get_pgstat_counter
 
 	return $self->safe_psql('postgres',
 		qq{SELECT value FROM pg_stat_cluster_counters WHERE name='$name'});
+}
+
+
+#-----------------------------------------------------------------------
+# get_cluster_state_value -- Read one entry from pg_cluster_state
+#	(stage 0.29 diagnostic snapshot).
+#
+#	Wraps SELECT value FROM pg_cluster_state WHERE category=$cat AND
+#	key=$key.  pg_cluster_state never returns NULL values; missing
+#	(category, key) pair results in safe_psql empty string.
+#
+# Args:
+#	$category: dump category (e.g. 'shmem' / 'guc' / 'inject')
+#	$key:      key within category
+#
+# Returns:
+#	Value as a string; empty string if (category, key) not found.
+#-----------------------------------------------------------------------
+sub get_cluster_state_value
+{
+	my ($self, $category, $key) = @_;
+
+	return $self->safe_psql(
+		'postgres',
+		qq{SELECT value FROM pg_cluster_state
+		     WHERE category='$category' AND key='$key'});
 }
 
 

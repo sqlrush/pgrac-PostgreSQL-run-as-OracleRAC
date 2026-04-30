@@ -154,6 +154,51 @@ cluster_pgstat_read(const ClusterPgstatCounter *c)
 }
 
 
+/*
+ * cluster_pgstat_get_count -- registry size accessor (stage 0.29).
+ *
+ *	Returns the compile-time number of registered counters.  Used by
+ *	cluster_debug.c for enumerating the registry without exposing the
+ *	static array.
+ */
+int
+cluster_pgstat_get_count(void)
+{
+	return CLUSTER_PGSTAT_COUNT;
+}
+
+/*
+ * cluster_pgstat_get_at -- read one counter entry (stage 0.29).
+ *
+ *	Iterator companion to cluster_pgstat_get_count.  Returns false
+ *	if `idx` is out of range; otherwise fills *name_out / *value_out
+ *	from the entry at index `idx`.  Value is read atomically; mirror
+ *	counters reflect whatever sync state is currently stored (caller
+ *	can re-trigger mirror sync via cluster_get_pgstat_counters SRF).
+ *
+ *	`name_out` points into the compile-time registry's string literal.
+ */
+bool
+cluster_pgstat_get_at(int idx, const char **name_out, uint64 *value_out)
+{
+	ClusterPgstatCounter *c;
+
+	if (idx < 0 || idx >= CLUSTER_PGSTAT_COUNT)
+		return false;
+
+	cluster_pgstat_initialise();
+
+	c = &cluster_pgstat_counters[idx];
+
+	if (name_out != NULL)
+		*name_out = c->name;
+	if (value_out != NULL)
+		*value_out = pg_atomic_read_u64(&c->value);
+
+	return true;
+}
+
+
 /* ============================================================
  * Mirror sync: pull external state into framework counters.
  *

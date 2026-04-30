@@ -293,6 +293,54 @@ cluster_injection_should_skip(const char *name)
 
 
 /*
+ * cluster_injection_get_count -- registry size accessor (stage 0.29).
+ *
+ *	Returns the compile-time number of injection points.  Used by
+ *	cluster_debug.c for enumerating the registry without exposing the
+ *	static array.
+ */
+int
+cluster_injection_get_count(void)
+{
+	return CLUSTER_INJECTION_COUNT;
+}
+
+/*
+ * cluster_injection_get_state_at -- read one registry entry (stage 0.29).
+ *
+ *	Iterator companion to cluster_injection_get_count.  Returns false
+ *	if `idx` is out of range; otherwise fills *name_out / *type_out /
+ *	*hits_out from the entry at index `idx`.  Pointer outputs are
+ *	read atomically from the live atomic_uint32 / atomic_uint64.
+ *
+ *	`name_out` points into the compile-time registry's string literal;
+ *	caller must not free or modify.
+ */
+bool
+cluster_injection_get_state_at(int idx, const char **name_out, ClusterInjectFaultType *type_out,
+							   uint64 *hits_out)
+{
+	ClusterInjectPoint *p;
+
+	if (idx < 0 || idx >= CLUSTER_INJECTION_COUNT)
+		return false;
+
+	cluster_injection_initialise();
+
+	p = &cluster_injection_points[idx];
+
+	if (name_out != NULL)
+		*name_out = p->name;
+	if (type_out != NULL)
+		*type_out = (ClusterInjectFaultType)pg_atomic_read_u32(&p->armed_type);
+	if (hits_out != NULL)
+		*hits_out = pg_atomic_read_u64(&p->hits);
+
+	return true;
+}
+
+
+/*
  * cluster_injection_init_from_guc -- apply the cluster.injection_points
  * GUC value at backend startup.
  *

@@ -119,6 +119,19 @@ extern void cluster_injection_init_from_guc(void);
 /* assign_hook for cluster.injection_points (registered by cluster_init_guc) */
 extern void cluster_injection_assign_hook(const char *newval, void *extra);
 
+/* ----------
+ * Iterator API (stage 0.29).
+ *
+ *	Used by cluster_debug.c (pg_cluster_state view) to enumerate every
+ *	registered injection point.  cluster_get_injection_state SRF
+ *	already exposes the same data via SQL; the iterator below makes
+ *	the registry walkable from C call sites without round-tripping
+ *	through fmgr.
+ * ---------- */
+extern int cluster_injection_get_count(void);
+extern bool cluster_injection_get_state_at(int idx, const char **name_out,
+										   ClusterInjectFaultType *type_out, uint64 *hits_out);
+
 #else /* !USE_PGRAC_CLUSTER */
 
 #define CLUSTER_INJECTION_POINT(name) ((void)0)

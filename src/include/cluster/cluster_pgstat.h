@@ -72,6 +72,21 @@ extern void cluster_pgstat_inc(ClusterPgstatCounter *c);
 extern void cluster_pgstat_set(ClusterPgstatCounter *c, uint64 value);
 extern uint64 cluster_pgstat_read(const ClusterPgstatCounter *c);
 
+/* ----------
+ * Iterator API (stage 0.29).
+ *
+ *	Used by cluster_debug.c (pg_cluster_state view) to enumerate every
+ *	registered counter.  cluster_get_pgstat_counters SRF already
+ *	exposes the same data via SQL; the iterator below makes the
+ *	registry walkable from C call sites without round-tripping
+ *	through fmgr.  Caller is responsible for first calling the
+ *	mirror-sync path (currently exposed only via the SRF entry); the
+ *	iterator returns whatever value is currently stored, mirror or
+ *	otherwise.
+ * ---------- */
+extern int cluster_pgstat_get_count(void);
+extern bool cluster_pgstat_get_at(int idx, const char **name_out, uint64 *value_out);
+
 #endif /* USE_PGRAC_CLUSTER */
 
 

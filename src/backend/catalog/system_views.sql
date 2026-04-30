@@ -1460,3 +1460,16 @@ CREATE VIEW pg_stat_cluster_counters AS
 
 REVOKE ALL ON pg_stat_cluster_counters FROM PUBLIC;
 GRANT SELECT ON pg_stat_cluster_counters TO PUBLIC;
+
+-- PGRAC: pg_cluster_state (stage 0.29).
+--   One-stop diagnostic snapshot covering every cluster subsystem's
+--   runtime state expressed as (category, key, value) triples:
+--   shmem ctl block / cluster.* GUCs / active IC tier / injection-point
+--   registry / pgstat counter registry / pgrac.conf topology summary /
+--   cluster lifecycle phase.  Read-only; safe to invoke in production.
+--   See specs/spec-0.29-debug-tools.md and docs/cluster-debug-design.md.
+CREATE VIEW pg_cluster_state AS
+    SELECT category, key, value FROM cluster_dump_state();
+
+REVOKE ALL ON pg_cluster_state FROM PUBLIC;
+GRANT SELECT ON pg_cluster_state TO PUBLIC;

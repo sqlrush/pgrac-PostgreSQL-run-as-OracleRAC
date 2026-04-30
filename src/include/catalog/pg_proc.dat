@@ -12,7 +12,7 @@
 #
 # PGRAC MODIFICATIONS
 #   Modified by: SqlRush <sqlrush@gmail.com>
-#   Stage:        0.16, 0.17, 0.19, 0.26, 0.27, 0.28
+#   Stage:        0.16, 0.17, 0.19, 0.26, 0.27, 0.28, 0.29
 #
 #   Appended pgrac cluster catalog functions at the end of this file
 #   under a clearly-marked "PGRAC: cluster catalog functions" section.
@@ -32,9 +32,11 @@
 #   Stage 0.28 added cluster_get_stat_nodes (OID 8907) +
 #   cluster_get_pgstat_counters (OID 8908), powering
 #   pg_stat_cluster_nodes + pg_stat_cluster_counters (perfmon
-#   framework skeleton).  Future cluster SRFs land here together with
-#   their owning subsystem spec; CATALOG_VERSION_NO must bump for
-#   every catalog change.
+#   framework skeleton).
+#   Stage 0.29 added cluster_dump_state (OID 8909), powering
+#   pg_cluster_state (one-stop diagnostic snapshot).  Future cluster
+#   SRFs land here together with their owning subsystem spec;
+#   CATALOG_VERSION_NO must bump for every catalog change.
 #
 #   Related design:
 #     docs/cluster-views-impl-design.md v1.1 (registration policy + OIDs)
@@ -12196,5 +12198,20 @@
   proargmodes => '{o,o}',
   proargnames => '{name,value}',
   prosrc => 'cluster_get_pgstat_counters' },
+
+# Stage 0.29: one-stop diagnostic snapshot.  Returns one row per
+# (category, key, value) triple covering every cluster subsystem's
+# runtime state -- shmem ctl block, cluster.* GUCs, active IC tier,
+# injection-point registry, pgstat counter registry, pgrac.conf
+# topology summary, and cluster lifecycle phase.  Read-only; safe
+# in production.
+{ oid => '8909', descr => 'one-stop diagnostic snapshot of cluster state',
+  proname => 'cluster_dump_state', prorows => '32',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{text,text,text}',
+  proargmodes => '{o,o,o}',
+  proargnames => '{category,key,value}',
+  prosrc => 'cluster_dump_state' },
 
 ]

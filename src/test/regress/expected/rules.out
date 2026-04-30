@@ -1321,6 +1321,10 @@ pg_cluster_nodes| SELECT node_id,
     region,
     is_self
    FROM cluster_get_nodes() cluster_get_nodes(node_id, hostname, interconnect_addr, public_addr, role, region, is_self);
+pg_cluster_state| SELECT category,
+    key,
+    value
+   FROM cluster_dump_state() cluster_dump_state(category, key, value);
 pg_config| SELECT name,
     setting
    FROM pg_config() pg_config(name, setting);
