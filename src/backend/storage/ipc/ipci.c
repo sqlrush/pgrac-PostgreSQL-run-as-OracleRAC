@@ -14,7 +14,7 @@
  *
  * PGRAC MODIFICATIONS
  *	  Modified by: SqlRush <sqlrush@gmail.com>
- *	  Stage:        0.14
+ *	  Stage:        0.14 / 1.1
  *
  *	  Wired cluster_init_shmem() into CreateSharedMemoryAndSemaphores()
  *	  so that the pgrac cluster control block (and future GRD / PCM /
@@ -29,12 +29,21 @@
  *	  modifications block; both calls must occur in the same postmaster
  *	  startup pass.
  *
+ *	  Stage 1.1: also wires cluster_shared_fs_init() immediately after
+ *	  cluster_init_shmem() to register the built-in stub and local
+ *	  storage backends and resolve the cluster.shared_storage_backend
+ *	  GUC to the active vtable.  Independent of cluster shmem (the
+ *	  registry is process-local) but co-located so the lifecycle
+ *	  ordering is obvious.
+ *
  *	  Guarded by #ifdef USE_PGRAC_CLUSTER so --disable-cluster builds
  *	  remain byte-for-byte identical to upstream PG runtime behavior.
  *
  *	  Related design:
  *	    docs/cluster-shmem-design.md v1.0 §2.1 (shmem entry-point policy)
  *	    specs/spec-0.14-shmem-framework.md
+ *	    docs/cluster-shared-fs-design.md §5 (init lifecycle)
+ *	    specs/spec-1.1-shared-fs-skeleton.md
  *
  *-------------------------------------------------------------------------
  */
@@ -78,6 +87,7 @@
 
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_shmem.h"	/* PGRAC: cluster_init_shmem() */
+#include "cluster/storage/cluster_shared_fs.h"	/* PGRAC: cluster_shared_fs_init() */
 #endif
 
 /* GUCs */
@@ -333,6 +343,16 @@ CreateSharedMemoryAndSemaphores(void)
 	 * ClusterShmem fully initialised when their hook fires.
 	 */
 	cluster_init_shmem();
+
+	/*
+	 * PGRAC: stage-1.1 cluster_shared_fs init.  Registers the built-in
+	 * stub and local backends and resolves cluster.shared_storage_backend
+	 * to the active vtable.  Independent of cluster shmem (the registry
+	 * is process-local) but placed here so the lifecycle ordering is
+	 * obvious -- GUC is already parsed by miscinit.c, and any future
+	 * shmem-using backend can take a ClusterShmem pointer directly.
+	 */
+	cluster_shared_fs_init();
 #endif
 
 #ifdef EXEC_BACKEND

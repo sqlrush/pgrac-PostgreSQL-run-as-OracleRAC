@@ -24,7 +24,7 @@
 #      - After clearing the bad config, the server starts again on
 #        stub.
 #      - Baseline regression: spec-0.16 / 0.17 cluster views still
-#        return 46 rows each (cluster_ic addition is a pure addition,
+#        return 51 rows each (cluster_ic addition is a pure addition,
 #        not a refactor).
 #
 # IDENTIFICATION
@@ -102,13 +102,13 @@ like($stderr, qr/cannot be changed without restarting the server/i,
 # ----------
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'46',
-	'pg_stat_cluster_wait_events still returns 46 rows after IC framework added');
+	'51',
+	'pg_stat_cluster_wait_events still returns 51 rows after IC framework added');
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'46',
-	'pg_stat_gcluster_wait_events still returns 46 rows after IC framework added');
+	'51',
+	'pg_stat_gcluster_wait_events still returns 51 rows after IC framework added');
 
 
 # ----------

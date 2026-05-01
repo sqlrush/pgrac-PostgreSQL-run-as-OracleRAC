@@ -39,8 +39,9 @@
 #include "utils/guc.h"
 
 #include "cluster/cluster_guc.h"
-#include "cluster/cluster_ic.h"		/* ClusterICTier enum values */
-#include "cluster/cluster_inject.h" /* cluster_injection_assign_hook (stage 0.27) */
+#include "cluster/cluster_ic.h"				   /* ClusterICTier enum values */
+#include "cluster/cluster_inject.h"			   /* cluster_injection_assign_hook (stage 0.27) */
+#include "cluster/storage/cluster_shared_fs.h" /* ClusterSharedFsBackendId (stage 1.1) */
 
 
 /*
@@ -55,6 +56,7 @@ int cluster_node_id = -1;
 int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
 char *cluster_config_file = NULL;	   /* boot value filled by DefineCustomStringVariable */
 char *cluster_injection_points = NULL; /* boot value filled by DefineCustomStringVariable */
+int cluster_shared_storage_backend = CLUSTER_SHARED_FS_BACKEND_STUB;
 
 
 /*
@@ -70,6 +72,24 @@ static const struct config_enum_entry cluster_interconnect_tier_options[]
 	= { { "stub", CLUSTER_IC_TIER_STUB, false }, { "mock", CLUSTER_IC_TIER_MOCK, false },
 		{ "tier1", CLUSTER_IC_TIER_1, false },	 { "tier2", CLUSTER_IC_TIER_2, false },
 		{ "tier3", CLUSTER_IC_TIER_3, false },	 { NULL, 0, false } };
+
+
+/*
+ * Mapping for cluster.shared_storage_backend.  Mirrors
+ * ClusterSharedFsBackendId enum positionally.  All six backends are
+ * advertised; only stub and local are registered at stage 1.1, so
+ * picking one of the other four causes cluster_shared_fs_init to
+ * FATAL with an errhint pointing to Stage 2.  See
+ * docs/cluster-shared-fs-design.md §4.
+ */
+static const struct config_enum_entry cluster_shared_storage_backend_options[]
+	= { { "stub", CLUSTER_SHARED_FS_BACKEND_STUB, false },
+		{ "local", CLUSTER_SHARED_FS_BACKEND_LOCAL, false },
+		{ "block_device", CLUSTER_SHARED_FS_BACKEND_BLOCK_DEVICE, false },
+		{ "cluster_fs", CLUSTER_SHARED_FS_BACKEND_CLUSTER_FS, false },
+		{ "rbd", CLUSTER_SHARED_FS_BACKEND_RBD, false },
+		{ "multi_attach", CLUSTER_SHARED_FS_BACKEND_MULTI_ATTACH, false },
+		{ NULL, 0, false } };
 
 
 /*
@@ -171,4 +191,26 @@ cluster_init_guc(void)
 		NULL,						   /* check_hook */
 		cluster_injection_assign_hook, /* assign_hook */
 		NULL);						   /* show_hook */
+
+	/*
+	 * cluster.shared_storage_backend -- selects the cluster_shared_fs
+	 * vtable activated by cluster_shared_fs_init.  Boot default "stub"
+	 * keeps stage-0 behaviour unchanged for users who upgrade without
+	 * explicitly opting into the new abstraction layer.  See
+	 * docs/cluster-shared-fs-design.md §4 and
+	 * spec-1.1-shared-fs-skeleton.md.
+	 */
+	DefineCustomEnumVariable("cluster.shared_storage_backend",
+							 gettext_noop("Cluster shared-storage backend selection."),
+							 gettext_noop("stub (default) keeps cluster_shared_fs disabled "
+										  "(every call ereports FEATURE_NOT_SUPPORTED); local "
+										  "is single-node passthrough to fd.c; block_device, "
+										  "cluster_fs, rbd, and multi_attach land in Stage 2."),
+							 &cluster_shared_storage_backend, CLUSTER_SHARED_FS_BACKEND_STUB,
+							 cluster_shared_storage_backend_options,
+							 PGC_POSTMASTER, /* backend selection requires restart */
+							 0,				 /* flags */
+							 NULL,			 /* check_hook */
+							 NULL,			 /* assign_hook */
+							 NULL);			 /* show_hook */
 }

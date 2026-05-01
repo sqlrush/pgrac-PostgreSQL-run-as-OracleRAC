@@ -7,7 +7,7 @@
 #    Stage 0.17 ships ONE global view: pg_stat_gcluster_wait_events,
 #    backed by the cluster_get_gcluster_wait_events SRF (OID 8899) and
 #    declared in src/backend/catalog/system_views.sql.  At 0.17 the
-#    SRF emits 46 rows for the local node only (node_id = the
+#    SRF emits 51 rows for the local node only (node_id = the
 #    cluster.node_id GUC value, default -1); the (node_id, type, name)
 #    column shape is the stable contract from 0.17 onward and stays
 #    unchanged when Stage 6+ swaps the SRF body for a real cross-node
@@ -15,7 +15,7 @@
 #
 #    What this test verifies:
 #      - The global view exists and is queryable.
-#      - It returns exactly 46 rows (1 node x 46 cluster wait events).
+#      - It returns exactly 51 rows (1 node x 51 cluster wait events).
 #      - It exposes exactly 1 distinct node_id at 0.17 (placeholder).
 #      - The single node_id matches the cluster.node_id GUC.
 #      - Per-class row counts match docs/wait-events-design.md §2.1.
@@ -58,12 +58,12 @@ my $node_id = $node->safe_psql('postgres', 'SHOW cluster.node_id');
 
 
 # ----------
-# Total row count: 1 node x 46 events = 46.
+# Total row count: 1 node x 51 events = 46.
 # ----------
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'46',
-	'pg_stat_gcluster_wait_events returns 46 rows at stage 0.17 (1 node x 46 events)');
+	'51',
+	'pg_stat_gcluster_wait_events returns 51 rows at stage 0.17 (1 node x 51 events)');
 
 
 # ----------

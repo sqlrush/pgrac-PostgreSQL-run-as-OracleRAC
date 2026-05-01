@@ -75,7 +75,7 @@ UT_TEST(test_macro_version_major)
 
 UT_TEST(test_macro_version_minor)
 {
-	UT_ASSERT_EQ(PGRAC_VERSION_MINOR, 1);
+	UT_ASSERT_EQ(PGRAC_VERSION_MINOR, 2);
 }
 
 UT_TEST(test_macro_pg_base_version)

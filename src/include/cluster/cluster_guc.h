@@ -131,4 +131,19 @@ extern char *cluster_config_file;
 extern char *cluster_injection_points;
 
 
+/*
+ * cluster_shared_storage_backend -- which cluster_shared_fs backend
+ *	the postmaster activates at startup.
+ *
+ *	Boot default: 0 (CLUSTER_SHARED_FS_BACKEND_STUB; every cluster
+ *	            shared-storage call ereports FEATURE_NOT_SUPPORTED).
+ *	Range:        ClusterSharedFsBackendId enum (0..15).
+ *	context:      PGC_POSTMASTER (changes require restart).
+ *
+ *	See docs/cluster-shared-fs-design.md §4 and
+ *	spec-1.1-shared-fs-skeleton.md.
+ */
+extern int cluster_shared_storage_backend;
+
+
 #endif /* CLUSTER_GUC_H */

@@ -14,9 +14,13 @@
 #
 # NOTES
 #    This is a pgrac-original Makefile (no derivation from PostgreSQL).
-#    Stage 0.2 keeps OBJS minimal; subsystem subdirectories (grd/, gcs/,
-#    ges/, scn/, ...) will be added in later feature points and listed
-#    in SUBDIRS at that time.
+#    Stage 0.2 kept OBJS minimal; stage 1.1 adds the first subsystem
+#    subdirectory storage/ (cluster_shared_fs vtable + 2 built-in
+#    backends).  Future subdirectories (grd/, gcs/, ges/, scn/, ...)
+#    will be added in later feature points the same way.  Each
+#    subdirectory's .o files are listed individually under OBJS rather
+#    than via SUBDIRS so the disable-cluster mode can omit them as a
+#    block (spec-0.3 binary-symbol contract).
 #
 #-------------------------------------------------------------------------
 
@@ -45,14 +49,20 @@ OBJS = \
 	cluster_shmem.o \
 	cluster_signal.o \
 	cluster_version.o \
-	cluster_views.o
+	cluster_views.o \
+	storage/cluster_shared_fs.o \
+	storage/cluster_shared_fs_stub.o \
+	storage/cluster_shared_fs_local.o
 else
 # cluster_conf.o, cluster_debug.o, cluster_views.o, cluster_ic.o,
 # cluster_inject.o, cluster_pgstat.o are always linked because
 # pg_proc.dat references their SRF entry points unconditionally.
 # In disable-cluster builds the SRF bodies #ifdef out and raise
 # ERRCODE_FEATURE_NOT_SUPPORTED, but the function symbols must still
-# resolve at link time.
+# resolve at link time.  storage/ subdirectory is omitted entirely in
+# disable mode because nothing in pg_proc.dat references it (spec-1.1
+# does not introduce a SRF; pg_cluster_state extension lives in
+# cluster_debug.c which is always linked).
 OBJS = cluster_conf.o cluster_debug.o cluster_ic.o cluster_inject.o \
 	cluster_pgstat.o cluster_views.o
 endif

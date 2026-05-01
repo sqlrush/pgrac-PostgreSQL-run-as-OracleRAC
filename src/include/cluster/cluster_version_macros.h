@@ -43,11 +43,11 @@
  * Version components (single source of truth)
  * ============================================================ */
 #define PGRAC_VERSION_MAJOR 0
-#define PGRAC_VERSION_MINOR 1
+#define PGRAC_VERSION_MINOR 2
 #define PGRAC_VERSION_PATCH 0
 
-#define PGRAC_STAGE_NUM 0
-#define PGRAC_STAGE_STEP 30
+#define PGRAC_STAGE_NUM 1
+#define PGRAC_STAGE_STEP 1
 
 /* PostgreSQL version this fork is based on. */
 #define PGRAC_PG_BASE_VERSION "16.13"

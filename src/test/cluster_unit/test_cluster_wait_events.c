@@ -74,7 +74,8 @@ UT_DEFINE_GLOBALS();
 
 
 /* ----------
- * 10 cluster class IDs match docs/wait-events-design.md §14.1 exactly.
+ * 11 cluster class IDs match docs/wait-events-design.md §14.1 exactly
+ * (10 from spec-0.11 plus SharedFs added by spec-1.1).
  * ----------
  */
 
@@ -90,6 +91,7 @@ UT_TEST(test_class_ids_match_design_doc)
 	UT_ASSERT_EQ(PG_WAIT_CLUSTER_INTERCONNECT, 0x17000000U);
 	UT_ASSERT_EQ(PG_WAIT_CLUSTER_UNDO, 0x18000000U);
 	UT_ASSERT_EQ(PG_WAIT_CLUSTER_ADG, 0x19000000U);
+	UT_ASSERT_EQ(PG_WAIT_CLUSTER_SHAREDFS, 0x1a000000U);
 }
 
 
@@ -195,7 +197,7 @@ UT_TEST(test_last_event_per_category_in_class)
 /* ----------
  * Per-category event counts match the design doc roster
  *  (GES 5, PCM 6, BufferShip 5, SCN 4, Reconfig 5, Recovery 5,
- *   Sinval 3, Interconnect 5, Undo 4, ADG 4 -- total 46).
+ *   Sinval 3, Interconnect 5, Undo 4, ADG 4, SharedFs 5 -- total 51).
  *
  *	Use (last - first + 1) within each category as the count.
  * ----------
@@ -227,6 +229,9 @@ UT_TEST(test_per_category_event_counts)
 				 4);
 	UT_ASSERT_EQ((uint32)WAIT_EVENT_ADG_SCN_SYNC_WAIT - (uint32)WAIT_EVENT_ADG_MRP_APPLY_WAIT + 1,
 				 4);
+	UT_ASSERT_EQ((uint32)WAIT_EVENT_CLUSTER_SHARED_FS_FSYNC
+					 - (uint32)WAIT_EVENT_CLUSTER_SHARED_FS_READ + 1,
+				 5);
 }
 
 
@@ -241,6 +246,8 @@ UT_TEST(test_cross_category_jump_is_one_class_step)
 	UT_ASSERT_EQ((uint32)WAIT_EVENT_PCM_BLOCK_READ_N_S - (uint32)WAIT_EVENT_GES_LOCAL_FAST_PATH,
 				 0x01000000U - 4U);
 	UT_ASSERT_EQ((uint32)WAIT_EVENT_ADG_MRP_APPLY_WAIT - (uint32)WAIT_EVENT_UNDO_RETENTION_WAIT,
+				 0x01000000U - 3U);
+	UT_ASSERT_EQ((uint32)WAIT_EVENT_CLUSTER_SHARED_FS_READ - (uint32)WAIT_EVENT_ADG_SCN_SYNC_WAIT,
 				 0x01000000U - 3U);
 }
 

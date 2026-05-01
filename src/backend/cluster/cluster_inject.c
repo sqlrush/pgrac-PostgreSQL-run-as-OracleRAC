@@ -89,13 +89,26 @@ typedef struct ClusterInjectPoint {
  * and §5 for the Stage 1+ roadmap.
  */
 static ClusterInjectPoint cluster_injection_points[] = {
-	{ .name = "cluster-conf-load-success" },   { .name = "cluster-conf-parse-fail" },
-	{ .name = "cluster-conf-shmem-init" },	   { .name = "cluster-debug-dump-entry" },
-	{ .name = "cluster-guc-init-pre-define" }, { .name = "cluster-ic-mock-send-pre-enqueue" },
-	{ .name = "cluster-ic-tier-selected" },	   { .name = "cluster-init-post-shmem" },
-	{ .name = "cluster-init-pre-shmem" },	   { .name = "cluster-init-top" },
-	{ .name = "cluster-pgstat-mirror-sync" },  { .name = "cluster-shmem-request" },
-	{ .name = "cluster-shutdown-top" },		   { .name = "cluster-views-srf-entry" },
+	/* Stage 0.27 baseline + 0.30 sweep (14 entries) */
+	{ .name = "cluster-conf-load-success" },
+	{ .name = "cluster-conf-parse-fail" },
+	{ .name = "cluster-conf-shmem-init" },
+	{ .name = "cluster-debug-dump-entry" },
+	{ .name = "cluster-guc-init-pre-define" },
+	{ .name = "cluster-ic-mock-send-pre-enqueue" },
+	{ .name = "cluster-ic-tier-selected" },
+	{ .name = "cluster-init-post-shmem" },
+	{ .name = "cluster-init-pre-shmem" },
+	{ .name = "cluster-init-top" },
+	{ .name = "cluster-pgstat-mirror-sync" },
+	{ .name = "cluster-shmem-request" },
+	{ .name = "cluster-shutdown-top" },
+	{ .name = "cluster-views-srf-entry" },
+
+	/* Stage 1.1 cluster_shared_fs (3 entries) */
+	{ .name = "cluster-shared-fs-backend-register" },
+	{ .name = "cluster-shared-fs-init-top" },
+	{ .name = "cluster-shared-fs-local-open" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)

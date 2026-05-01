@@ -1,0 +1,217 @@
+/*-------------------------------------------------------------------------
+ *
+ * cluster_shared_fs.h
+ *	  pgrac cluster shared-storage abstraction layer (Stage 1.1 skeleton).
+ *
+ *	  Declares the vtable contract that every pgrac storage backend
+ *	  (stub, local, block_device, cluster_fs, rbd, multi_attach, ...)
+ *	  implements.  Stage 1.1 ships two built-in backends: stub (always
+ *	  ereports FEATURE_NOT_SUPPORTED) and local (single-node passthrough
+ *	  to PG's existing fd.c VFD layer).  Stage 1.2 wires this vtable
+ *	  into PG's smgrsw[] via cluster-aware smgr; Stage 2+ registers the
+ *	  four real cluster backends.  The API surface declared here stays
+ *	  unchanged across that evolution.
+ *
+ *	  Backend selection is start-time only: the cluster.shared_storage_backend
+ *	  GUC (PGC_POSTMASTER) picks one of the registered backends; the
+ *	  active vtable pointer is then frozen for the postmaster's
+ *	  lifetime.  Switching backends requires a restart.
+ *
+ *	  vtable callbacks intentionally mirror PG's f_smgr signature shape
+ *	  (open / close / read / write / extend / nblocks / truncate /
+ *	  immedsync / unlink) so that stage-1.2 smgr_cluster.c can forward
+ *	  through with no impedance mismatch.
+ *
+ *	  See docs/cluster-shared-fs-design.md for the full design
+ *	  rationale, backend ID assignment table, and Stage evolution path;
+ *	  specs/spec-1.1-shared-fs-skeleton.md for the stage-1.1 scope and
+ *	  exit criteria.
+ *
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2026, pgrac contributors
+ *
+ * Author: SqlRush <sqlrush@gmail.com>
+ *
+ * IDENTIFICATION
+ *	  src/include/cluster/storage/cluster_shared_fs.h
+ *
+ * NOTES
+ *	  This is a pgrac-original file (no derivation from PostgreSQL).
+ *	  The cluster_shared_fs_* symbols are available only when
+ *	  configured with --enable-cluster (USE_PGRAC_CLUSTER defined);
+ *	  call sites must be guarded.
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef CLUSTER_SHARED_FS_H
+#define CLUSTER_SHARED_FS_H
+
+#include "storage/block.h"
+#include "storage/relfilelocator.h"
+#include "storage/smgr.h" /* for ForkNumber */
+
+
+/*
+ * ClusterSharedFsBackendId -- enum index into the backend registry.
+ *
+ *	The numeric assignment is a public ABI: the cluster.shared_storage_backend
+ *	GUC enum maps positionally onto these values, and the registry
+ *	array is indexed by them.  Re-numbering breaks the GUC contract;
+ *	new backends must occupy the next free slot (6, 7, ...) only.
+ *
+ *	16-slot reservation rationale: 6 production backends planned
+ *	(stub / local / block_device / cluster_fs / rbd / multi_attach),
+ *	plus 10 future-extension slots for test backends, hybrid backends,
+ *	and cloud-vendor-specific variants.  See
+ *	docs/cluster-shared-fs-design.md §3 for the SSOT table.
+ */
+typedef enum ClusterSharedFsBackendId {
+	CLUSTER_SHARED_FS_BACKEND_STUB = 0,
+	CLUSTER_SHARED_FS_BACKEND_LOCAL = 1,
+	CLUSTER_SHARED_FS_BACKEND_BLOCK_DEVICE = 2,
+	CLUSTER_SHARED_FS_BACKEND_CLUSTER_FS = 3,
+	CLUSTER_SHARED_FS_BACKEND_RBD = 4,
+	CLUSTER_SHARED_FS_BACKEND_MULTI_ATTACH = 5
+	/* IDs 6..15 are reserved; do not reuse without bumping the GUC enum. */
+} ClusterSharedFsBackendId;
+
+#define CLUSTER_SHARED_FS_BACKEND_MAX 16
+
+
+/*
+ * ClusterSharedFsHandle -- opaque per-(rlocator, forknum) handle
+ *	returned by open().  Each backend defines its own underlying
+ *	struct; callers must not deref.  Stage 1.1: stub never returns a
+ *	handle (ereports first); local stores a fd.c File and a copy of
+ *	the locator/fork.
+ */
+typedef struct ClusterSharedFsHandle ClusterSharedFsHandle;
+
+
+/*
+ * ClusterSharedFsOps -- vtable.
+ *
+ *	Nine I/O callbacks plus init/shutdown lifecycle.  Every member
+ *	must be non-NULL when registered; cluster_shared_fs_register_backend
+ *	rejects partial implementations to make link-time auditing clean.
+ *
+ *	Semantic invariants (see docs/cluster-shared-fs-design.md §2.2):
+ *	  - read / write operate at BLCKSZ granularity; no partial I/O
+ *	  - extend zero-fills the new page (PG semantics)
+ *	  - immedsync is synchronous; returns only after persistence
+ *	  - unlink takes RelFileLocator (caller has already closed handle)
+ */
+typedef struct ClusterSharedFsOps {
+	const char *name; /* "stub" / "local" / ... */
+	ClusterSharedFsBackendId id;
+
+	/* Core I/O. */
+	void (*open)(RelFileLocator rlocator, ForkNumber forknum, ClusterSharedFsHandle **out_handle);
+	void (*close)(ClusterSharedFsHandle *handle);
+	int (*read)(ClusterSharedFsHandle *handle, BlockNumber blocknum, char *buf);
+	int (*write)(ClusterSharedFsHandle *handle, BlockNumber blocknum, const char *buf);
+	void (*extend)(ClusterSharedFsHandle *handle, BlockNumber blocknum);
+	BlockNumber (*nblocks)(ClusterSharedFsHandle *handle);
+	void (*truncate)(ClusterSharedFsHandle *handle, BlockNumber nblocks);
+	void (*immedsync)(ClusterSharedFsHandle *handle);
+	void (*unlink)(RelFileLocator rlocator, ForkNumber forknum);
+
+	/* Lifecycle. */
+	void (*init)(void);		/* called once after register */
+	void (*shutdown)(void); /* called at postmaster exit */
+} ClusterSharedFsOps;
+
+
+/* ----------
+ * Lifecycle entry points
+ *
+ *	cluster_shared_fs_init -- called by cluster_init() after
+ *	    cluster_init_shmem.  Registers the built-in stub and local
+ *	    backends, then resolves the cluster.shared_storage_backend
+ *	    GUC value to the active vtable.  FATAL if the GUC names a
+ *	    backend that has not been registered.
+ *
+ *	cluster_shared_fs_shutdown -- before_shmem_exit callback.  Calls
+ *	    active_ops->shutdown() if active_ops is set; safe to call when
+ *	    no backend was activated.
+ * ----------
+ */
+extern void cluster_shared_fs_init(void);
+extern void cluster_shared_fs_shutdown(void);
+
+
+/* ----------
+ * Backend self-registration
+ *
+ *	Each backend module exposes a static const ClusterSharedFsOps and
+ *	calls cluster_shared_fs_register_backend(&that_struct) from inside
+ *	cluster_shared_fs_init.  Stage 1.1 has two registrations (stub +
+ *	local); Stage 2+ backend modules add theirs the same way.
+ *
+ *	Errors:
+ *	  - duplicate id          -> WARNING; first registration wins
+ *	  - id out of range       -> FATAL
+ *	  - any callback NULL     -> FATAL
+ *	  - called outside init   -> FATAL
+ * ----------
+ */
+extern void cluster_shared_fs_register_backend(const ClusterSharedFsOps *ops);
+
+
+/* ----------
+ * Active backend accessors
+ *
+ *	cluster_shared_fs_get_active_ops -- returns the vtable that
+ *	    cluster.shared_storage_backend selected.  Set during
+ *	    cluster_shared_fs_init; read-only and lock-free thereafter.
+ *	    Returns NULL only if cluster_shared_fs_init has not yet run
+ *	    (e.g. very early postmaster code or disable-cluster builds).
+ *
+ *	cluster_shared_fs_get_registered_count -- returns how many
+ *	    backends have been registered (used by diagnostic dumps and
+ *	    cluster_unit assertions).
+ *
+ *	cluster_shared_fs_get_backend_at -- returns the vtable at a given
+ *	    backend id slot, or NULL if unregistered.  Used by the
+ *	    cluster_dump_state diagnostic and the unit-test surface.
+ * ----------
+ */
+extern const ClusterSharedFsOps *cluster_shared_fs_get_active_ops(void);
+extern int cluster_shared_fs_get_registered_count(void);
+extern const ClusterSharedFsOps *cluster_shared_fs_get_backend_at(int id);
+
+
+/* ----------
+ * Caller-facing I/O API
+ *
+ *	Thin dispatch wrappers around active_ops->*.  Provided so that
+ *	callers don't need to fetch the vtable themselves and so that
+ *	backend selection logging / wait-event accounting can live in one
+ *	place when stage 6+ wires those in.  Stage 1.1: pure dispatch.
+ * ----------
+ */
+extern void cluster_shared_fs_open(RelFileLocator rlocator, ForkNumber forknum,
+								   ClusterSharedFsHandle **out_handle);
+extern void cluster_shared_fs_close(ClusterSharedFsHandle *handle);
+extern int cluster_shared_fs_read(ClusterSharedFsHandle *handle, BlockNumber blocknum, char *buf);
+extern int cluster_shared_fs_write(ClusterSharedFsHandle *handle, BlockNumber blocknum,
+								   const char *buf);
+extern void cluster_shared_fs_extend(ClusterSharedFsHandle *handle, BlockNumber blocknum);
+extern BlockNumber cluster_shared_fs_nblocks(ClusterSharedFsHandle *handle);
+extern void cluster_shared_fs_truncate(ClusterSharedFsHandle *handle, BlockNumber nblocks);
+extern void cluster_shared_fs_immedsync(ClusterSharedFsHandle *handle);
+extern void cluster_shared_fs_unlink(RelFileLocator rlocator, ForkNumber forknum);
+
+
+/*
+ * Internal: built-in vtable instances exposed for cluster_shared_fs_init's
+ * registration path and for cluster_unit linkage assertions.  Backend
+ * implementation modules define these in their own .c file.
+ */
+extern const ClusterSharedFsOps cluster_shared_fs_stub_ops;
+extern const ClusterSharedFsOps cluster_shared_fs_local_ops;
+
+
+#endif /* CLUSTER_SHARED_FS_H */

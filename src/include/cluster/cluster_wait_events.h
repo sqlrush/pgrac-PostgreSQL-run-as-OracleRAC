@@ -1,8 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * cluster_wait_events.h
- *	  pgrac cluster wait event class IDs (10 classes for the 46
- *	  cluster wait events registered in stage 0.11).
+ *	  pgrac cluster wait event class IDs (11 classes for the 51
+ *	  cluster wait events: 46 from stage 0.11 + 5 added by stage 1.1
+ *	  for cluster_shared_fs).
  *
  *	  This header is the single source of truth for the upper-byte
  *	  class identifiers used by the WaitEventCluster enum defined in
@@ -27,6 +28,7 @@
  *	      0x17000000   Cluster: Interconnect  (AD-007)
  *	      0x18000000   Cluster: Undo          (AD-010)
  *	      0x19000000   Cluster: ADG           (#95)
+ *	      0x1a000000   Cluster: SharedFs      (spec-1.1)
  *
  *	  Why the gap between PG (0x01..0x0A) and pgrac (0x10..0x19):
  *
@@ -92,6 +94,7 @@
 #define PG_WAIT_CLUSTER_INTERCONNECT 0x17000000U
 #define PG_WAIT_CLUSTER_UNDO 0x18000000U
 #define PG_WAIT_CLUSTER_ADG 0x19000000U
+#define PG_WAIT_CLUSTER_SHAREDFS 0x1a000000U
 
 
 #endif /* CLUSTER_WAIT_EVENTS_H */

@@ -9,21 +9,29 @@
  *
  * PGRAC MODIFICATIONS
  *	  Modified by: SqlRush <sqlrush@gmail.com>
- *	  Stage:        0.11
+ *	  Stage:        0.11 / 1.1
  *
- *	  Added the WaitEventCluster enum (46 entries spread across 10
- *	  class IDs 0x10000000..0x19000000) and pulled in
+ *	  Added the WaitEventCluster enum (now 51 entries spread across
+ *	  11 class IDs 0x10000000..0x1a000000) and pulled in
  *	  cluster/cluster_wait_events.h for the class-ID macros.  No PG
  *	  native enum is touched; the cluster enum is independent.
  *
- *	  Stage 0.11 only registers identifiers; the call sites that emit
+ *	  Stage 0.11 registered the original 46 entries across 10 classes
+ *	  (GES / PCM / BufferShip / SCN / Reconfig / Recovery / Sinval /
+ *	  Interconnect / Undo / ADG).  Stage 1.1 extended with the
+ *	  Cluster: SharedFs class and 5 events for cluster_shared_fs
+ *	  (read / write / extend / truncate / fsync).
+ *
+ *	  Identifiers are registered here; the call sites that emit
  *	  these wait events are wired up in the spec for each owning
  *	  subsystem (GES events in spec-1.X-ges, PCM events in
- *	  spec-2.X-pcm, ...).
+ *	  spec-2.X-pcm, SharedFs events when stage 6+ wires production
+ *	  perf instrumentation, ...).
  *
  *	  Related design:
  *	    docs/wait-events-design.md v1.1 §14.1 / §14.2
  *	    specs/spec-0.11-wait-events-framework.md
+ *	    specs/spec-1.1-shared-fs-skeleton.md
  *
  *-------------------------------------------------------------------------
  */
@@ -265,7 +273,8 @@ typedef enum
 /* ----------
  * Wait Events - Cluster (PGRAC, stage 0.11)
  *
- * pgrac cluster wait events span 10 categories, each with its own class
+ * pgrac cluster wait events span 11 categories (10 from stage 0.11 plus
+ * Cluster: SharedFs added by stage 1.1), each with its own class
  * ID in the upper byte (PG_WAIT_CLUSTER_* macros from cluster_wait_events.h).
  * Within a category, events are densely packed.  See
  * docs/wait-events-design.md §3-§12 for per-event semantics and
@@ -342,6 +351,13 @@ typedef enum
 	WAIT_EVENT_ADG_WAL_RECEIVE_LAG,
 	WAIT_EVENT_ADG_READ_SNAPSHOT_WAIT,
 	WAIT_EVENT_ADG_SCN_SYNC_WAIT,
+
+	/* Cluster: SharedFs (5 events) -- spec-1.1 */
+	WAIT_EVENT_CLUSTER_SHARED_FS_READ = PG_WAIT_CLUSTER_SHAREDFS,
+	WAIT_EVENT_CLUSTER_SHARED_FS_WRITE,
+	WAIT_EVENT_CLUSTER_SHARED_FS_EXTEND,
+	WAIT_EVENT_CLUSTER_SHARED_FS_TRUNCATE,
+	WAIT_EVENT_CLUSTER_SHARED_FS_FSYNC,
 } WaitEventCluster;
 
 

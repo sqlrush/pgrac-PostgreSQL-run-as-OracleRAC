@@ -171,8 +171,8 @@ $stub_node->stop;
 is( $node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'46',
-	'pg_stat_cluster_wait_events still returns 46 rows after mock framework');
+	'51',
+	'pg_stat_cluster_wait_events still returns 51 rows after mock framework');
 
 $node->stop;
 

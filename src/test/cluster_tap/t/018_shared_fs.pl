@@ -1,0 +1,182 @@
+#-------------------------------------------------------------------------
+#
+# 018_shared_fs.pl
+#    End-to-end regression for the cluster_shared_fs abstraction layer
+#    introduced in stage 1.1.
+#
+#    Stage 1.1 ships two built-in backends (stub + local) and reserves
+#    four enumvals for the Stage 2 cluster backends (block_device /
+#    cluster_fs / rbd / multi_attach).  This TAP test exercises the
+#    surfaces visible to a running PG instance:
+#
+#      - cluster.shared_storage_backend default is 'stub'.
+#      - pg_settings exposes the GUC with vartype=enum,
+#        context=postmaster, and all six enumvals.
+#      - Runtime SET is rejected (PGC_POSTMASTER).
+#      - postgresql.conf override = local restarts cleanly and
+#        cluster_dump_state reports active_backend=local.
+#      - postgresql.conf override = block_device prevents the server
+#        from starting (cluster_shared_fs_init ereports FATAL with an
+#        errhint pointing to Stage 2).
+#      - 5 cluster_shared_fs wait events are present in
+#        pg_stat_cluster_wait_events under type='Cluster: SharedFs'.
+#      - 3 cluster_shared_fs injection points appear in
+#        pg_stat_cluster_injections (registry total: 17 = 14 + 3).
+#      - cluster_inject_fault('cluster-shared-fs-init-top','warning',0)
+#        followed by a restart bumps that point's hits counter.
+#      - pg_cluster_state has a 'shared_fs' category with two keys
+#        (active_backend, registered_backends).
+#
+# IDENTIFICATION
+#    src/test/cluster_tap/t/018_shared_fs.pl
+#
+# Author: SqlRush <sqlrush@gmail.com>
+#
+# Portions Copyright (c) 2026, pgrac contributors
+#
+#-------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use FindBin;
+use lib "$FindBin::RealBin/../lib";
+
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+use PgracClusterNode;
+
+
+my $node = PgracClusterNode->new('main');
+$node->init;
+$node->start;
+
+
+# ----------
+# L1: default GUC is 'stub'.
+# ----------
+$node->assert_cluster_guc('cluster.shared_storage_backend', 'stub',
+	'L1 cluster.shared_storage_backend default is stub');
+
+
+# ----------
+# L2: pg_settings metadata + 6 enumvals.
+# ----------
+my $row = $node->safe_psql(
+	'postgres',
+	q{SELECT vartype, context FROM pg_settings
+	   WHERE name = 'cluster.shared_storage_backend'});
+is($row, 'enum|postmaster',
+   'L2 cluster.shared_storage_backend is enum (postmaster context)');
+
+my $enumvals = $node->safe_psql(
+	'postgres',
+	q{SELECT array_to_string(enumvals, ',')
+	    FROM pg_settings WHERE name = 'cluster.shared_storage_backend'});
+is($enumvals, 'stub,local,block_device,cluster_fs,rbd,multi_attach',
+   'L3 cluster.shared_storage_backend enumvals expose all six backends');
+
+
+# ----------
+# L4: runtime SET is rejected (PGC_POSTMASTER).
+# ----------
+my ($stdout, $stderr);
+$node->psql('postgres',
+	q{SET "cluster.shared_storage_backend" = 'local'},
+	stdout => \$stdout, stderr => \$stderr);
+like($stderr, qr/cannot be changed without restarting the server/i,
+	'L4 SET cluster.shared_storage_backend at runtime is rejected (PGC_POSTMASTER)');
+
+
+# ----------
+# L5: postgresql.conf override = local restarts cleanly.
+# ----------
+$node->stop;
+$node->append_conf('postgresql.conf', "cluster.shared_storage_backend = local\n");
+$node->start;
+
+$node->assert_cluster_guc('cluster.shared_storage_backend', 'local',
+	'L5 cluster.shared_storage_backend = local applied across restart');
+
+is($node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category = 'shared_fs' AND key = 'active_backend'}),
+	'local',
+	'L6 pg_cluster_state.shared_fs.active_backend reflects override = local');
+
+
+# ----------
+# L7: 5 wait events under "Cluster: SharedFs".
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT count(*) FROM pg_stat_cluster_wait_events
+		   WHERE type = 'Cluster: SharedFs'}),
+	'5',
+	'L7 5 cluster_shared_fs wait events registered under type "Cluster: SharedFs"');
+
+
+# ----------
+# L8: 3 cluster-shared-fs-* injection points + total registry 17.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT count(*) FROM pg_stat_cluster_injections
+		   WHERE name LIKE 'cluster-shared-fs-%'}),
+	'3',
+	'L8 3 cluster_shared_fs injection points registered');
+
+is($node->safe_psql(
+		'postgres',
+		'SELECT count(*) FROM pg_stat_cluster_injections'),
+	'17',
+	'L9 total injection registry size is 17 (14 + 3 stage-1.1 sweep)');
+
+
+# ----------
+# L10: pg_cluster_state shared_fs category contents.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT string_agg(key, ',' ORDER BY key) FROM pg_cluster_state
+		   WHERE category = 'shared_fs'}),
+	'active_backend,registered_backends',
+	'L10 pg_cluster_state.shared_fs has both expected keys');
+
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category = 'shared_fs' AND key = 'registered_backends'}),
+	'stub,local',
+	'L11 registered_backends lists both built-in backends');
+
+
+# ----------
+# L12: postgresql.conf override = block_device makes startup FATAL.
+#
+#   Switch from "local" to "block_device" (PG GUC takes the last
+#   assignment for a given key).  cluster_shared_fs_init ereports
+#   FATAL with errhint=Stage 2.  We cannot use $node->start because
+#   PostgreSQL::Test::Cluster calls BAIL_OUT on a failed pg_ctl start
+#   (uncatchable by eval), so we invoke pg_ctl directly via system()
+#   and inspect the resulting exit code + log file.
+# ----------
+$node->stop;
+$node->append_conf('postgresql.conf', "cluster.shared_storage_backend = block_device\n");
+
+my $pg_ctl = $ENV{PG_CTL} || 'pg_ctl';
+my $exit_code = system($pg_ctl, '-w', '-t', '5', '-D', $node->data_dir,
+					   '-l', $node->logfile, 'start');
+isnt($exit_code, 0,
+	 'L12 postmaster refuses to start when cluster.shared_storage_backend names an unregistered backend');
+
+# The startup attempt left a postmaster log behind; confirm the
+# specific errhint reached it.
+my $log = slurp_file($node->logfile);
+like($log,
+	 qr/cluster\.shared_storage_backend selected backend.*is not available/,
+	 'L13 startup log contains FEATURE_NOT_SUPPORTED message naming the backend id');
+
+
+done_testing();

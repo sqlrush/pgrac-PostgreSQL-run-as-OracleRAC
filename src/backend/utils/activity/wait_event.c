@@ -65,6 +65,7 @@ static const char *pgstat_get_wait_cluster_sinval(WaitEventCluster w);
 static const char *pgstat_get_wait_cluster_interconnect(WaitEventCluster w);
 static const char *pgstat_get_wait_cluster_undo(WaitEventCluster w);
 static const char *pgstat_get_wait_cluster_adg(WaitEventCluster w);
+static const char *pgstat_get_wait_cluster_sharedfs(WaitEventCluster w);
 
 
 static uint32 local_my_wait_event_info;
@@ -174,6 +175,9 @@ pgstat_get_wait_event_type(uint32 wait_event_info)
 			break;
 		case PG_WAIT_CLUSTER_ADG:
 			event_type = "Cluster: ADG";
+			break;
+		case PG_WAIT_CLUSTER_SHAREDFS:
+			event_type = "Cluster: SharedFs";
 			break;
 		default:
 			event_type = "???";
@@ -291,6 +295,10 @@ pgstat_get_wait_event(uint32 wait_event_info)
 			break;
 		case PG_WAIT_CLUSTER_ADG:
 			event_name = pgstat_get_wait_cluster_adg(
+				(WaitEventCluster) wait_event_info);
+			break;
+		case PG_WAIT_CLUSTER_SHAREDFS:
+			event_name = pgstat_get_wait_cluster_sharedfs(
 				(WaitEventCluster) wait_event_info);
 			break;
 		default:
@@ -1154,6 +1162,35 @@ pgstat_get_wait_cluster_adg(WaitEventCluster w)
 			break;
 		case WAIT_EVENT_ADG_SCN_SYNC_WAIT:
 			event_name = "AdgScnSyncWait";
+			break;
+		default:
+			break;
+	}
+
+	return event_name;
+}
+
+static const char *
+pgstat_get_wait_cluster_sharedfs(WaitEventCluster w)
+{
+	const char *event_name = "unknown wait event";
+
+	switch (w)
+	{
+		case WAIT_EVENT_CLUSTER_SHARED_FS_READ:
+			event_name = "ClusterSharedFsRead";
+			break;
+		case WAIT_EVENT_CLUSTER_SHARED_FS_WRITE:
+			event_name = "ClusterSharedFsWrite";
+			break;
+		case WAIT_EVENT_CLUSTER_SHARED_FS_EXTEND:
+			event_name = "ClusterSharedFsExtend";
+			break;
+		case WAIT_EVENT_CLUSTER_SHARED_FS_TRUNCATE:
+			event_name = "ClusterSharedFsTruncate";
+			break;
+		case WAIT_EVENT_CLUSTER_SHARED_FS_FSYNC:
+			event_name = "ClusterSharedFsFsync";
 			break;
 		default:
 			break;

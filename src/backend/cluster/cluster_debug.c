@@ -77,6 +77,8 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_ic.h" /* ClusterICOps_Active, ClusterICTier */
 #include "cluster/cluster_pgstat.h"
 #include "cluster/cluster_shmem.h"
+#include "cluster/storage/cluster_shared_fs.h" /* dump_shared_fs (stage 1.1) */
+#include "lib/stringinfo.h"
 #include "utils/timestamp.h"
 
 
@@ -217,12 +219,24 @@ dump_shmem(ReturnSetInfo *rsinfo)
 static void
 dump_guc(ReturnSetInfo *rsinfo)
 {
+	const ClusterSharedFsOps *shared_fs_active;
+
 	emit_row(rsinfo, "guc", "cluster.config_file", str_or_default(cluster_config_file, "(empty)"));
 	emit_row(rsinfo, "guc", "cluster.injection_points",
 			 str_or_default(cluster_injection_points, "(empty)"));
 	emit_row(rsinfo, "guc", "cluster.interconnect_tier",
 			 ic_tier_to_text(cluster_interconnect_tier));
 	emit_row(rsinfo, "guc", "cluster.node_id", fmt_int32(cluster_node_id));
+
+	/*
+	 * Stage 1.1: cluster.shared_storage_backend value as a human-readable
+	 * backend name (looked up from the active vtable rather than mapping
+	 * the int again here).  Pre-init backends fall back to "(none)" so
+	 * the row remains present for diagnostic stability.
+	 */
+	shared_fs_active = cluster_shared_fs_get_active_ops();
+	emit_row(rsinfo, "guc", "cluster.shared_storage_backend",
+			 shared_fs_active != NULL ? shared_fs_active->name : "(none)");
 }
 
 static void
@@ -300,6 +314,40 @@ dump_phase(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "phase", "cluster_phase", str_or_default(cluster_phase, "(unset)"));
 }
 
+/*
+ * dump_shared_fs -- Stage 1.1 cluster_shared_fs runtime state.
+ *
+ *	Emits two rows: the active backend's name (or "(none)" if init has
+ *	not yet run -- only happens in disable-cluster code paths or very
+ *	early postmaster lifetimes that should not reach this SRF), and a
+ *	CSV of every backend currently in the registry.  Runs lock-free
+ *	against process-local state set up by cluster_shared_fs_init.
+ */
+static void
+dump_shared_fs(ReturnSetInfo *rsinfo)
+{
+	const ClusterSharedFsOps *active = cluster_shared_fs_get_active_ops();
+	StringInfoData csv;
+	int i;
+	int emitted = 0;
+
+	emit_row(rsinfo, "shared_fs", "active_backend", active != NULL ? active->name : "(none)");
+
+	initStringInfo(&csv);
+	for (i = 0; i < CLUSTER_SHARED_FS_BACKEND_MAX; i++) {
+		const ClusterSharedFsOps *ops = cluster_shared_fs_get_backend_at(i);
+
+		if (ops == NULL)
+			continue;
+		if (emitted > 0)
+			appendStringInfoChar(&csv, ',');
+		appendStringInfoString(&csv, ops->name);
+		emitted++;
+	}
+	emit_row(rsinfo, "shared_fs", "registered_backends", csv.len > 0 ? csv.data : "(empty)");
+	pfree(csv.data);
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -329,6 +377,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_inject(rsinfo);
 		dump_pgstat(rsinfo);
 		dump_conf(rsinfo);
+		dump_shared_fs(rsinfo);
 		dump_phase(rsinfo);
 	}
 #else

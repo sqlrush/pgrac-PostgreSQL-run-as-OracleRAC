@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'46', 'E1 pg_stat_cluster_wait_events returns 46 rows');
+	'51', 'E1 pg_stat_cluster_wait_events returns 51 rows');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'46', 'E4 pg_stat_gcluster_wait_events returns 46 rows (single-node)');
+	'51', 'E4 pg_stat_gcluster_wait_events returns 51 rows (single-node)');
 
 
 # ============================================================
@@ -194,6 +194,9 @@ ok($node->get_cluster_state_value('guc', 'cluster.config_file') ne '',
 ok($node->get_cluster_state_value('guc', 'cluster.injection_points') ne '',
 	'G4 dump shows cluster.injection_points GUC');
 
+is($node->get_cluster_state_value('guc', 'cluster.shared_storage_backend'),
+	'stub', 'G5 dump shows cluster.shared_storage_backend GUC (default stub, stage 1.1)');
+
 
 # ============================================================
 # §H  shmem framework (3 tests)
@@ -216,7 +219,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		q{SELECT count(DISTINCT type) FROM pg_stat_cluster_wait_events}),
-	'10', 'I1 wait_events has exactly 10 distinct types');
+	'11', 'I1 wait_events has exactly 11 distinct types (10 from stage 0 + SharedFs from stage 1.1)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_gcluster_wait_events WHERE node_id IS NOT NULL})
@@ -294,12 +297,12 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 
 # ============================================================
-# §M  error injection 14 注入点 + 5 fault types (6 tests)
+# §M  error injection 17 注入点 + 5 fault types (6 tests)
 # ============================================================
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'14', 'M1 14 injection points (6 baseline + 8 stage-0.30 sweep)');
+	'17', 'M1 17 injection points (6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -329,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '28',
-	'M5 inject category has 14×2 = 28 sub-keys (.fault_type + .hits)');
+	) eq '34',
+	'M5 inject category has 17×2 = 34 sub-keys (.fault_type + .hits)');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
@@ -360,12 +363,12 @@ is($node->get_pgstat_counter('cluster.inject.armed_count'),
 
 ok($node->safe_psql('postgres',
 		'SELECT count(*) >= 30 FROM pg_cluster_state')
-	eq 't', 'O1 pg_cluster_state returns >= 30 rows (14 inject + others)');
+	eq 't', 'O1 pg_cluster_state returns >= 30 rows (17 inject + others)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM pg_cluster_state}),
-	'conf,guc,ic,inject,pgstat,phase,shmem',
-	'O2 pg_cluster_state has all 7 categories');
+	'conf,guc,ic,inject,pgstat,phase,shared_fs,shmem',
+	'O2 pg_cluster_state has all 8 categories (7 from stage 0 + shared_fs from stage 1.1)');
 
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE value IS NULL}),

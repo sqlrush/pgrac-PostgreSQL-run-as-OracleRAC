@@ -72,6 +72,9 @@
 /*               (spec-0.28, stage 0.28). */
 /*  - 202604320: cluster_dump_state SRF + pg_cluster_state view */
 /*               (spec-0.29, stage 0.29). */
-#define CATALOG_VERSION_NO	202604320
+/*  - 202605010: cluster.shared_storage_backend GUC + 5 cluster_shared_fs */
+/*               wait events (no new SRF; pg_cluster_state extended with */
+/*               a shared_fs category) (spec-1.1, stage 1.1). */
+#define CATALOG_VERSION_NO	202605010
 
 #endif

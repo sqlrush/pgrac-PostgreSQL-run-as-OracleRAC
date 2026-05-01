@@ -18,7 +18,7 @@
 #        backend startup; startup-fired injection points then have
 #        hits >= 1 because cluster_init_shmem traverses them while
 #        the global armed_count is non-zero.
-#      - 0.16 baseline view (pg_stat_cluster_wait_events 46 rows) is
+#      - 0.16 baseline view (pg_stat_cluster_wait_events 51 rows) is
 #        not perturbed by the 0.27 framework addition.
 #
 #    Per-backend semantics note: cluster_inject_fault arms state is
@@ -53,13 +53,14 @@ $node->start;
 
 
 # ----------
-# Test 1: View exists and returns 14 rows (compile-time registry size
-# after stage-0.30 sweep; 6 baseline + 8 new entries).
+# Test 1: View exists and returns 17 rows (compile-time registry size
+# after stage-0.30 sweep + stage-1.1 cluster_shared_fs additions;
+# 6 baseline + 8 sweep + 3 shared_fs).
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'14',
-	'pg_stat_cluster_injections returns 14 rows (compile-time registry)');
+	'17',
+	'pg_stat_cluster_injections returns 17 rows (compile-time registry)');
 
 
 # ----------
@@ -77,15 +78,15 @@ is( $node->safe_psql(
 
 
 # ----------
-# Test 3: Names match the spec-0.30 §2.1 list (14 entries: 6 baseline +
-# 8 sweep additions).
+# Test 3: Names match the spec-0.30 + spec-1.1 list (17 entries:
+# 6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs).
 # ----------
 is( $node->safe_psql(
 		'postgres',
 		'SELECT string_agg(name, \',\' ORDER BY name) FROM pg_stat_cluster_injections'
 	),
-	'cluster-conf-load-success,cluster-conf-parse-fail,cluster-conf-shmem-init,cluster-debug-dump-entry,cluster-guc-init-pre-define,cluster-ic-mock-send-pre-enqueue,cluster-ic-tier-selected,cluster-init-post-shmem,cluster-init-pre-shmem,cluster-init-top,cluster-pgstat-mirror-sync,cluster-shmem-request,cluster-shutdown-top,cluster-views-srf-entry',
-	'14 injection point names match spec-0.30 §2.1');
+	'cluster-conf-load-success,cluster-conf-parse-fail,cluster-conf-shmem-init,cluster-debug-dump-entry,cluster-guc-init-pre-define,cluster-ic-mock-send-pre-enqueue,cluster-ic-tier-selected,cluster-init-post-shmem,cluster-init-pre-shmem,cluster-init-top,cluster-pgstat-mirror-sync,cluster-shared-fs-backend-register,cluster-shared-fs-init-top,cluster-shared-fs-local-open,cluster-shmem-request,cluster-shutdown-top,cluster-views-srf-entry',
+	'17 injection point names match spec-0.30 + spec-1.1');
 
 
 # ----------
@@ -187,8 +188,8 @@ ok($hits >= 1,
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'46',
-	'pg_stat_cluster_wait_events still 46 rows after 0.27');
+	'51',
+	'pg_stat_cluster_wait_events still 51 rows after 0.27');
 
 $node->stop;
 

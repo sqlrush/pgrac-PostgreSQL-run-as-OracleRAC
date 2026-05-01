@@ -63,8 +63,8 @@ is( $node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category)
 		    FROM pg_cluster_state}),
-	'conf,guc,ic,inject,pgstat,phase,shmem',
-	'all 7 categories appear (sorted: conf, guc, ic, inject, pgstat, phase, shmem)');
+	'conf,guc,ic,inject,pgstat,phase,shared_fs,shmem',
+	'all 8 categories appear (sorted: conf, guc, ic, inject, pgstat, phase, shared_fs, shmem)');
 
 
 # ----------
@@ -117,22 +117,23 @@ is($node->get_cluster_state_value('ic', 'active_tier_name'),
 
 
 # ----------
-# Test 8: All 14 injection points appear with .fault_type / .hits keys
-# (after stage-0.30 sweep: 6 baseline + 8 new entries).
+# Test 8: All 17 injection points appear with .fault_type / .hits keys
+# (after stage-0.30 sweep + stage-1.1 shared_fs: 6 baseline + 8 sweep
+# + 3 shared_fs).
 # ----------
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.fault_type'}),
-	'14',
-	'all 14 injection points have a .fault_type entry under inject category');
+	'17',
+	'all 17 injection points have a .fault_type entry under inject category');
 
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.hits'}),
-	'14',
-	'all 14 injection points have a .hits entry under inject category');
+	'17',
+	'all 17 injection points have a .hits entry under inject category');
 
 
 # ----------
@@ -158,8 +159,8 @@ like($phase, qr/^(init|running|shutdown|\(unset\))$/,
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'46',
-	'pg_stat_cluster_wait_events still 46 rows after 0.29');
+	'51',
+	'pg_stat_cluster_wait_events still 51 rows after 0.29');
 
 $node->stop;
 

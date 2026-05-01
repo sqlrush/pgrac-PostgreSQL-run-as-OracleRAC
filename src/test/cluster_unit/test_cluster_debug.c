@@ -147,6 +147,42 @@ cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
 /* cluster_elog */
 const char *cluster_phase = "init";
 
+/* cluster_shared_fs (stage 1.1).  cluster_debug.c::dump_shared_fs reads
+ * the active vtable and the registered_backends slots; both stubs
+ * return NULL so the SRF body's "(none)" / "(empty)" branches fire. */
+const struct ClusterSharedFsOps *
+cluster_shared_fs_get_active_ops(void)
+{
+	return NULL;
+}
+
+const struct ClusterSharedFsOps *
+cluster_shared_fs_get_backend_at(int id pg_attribute_unused())
+{
+	return NULL;
+}
+
+/* StringInfo + pfree stubs for dump_shared_fs.  No-op pointers; SRF
+ * body is never invoked by this unit test. */
+#include "lib/stringinfo.h"
+void
+initStringInfo(StringInfo str)
+{
+	str->data = NULL;
+	str->len = 0;
+	str->maxlen = 0;
+	str->cursor = 0;
+}
+void
+appendStringInfoChar(StringInfo str pg_attribute_unused(), char ch pg_attribute_unused())
+{}
+void
+appendStringInfoString(StringInfo str pg_attribute_unused(), const char *s pg_attribute_unused())
+{}
+void
+pfree(void *pointer pg_attribute_unused())
+{}
+
 
 /* PG backend stubs */
 void

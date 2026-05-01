@@ -9,7 +9,7 @@
  *	  matching pg_proc.dat entry and a system_views.sql VIEW declaration.
  *
  *	  Stage 0.16 ships ONE SRF: cluster_get_wait_events, backing the
- *	  pg_stat_cluster_wait_events view.  It iterates the 46 cluster wait
+ *	  pg_stat_cluster_wait_events view.  It iterates the 51 cluster wait
  *	  event values registered by spec-0.11 and emits one row per event
  *	  with (type, name) populated by the existing pgstat_get_wait_event
  *	  / pgstat_get_wait_event_type lookups.
@@ -152,6 +152,13 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_ADG_WAL_RECEIVE_LAG,
 	WAIT_EVENT_ADG_READ_SNAPSHOT_WAIT,
 	WAIT_EVENT_ADG_SCN_SYNC_WAIT,
+
+	/* Cluster: SharedFs (5) -- spec-1.1 */
+	WAIT_EVENT_CLUSTER_SHARED_FS_READ,
+	WAIT_EVENT_CLUSTER_SHARED_FS_WRITE,
+	WAIT_EVENT_CLUSTER_SHARED_FS_EXTEND,
+	WAIT_EVENT_CLUSTER_SHARED_FS_TRUNCATE,
+	WAIT_EVENT_CLUSTER_SHARED_FS_FSYNC,
 };
 
 /* Compile-time assertion: array length must match the documented count. */
