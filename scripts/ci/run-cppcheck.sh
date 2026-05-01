@@ -81,6 +81,9 @@ PG_HEADER_SUPP=(
   --suppress=nullPointerRedundantCheck:src/include/nodes/pg_list.h
   --suppress=nullPointerRedundantCheck:src/include/storage/bufpage.h
   --suppress=constParameterPointer:src/include/lib/ilist.h
+  # Reason: PG-upstream xlogreader.h reachable via cluster_smgr.c -> smgr.h
+  # transitive include; not pgrac code per spec-0.27.5 §1.2 scope.
+  --suppress=constParameterPointer:src/include/access/xlogreader.h
 )
 
 # Reason: PG's Assert() is non-trapping by spec to cppcheck (it has no

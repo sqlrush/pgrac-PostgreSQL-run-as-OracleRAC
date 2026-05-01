@@ -41,6 +41,9 @@ preprocessorErrorDirective:src/include/storage/s_lock.h
 nullPointerRedundantCheck:src/include/nodes/pg_list.h
 # Reason: PG-upstream defensive null check; bufpage.h is not pgrac code.
 nullPointerRedundantCheck:src/include/storage/bufpage.h
+# Reason: PG-upstream xlogreader.h reachable via cluster_smgr.c -> smgr.h
+# transitive include (added in stage 1.2); not pgrac code.
+constParameterPointer:src/include/access/xlogreader.h
 
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a

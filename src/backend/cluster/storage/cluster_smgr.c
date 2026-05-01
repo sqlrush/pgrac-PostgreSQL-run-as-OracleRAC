@@ -317,7 +317,7 @@ cluster_smgr_create(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 bool
 cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 {
-	ClusterSmgrRelationState *state;
+	const ClusterSmgrRelationState *state;
 	char *path;
 	struct stat st;
 	bool exists;
@@ -350,11 +350,11 @@ cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 void
 cluster_smgr_unlink(RelFileLocatorBackend rlocator, ForkNumber forknum, bool isRedo)
 {
-	ClusterSmgrRelationState *state;
-
 	(void)isRedo;
 
 	if (cluster_smgr_relations != NULL) {
+		ClusterSmgrRelationState *state;
+
 		state = (ClusterSmgrRelationState *)hash_search(cluster_smgr_relations, &rlocator,
 														HASH_FIND, NULL);
 		if (state != NULL) {
