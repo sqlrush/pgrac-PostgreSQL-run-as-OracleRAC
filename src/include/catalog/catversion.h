@@ -79,6 +79,12 @@
 /*               smgrsw[] extended to 2 entries + 3 cluster-smgr-* */
 /*               injection points + pg_cluster_state shared_fs / guc */
 /*               extended (spec-1.2, stage 1.2; 方案 C 单文件). */
-#define CATALOG_VERSION_NO	202605020
+/*  - 202605030: cluster shmem region registry + cluster_shmem_dump_regions */
+/*               SRF (OID 8910) + pg_cluster_shmem view + */
+/*               cluster.shmem_max_regions GUC + 4 cluster-shmem-* */
+/*               injection points + pg_cluster_state.shmem extended with */
+/*               region.<name>.* keys (spec-1.3, stage 1.3; registry */
+/*               replaces hard-coded dispatch from spec-0.14). */
+#define CATALOG_VERSION_NO	202605030
 
 #endif

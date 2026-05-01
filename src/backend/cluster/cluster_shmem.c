@@ -3,29 +3,30 @@
  * cluster_shmem.c
  *	  pgrac cluster shared-memory registration and control block.
  *
- *	  Stage 0.14 establishes the cluster shmem framework.  All cluster
- *	  subsystems funnel through this file's two public entry points:
+ *	  Stage 0.14 established the cluster shmem framework (PG-side hook
+ *	  points + ClusterShmemCtl 64-byte control block) using a hard-coded
+ *	  dispatch model.  Stage 1.3 evolves the dispatcher into a region
+ *	  registry: each subsystem declares a static const ClusterShmemRegion
+ *	  and registers it via cluster_shmem_register_region during postmaster
+ *	  init.  cluster_request_shmem / cluster_init_shmem then iterate the
+ *	  registry and dispatch by table.
  *
- *	    cluster_request_shmem()  -- Phase 1 (miscinit.c)
- *	      Reserves the size of every cluster shmem region by calling
- *	      RequestAddinShmemSpace() and (when needed) RequestNamedLWLock-
- *	      Tranche().  Subsystems append their own *_shmem_request()
- *	      static helpers below.
+ *	  External ABI is unchanged: cluster_request_shmem,
+ *	  cluster_init_shmem, cluster_shmem_size, and the ClusterShmem global
+ *	  pointer all keep the same signatures and lifetimes that 0.14
+ *	  shipped.  The two PG core hook points (miscinit.c
+ *	  process_shmem_requests and ipci.c CreateSharedMemoryAndSemaphores)
+ *	  call the same entry points -- only their internals refactored.
  *
- *	    cluster_init_shmem()     -- Phase 2 (ipci.c)
- *	      Allocates each region via ShmemInitStruct() and runs first-
- *	      time initialisation when ShmemInitStruct returns found = false.
- *	      Subsystems append their own *_shmem_init() static helpers.
+ *	  Why one orchestration point per subsystem instead of letting each
+ *	  subsystem edit PG core files directly: keeps the PGRAC
+ *	  MODIFICATIONS to PG paths to the two single-line callbacks at the
+ *	  top of this file.  Stage 1.3 takes this further -- new cluster
+ *	  subsystems do not even touch this file: they call
+ *	  cluster_shmem_register_region from their own *_init() helper.
  *
- *	  Why one entry per subsystem instead of letting each subsystem edit
- *	  PG core files directly: keeps the PGRAC MODIFICATIONS to PG paths
- *	  to the two single-line callbacks at the top of this file -- new
- *	  cluster subsystems never touch miscinit.c or ipci.c again.
- *
- *	  Stage 0.14 ships only the control block (ClusterShmemCtl).  See
- *	  docs/cluster-shmem-design.md §3 for the full registration roster
- *	  and CLAUDE.md rule 8 for why we do not pre-allocate placeholder
- *	  regions or LWLocks.
+ *	  See docs/cluster-shmem-design.md §9 (region registry) and §10
+ *	  (diagnostic views) for the full design.
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -47,14 +48,16 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h" /* IsUnderPostmaster */
 #include "storage/shmem.h"
+#include "utils/memutils.h" /* TopMemoryContext */
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_conf.h"	/* cluster_conf_shmem_* / load (stage 0.19) */
+#include "cluster/cluster_conf.h"	/* cluster_conf_shmem_size / init */
 #include "cluster/cluster_elog.h"	/* CLUSTER_LOG */
-#include "cluster/cluster_guc.h"	/* cluster_node_id */
+#include "cluster/cluster_guc.h"	/* cluster_node_id / cluster_shmem_max_regions */
 #include "cluster/cluster_ic.h"		/* cluster_ic_init / shutdown (stage 0.18) */
-#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (stage 0.27) */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_version_macros.h"
 
@@ -66,15 +69,244 @@ ClusterShmemCtl *ClusterShmem = NULL;
 
 
 /* ============================================================
- * Forward declarations of per-subsystem helpers (stage 0.14).
+ * Registry storage (stage 1.3).
  *
- *	Each future subsystem (GRD, PCM, GES, ...) declares its own pair
- *	of static helpers and adds matching calls to the public entry
- *	points below.
+ *	Allocated once in cluster_init_shmem_module() with capacity =
+ *	cluster.shmem_max_regions GUC.  Frozen at the entry of
+ *	cluster_request_shmem (further register calls fail).
+ *
+ *	On EXEC_BACKEND child processes the registry array is rebuilt
+ *	(cluster_init_shmem_module runs again under IsUnderPostmaster);
+ *	register API tolerates this by silently treating duplicate name
+ *	in child processes as an idempotent rebind.
+ * ============================================================ */
+static ClusterShmemRegion *registry = NULL;
+static int registry_count = 0;
+static int registry_capacity = 0;
+static bool registry_frozen = false;
+
+
+/* ============================================================
+ * Forward declarations.
  * ============================================================ */
 static Size cluster_ctl_shmem_size(void);
-static void cluster_ctl_shmem_request(void);
 static void cluster_ctl_shmem_init(void);
+
+
+/* ============================================================
+ * Foundational region descriptors (stage 1.3).
+ *
+ *	cluster_ctl owns the ClusterShmemCtl control block.
+ *	cluster_conf owns the ClusterConf topology shmem (stage 0.19).
+ *	Both are registered from cluster_init_shmem_module() so the
+ *	registry is the single dispatch path -- no hard-coded fallback.
+ * ============================================================ */
+static const ClusterShmemRegion cluster_ctl_region = {
+	.name = "pgrac cluster control",
+	.size_fn = cluster_ctl_shmem_size,
+	.init_fn = cluster_ctl_shmem_init,
+	.lwlock_count = 0,
+	.owner_subsys = "cluster_ctl",
+	.reserved_flags = 0,
+};
+
+static const ClusterShmemRegion cluster_conf_region = {
+	.name = "pgrac cluster conf",
+	.size_fn = cluster_conf_shmem_size,
+	.init_fn = cluster_conf_shmem_init,
+	.lwlock_count = 0,
+	.owner_subsys = "cluster_conf",
+	.reserved_flags = 0,
+};
+
+
+/* ============================================================
+ * Registry API (stage 1.3).
+ * ============================================================ */
+
+/*
+ * cluster_shmem_register_region -- register one region.
+ *
+ *	Adds the supplied region descriptor to the static registry array.
+ *	Errors out (ERROR) if the registry is frozen, the name is
+ *	duplicated, or capacity is exceeded.
+ *
+ *	On EXEC_BACKEND child processes (IsUnderPostmaster == true), a
+ *	duplicate name from re-running cluster_init_shmem_module is
+ *	silently accepted as a rebind (no error).
+ */
+void
+cluster_shmem_register_region(const ClusterShmemRegion *region)
+{
+	int i;
+
+	CLUSTER_INJECTION_POINT("cluster-shmem-register-region");
+
+	Assert(region != NULL);
+	Assert(region->name != NULL);
+	Assert(region->size_fn != NULL);
+	Assert(region->init_fn != NULL);
+	Assert(region->owner_subsys != NULL);
+	Assert(region->reserved_flags == 0);
+
+	if (registry == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cluster_shmem_register_region called before "
+							   "cluster_init_shmem_module"),
+						errhint("Call cluster_init() before registering shmem regions.")));
+
+	if (registry_frozen)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cluster_shmem_register_region called after registry frozen"),
+						errhint("Register subsystems before cluster_request_shmem entry.")));
+
+	for (i = 0; i < registry_count; i++) {
+		if (strcmp(registry[i].name, region->name) == 0) {
+			/*
+			 * Duplicate name.  On POSIX fork platforms this should never
+			 * happen (registry is built once in postmaster).  On
+			 * EXEC_BACKEND children it can happen because each child
+			 * re-runs the init path -- treat as idempotent rebind.
+			 */
+			if (IsUnderPostmaster)
+				return;
+
+			ereport(ERROR, (errcode(ERRCODE_DUPLICATE_OBJECT),
+							errmsg("duplicate cluster shmem region \"%s\"", region->name),
+							errhint("Region already registered by subsystem \"%s\".",
+									registry[i].owner_subsys)));
+		}
+	}
+
+	if (registry_count >= registry_capacity)
+		ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+						errmsg("cluster shmem registry capacity exceeded "
+							   "(current=%d, max=%d)",
+							   registry_count, registry_capacity),
+						errhint("Raise cluster.shmem_max_regions GUC (currently %d).",
+								registry_capacity)));
+
+	registry[registry_count] = *region;
+	registry_count++;
+}
+
+/*
+ * cluster_shmem_lookup_region -- find a region by name.
+ *
+ *	Returns a pointer to the registered descriptor or NULL if not
+ *	found.  Pointer is stable for the postmaster lifetime.
+ */
+const ClusterShmemRegion *
+cluster_shmem_lookup_region(const char *name)
+{
+	int i;
+
+	if (registry == NULL || name == NULL)
+		return NULL;
+
+	for (i = 0; i < registry_count; i++) {
+		if (strcmp(registry[i].name, name) == 0)
+			return &registry[i];
+	}
+	return NULL;
+}
+
+/*
+ * cluster_shmem_iter_regions -- iterator-style traversal.
+ *
+ *	Caller initializes *idx = 0 and calls repeatedly.  Returns true
+ *	with *out filled per call; returns false when exhausted.  Used by
+ *	pg_cluster_shmem SRF and pg_cluster_state dump.
+ */
+bool
+cluster_shmem_iter_regions(int *idx, ClusterShmemRegion *out)
+{
+	Assert(idx != NULL);
+	Assert(out != NULL);
+
+	if (registry == NULL || *idx < 0 || *idx >= registry_count)
+		return false;
+
+	*out = registry[*idx];
+	(*idx)++;
+	return true;
+}
+
+/*
+ * cluster_shmem_get_region_count -- number of registered regions.
+ */
+int
+cluster_shmem_get_region_count(void)
+{
+	return registry_count;
+}
+
+/*
+ * cluster_shmem_get_total_bytes -- sum of size_fn() across registry.
+ *
+ *	Used by pg_cluster_state.shmem.total_bytes.
+ */
+Size
+cluster_shmem_get_total_bytes(void)
+{
+	Size total = 0;
+	int i;
+
+	for (i = 0; i < registry_count; i++)
+		total = add_size(total, registry[i].size_fn());
+	return total;
+}
+
+
+/* ============================================================
+ * Module init -- foundational region registration.
+ * ============================================================ */
+
+/*
+ * cluster_init_shmem_module -- allocate registry and register the
+ *	foundational regions (cluster_ctl + cluster_conf).
+ *
+ *	Called from cluster_init() during postmaster startup, after
+ *	cluster_init_guc.  Other subsystems (cluster_ic, future grd / pcm /
+ *	ges / ...) register their own regions from their own init helpers.
+ *
+ *	On EXEC_BACKEND child processes this runs again; the duplicate-name
+ *	branch in cluster_shmem_register_region treats re-registration as
+ *	idempotent rebind (no error).
+ */
+void
+cluster_init_shmem_module(void)
+{
+	/*
+	 * First call: allocate the registry array.  Capacity is bound by the
+	 * cluster.shmem_max_regions GUC.  In bootstrap and check modes
+	 * (initdb --boot / --check) cluster_init_guc never runs, so the
+	 * cluster_shmem_max_regions C global retains its boot value (64).
+	 */
+	if (registry == NULL) {
+		registry_capacity = cluster_shmem_max_regions;
+		registry = (ClusterShmemRegion *)MemoryContextAllocZero(
+			TopMemoryContext, sizeof(ClusterShmemRegion) * registry_capacity);
+		registry_count = 0;
+		registry_frozen = false;
+	}
+
+	/*
+	 * Idempotent foundational region registration.  Callers can be:
+	 *	  - miscinit.c::process_shared_preload_libraries (postmaster mode,
+	 *	    via cluster_init())
+	 *	  - cluster_init_shmem (bootstrap / check / single-user fallback,
+	 *	    when process_shared_preload_libraries was skipped)
+	 *	  - EXEC_BACKEND child re-running cluster_init()
+	 *
+	 *	The lookup-then-register pattern keeps each foundational region
+	 *	registered exactly once per registry, regardless of caller mix.
+	 */
+	if (cluster_shmem_lookup_region(cluster_ctl_region.name) == NULL)
+		cluster_shmem_register_region(&cluster_ctl_region);
+	if (cluster_shmem_lookup_region(cluster_conf_region.name) == NULL)
+		cluster_shmem_register_region(&cluster_conf_region);
+}
 
 
 /* ============================================================
@@ -88,13 +320,7 @@ static void cluster_ctl_shmem_init(void);
 Size
 cluster_shmem_size(void)
 {
-	Size total = 0;
-
-	total = add_size(total, cluster_ctl_shmem_size());
-	total = add_size(total, cluster_conf_shmem_size());
-	/* Future: total = add_size(total, grd_shmem_size()); ... */
-
-	return total;
+	return cluster_shmem_get_total_bytes();
 }
 
 /*
@@ -103,15 +329,26 @@ cluster_shmem_size(void)
  *	process_shmem_requests phase.  PG forbids RequestAddinShmemSpace
  *	outside this phase, so this is the only window in which we can
  *	register.
+ *
+ *	Stage 1.3: iterates the registry and calls size_fn per row.
  */
 void
 cluster_request_shmem(void)
 {
+	int idx;
+	ClusterShmemRegion region;
+
 	CLUSTER_INJECTION_POINT("cluster-shmem-request");
 
-	cluster_ctl_shmem_request();
-	cluster_conf_shmem_request();
-	/* Future: grd_shmem_request(); pcm_shmem_request(); ... */
+	/*
+	 * Freeze the registry: any subsequent cluster_shmem_register_region
+	 * call will fail.  Subsystems must register before this point.
+	 */
+	registry_frozen = true;
+
+	idx = 0;
+	while (cluster_shmem_iter_regions(&idx, &region))
+		RequestAddinShmemSpace(region.size_fn());
 }
 
 /*
@@ -120,18 +357,32 @@ cluster_request_shmem(void)
  *	after PG's built-in ShmemInit calls and before the user
  *	shmem_startup_hook.
  *
- *	On EXEC_BACKEND child processes ShmemInitStruct returns
- *	found = true; helpers in this file must skip first-time
- *	initialisation in that case.
+ *	Stage 1.3: iterates the registry and calls init_fn per row.  Each
+ *	init_fn must use ShmemInitStruct so EXEC_BACKEND children rebind.
  */
 void
 cluster_init_shmem(void)
 {
+	int idx;
+	ClusterShmemRegion region;
+
 	CLUSTER_INJECTION_POINT("cluster-init-pre-shmem");
 
-	cluster_ctl_shmem_init();
-	cluster_conf_shmem_init();
-	/* Future: grd_shmem_init(); pcm_shmem_init(); ... */
+	/*
+	 * Bootstrap and standalone modes skip process_shared_preload_libraries
+	 * (and thus cluster_init -> cluster_init_shmem_module).  Build the
+	 * registry lazily here so the foundational regions are always
+	 * present before we iterate.
+	 */
+	if (registry == NULL)
+		cluster_init_shmem_module();
+
+	idx = 0;
+	while (cluster_shmem_iter_regions(&idx, &region)) {
+		CLUSTER_INJECTION_POINT("cluster-shmem-region-init-pre");
+		region.init_fn();
+		CLUSTER_INJECTION_POINT("cluster-shmem-region-init-post");
+	}
 
 	/*
 	 * Stage 0.19: parse pgrac.conf into ClusterConfShmem.  Must run
@@ -158,7 +409,7 @@ cluster_init_shmem(void)
 
 
 /* ============================================================
- * Cluster control block (stage 0.14).
+ * Cluster control block (stage 0.14, registry-driven since 1.3).
  *
  *	Immutable metadata: magic, packed version, snapshot of
  *	cluster_node_id at init, and creation timestamp.  No locking
@@ -170,12 +421,6 @@ static Size
 cluster_ctl_shmem_size(void)
 {
 	return MAXALIGN(sizeof(ClusterShmemCtl));
-}
-
-static void
-cluster_ctl_shmem_request(void)
-{
-	RequestAddinShmemSpace(cluster_ctl_shmem_size());
 }
 
 static void

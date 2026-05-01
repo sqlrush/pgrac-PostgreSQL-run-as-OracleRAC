@@ -114,6 +114,12 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	{ .name = "cluster-smgr-create-top" },
 	{ .name = "cluster-smgr-open-top" },
 	{ .name = "cluster-smgr-which-decision" },
+
+	/* Stage 1.3 cluster shmem region registry (4 entries) */
+	{ .name = "cluster-shmem-region-init-post" },
+	{ .name = "cluster-shmem-region-init-pre" },
+	{ .name = "cluster-shmem-register-region" },
+	{ .name = "cluster-shmem-views-srf-entry" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)

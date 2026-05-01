@@ -1473,3 +1473,19 @@ CREATE VIEW pg_cluster_state AS
 
 REVOKE ALL ON pg_cluster_state FROM PUBLIC;
 GRANT SELECT ON pg_cluster_state TO PUBLIC;
+
+-- PGRAC: pg_cluster_shmem (stage 1.3).
+--   Per-region snapshot of the cluster shmem registry.  Stage 1.3 baseline
+--   returns 2 rows (cluster_ctl + cluster_conf); Stage 2+ subsystems (GRD,
+--   PCM, GES, ...) appear automatically as they call
+--   cluster_shmem_register_region from their own init helper.  Column
+--   shape (name text, size_bytes int8, lwlock_count int4, owner_subsys
+--   text) is stable from spec-1.3 onward.
+--   See specs/spec-1.3-shmem-region-registry.md and
+--   docs/cluster-shmem-design.md §10.
+CREATE VIEW pg_cluster_shmem AS
+    SELECT name, size_bytes, lwlock_count, owner_subsys
+      FROM cluster_shmem_dump_regions();
+
+REVOKE ALL ON pg_cluster_shmem FROM PUBLIC;
+GRANT SELECT ON pg_cluster_shmem TO PUBLIC;

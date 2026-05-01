@@ -58,6 +58,7 @@ char *cluster_config_file = NULL;	   /* boot value filled by DefineCustomStringV
 char *cluster_injection_points = NULL; /* boot value filled by DefineCustomStringVariable */
 int cluster_shared_storage_backend = CLUSTER_SHARED_FS_BACKEND_STUB;
 bool cluster_smgr_user_relations = false;
+int cluster_shmem_max_regions = 64;
 
 
 /*
@@ -239,4 +240,29 @@ cluster_init_guc(void)
 		NULL,			/* check_hook */
 		NULL,			/* assign_hook */
 		NULL);			/* show_hook */
+
+	/*
+	 * cluster.shmem_max_regions (spec-1.3): capacity of the cluster shmem
+	 * region registry.  Default 64 covers the stage 1.3 baseline (2
+	 * regions: cluster_ctl + cluster_conf) plus the 12 reserved regions
+	 * planned in cluster-shmem-design.md §3.2 with a wide safety margin.
+	 * Range [8, 256] -- 8 is the minimum to fit baseline + small dev
+	 * subset; 256 is the upper engineering bound (raise via source-code
+	 * change if more are needed).  PGC_POSTMASTER because the registry
+	 * array is palloc'd once at postmaster init from this value.
+	 */
+	DefineCustomIntVariable("cluster.shmem_max_regions",
+							gettext_noop("Capacity of the pgrac cluster shmem region registry."),
+							gettext_noop("Maximum number of regions that may be registered via "
+										 "cluster_shmem_register_region.  Each cluster subsystem "
+										 "(cluster_ctl, cluster_conf, future GRD/PCM/GES/...) "
+										 "registers one region.  Raise if FATAL on startup with "
+										 "errcode 53400 \"cluster shmem registry capacity "
+										 "exceeded\"."),
+							&cluster_shmem_max_regions, 64, 8, 256,
+							PGC_POSTMASTER, /* registry array is palloc'd once at init */
+							0,				/* flags */
+							NULL,			/* check_hook */
+							NULL,			/* assign_hook */
+							NULL);			/* show_hook */
 }

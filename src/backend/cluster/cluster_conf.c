@@ -99,12 +99,6 @@ cluster_conf_shmem_size(void)
 }
 
 void
-cluster_conf_shmem_request(void)
-{
-	RequestAddinShmemSpace(cluster_conf_shmem_size());
-}
-
-void
 cluster_conf_shmem_init(void)
 {
 	bool found;

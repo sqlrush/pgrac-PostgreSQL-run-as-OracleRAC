@@ -130,15 +130,18 @@ typedef struct ClusterConf {
 extern ClusterConf *ClusterConfShmem;
 
 /*
- * Shmem region helpers, called from cluster_shmem.c.
+ * Shmem region helpers.  Stage 1.3: registered via
+ * cluster_shmem_register_region; cluster_request_shmem and
+ * cluster_init_shmem dispatch by table.  See cluster_shmem.c
+ * cluster_conf_region descriptor.
  *
- *	cluster_conf_shmem_size    -- bytes to reserve via RequestAddinShmemSpace.
- *	cluster_conf_shmem_request -- thin wrapper called from cluster_request_shmem.
- *	cluster_conf_shmem_init    -- ShmemInitStruct + zero-fill on first attach;
- *	                              must run before cluster_conf_load.
+ *	cluster_conf_shmem_size -- bytes to reserve via RequestAddinShmemSpace
+ *	                           (size_fn for the registry).
+ *	cluster_conf_shmem_init -- ShmemInitStruct + zero-fill on first attach;
+ *	                           must run before cluster_conf_load (init_fn
+ *	                           for the registry).
  */
 extern Size cluster_conf_shmem_size(void);
-extern void cluster_conf_shmem_request(void);
 extern void cluster_conf_shmem_init(void);
 
 /*

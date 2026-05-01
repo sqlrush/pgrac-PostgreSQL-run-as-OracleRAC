@@ -172,8 +172,30 @@ cluster_smgr_active_relation_count(void)
 }
 bool cluster_smgr_user_relations = false;
 
-/* StringInfo + pfree stubs for dump_shared_fs.  No-op pointers; SRF
- * body is never invoked by this unit test. */
+/* Stage 1.3: cluster_debug.c::dump_shmem now reads from the cluster
+ * shmem region registry (region_count + total_bytes + per-region
+ * iter).  cluster_shmem.o is not linked here; provide stubs that
+ * mimic an empty registry. */
+int cluster_shmem_max_regions = 64;
+int
+cluster_shmem_get_region_count(void)
+{
+	return 0;
+}
+Size
+cluster_shmem_get_total_bytes(void)
+{
+	return 0;
+}
+bool
+cluster_shmem_iter_regions(int *idx pg_attribute_unused(),
+						   ClusterShmemRegion *out pg_attribute_unused())
+{
+	return false;
+}
+
+/* StringInfo + pfree stubs for dump_shared_fs / dump_shmem (stage 1.3).
+ * No-op pointers; SRF body is never invoked by this unit test. */
 #include "lib/stringinfo.h"
 void
 initStringInfo(StringInfo str)
@@ -188,6 +210,12 @@ appendStringInfoChar(StringInfo str pg_attribute_unused(), char ch pg_attribute_
 {}
 void
 appendStringInfoString(StringInfo str pg_attribute_unused(), const char *s pg_attribute_unused())
+{}
+void
+appendStringInfo(StringInfo str pg_attribute_unused(), const char *fmt pg_attribute_unused(), ...)
+{}
+void
+resetStringInfo(StringInfo str pg_attribute_unused())
 {}
 void
 pfree(void *pointer pg_attribute_unused())

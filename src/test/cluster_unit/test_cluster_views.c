@@ -153,6 +153,18 @@ void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}
 
+/*
+ * Stage 1.3: cluster_views.c::cluster_shmem_dump_regions calls the
+ * registry iter API.  Stub returns "no rows" -- the SRF body is never
+ * invoked in this test (we only check linkage).
+ */
+bool
+cluster_shmem_iter_regions(int *idx pg_attribute_unused(),
+						   ClusterShmemRegion *out pg_attribute_unused())
+{
+	return false;
+}
+
 
 UT_DEFINE_GLOBALS();
 

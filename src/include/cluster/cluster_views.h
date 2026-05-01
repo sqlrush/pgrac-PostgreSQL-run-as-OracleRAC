@@ -108,4 +108,28 @@ extern Datum cluster_get_gcluster_wait_events(PG_FUNCTION_ARGS);
 extern Datum cluster_get_stat_nodes(PG_FUNCTION_ARGS);
 
 
+/*
+ * cluster_shmem_dump_regions -- SRF backing pg_cluster_shmem (stage 1.3).
+ *
+ *	Emits one row per registered cluster shmem region:
+ *	    name          text     -- region.name (unique within registry)
+ *	    size_bytes    int8     -- region.size_fn() at view query time
+ *	    lwlock_count  int4     -- region.lwlock_count (informational)
+ *	    owner_subsys  text     -- "cluster_ctl" / "cluster_conf" / ...
+ *
+ *	Stage 1.3 baseline returns 2 rows (cluster_ctl + cluster_conf).
+ *	Stage 2+ subsystems appear here automatically as they call
+ *	cluster_shmem_register_region from their own init helper.
+ *
+ *	The column contract is a stable interface from 1.3 onward; future
+ *	amends may append columns at the tail (e.g. wait_time / hit_ratio
+ *	for stage 4+ performance monitoring) but not change/remove existing
+ *	columns.
+ *
+ *	See specs/spec-1.3-shmem-region-registry.md §2.3 (column contract)
+ *	and docs/cluster-shmem-design.md §10 (diagnostic views).
+ */
+extern Datum cluster_shmem_dump_regions(PG_FUNCTION_ARGS);
+
+
 #endif /* CLUSTER_VIEWS_H */

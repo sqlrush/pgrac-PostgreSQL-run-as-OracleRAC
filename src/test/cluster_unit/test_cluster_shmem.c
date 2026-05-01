@@ -152,18 +152,11 @@ DefineCustomBoolVariable(const char *name pg_attribute_unused(),
 
 /* Forward decl to silence -Wmissing-prototypes (stage 0.19). */
 extern void cluster_conf_shmem_init(void);
-extern void cluster_conf_shmem_request(void);
 extern Size cluster_conf_shmem_size(void);
 extern void cluster_conf_load(void);
 
 void
 cluster_conf_shmem_init(void)
-{
-	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
-}
-
-void
-cluster_conf_shmem_request(void)
 {
 	/* Stub: real impl in src/backend/cluster/cluster_conf.c (stage 0.19) */
 }
@@ -221,6 +214,31 @@ errstart(int elevel pg_attribute_unused(), const char *domain pg_attribute_unuse
 	return false; /* tell errmsg_internal/errfinish to skip */
 }
 
+bool
+errstart_cold(int elevel pg_attribute_unused(), const char *domain pg_attribute_unused())
+{
+	/* Cold-path version used by ereport(ERROR/FATAL/...) macros. */
+	return false;
+}
+
+int
+errmsg(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+
+int
+errcode(int sqlerrcode pg_attribute_unused())
+{
+	return 0;
+}
+
+int
+errhint(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+
 int
 errmsg_internal(const char *fmt pg_attribute_unused(), ...)
 {
@@ -232,6 +250,33 @@ errfinish(const char *filename pg_attribute_unused(), int lineno pg_attribute_un
 		  const char *funcname pg_attribute_unused())
 {
 	/* never called when errstart returned false, but stub anyway */
+}
+
+/*
+ * MemoryContext / palloc stubs for stage-1.3 registry path.  The unit
+ * test never exercises cluster_init_shmem_module (would need full PG
+ * memory machinery), so these only need to satisfy the linker.
+ */
+MemoryContext TopMemoryContext = NULL;
+
+void *
+MemoryContextAllocZero(MemoryContext context pg_attribute_unused(), Size size pg_attribute_unused())
+{
+	return NULL;
+}
+
+bool IsUnderPostmaster = false;
+
+/* cluster_shmem_max_regions is provided by cluster_guc.o (linked in
+ * by this test) -- no local definition. */
+
+/* Assert() backstop: real impl in src/backend/utils/error/assert.c. */
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
 }
 
 /* add_size is in shmem.c (PG backend) and unconditionally pulled in by
@@ -280,15 +325,16 @@ UT_TEST(test_cluster_shmem_ctl_size_within_budget)
 }
 
 
-UT_TEST(test_cluster_shmem_size_matches_struct)
+UT_TEST(test_cluster_shmem_size_matches_total_bytes)
 {
 	/*
-	 * cluster_shmem_size() should return MAXALIGN(sizeof(ctl)) at this
-	 * stage (only the control block is registered).  We do not call
-	 * MAXALIGN() here -- it is a PG macro that depends on backend
-	 * settings -- but the result must be at least the struct size.
+	 * Stage 1.3: cluster_shmem_size() forwards to
+	 * cluster_shmem_get_total_bytes().  In unit-test scope the
+	 * registry is never built (no cluster_init_shmem_module call),
+	 * so both must agree on 0.
 	 */
-	UT_ASSERT(cluster_shmem_size() >= sizeof(ClusterShmemCtl));
+	UT_ASSERT_EQ((int)cluster_shmem_size(), 0);
+	UT_ASSERT_EQ((int)cluster_shmem_size(), (int)cluster_shmem_get_total_bytes());
 }
 
 
@@ -317,15 +363,121 @@ UT_TEST(test_cluster_shmem_api_symbols_linkable)
 }
 
 
+/* ============================================================
+ * Stage 1.3: region registry tests.
+ *
+ *	The runtime behavior (register / lookup / iter) requires PG's
+ *	full memory + ereport machinery, so we cover that in the TAP
+ *	test 020_shmem_registry.pl.  Here we focus on link-time +
+ *	struct-shape invariants that hold without exercising registry
+ *	state.
+ * ============================================================ */
+
+UT_TEST(test_cluster_shmem_region_struct_shape)
+{
+	/*
+	 * Struct must be non-empty and big enough to hold the documented
+	 * 6 fields (3 pointers + 1 int + 1 char* + 1 int).  A real-world
+	 * size on 64-bit ABI is ~48 bytes including padding.
+	 */
+	UT_ASSERT(sizeof(ClusterShmemRegion) > 0);
+	UT_ASSERT(sizeof(ClusterShmemRegion) >= 4 * sizeof(void *));
+}
+
+
+UT_TEST(test_cluster_shmem_registry_api_symbols_linkable)
+{
+	/*
+	 * Stage 1.3 added 5 registry API entry points + 1 module init.
+	 * Taking their addresses proves the symbols resolve.  We do NOT
+	 * invoke any of them here -- runtime behavior is covered in the
+	 * 020_shmem_registry.pl TAP test where PG memory + ereport
+	 * machinery is real.
+	 */
+	UT_ASSERT_NOT_NULL((void *)cluster_shmem_register_region);
+	UT_ASSERT_NOT_NULL((void *)cluster_shmem_lookup_region);
+	UT_ASSERT_NOT_NULL((void *)cluster_shmem_iter_regions);
+	UT_ASSERT_NOT_NULL((void *)cluster_shmem_get_region_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_shmem_get_total_bytes);
+	UT_ASSERT_NOT_NULL((void *)cluster_init_shmem_module);
+}
+
+
+UT_TEST(test_cluster_shmem_get_region_count_pre_init)
+{
+	/*
+	 * Before cluster_init_shmem_module() runs in this process the
+	 * registry is NULL -> region_count is 0.
+	 */
+	UT_ASSERT_EQ(cluster_shmem_get_region_count(), 0);
+}
+
+
+UT_TEST(test_cluster_shmem_get_total_bytes_pre_init)
+{
+	/*
+	 * Total bytes summed over an empty registry is 0.
+	 */
+	UT_ASSERT_EQ((int)cluster_shmem_get_total_bytes(), 0);
+}
+
+
+UT_TEST(test_cluster_shmem_lookup_region_returns_null_when_uninit)
+{
+	/*
+	 * lookup before registry init should return NULL (defensive
+	 * NULL-tolerance, not Assert).  This is documented behavior in
+	 * cluster_shmem.h: "Returns NULL if not found".
+	 */
+	UT_ASSERT_NULL((void *)cluster_shmem_lookup_region("pgrac cluster control"));
+	UT_ASSERT_NULL((void *)cluster_shmem_lookup_region(NULL));
+}
+
+
+UT_TEST(test_cluster_shmem_iter_regions_returns_false_when_uninit)
+{
+	/*
+	 * iter before registry init should return false (no rows).
+	 * Caller's *idx is unchanged on false return.
+	 */
+	int idx = 0;
+	ClusterShmemRegion out;
+
+	memset(&out, 0xff, sizeof(out));
+	UT_ASSERT_EQ((int)cluster_shmem_iter_regions(&idx, &out), 0);
+	UT_ASSERT_EQ(idx, 0);
+}
+
+
+UT_TEST(test_cluster_shmem_max_regions_default_value)
+{
+	/*
+	 * The boot-value of cluster.shmem_max_regions is 64 (spec-1.3
+	 * §2.2 / cluster_guc.c static initializer).  Unit test links
+	 * cluster_guc.o but never calls cluster_init_guc, so the C
+	 * global retains its static-initializer default.
+	 */
+	extern int cluster_shmem_max_regions;
+	UT_ASSERT_EQ(cluster_shmem_max_regions, 64);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(5);
+	UT_PLAN(12);
 	UT_RUN(test_cluster_shmem_magic_value);
 	UT_RUN(test_cluster_shmem_ctl_size_within_budget);
-	UT_RUN(test_cluster_shmem_size_matches_struct);
+	UT_RUN(test_cluster_shmem_size_matches_total_bytes);
 	UT_RUN(test_cluster_shmem_pointer_defaults_null);
 	UT_RUN(test_cluster_shmem_api_symbols_linkable);
+	UT_RUN(test_cluster_shmem_region_struct_shape);
+	UT_RUN(test_cluster_shmem_registry_api_symbols_linkable);
+	UT_RUN(test_cluster_shmem_get_region_count_pre_init);
+	UT_RUN(test_cluster_shmem_get_total_bytes_pre_init);
+	UT_RUN(test_cluster_shmem_lookup_region_returns_null_when_uninit);
+	UT_RUN(test_cluster_shmem_iter_regions_returns_false_when_uninit);
+	UT_RUN(test_cluster_shmem_max_regions_default_value);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

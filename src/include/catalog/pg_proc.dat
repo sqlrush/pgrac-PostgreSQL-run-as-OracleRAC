@@ -12214,4 +12214,19 @@
   proargnames => '{category,key,value}',
   prosrc => 'cluster_dump_state' },
 
+# Stage 1.3: cluster shmem region registry diagnostic view.
+# Returns one row per registered cluster shmem region with
+# (name, size_bytes, lwlock_count, owner_subsys).  Stage 1.3
+# baseline returns 2 rows (cluster_ctl + cluster_conf); Stage 2+
+# subsystems appear automatically as they call
+# cluster_shmem_register_region.  Read-only; safe in production.
+{ oid => '8910', descr => 'list registered cluster shmem regions with sizes',
+  proname => 'cluster_shmem_dump_regions', prorows => '4',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{text,int8,int4,text}',
+  proargmodes => '{o,o,o,o}',
+  proargnames => '{name,size_bytes,lwlock_count,owner_subsys}',
+  prosrc => 'cluster_shmem_dump_regions' },
+
 ]

@@ -117,23 +117,23 @@ is($node->get_cluster_state_value('ic', 'active_tier_name'),
 
 
 # ----------
-# Test 8: All 20 injection points appear with .fault_type / .hits keys
-# (after stage-1.2 cluster_smgr: 6 baseline + 8 sweep + 3 shared_fs
-# + 3 cluster_smgr).
+# Test 8: All 24 injection points appear with .fault_type / .hits keys
+# (after stage-1.3 shmem registry: 6 baseline + 8 sweep + 3 shared_fs
+# + 3 cluster_smgr + 4 shmem registry).
 # ----------
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.fault_type'}),
-	'20',
-	'all 20 injection points have a .fault_type entry under inject category');
+	'24',
+	'all 24 injection points have a .fault_type entry under inject category');
 
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.hits'}),
-	'20',
-	'all 20 injection points have a .hits entry under inject category');
+	'24',
+	'all 24 injection points have a .hits entry under inject category');
 
 
 # ----------

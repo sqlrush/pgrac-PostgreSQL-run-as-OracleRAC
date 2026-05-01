@@ -74,6 +74,7 @@
 #include "utils/varlena.h"
 
 #ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster.h"	/* PGRAC: cluster_init() (stage 1.3) */
 #include "cluster/cluster_guc.h"	/* PGRAC: cluster_init_guc() */
 #include "cluster/cluster_shmem.h"	/* PGRAC: cluster_request_shmem() */
 #endif
@@ -1986,6 +1987,16 @@ process_shared_preload_libraries(void)
 #ifdef USE_PGRAC_CLUSTER
 	/* PGRAC: register cluster GUCs (PGC_POSTMASTER) before user preload libs. */
 	cluster_init_guc();
+	/*
+	 * PGRAC (stage 1.3): cluster_init() now registers foundational shmem
+	 * regions (cluster_ctl + cluster_conf) into the cluster shmem
+	 * registry.  Must run after cluster_init_guc (registry capacity GUC
+	 * cluster.shmem_max_regions must already be loaded) and before
+	 * cluster_request_shmem (registry frozen at request entry).  The
+	 * call sits inside process_shared_preload_libraries_in_progress so
+	 * any future cluster GUC dependencies are still satisfiable.
+	 */
+	cluster_init();
 #endif
 	load_libraries(shared_preload_libraries_string,
 				   "shared_preload_libraries",

@@ -53,14 +53,14 @@ $node->start;
 
 
 # ----------
-# Test 1: View exists and returns 20 rows (compile-time registry size
-# after stage-1.2 cluster_smgr additions; 6 baseline + 8 sweep
-# + 3 shared_fs + 3 smgr).
+# Test 1: View exists and returns 24 rows (compile-time registry size
+# after stage-1.3 shmem registry additions; 6 baseline + 8 sweep
+# + 3 shared_fs + 3 smgr + 4 shmem registry).
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'20',
-	'pg_stat_cluster_injections returns 20 rows (compile-time registry)');
+	'24',
+	'pg_stat_cluster_injections returns 24 rows (compile-time registry)');
 
 
 # ----------
@@ -79,15 +79,15 @@ is( $node->safe_psql(
 
 # ----------
 # Test 3: Names match the spec-0.30 + spec-1.1 + spec-1.2 list
-# (20 entries: 6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs
-# + 3 stage-1.2 cluster_smgr).
+# (24 entries: 6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs
+# + 3 stage-1.2 cluster_smgr + 4 stage-1.3 shmem registry).
 # ----------
 is( $node->safe_psql(
 		'postgres',
 		'SELECT string_agg(name, \',\' ORDER BY name) FROM pg_stat_cluster_injections'
 	),
-	'cluster-conf-load-success,cluster-conf-parse-fail,cluster-conf-shmem-init,cluster-debug-dump-entry,cluster-guc-init-pre-define,cluster-ic-mock-send-pre-enqueue,cluster-ic-tier-selected,cluster-init-post-shmem,cluster-init-pre-shmem,cluster-init-top,cluster-pgstat-mirror-sync,cluster-shared-fs-backend-register,cluster-shared-fs-init-top,cluster-shared-fs-local-open,cluster-shmem-request,cluster-shutdown-top,cluster-smgr-create-top,cluster-smgr-open-top,cluster-smgr-which-decision,cluster-views-srf-entry',
-	'20 injection point names match spec-0.30 + spec-1.1 + spec-1.2');
+	'cluster-conf-load-success,cluster-conf-parse-fail,cluster-conf-shmem-init,cluster-debug-dump-entry,cluster-guc-init-pre-define,cluster-ic-mock-send-pre-enqueue,cluster-ic-tier-selected,cluster-init-post-shmem,cluster-init-pre-shmem,cluster-init-top,cluster-pgstat-mirror-sync,cluster-shared-fs-backend-register,cluster-shared-fs-init-top,cluster-shared-fs-local-open,cluster-shmem-region-init-post,cluster-shmem-region-init-pre,cluster-shmem-register-region,cluster-shmem-request,cluster-shmem-views-srf-entry,cluster-shutdown-top,cluster-smgr-create-top,cluster-smgr-open-top,cluster-smgr-which-decision,cluster-views-srf-entry',
+	'24 injection point names match spec-0.30 + spec-1.1 + spec-1.2 + spec-1.3');
 
 
 # ----------

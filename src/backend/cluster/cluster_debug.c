@@ -203,18 +203,44 @@ ic_tier_to_text(int t)
 static void
 dump_shmem(ReturnSetInfo *rsinfo)
 {
+	int idx;
+	ClusterShmemRegion region;
+	StringInfoData key_buf;
+
 	if (ClusterShmem == NULL) {
 		emit_row(rsinfo, "shmem", "magic", "(null)");
 		emit_row(rsinfo, "shmem", "version_packed", "(null)");
 		emit_row(rsinfo, "shmem", "node_id_at_init", "(null)");
 		emit_row(rsinfo, "shmem", "created_at", "(null)");
-		return;
+	} else {
+		emit_row(rsinfo, "shmem", "magic", fmt_uint32_hex(ClusterShmem->magic));
+		emit_row(rsinfo, "shmem", "version_packed", fmt_uint32_hex(ClusterShmem->version_packed));
+		emit_row(rsinfo, "shmem", "node_id_at_init", fmt_int32(ClusterShmem->node_id_at_init));
+		emit_row(rsinfo, "shmem", "created_at", fmt_timestamptz(ClusterShmem->created_at));
 	}
 
-	emit_row(rsinfo, "shmem", "magic", fmt_uint32_hex(ClusterShmem->magic));
-	emit_row(rsinfo, "shmem", "version_packed", fmt_uint32_hex(ClusterShmem->version_packed));
-	emit_row(rsinfo, "shmem", "node_id_at_init", fmt_int32(ClusterShmem->node_id_at_init));
-	emit_row(rsinfo, "shmem", "created_at", fmt_timestamptz(ClusterShmem->created_at));
+	/*
+	 * Stage 1.3: per-region rollup from the cluster shmem registry.
+	 * region_count + total_bytes are the summary; region.<name>.bytes
+	 * + region.<name>.owner expand each registered region for direct
+	 * lookup.  Both surfaces complement pg_cluster_shmem (the SQL view)
+	 * which is the structured per-row source of truth.
+	 */
+	emit_row(rsinfo, "shmem", "region_count", fmt_int32(cluster_shmem_get_region_count()));
+	emit_row(rsinfo, "shmem", "total_bytes", fmt_int64((int64)cluster_shmem_get_total_bytes()));
+
+	initStringInfo(&key_buf);
+	idx = 0;
+	while (cluster_shmem_iter_regions(&idx, &region)) {
+		resetStringInfo(&key_buf);
+		appendStringInfo(&key_buf, "region.%s.bytes", region.name);
+		emit_row(rsinfo, "shmem", key_buf.data, fmt_int64((int64)region.size_fn()));
+
+		resetStringInfo(&key_buf);
+		appendStringInfo(&key_buf, "region.%s.owner", region.name);
+		emit_row(rsinfo, "shmem", key_buf.data, region.owner_subsys);
+	}
+	pfree(key_buf.data);
 }
 
 static void
@@ -241,6 +267,9 @@ dump_guc(ReturnSetInfo *rsinfo)
 
 	/* Stage 1.2: cluster.smgr_user_relations boolean. */
 	emit_row(rsinfo, "guc", "cluster.smgr_user_relations", fmt_bool(cluster_smgr_user_relations));
+
+	/* Stage 1.3: cluster.shmem_max_regions int. */
+	emit_row(rsinfo, "guc", "cluster.shmem_max_regions", fmt_int32(cluster_shmem_max_regions));
 }
 
 static void

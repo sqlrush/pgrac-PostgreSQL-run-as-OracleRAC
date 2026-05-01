@@ -53,6 +53,7 @@
 #ifndef CLUSTER_SHMEM_H
 #define CLUSTER_SHMEM_H
 
+#include "c.h"					/* Size */
 #include "datatype/timestamp.h" /* TimestampTz */
 
 
@@ -114,6 +115,81 @@ extern Size cluster_shmem_size(void);
  *	process lifetime.  Never written after initialisation.
  */
 extern ClusterShmemCtl *ClusterShmem;
+
+
+/*
+ * ClusterShmemRegion -- registration entry for a cluster shmem region.
+ *
+ *	Each cluster subsystem (cluster_ctl + cluster_conf in stage 1.3;
+ *	grd / pcm / ges / ... in stage 2+) declares a static const
+ *	ClusterShmemRegion struct and registers it via
+ *	cluster_shmem_register_region during postmaster init (after
+ *	cluster_init_guc, before cluster_request_shmem).
+ *
+ *	Lifetime:
+ *	  register-time: cluster_init_guc() done; registry not yet frozen
+ *	  freeze-time:   cluster_request_shmem() entry sets registry frozen
+ *	  request-time:  cluster_request_shmem() iterates and calls size_fn
+ *	                 per row, passing the result to RequestAddinShmemSpace
+ *	  init-time:     cluster_init_shmem() iterates and calls init_fn
+ *	                 per row (init_fn must use ShmemInitStruct so that
+ *	                 EXEC_BACKEND children rebind the existing region)
+ *
+ *	See docs/cluster-shmem-design.md §9 for the full registry design and
+ *	specs/spec-1.3-shmem-region-registry.md §2.1 for field semantics.
+ */
+typedef struct ClusterShmemRegion {
+	const char *name;		  /* unique within registry */
+	Size (*size_fn)(void);	  /* returns bytes; called in Phase 1 */
+	void (*init_fn)(void);	  /* called in Phase 2; idempotent (EXEC_BACKEND found=true) */
+	int lwlock_count;		  /* informational; subsystem registers LWLocks itself */
+	const char *owner_subsys; /* "cluster_ctl" / "cluster_conf" / "grd" / ... */
+	int reserved_flags;		  /* future extension; must be 0 */
+} ClusterShmemRegion;
+
+
+/*
+ * Region registry API (since stage 1.3).
+ *
+ *	cluster_shmem_register_region:
+ *	  Register one region.  Must be called after cluster_init_guc and
+ *	  before cluster_request_shmem.  Errors:
+ *	    - registry frozen          -> ERROR (FEATURE_NOT_SUPPORTED 0A000)
+ *	    - duplicate name           -> ERROR (DUPLICATE_OBJECT 42710)
+ *	    - capacity exceeded        -> ERROR (CONFIG_LIMIT_EXCEEDED 53400)
+ *
+ *	cluster_shmem_lookup_region:
+ *	  Lookup a region by name.  Returns NULL if not found.
+ *
+ *	cluster_shmem_iter_regions:
+ *	  Iterator-style traversal.  Caller initializes *idx = 0 and calls
+ *	  repeatedly; returns true and fills *out per call; returns false
+ *	  when exhausted.  Used by SRF and pg_cluster_state dump.
+ *
+ *	cluster_shmem_get_region_count:
+ *	  Returns the number of registered regions (for diagnostics).
+ *
+ *	cluster_shmem_get_total_bytes:
+ *	  Returns the sum of size_fn() over all registered regions.
+ */
+extern void cluster_shmem_register_region(const ClusterShmemRegion *region);
+extern const ClusterShmemRegion *cluster_shmem_lookup_region(const char *name);
+extern bool cluster_shmem_iter_regions(int *idx, ClusterShmemRegion *out);
+extern int cluster_shmem_get_region_count(void);
+extern Size cluster_shmem_get_total_bytes(void);
+
+
+/*
+ * cluster_init_shmem_module -- register foundational regions.
+ *
+ *	Called once from cluster_init() during postmaster startup, after
+ *	cluster_init_guc has completed.  Allocates the registry array
+ *	(cluster_shmem_max_regions slots) and registers the cluster_ctl
+ *	and cluster_conf regions.  Other subsystems register their own
+ *	regions from their own init functions (cluster_ic_init, etc.) --
+ *	this helper only owns the foundational two.
+ */
+extern void cluster_init_shmem_module(void);
 
 
 #endif /* CLUSTER_SHMEM_H */

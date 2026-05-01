@@ -336,3 +336,58 @@ cluster_get_stat_nodes(PG_FUNCTION_ARGS)
 
 	return (Datum)0;
 }
+
+
+/* ============================================================
+ * cluster_shmem_dump_regions -- backing SRF for pg_cluster_shmem
+ * (stage 1.3).
+ *
+ *	Returns one row per registered cluster shmem region with
+ *	(name, size_bytes, lwlock_count, owner_subsys).  Stage 1.3
+ *	baseline registers two regions (cluster_ctl + cluster_conf);
+ *	Stage 2+ subsystems (GRD, PCM, GES, ...) appear here automatically
+ *	once they call cluster_shmem_register_region from their own init
+ *	helper.
+ *
+ *	Column shape is stable from spec-1.3 onward; future amends may
+ *	append columns at the tail (e.g. wait_time / hit_ratio for stage
+ *	4+ performance monitoring) but not change/remove existing columns.
+ *
+ *	In --disable-cluster builds the SRF returns an empty result set,
+ *	the same convention as the other cluster_get_* SRFs above.
+ *
+ *	See specs/spec-1.3-shmem-region-registry.md §2.3 (column contract)
+ *	and docs/cluster-shmem-design.md §10 (diagnostic views).
+ * ============================================================ */
+
+PG_FUNCTION_INFO_V1(cluster_shmem_dump_regions);
+
+Datum
+cluster_shmem_dump_regions(PG_FUNCTION_ARGS)
+{
+	InitMaterializedSRF(fcinfo, 0);
+
+	CLUSTER_INJECTION_POINT("cluster-shmem-views-srf-entry");
+
+#ifdef USE_PGRAC_CLUSTER
+	{
+		ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+		int idx = 0;
+		ClusterShmemRegion region;
+
+		while (cluster_shmem_iter_regions(&idx, &region)) {
+			Datum values[4];
+			bool nulls[4] = { false, false, false, false };
+
+			values[0] = CStringGetTextDatum(region.name);
+			values[1] = Int64GetDatum((int64)region.size_fn());
+			values[2] = Int32GetDatum(region.lwlock_count);
+			values[3] = CStringGetTextDatum(region.owner_subsys);
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+		}
+	}
+#endif
+
+	return (Datum)0;
+}

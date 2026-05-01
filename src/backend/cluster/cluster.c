@@ -41,6 +41,7 @@
 #include "cluster/cluster.h"
 #include "cluster/cluster_elog.h"
 #include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (stage 0.30 sweep) */
+#include "cluster/cluster_shmem.h"	/* cluster_init_shmem_module (stage 1.3) */
 #include "utils/elog.h"
 
 
@@ -76,7 +77,15 @@ cluster_init(void)
 	CLUSTER_INJECTION_POINT("cluster-init-top");
 
 	cluster_phase = "init";
-	CLUSTER_LOG(DEBUG1, "cluster_init: stub, no-op in stage 0.9");
+	CLUSTER_LOG(DEBUG1, "cluster_init: registering cluster shmem regions");
+
+	/*
+	 * Stage 1.3: register the foundational shmem regions (cluster_ctl +
+	 * cluster_conf) into the registry.  Subsystems with their own
+	 * cluster_<subsys>_init() helper register their own regions there.
+	 * Must run after cluster_init_guc and before cluster_request_shmem.
+	 */
+	cluster_init_shmem_module();
 }
 
 /*

@@ -164,4 +164,21 @@ extern int cluster_shared_storage_backend;
 extern bool cluster_smgr_user_relations;
 
 
+/*
+ * cluster_shmem_max_regions -- capacity of the cluster shmem region
+ *	registry (since stage 1.3).
+ *
+ *	Boot default: 64 (covers stage 0.14 cluster_ctl + 0.19 cluster_conf
+ *	+ all 12 reserved regions in cluster-shmem-design.md §3.2 with a
+ *	wide safety margin).
+ *	Range:        [8, 256].
+ *	context:      PGC_POSTMASTER (registry array is palloc'd once at
+ *	              postmaster init from this value).
+ *
+ *	See docs/cluster-shmem-design.md §9.4 and
+ *	spec-1.3-shmem-region-registry.md §2.2.
+ */
+extern int cluster_shmem_max_regions;
+
+
 #endif /* CLUSTER_GUC_H */
