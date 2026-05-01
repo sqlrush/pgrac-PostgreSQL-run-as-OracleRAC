@@ -7,8 +7,10 @@
 #    Stage 0.13 wires cluster_init_guc() into PG's
 #    process_shared_preload_libraries() phase, which registers the first
 #    cluster GUC, "cluster.node_id" (a PGC_POSTMASTER variable backed by
-#    the C global cluster_node_id).  This TAP test runs against a real
-#    PG instance and verifies:
+#    the C global cluster_node_id).  Subsequent stages added three more
+#    GUCs: cluster.interconnect_tier (enum), cluster.config_file
+#    (string), cluster.injection_points (PGC_SUSET string list).  This
+#    TAP test runs against a real PG instance and verifies:
 #
 #      - SHOW returns the boot default (-1) before any user override.
 #      - pg_settings exposes the GUC with the expected metadata
@@ -23,6 +25,11 @@
 #        CLUSTER_LOG macro reads through and the value appears in the
 #        startup log line prefix.  This proves the GUC actually feeds
 #        the read site that motivated promoting it from a placeholder.
+#      - cluster.interconnect_tier enum advertises all five tiers
+#        (stub / mock / tier1 / tier2 / tier3) and defaults to stub.
+#      - cluster.config_file defaults to "pgrac.conf".
+#      - cluster.injection_points defaults to empty and accepts a
+#        runtime SET (PGC_SUSET, unlike the postmaster-locked GUCs).
 #
 #    GUC names containing a dot must be double-quoted in SHOW/SET; the
 #    raw form `cluster.node_id` is the canonical postgresql.conf entry.
@@ -43,6 +50,7 @@ use FindBin;
 use lib "$FindBin::RealBin/../lib";
 
 use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 use PgracClusterNode;
 
@@ -105,6 +113,71 @@ like($source, qr/^configuration file|command line$/,
    'pg_settings.source becomes "configuration file" after postgresql.conf override');
 
 
+# ----------
+# cluster.interconnect_tier — enum default + metadata + enumvals.
+# ----------
+$node->assert_cluster_guc('cluster.interconnect_tier', 'stub',
+	'cluster.interconnect_tier default is stub');
+
+my $tier_meta = $node->safe_psql(
+	'postgres',
+	q{SELECT vartype, context FROM pg_settings WHERE name = 'cluster.interconnect_tier'});
+is($tier_meta, 'enum|postmaster',
+   'cluster.interconnect_tier is an enum (postmaster context)');
+
+my $tier_options = $node->safe_psql(
+	'postgres',
+	q{SELECT array_to_string(enumvals, ',')
+	    FROM pg_settings WHERE name = 'cluster.interconnect_tier'});
+is($tier_options, 'stub,mock,tier1,tier2,tier3',
+   'cluster.interconnect_tier enumvals expose all five tiers');
+
+
+# ----------
+# cluster.config_file — string default.
+# ----------
+$node->assert_cluster_guc('cluster.config_file', 'pgrac.conf',
+	'cluster.config_file default is "pgrac.conf"');
+
+
+# ----------
+# cluster.injection_points — PGC_SUSET, runtime SET succeeds.
+# ----------
+$node->assert_cluster_guc('cluster.injection_points', '',
+	'cluster.injection_points default is empty');
+
+# Unlike the three PGC_POSTMASTER GUCs above, this one is PGC_SUSET so
+# a runtime SET inside a backend session must succeed (no restart).
+$node->psql('postgres',
+	q{SET "cluster.injection_points" = 'cluster-init-pre-shmem'},
+	stdout => \$stdout, stderr => \$stderr);
+is($stderr, '',
+   'SET cluster.injection_points at runtime is accepted (PGC_SUSET)');
+
+
+# ----------
+# Out-of-range cluster.node_id rejected with a WARNING + fallback.
+#
+#   PG GUC validator policy for an out-of-range int: emit a WARNING
+#   and fall back to the boot default (here -1), not the last in-range
+#   value the postmaster previously held.  The postmaster still starts.
+#   This matches PG's standard built-in GUC behaviour, not a strict
+#   refusal.
+# ----------
 $node->stop;
+$node->append_conf('postgresql.conf', "cluster.node_id = 999\n");
+$node->start;
+
+# After restart, SHOW must report the boot default (-1), not 999 and
+# not the prior in-range value (7).
+$node->assert_cluster_guc('cluster.node_id', '-1',
+	'out-of-range cluster.node_id (999) falls back to the boot default (-1)');
+
+# The startup log carries a WARNING naming the offending parameter.
+my $log = slurp_file($node->logfile);
+like($log,
+	 qr/999 is outside the valid range for parameter "cluster.node_id"/,
+	 'startup log contains GUC out-of-range WARNING for cluster.node_id');
+
 
 done_testing();
