@@ -225,17 +225,18 @@ cluster_init_guc(void)
 	 * lives in cluster_shared_fs_init (cluster_shared_fs.c).  See
 	 * spec-1.2-smgr-cluster.md §3.2 + docs/cluster-smgr-design.md §6.
 	 */
-	DefineCustomBoolVariable("cluster.smgr_user_relations",
-							 gettext_noop("Route permanent relations through cluster_smgr instead of md.c."),
-							 gettext_noop("When on (combined with shared_storage_backend != stub), "
-										  "permanent non-temp relations route through cluster_smgr "
-										  "-> cluster_shared_fs at smgropen time.  Stage 1.2 single-"
-										  "node single-file passthrough; user data stored as one "
-										  "file per (rlocator, fork) without the md.c .seg suffix."),
-							 &cluster_smgr_user_relations, false,
-							 PGC_POSTMASTER, /* smgr_which is cached per-relation; restart required */
-							 0,				 /* flags */
-							 NULL,			 /* check_hook */
-							 NULL,			 /* assign_hook */
-							 NULL);			 /* show_hook */
+	DefineCustomBoolVariable(
+		"cluster.smgr_user_relations",
+		gettext_noop("Route permanent relations through cluster_smgr instead of md.c."),
+		gettext_noop("When on (combined with shared_storage_backend != stub), "
+					 "permanent non-temp relations route through cluster_smgr "
+					 "-> cluster_shared_fs at smgropen time.  Stage 1.2 single-"
+					 "node single-file passthrough; user data stored as one "
+					 "file per (rlocator, fork) without the md.c .seg suffix."),
+		&cluster_smgr_user_relations, false,
+		PGC_POSTMASTER, /* smgr_which is cached per-relation; restart required */
+		0,				/* flags */
+		NULL,			/* check_hook */
+		NULL,			/* assign_hook */
+		NULL);			/* show_hook */
 }

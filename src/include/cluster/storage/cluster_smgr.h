@@ -78,7 +78,7 @@ extern void cluster_smgr_shutdown(void);
  *	  - otherwise                          -> 1
  * ----------
  */
-extern int	cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend);
+extern int cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend);
 
 
 /* ----------
@@ -95,29 +95,23 @@ extern int	cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend);
  */
 extern void cluster_smgr_open(SMgrRelation reln);
 extern void cluster_smgr_close(SMgrRelation reln, ForkNumber forknum);
-extern void cluster_smgr_create(SMgrRelation reln, ForkNumber forknum,
-								bool isRedo);
+extern void cluster_smgr_create(SMgrRelation reln, ForkNumber forknum, bool isRedo);
 extern bool cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum);
-extern void cluster_smgr_unlink(RelFileLocatorBackend rlocator,
-								ForkNumber forknum, bool isRedo);
-extern void cluster_smgr_extend(SMgrRelation reln, ForkNumber forknum,
-								BlockNumber blocknum, const void *buffer,
-								bool skipFsync);
-extern void cluster_smgr_zeroextend(SMgrRelation reln, ForkNumber forknum,
-									BlockNumber blocknum, int nblocks,
-									bool skipFsync);
-extern bool cluster_smgr_prefetch(SMgrRelation reln, ForkNumber forknum,
-								  BlockNumber blocknum);
-extern void cluster_smgr_read(SMgrRelation reln, ForkNumber forknum,
-							  BlockNumber blocknum, void *buffer);
-extern void cluster_smgr_write(SMgrRelation reln, ForkNumber forknum,
-							   BlockNumber blocknum, const void *buffer,
-							   bool skipFsync);
-extern void cluster_smgr_writeback(SMgrRelation reln, ForkNumber forknum,
-								   BlockNumber blocknum, BlockNumber nblocks);
+extern void cluster_smgr_unlink(RelFileLocatorBackend rlocator, ForkNumber forknum, bool isRedo);
+extern void cluster_smgr_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+								const void *buffer, bool skipFsync);
+extern void cluster_smgr_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+									int nblocks, bool skipFsync);
+extern bool cluster_smgr_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum);
+extern void cluster_smgr_read(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+							  void *buffer);
+extern void cluster_smgr_write(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+							   const void *buffer, bool skipFsync);
+extern void cluster_smgr_writeback(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+								   BlockNumber nblocks);
 extern BlockNumber cluster_smgr_nblocks(SMgrRelation reln, ForkNumber forknum);
-extern void cluster_smgr_truncate(SMgrRelation reln, ForkNumber forknum,
-								  BlockNumber old_blocks, BlockNumber nblocks);
+extern void cluster_smgr_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old_blocks,
+								  BlockNumber nblocks);
 extern void cluster_smgr_immedsync(SMgrRelation reln, ForkNumber forknum);
 
 
@@ -131,7 +125,7 @@ extern void cluster_smgr_immedsync(SMgrRelation reln, ForkNumber forknum);
  *	    Returns 0 if the HTAB has not been initialised yet.
  * ----------
  */
-extern int	cluster_smgr_active_relation_count(void);
+extern int cluster_smgr_active_relation_count(void);
 
 
-#endif							/* CLUSTER_SMGR_H */
+#endif /* CLUSTER_SMGR_H */

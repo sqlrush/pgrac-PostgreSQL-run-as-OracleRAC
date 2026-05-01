@@ -78,7 +78,9 @@ bool cluster_smgr_user_relations = false;
 #include "cluster/cluster_inject.h"
 int cluster_injection_armed_count = 0;
 char *cluster_injection_points = NULL;
-void cluster_injection_run(const char *name pg_attribute_unused()) { }
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
 
 void
 ExceptionalCondition(const char *conditionName pg_attribute_unused(),
@@ -89,51 +91,130 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 }
 
 /* ereport machinery. */
-bool errstart(int e pg_attribute_unused(), const char *d pg_attribute_unused()) { return false; }
-bool errstart_cold(int e pg_attribute_unused(), const char *d pg_attribute_unused()) { return false; }
-void errfinish(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
-			   const char *fn pg_attribute_unused()) { }
-int errcode(int s pg_attribute_unused()) { return 0; }
-int errcode_for_file_access(void) { return 0; }
-int errmsg(const char *f pg_attribute_unused(), ...) { return 0; }
-int errmsg_internal(const char *f pg_attribute_unused(), ...) { return 0; }
-int errdetail(const char *f pg_attribute_unused(), ...) { return 0; }
-int errhint(const char *f pg_attribute_unused(), ...) { return 0; }
-void elog_start(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
-				const char *fn pg_attribute_unused()) { }
-void elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ...) { }
-void pre_format_elog_string(int n pg_attribute_unused(),
-							const char *d pg_attribute_unused()) { }
-char *format_elog_string(const char *f pg_attribute_unused(), ...) { return NULL; }
+bool
+errstart(int e pg_attribute_unused(), const char *d pg_attribute_unused())
+{
+	return false;
+}
+bool
+errstart_cold(int e pg_attribute_unused(), const char *d pg_attribute_unused())
+{
+	return false;
+}
+void
+errfinish(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
+		  const char *fn pg_attribute_unused())
+{}
+int
+errcode(int s pg_attribute_unused())
+{
+	return 0;
+}
+int
+errcode_for_file_access(void)
+{
+	return 0;
+}
+int
+errmsg(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errmsg_internal(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errdetail(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errhint(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+void
+elog_start(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
+		   const char *fn pg_attribute_unused())
+{}
+void
+elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ...)
+{}
+void
+pre_format_elog_string(int n pg_attribute_unused(), const char *d pg_attribute_unused())
+{}
+char *
+format_elog_string(const char *f pg_attribute_unused(), ...)
+{
+	return NULL;
+}
 
 /* Memory context machinery. */
 MemoryContext TopMemoryContext = NULL;
 MemoryContext CurrentMemoryContext = NULL;
-void *palloc0(Size s pg_attribute_unused()) { return NULL; }
-void pfree(void *p pg_attribute_unused()) { }
+void *
+palloc0(Size s pg_attribute_unused())
+{
+	return NULL;
+}
+void
+pfree(void *p pg_attribute_unused())
+{}
 
 /* fd.c VFD layer stubs. */
-File PathNameOpenFile(const char *fn pg_attribute_unused(),
-					  int fl pg_attribute_unused()) { return -1; }
-void FileClose(File f pg_attribute_unused()) { }
-int FileRead(File f pg_attribute_unused(), void *b pg_attribute_unused(),
-			 size_t a pg_attribute_unused(), off_t o pg_attribute_unused(),
-			 uint32 w pg_attribute_unused()) { return 0; }
-int FileWrite(File f pg_attribute_unused(), const void *b pg_attribute_unused(),
-			  size_t a pg_attribute_unused(), off_t o pg_attribute_unused(),
-			  uint32 w pg_attribute_unused()) { return 0; }
-int FileSync(File f pg_attribute_unused(), uint32 w pg_attribute_unused()) { return 0; }
-off_t FileSize(File f pg_attribute_unused()) { return 0; }
-int FileTruncate(File f pg_attribute_unused(), off_t o pg_attribute_unused(),
-				 uint32 w pg_attribute_unused()) { return 0; }
+File
+PathNameOpenFile(const char *fn pg_attribute_unused(), int fl pg_attribute_unused())
+{
+	return -1;
+}
+void
+FileClose(File f pg_attribute_unused())
+{}
+int
+FileRead(File f pg_attribute_unused(), void *b pg_attribute_unused(),
+		 size_t a pg_attribute_unused(), off_t o pg_attribute_unused(),
+		 uint32 w pg_attribute_unused())
+{
+	return 0;
+}
+int
+FileWrite(File f pg_attribute_unused(), const void *b pg_attribute_unused(),
+		  size_t a pg_attribute_unused(), off_t o pg_attribute_unused(),
+		  uint32 w pg_attribute_unused())
+{
+	return 0;
+}
+int
+FileSync(File f pg_attribute_unused(), uint32 w pg_attribute_unused())
+{
+	return 0;
+}
+off_t
+FileSize(File f pg_attribute_unused())
+{
+	return 0;
+}
+int
+FileTruncate(File f pg_attribute_unused(), off_t o pg_attribute_unused(),
+			 uint32 w pg_attribute_unused())
+{
+	return 0;
+}
 
 char *
 GetRelationPath(Oid d pg_attribute_unused(), Oid s pg_attribute_unused(),
 				RelFileNumber r pg_attribute_unused(), int b pg_attribute_unused(),
-				ForkNumber f pg_attribute_unused()) { return NULL; }
+				ForkNumber f pg_attribute_unused())
+{
+	return NULL;
+}
 
-void before_shmem_exit(pg_on_exit_callback function pg_attribute_unused(),
-					   Datum arg pg_attribute_unused()) { }
+void
+before_shmem_exit(pg_on_exit_callback function pg_attribute_unused(),
+				  Datum arg pg_attribute_unused())
+{}
 
 /* HTAB stubs. */
 HTAB *
@@ -142,35 +223,52 @@ hash_create(const char *t pg_attribute_unused(), long n pg_attribute_unused(),
 {
 	return NULL;
 }
-void *hash_search(HTAB *h pg_attribute_unused(), const void *k pg_attribute_unused(),
-				  HASHACTION a pg_attribute_unused(), bool *f pg_attribute_unused())
+void *
+hash_search(HTAB *h pg_attribute_unused(), const void *k pg_attribute_unused(),
+			HASHACTION a pg_attribute_unused(), bool *f pg_attribute_unused())
 {
 	return NULL;
 }
-void hash_destroy(HTAB *h pg_attribute_unused()) { }
-void hash_seq_init(HASH_SEQ_STATUS *s pg_attribute_unused(),
-				   HTAB *h pg_attribute_unused()) { }
-void *hash_seq_search(HASH_SEQ_STATUS *s pg_attribute_unused()) { return NULL; }
-long hash_get_num_entries(HTAB *h pg_attribute_unused()) { return 0; }
+void
+hash_destroy(HTAB *h pg_attribute_unused())
+{}
+void
+hash_seq_init(HASH_SEQ_STATUS *s pg_attribute_unused(), HTAB *h pg_attribute_unused())
+{}
+void *
+hash_seq_search(HASH_SEQ_STATUS *s pg_attribute_unused())
+{
+	return NULL;
+}
+long
+hash_get_num_entries(HTAB *h pg_attribute_unused())
+{
+	return 0;
+}
 
 /* TablespaceCreateDbspace stub. */
-void TablespaceCreateDbspace(Oid s pg_attribute_unused(), Oid d pg_attribute_unused(),
-							 bool r pg_attribute_unused()) { }
+void
+TablespaceCreateDbspace(Oid s pg_attribute_unused(), Oid d pg_attribute_unused(),
+						bool r pg_attribute_unused())
+{}
 
 /* md.c stubs (cluster_smgr no longer fallbacks to these but still
  * referenced via header inclusion). */
-void mdzeroextend(SMgrRelation r pg_attribute_unused(),
-				  ForkNumber f pg_attribute_unused(),
-				  BlockNumber b pg_attribute_unused(),
-				  int n pg_attribute_unused(),
-				  bool s pg_attribute_unused()) { }
-bool mdprefetch(SMgrRelation r pg_attribute_unused(),
-				ForkNumber f pg_attribute_unused(),
-				BlockNumber b pg_attribute_unused()) { return false; }
-void mdwriteback(SMgrRelation r pg_attribute_unused(),
-				 ForkNumber f pg_attribute_unused(),
-				 BlockNumber b pg_attribute_unused(),
-				 BlockNumber n pg_attribute_unused()) { }
+void
+mdzeroextend(SMgrRelation r pg_attribute_unused(), ForkNumber f pg_attribute_unused(),
+			 BlockNumber b pg_attribute_unused(), int n pg_attribute_unused(),
+			 bool s pg_attribute_unused())
+{}
+bool
+mdprefetch(SMgrRelation r pg_attribute_unused(), ForkNumber f pg_attribute_unused(),
+		   BlockNumber b pg_attribute_unused())
+{
+	return false;
+}
+void
+mdwriteback(SMgrRelation r pg_attribute_unused(), ForkNumber f pg_attribute_unused(),
+			BlockNumber b pg_attribute_unused(), BlockNumber n pg_attribute_unused())
+{}
 
 
 UT_DEFINE_GLOBALS();
@@ -182,22 +280,22 @@ UT_DEFINE_GLOBALS();
 
 UT_TEST(test_smgr_callbacks_linkable)
 {
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_init);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_shutdown);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_open);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_close);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_create);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_exists);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_unlink);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_extend);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_zeroextend);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_prefetch);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_read);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_write);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_writeback);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_nblocks);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_truncate);
-	UT_ASSERT_NOT_NULL((void *) cluster_smgr_immedsync);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_init);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_shutdown);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_open);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_close);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_create);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_exists);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_unlink);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_extend);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_zeroextend);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_prefetch);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_read);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_write);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_writeback);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_nblocks);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_truncate);
+	UT_ASSERT_NOT_NULL((void *)cluster_smgr_immedsync);
 }
 
 
@@ -224,8 +322,8 @@ UT_TEST(test_which_for_stub_backend_returns_md)
 
 	/* Default GUCs: shared_storage_backend=stub, smgr_user_relations=off.
 	 * Either of those means smgr_which=0. */
-	cluster_shared_storage_backend = 0;	/* STUB */
-	cluster_smgr_user_relations = true;	/* even if user wants on */
+	cluster_shared_storage_backend = 0; /* STUB */
+	cluster_smgr_user_relations = true; /* even if user wants on */
 	UT_ASSERT_EQ(cluster_smgr_which_for(rl, InvalidBackendId), 0);
 }
 
@@ -234,8 +332,8 @@ UT_TEST(test_which_for_user_relations_off_returns_md)
 {
 	RelFileLocator rl = { .spcOid = 1664, .dbOid = 5, .relNumber = 16385 };
 
-	cluster_shared_storage_backend = 1;	/* LOCAL */
-	cluster_smgr_user_relations = false;	/* GUC opt-in off */
+	cluster_shared_storage_backend = 1;	 /* LOCAL */
+	cluster_smgr_user_relations = false; /* GUC opt-in off */
 	UT_ASSERT_EQ(cluster_smgr_which_for(rl, InvalidBackendId), 0);
 }
 
@@ -244,8 +342,8 @@ UT_TEST(test_which_for_full_opt_in_returns_cluster)
 {
 	RelFileLocator rl = { .spcOid = 1664, .dbOid = 5, .relNumber = 16385 };
 
-	cluster_shared_storage_backend = 1;	/* LOCAL */
-	cluster_smgr_user_relations = true;	/* opt-in on */
+	cluster_shared_storage_backend = 1; /* LOCAL */
+	cluster_smgr_user_relations = true; /* opt-in on */
 	UT_ASSERT_EQ(cluster_smgr_which_for(rl, InvalidBackendId), 1);
 }
 
@@ -273,13 +371,13 @@ UT_TEST(test_smgrsw_callback_signature_compiles)
 	 * f_smgr typedef, the compile will fail.  Touch all sixteen
 	 * function pointers via address-take to exercise that.
 	 */
-	void (*p_init) (void) = cluster_smgr_init;
-	void (*p_shutdown) (void) = cluster_smgr_shutdown;
-	void (*p_open) (SMgrRelation) = cluster_smgr_open;
+	void (*p_init)(void) = cluster_smgr_init;
+	void (*p_shutdown)(void) = cluster_smgr_shutdown;
+	void (*p_open)(SMgrRelation) = cluster_smgr_open;
 
-	UT_ASSERT_NOT_NULL((void *) p_init);
-	UT_ASSERT_NOT_NULL((void *) p_shutdown);
-	UT_ASSERT_NOT_NULL((void *) p_open);
+	UT_ASSERT_NOT_NULL((void *)p_init);
+	UT_ASSERT_NOT_NULL((void *)p_shutdown);
+	UT_ASSERT_NOT_NULL((void *)p_open);
 }
 
 

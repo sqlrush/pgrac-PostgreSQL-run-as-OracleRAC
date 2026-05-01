@@ -205,8 +205,8 @@ cluster_shared_fs_init(void)
 	 * cluster_smgr -> cluster_shared_fs -> stub would FATAL on the
 	 * first I/O.  Catch the misconfiguration at postmaster init.
 	 */
-	if (cluster_smgr_user_relations &&
-		cluster_shared_storage_backend == CLUSTER_SHARED_FS_BACKEND_STUB)
+	if (cluster_smgr_user_relations
+		&& cluster_shared_storage_backend == CLUSTER_SHARED_FS_BACKEND_STUB)
 		ereport(FATAL,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cluster.smgr_user_relations=on requires shared_storage_backend != stub"),

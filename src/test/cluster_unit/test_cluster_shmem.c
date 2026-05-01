@@ -136,13 +136,15 @@ DefineCustomStringVariable(
 }
 
 void
-DefineCustomBoolVariable(
-	const char *name pg_attribute_unused(), const char *short_desc pg_attribute_unused(),
-	const char *long_desc pg_attribute_unused(), bool *valueAddr pg_attribute_unused(),
-	bool bootValue pg_attribute_unused(), GucContext context pg_attribute_unused(),
-	int flags pg_attribute_unused(), GucBoolCheckHook check_hook pg_attribute_unused(),
-	GucBoolAssignHook assign_hook pg_attribute_unused(),
-	GucShowHook show_hook pg_attribute_unused())
+DefineCustomBoolVariable(const char *name pg_attribute_unused(),
+						 const char *short_desc pg_attribute_unused(),
+						 const char *long_desc pg_attribute_unused(),
+						 bool *valueAddr pg_attribute_unused(),
+						 bool bootValue pg_attribute_unused(),
+						 GucContext context pg_attribute_unused(), int flags pg_attribute_unused(),
+						 GucBoolCheckHook check_hook pg_attribute_unused(),
+						 GucBoolAssignHook assign_hook pg_attribute_unused(),
+						 GucShowHook show_hook pg_attribute_unused())
 {
 	/* Stub: real impl in src/backend/utils/misc/guc.c.  Added at
 	 * stage 1.2 for cluster.smgr_user_relations. */

@@ -240,8 +240,7 @@ dump_guc(ReturnSetInfo *rsinfo)
 			 shared_fs_active != NULL ? shared_fs_active->name : "(none)");
 
 	/* Stage 1.2: cluster.smgr_user_relations boolean. */
-	emit_row(rsinfo, "guc", "cluster.smgr_user_relations",
-			 fmt_bool(cluster_smgr_user_relations));
+	emit_row(rsinfo, "guc", "cluster.smgr_user_relations", fmt_bool(cluster_smgr_user_relations));
 }
 
 static void
@@ -354,8 +353,7 @@ dump_shared_fs(ReturnSetInfo *rsinfo)
 
 	/* Stage 1.2 cluster_smgr extension: surface the routing GUC + the
 	 * count of cluster_smgr SMgrRelations live in the bypass HTAB. */
-	emit_row(rsinfo, "shared_fs", "smgr_user_relations",
-			 fmt_bool(cluster_smgr_user_relations));
+	emit_row(rsinfo, "shared_fs", "smgr_user_relations", fmt_bool(cluster_smgr_user_relations));
 	emit_row(rsinfo, "shared_fs", "smgr_active_relations",
 			 fmt_int32(cluster_smgr_active_relation_count()));
 }

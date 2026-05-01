@@ -81,11 +81,10 @@
  *	extend / truncate.  Caching here too creates double-cache
  *	staleness ("unexpected data beyond EOF" across backends).
  * ============================================================ */
-typedef struct ClusterSmgrRelationState
-{
-	RelFileLocatorBackend	rlocator;	/* hash key */
+typedef struct ClusterSmgrRelationState {
+	RelFileLocatorBackend rlocator; /* hash key */
 
-	ClusterSharedFsHandle  *fork_handles[MAX_FORKNUM + 1];
+	ClusterSharedFsHandle *fork_handles[MAX_FORKNUM + 1];
 
 	/*
 	 * No nblocks cache: PG's smgr.c already maintains
@@ -100,7 +99,7 @@ typedef struct ClusterSmgrRelationState
 /* Process-local bypass HTAB.  NULL until cluster_smgr_init runs. */
 static HTAB *cluster_smgr_relations = NULL;
 
-#define CLUSTER_SMGR_INITIAL_HTAB_SIZE	1024
+#define CLUSTER_SMGR_INITIAL_HTAB_SIZE 1024
 
 
 /* ============================================================
@@ -116,16 +115,14 @@ static ClusterSmgrRelationState *
 cluster_smgr_state_lookup(SMgrRelation reln, bool create)
 {
 	ClusterSmgrRelationState *state;
-	bool		found;
+	bool found;
 
 	Assert(cluster_smgr_relations != NULL);
 
-	state = (ClusterSmgrRelationState *)
-		hash_search(cluster_smgr_relations, &reln->smgr_rlocator,
-					create ? HASH_ENTER : HASH_FIND, &found);
+	state = (ClusterSmgrRelationState *)hash_search(cluster_smgr_relations, &reln->smgr_rlocator,
+													create ? HASH_ENTER : HASH_FIND, &found);
 
-	if (state != NULL && !found)
-	{
+	if (state != NULL && !found) {
 		/* Newly inserted entry; zero-init the per-fork arrays. */
 		memset(state->fork_handles, 0, sizeof(state->fork_handles));
 	}
@@ -142,8 +139,7 @@ static ClusterSharedFsHandle *
 cluster_smgr_ensure_handle(ClusterSmgrRelationState *state, ForkNumber forknum)
 {
 	if (state->fork_handles[forknum] == NULL)
-		cluster_shared_fs_open(state->rlocator.locator, forknum,
-							   &state->fork_handles[forknum]);
+		cluster_shared_fs_open(state->rlocator.locator, forknum, &state->fork_handles[forknum]);
 	return state->fork_handles[forknum];
 }
 
@@ -157,12 +153,10 @@ cluster_smgr_ensure_handle(ClusterSmgrRelationState *state, ForkNumber forknum)
 static void
 cluster_smgr_state_drop_handles(ClusterSmgrRelationState *state)
 {
-	int			f;
+	int f;
 
-	for (f = 0; f <= MAX_FORKNUM; f++)
-	{
-		if (state->fork_handles[f] != NULL)
-		{
+	for (f = 0; f <= MAX_FORKNUM; f++) {
+		if (state->fork_handles[f] != NULL) {
 			cluster_shared_fs_close(state->fork_handles[f]);
 			state->fork_handles[f] = NULL;
 		}
@@ -177,7 +171,7 @@ cluster_smgr_state_drop_handles(ClusterSmgrRelationState *state)
 void
 cluster_smgr_init(void)
 {
-	HASHCTL		info;
+	HASHCTL info;
 
 	/*
 	 * smgrinit() is called once per backend (and once in postmaster).
@@ -191,28 +185,28 @@ cluster_smgr_init(void)
 	info.keysize = sizeof(RelFileLocatorBackend);
 	info.entrysize = sizeof(ClusterSmgrRelationState);
 
-	cluster_smgr_relations = hash_create("cluster_smgr_relations",
-										 CLUSTER_SMGR_INITIAL_HTAB_SIZE,
-										 &info,
-										 HASH_ELEM | HASH_BLOBS);
+	cluster_smgr_relations = hash_create("cluster_smgr_relations", CLUSTER_SMGR_INITIAL_HTAB_SIZE,
+										 &info, HASH_ELEM | HASH_BLOBS);
 
-	elog(DEBUG1, "cluster_smgr: bypass HTAB initialised "
-		 "(initial size %d entries)", CLUSTER_SMGR_INITIAL_HTAB_SIZE);
+	elog(DEBUG1,
+		 "cluster_smgr: bypass HTAB initialised "
+		 "(initial size %d entries)",
+		 CLUSTER_SMGR_INITIAL_HTAB_SIZE);
 }
 
 
 void
 cluster_smgr_shutdown(void)
 {
-	HASH_SEQ_STATUS				seq;
-	ClusterSmgrRelationState   *state;
+	HASH_SEQ_STATUS seq;
+	ClusterSmgrRelationState *state;
 
 	if (cluster_smgr_relations == NULL)
 		return;
 
 	/* Walk every state entry and close every open fork handle. */
 	hash_seq_init(&seq, cluster_smgr_relations);
-	while ((state = (ClusterSmgrRelationState *) hash_seq_search(&seq)) != NULL)
+	while ((state = (ClusterSmgrRelationState *)hash_seq_search(&seq)) != NULL)
 		cluster_smgr_state_drop_handles(state);
 
 	hash_destroy(cluster_smgr_relations);
@@ -237,18 +231,18 @@ cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend)
 {
 	CLUSTER_INJECTION_POINT("cluster-smgr-which-decision");
 
-	(void) rlocator;
+	(void)rlocator;
 
 	if (backend != InvalidBackendId)
-		return 0;	/* temp relation: always md.c */
+		return 0; /* temp relation: always md.c */
 
 	if (cluster_shared_storage_backend == CLUSTER_SHARED_FS_BACKEND_STUB)
-		return 0;	/* cluster fs disabled: pure md.c path */
+		return 0; /* cluster fs disabled: pure md.c path */
 
 	if (!cluster_smgr_user_relations)
-		return 0;	/* opt-in GUC off: keep default safe */
+		return 0; /* opt-in GUC off: keep default safe */
 
-	return 1;		/* cluster_smgr */
+	return 1; /* cluster_smgr */
 }
 
 
@@ -267,7 +261,7 @@ cluster_smgr_open(SMgrRelation reln)
 
 	/* Just create the bypass entry; lazy-open the handles on first
 	 * I/O so smgropen of an unused relation is cheap. */
-	(void) cluster_smgr_state_lookup(reln, true);
+	(void)cluster_smgr_state_lookup(reln, true);
 }
 
 
@@ -284,14 +278,10 @@ cluster_smgr_close(SMgrRelation reln, ForkNumber forknum)
 	 * f_smgr.smgr_close per-fork variant: PG calls this once per fork
 	 * and once with forknum = InvalidForkNumber to release everything.
 	 */
-	if (forknum == InvalidForkNumber)
-	{
+	if (forknum == InvalidForkNumber) {
 		cluster_smgr_state_drop_handles(state);
-		hash_search(cluster_smgr_relations, &reln->smgr_rlocator,
-					HASH_REMOVE, NULL);
-	}
-	else if (state->fork_handles[forknum] != NULL)
-	{
+		hash_search(cluster_smgr_relations, &reln->smgr_rlocator, HASH_REMOVE, NULL);
+	} else if (state->fork_handles[forknum] != NULL) {
 		cluster_shared_fs_close(state->fork_handles[forknum]);
 		state->fork_handles[forknum] = NULL;
 	}
@@ -313,14 +303,14 @@ cluster_smgr_create(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 	 * because PathNameOpenFile(O_CREAT) can't create the file under
 	 * a nonexistent parent directory.
 	 */
-	TablespaceCreateDbspace(reln->smgr_rlocator.locator.spcOid,
-							reln->smgr_rlocator.locator.dbOid, isRedo);
+	TablespaceCreateDbspace(reln->smgr_rlocator.locator.spcOid, reln->smgr_rlocator.locator.dbOid,
+							isRedo);
 
 	state = cluster_smgr_state_lookup(reln, true);
 
 	/* cluster_shared_fs_local opens with O_RDWR | O_CREAT, so the
 	 * file is created on first open.  Force the open here. */
-	(void) cluster_smgr_ensure_handle(state, forknum);
+	(void)cluster_smgr_ensure_handle(state, forknum);
 }
 
 
@@ -328,9 +318,9 @@ bool
 cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 {
 	ClusterSmgrRelationState *state;
-	char	   *path;
+	char *path;
 	struct stat st;
-	bool		exists;
+	bool exists;
 
 	/*
 	 * Already opened in this backend?  Definitely exists.
@@ -349,8 +339,7 @@ cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 	 * stat() is the right check.  Stage 2 backends without paths will
 	 * need an exists() callback added to cluster_shared_fs.
 	 */
-	path = relpathbackend(reln->smgr_rlocator.locator,
-						  reln->smgr_rlocator.backend, forknum);
+	path = relpathbackend(reln->smgr_rlocator.locator, reln->smgr_rlocator.backend, forknum);
 	exists = (stat(path, &st) == 0);
 	pfree(path);
 
@@ -359,25 +348,20 @@ cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 
 
 void
-cluster_smgr_unlink(RelFileLocatorBackend rlocator, ForkNumber forknum,
-					bool isRedo)
+cluster_smgr_unlink(RelFileLocatorBackend rlocator, ForkNumber forknum, bool isRedo)
 {
 	ClusterSmgrRelationState *state;
 
-	(void) isRedo;
+	(void)isRedo;
 
-	if (cluster_smgr_relations != NULL)
-	{
-		state = (ClusterSmgrRelationState *)
-			hash_search(cluster_smgr_relations, &rlocator,
-						HASH_FIND, NULL);
-		if (state != NULL)
-		{
+	if (cluster_smgr_relations != NULL) {
+		state = (ClusterSmgrRelationState *)hash_search(cluster_smgr_relations, &rlocator,
+														HASH_FIND, NULL);
+		if (state != NULL) {
 			/* Close any open handles before unlinking the underlying file. */
 			if (forknum == InvalidForkNumber)
 				cluster_smgr_state_drop_handles(state);
-			else if (state->fork_handles[forknum] != NULL)
-			{
+			else if (state->fork_handles[forknum] != NULL) {
 				cluster_shared_fs_close(state->fork_handles[forknum]);
 				state->fork_handles[forknum] = NULL;
 			}
@@ -388,33 +372,29 @@ cluster_smgr_unlink(RelFileLocatorBackend rlocator, ForkNumber forknum,
 	 * Physical unlink.  forknum == InvalidForkNumber means "all forks";
 	 * cluster_shared_fs_unlink takes a single fork, so iterate.
 	 */
-	if (forknum == InvalidForkNumber)
-	{
-		ForkNumber	f;
+	if (forknum == InvalidForkNumber) {
+		ForkNumber f;
 
 		for (f = 0; f <= MAX_FORKNUM; f++)
 			cluster_shared_fs_unlink(rlocator.locator, f);
 
 		/* Drop the bypass state entry now that disk is gone. */
 		if (cluster_smgr_relations != NULL)
-			hash_search(cluster_smgr_relations, &rlocator,
-						HASH_REMOVE, NULL);
-	}
-	else
-	{
+			hash_search(cluster_smgr_relations, &rlocator, HASH_REMOVE, NULL);
+	} else {
 		cluster_shared_fs_unlink(rlocator.locator, forknum);
 	}
 }
 
 
 void
-cluster_smgr_extend(SMgrRelation reln, ForkNumber forknum,
-					BlockNumber blocknum, const void *buffer, bool skipFsync)
+cluster_smgr_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, const void *buffer,
+					bool skipFsync)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
-	(void) skipFsync;	/* PG handles fsync via the buffer manager */
+	(void)skipFsync; /* PG handles fsync via the buffer manager */
 
 	state = cluster_smgr_state_lookup(reln, true);
 	handle = cluster_smgr_ensure_handle(state, forknum);
@@ -426,20 +406,20 @@ cluster_smgr_extend(SMgrRelation reln, ForkNumber forknum,
 	 * appear as sparse zero-filled holes from the kernel's view, the
 	 * same as md.c.
 	 */
-	cluster_shared_fs_write(handle, blocknum, (const char *) buffer);
+	cluster_shared_fs_write(handle, blocknum, (const char *)buffer);
 }
 
 
 void
-cluster_smgr_zeroextend(SMgrRelation reln, ForkNumber forknum,
-						BlockNumber blocknum, int nblocks, bool skipFsync)
+cluster_smgr_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, int nblocks,
+						bool skipFsync)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
-	char						zerobuf[BLCKSZ];
-	int							i;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
+	char zerobuf[BLCKSZ];
+	int i;
 
-	(void) skipFsync;
+	(void)skipFsync;
 
 	/*
 	 * mdzeroextend cannot be used as a fallback: it operates on PG's
@@ -458,13 +438,11 @@ cluster_smgr_zeroextend(SMgrRelation reln, ForkNumber forknum,
 	memset(zerobuf, 0, BLCKSZ);
 	for (i = 0; i < nblocks; i++)
 		cluster_shared_fs_write(handle, blocknum + i, zerobuf);
-
 }
 
 
 bool
-cluster_smgr_prefetch(SMgrRelation reln, ForkNumber forknum,
-					  BlockNumber blocknum)
+cluster_smgr_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
 {
 	/*
 	 * Prefetch is purely advisory (no correctness consequence if it's
@@ -474,46 +452,45 @@ cluster_smgr_prefetch(SMgrRelation reln, ForkNumber forknum,
 	 * NOT delegate to mdprefetch because that would touch md.c's
 	 * SMgrRelationData state our smgr_which=1 path never initialises.
 	 */
-	(void) reln;
-	(void) forknum;
-	(void) blocknum;
+	(void)reln;
+	(void)forknum;
+	(void)blocknum;
 	return true;
 }
 
 
 void
-cluster_smgr_read(SMgrRelation reln, ForkNumber forknum,
-				  BlockNumber blocknum, void *buffer)
+cluster_smgr_read(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, void *buffer)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
 	state = cluster_smgr_state_lookup(reln, true);
 	handle = cluster_smgr_ensure_handle(state, forknum);
 
-	cluster_shared_fs_read(handle, blocknum, (char *) buffer);
+	cluster_shared_fs_read(handle, blocknum, (char *)buffer);
 }
 
 
 void
-cluster_smgr_write(SMgrRelation reln, ForkNumber forknum,
-				   BlockNumber blocknum, const void *buffer, bool skipFsync)
+cluster_smgr_write(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, const void *buffer,
+				   bool skipFsync)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
-	(void) skipFsync;
+	(void)skipFsync;
 
 	state = cluster_smgr_state_lookup(reln, true);
 	handle = cluster_smgr_ensure_handle(state, forknum);
 
-	cluster_shared_fs_write(handle, blocknum, (const char *) buffer);
+	cluster_shared_fs_write(handle, blocknum, (const char *)buffer);
 }
 
 
 void
-cluster_smgr_writeback(SMgrRelation reln, ForkNumber forknum,
-					   BlockNumber blocknum, BlockNumber nblocks)
+cluster_smgr_writeback(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+					   BlockNumber nblocks)
 {
 	/*
 	 * Writeback is purely advisory (posix_fadvise WILLNEED-style hint).
@@ -521,18 +498,18 @@ cluster_smgr_writeback(SMgrRelation reln, ForkNumber forknum,
 	 * it a no-op.  Same reason as cluster_smgr_prefetch: cannot
 	 * delegate to md.c (md_seg_fds uninitialised on smgr_which=1).
 	 */
-	(void) reln;
-	(void) forknum;
-	(void) blocknum;
-	(void) nblocks;
+	(void)reln;
+	(void)forknum;
+	(void)blocknum;
+	(void)nblocks;
 }
 
 
 BlockNumber
 cluster_smgr_nblocks(SMgrRelation reln, ForkNumber forknum)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
 	/*
 	 * No double caching: PG's smgr.c already maintains
@@ -551,13 +528,13 @@ cluster_smgr_nblocks(SMgrRelation reln, ForkNumber forknum)
 
 
 void
-cluster_smgr_truncate(SMgrRelation reln, ForkNumber forknum,
-					  BlockNumber old_blocks, BlockNumber nblocks)
+cluster_smgr_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old_blocks,
+					  BlockNumber nblocks)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
-	(void) old_blocks;	/* not needed at stage 1.2; useful for sync metadata */
+	(void)old_blocks; /* not needed at stage 1.2; useful for sync metadata */
 
 	state = cluster_smgr_state_lookup(reln, true);
 	handle = cluster_smgr_ensure_handle(state, forknum);
@@ -569,8 +546,8 @@ cluster_smgr_truncate(SMgrRelation reln, ForkNumber forknum,
 void
 cluster_smgr_immedsync(SMgrRelation reln, ForkNumber forknum)
 {
-	ClusterSmgrRelationState   *state;
-	ClusterSharedFsHandle	   *handle;
+	ClusterSmgrRelationState *state;
+	ClusterSharedFsHandle *handle;
 
 	state = cluster_smgr_state_lookup(reln, true);
 	handle = cluster_smgr_ensure_handle(state, forknum);
@@ -589,7 +566,7 @@ cluster_smgr_active_relation_count(void)
 	if (cluster_smgr_relations == NULL)
 		return 0;
 
-	return (int) hash_get_num_entries(cluster_smgr_relations);
+	return (int)hash_get_num_entries(cluster_smgr_relations);
 }
 
-#endif							/* USE_PGRAC_CLUSTER */
+#endif /* USE_PGRAC_CLUSTER */
