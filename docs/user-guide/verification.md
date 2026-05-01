@@ -222,3 +222,32 @@ cd /tmp/linkdb-disable && make check
 ```
 
 Cleanup: `rm -rf /tmp/linkdb-disable /tmp/pgrac-disable`.
+
+---
+
+## 6. Performance baseline (manual / local)
+
+```bash
+# From the source tree.  Builds and runs pgbench against both an
+# --enable-cluster install ($HOME/linkdb-install by default) and a
+# --disable-cluster install ($HOME/linkdb-disable-install), then
+# prints a summary line per mode.  Default 30-second runs with
+# scale=10, 4 clients, 2 jobs.
+scripts/perf/run-baseline.sh
+
+# Just one mode, smaller workload (handy for smoke tests):
+scripts/perf/run-baseline.sh --mode=enable --duration=5 --scale=1
+
+# Override install prefixes via env or flags:
+PGRAC_ENABLE_INSTALL=/opt/linkdb scripts/perf/run-baseline.sh --mode=enable
+scripts/perf/run-baseline.sh --enable-install=/opt/linkdb --mode=enable
+
+# Append one markdown row per mode to a ledger you already keep:
+scripts/perf/run-baseline.sh --append-md=$HOME/perf-history.md
+```
+
+Per-run pgbench output lands in `scripts/perf/results/<timestamp>-<mode>-<rw|ro>.txt`
+and is gitignored.  Read-write and read-only runs are timed
+separately, so a single invocation produces four output files (two
+modes × two read patterns) when run with `--mode=both` (the default).
+
