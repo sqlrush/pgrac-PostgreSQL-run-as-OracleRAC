@@ -92,6 +92,15 @@ PG_HEADER_SUPP=(
 # keeps the policy consistent.
 SHAREDFS_SUPP=(
   --suppress=nullPointerRedundantCheck:src/backend/cluster/storage/cluster_shared_fs_local.c
+  # constParameterCallback: cppcheck flags vtable callbacks that
+  # don't write through `handle` as candidates for `const
+  # ClusterSharedFsHandle *`.  But the parameter type is fixed by
+  # ClusterSharedFsOps' function-pointer signatures (cluster_shared_fs.h
+  # §2.1), so any const-correctness adjustment would have to flow
+  # through the entire vtable contract -- spec-1.1 deliberately keeps
+  # the vtable shape fixed across stages.  Suppress at the callback
+  # implementation file.
+  --suppress=constParameterCallback:src/backend/cluster/storage/cluster_shared_fs_local.c
 )
 
 echo "## cppcheck $(cppcheck --version)"
