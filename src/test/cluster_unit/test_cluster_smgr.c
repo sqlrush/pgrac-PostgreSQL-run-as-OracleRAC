@@ -259,7 +259,7 @@ TablespaceCreateDbspace(Oid s pg_attribute_unused(), Oid d pg_attribute_unused()
  * WARNING path stays inert (cluster_smgr_init() short-circuits when
  * !IsUnderPostmaster, mirroring the standalone-bootstrap exemption).
  */
-bool		IsUnderPostmaster = false;
+bool IsUnderPostmaster = false;
 
 /* md.c stubs (cluster_smgr no longer fallbacks to these but still
  * referenced via header inclusion). */
