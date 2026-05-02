@@ -1178,6 +1178,9 @@ DecodeMultiInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		header->t_infomask = xlhdr->t_infomask;
 		header->t_infomask2 = xlhdr->t_infomask2;
 		header->t_hoff = xlhdr->t_hoff;
+		/* PGRAC (stage 1.5 hardening): logical decoding doesn't carry
+		 * t_itl_slot_idx; write 255 sentinel matching primary's. */
+		ClusterHeapTupleHeaderInitItlSlot(header);
 
 		/*
 		 * Reset toast reassembly state only after the last row in the last
@@ -1273,6 +1276,9 @@ DecodeXLogTuple(char *data, Size len, ReorderBufferTupleBuf *tuple)
 	header->t_infomask = xlhdr.t_infomask;
 	header->t_infomask2 = xlhdr.t_infomask2;
 	header->t_hoff = xlhdr.t_hoff;
+	/* PGRAC (stage 1.5 hardening): logical decoding doesn't carry
+	 * t_itl_slot_idx; write 255 sentinel matching primary's. */
+	ClusterHeapTupleHeaderInitItlSlot(header);
 }
 
 /*

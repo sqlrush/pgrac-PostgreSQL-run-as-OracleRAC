@@ -976,6 +976,8 @@ expand_tuple(HeapTuple *targetHeapTuple,
 		HeapTupleHeaderSetTypMod(targetTHeader, tupleDesc->tdtypmod);
 		/* We also make sure that t_ctid is invalid unless explicitly set */
 		ItemPointerSetInvalid(&(targetTHeader->t_ctid));
+		/* PGRAC (stage 1.5 hardening): write 255 sentinel; palloc0 left it 0. */
+		ClusterHeapTupleHeaderInitItlSlot(targetTHeader);
 		if (targetNullLen > 0)
 			nullBits = (bits8 *) ((char *) (*targetHeapTuple)->t_data
 								  + offsetof(HeapTupleHeaderData, t_bits));
@@ -994,6 +996,8 @@ expand_tuple(HeapTuple *targetHeapTuple,
 		(*targetMinimalTuple)->t_infomask = sourceTHeader->t_infomask;
 		/* Same macro works for MinimalTuples */
 		HeapTupleHeaderSetNatts(*targetMinimalTuple, natts);
+		/* PGRAC (stage 1.5 hardening): write 255 sentinel; palloc0 left it 0. */
+		ClusterMinimalTupleInitItlSlot(*targetMinimalTuple);
 		if (targetNullLen > 0)
 			nullBits = (bits8 *) ((char *) *targetMinimalTuple
 								  + offsetof(MinimalTupleData, t_bits));
@@ -1203,18 +1207,17 @@ heap_form_tuple(TupleDesc tupleDescriptor,
 
 	HeapTupleHeaderSetNatts(td, numberOfAttributes);
 	td->t_hoff = hoff;
-#ifdef USE_PGRAC_CLUSTER
+
 	/*
-	 * PGRAC (stage 1.5): mark this tuple as having no ITL slot assigned.
-	 *
-	 *	palloc0 above already zeroed t_itl_slot_idx, but
-	 *	CLUSTER_ITL_SLOT_UNALLOCATED == 255 (not 0), so we must write
-	 *	the placeholder explicitly.  Stage 3 (AD-006 第五轮) populates
-	 *	real 0..N slot indexes when a transaction actually touches the
-	 *	row; until then every newly-formed tuple stays "unassigned".
+	 * PGRAC (stage 1.5 hardening, codex review 2026-05-02): mark this
+	 * tuple as having no ITL slot assigned.  Same helper called from
+	 * expand_tuple / heap_form_minimal_tuple / heap_xlog_* redo paths /
+	 * logical decoding so EVERY HeapTupleHeader allocation gets the
+	 * 255 sentinel, never the calloc/palloc0 default 0 (which is a
+	 * valid future ITL slot index).  See spec-stage1-codex-fixes
+	 * Deliverable 1 + spec-1.5 §11 hardening.
 	 */
-	td->t_itl_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
-#endif
+	ClusterHeapTupleHeaderInitItlSlot(td);
 
 	heap_fill_tuple(tupleDescriptor,
 					values,
@@ -1537,6 +1540,8 @@ heap_form_minimal_tuple(TupleDesc tupleDescriptor,
 	tuple->t_len = len;
 	HeapTupleHeaderSetNatts(tuple, numberOfAttributes);
 	tuple->t_hoff = hoff + MINIMAL_TUPLE_OFFSET;
+	/* PGRAC (stage 1.5 hardening): write 255 sentinel; palloc0 left it 0. */
+	ClusterMinimalTupleInitItlSlot(tuple);
 
 	heap_fill_tuple(tupleDescriptor,
 					values,

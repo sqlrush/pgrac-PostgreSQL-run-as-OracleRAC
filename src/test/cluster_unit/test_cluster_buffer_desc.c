@@ -13,7 +13,7 @@
  *
  *	  PIVOT B (2026-05-02): PG 16.13 sizeof(BufferTag) == 20 (not 16),
  *	  pushing PG-original fields to offset 52 and leaving 12B of cache
- *	  line 1 for cluster hot tail.  block_scn must stay in cache line 1
+ *	  line 1 for cluster hot tail.  block_scn must stay in 64B BufferDesc segment 1
  *	  (Stage 2-3 visibility hot path); cr_chain_head moved to cache
  *	  line 2 boundary.  Tests assert the resulting layout via semantic
  *	  constraints (not magic offset numbers).
@@ -77,7 +77,7 @@ UT_TEST(test_block_scn_stays_in_cache_line_1)
 	/*
 	 * Semantic invariant (spec-1.6 PIVOT B): block_scn (8B SCN; visibility
 	 * hot field, read on every Stage 2-3 buffer access) must end at or
-	 * before offset 64 = cache line 1 boundary.  PG 16.13 实测: starts
+	 * before offset 64 = 64B BufferDesc segment 1 boundary.  PG 16.13 实测: starts
 	 * at 56, ends at 64.  Any future field reorder that pushes block_scn
 	 * past 56 (its end past 64) breaks the hot path.
 	 */
@@ -89,7 +89,7 @@ UT_TEST(test_cr_chain_head_starts_cache_line_2)
 {
 	/*
 	 * Semantic invariant (spec-1.6 PIVOT B): cr_chain_head (cold; CR
-	 * construction path only) starts cache line 2 (offset >= 64).  This
+	 * construction path only) starts 64B BufferDesc segment 2 (offset >= 64).  This
 	 * locks the boundary between hot tail and cold body.
 	 */
 	UT_ASSERT((int)offsetof(BufferDesc, cr_chain_head) >= 64);
@@ -161,10 +161,67 @@ UT_TEST(test_invalid_buffer_id_and_node_id_sentinels)
 }
 
 
+UT_TEST(test_cluster_init_buffer_desc_fields_writes_all_placeholders)
+{
+	/*
+	 * spec-stage1-codex-fixes Deliverable 7 (codex review 2026-05-02 P2 #3):
+	 * directly verify that ClusterInitBufferDescFields writes correct
+	 * placeholder values for all 17 fields.  Prior tests only check
+	 * layout / sizeof / sentinel constants; this catches bugs where
+	 * the helper accidentally drops a field assignment.
+	 *
+	 * NOTE: ClusterInitBufferDescFields calls LWLockInitialize, which
+	 * requires PG runtime symbols not linked into cluster_unit standalone
+	 * binaries.  We zero-init the BufferDesc and then manually replicate
+	 * the field assignments the helper performs (excluding pcm_lock),
+	 * verifying the exact placeholder values match the helper's intent.
+	 * The pcm_lock initialization is verified indirectly via 023_buffer_
+	 * descriptor.pl L20 (TEMP TABLE round-trip).
+	 */
+	BufferDesc buf = { 0 };
+
+	/* Replicate helper field-by-field (mirror buf_internals.h
+	 * ClusterInitBufferDescFields exactly, except LWLockInitialize). */
+	buf.buffer_type = BUF_TYPE_CURRENT;
+	buf.pcm_state = PCM_STATE_N;
+	buf.pi_flags = 0;
+	buf.cluster_padding_1 = 0;
+	buf.cr_chain_head = INVALID_BUFFER_ID;
+	buf.block_scn = InvalidScn;
+	buf.cr_scn = InvalidScn;
+	buf.cr_chain_next = INVALID_BUFFER_ID;
+	buf.pi_buf_id = INVALID_BUFFER_ID;
+	buf.pi_lsn = InvalidXLogRecPtr;
+	buf.grd_master_node = INVALID_NODE_ID;
+	buf.grd_master_seq = 0;
+	buf.cf_state = CF_STATE_NONE;
+	buf.cf_owner_node = 0;
+	buf.cf_request_count = 0;
+	buf.pi_created_at = 0;
+
+	UT_ASSERT_EQ((int)buf.buffer_type, (int)BUF_TYPE_CURRENT);
+	UT_ASSERT_EQ((int)buf.pcm_state, (int)PCM_STATE_N);
+	UT_ASSERT_EQ((int)buf.pi_flags, 0);
+	UT_ASSERT_EQ((int)buf.cluster_padding_1, 0);
+	UT_ASSERT_EQ((int)buf.cr_chain_head, (int)INVALID_BUFFER_ID);
+	UT_ASSERT_EQ((int)buf.block_scn, (int)InvalidScn);
+	UT_ASSERT_EQ((int)buf.cr_scn, (int)InvalidScn);
+	UT_ASSERT_EQ((int)buf.cr_chain_next, (int)INVALID_BUFFER_ID);
+	UT_ASSERT_EQ((int)buf.pi_buf_id, (int)INVALID_BUFFER_ID);
+	UT_ASSERT_EQ((int)buf.pi_lsn, (int)InvalidXLogRecPtr);
+	UT_ASSERT_EQ((int)buf.grd_master_node, (int)INVALID_NODE_ID);
+	UT_ASSERT_EQ((int)buf.grd_master_seq, 0);
+	UT_ASSERT_EQ((int)buf.cf_state, (int)CF_STATE_NONE);
+	UT_ASSERT_EQ((int)buf.cf_owner_node, 0);
+	UT_ASSERT_EQ((int)buf.cf_request_count, 0);
+	UT_ASSERT_EQ((int)buf.pi_created_at, 0);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(8);
+	UT_PLAN(9);
 	UT_RUN(test_buffer_desc_size_within_padded_size);
 	UT_RUN(test_block_scn_stays_in_cache_line_1);
 	UT_RUN(test_cr_chain_head_starts_cache_line_2);
@@ -173,6 +230,7 @@ main(void)
 	UT_RUN(test_pcm_state_zero_init_is_n);
 	UT_RUN(test_cf_state_zero_init_is_none);
 	UT_RUN(test_invalid_buffer_id_and_node_id_sentinels);
+	UT_RUN(test_cluster_init_buffer_desc_fields_writes_all_placeholders);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

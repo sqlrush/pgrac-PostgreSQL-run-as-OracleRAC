@@ -15,9 +15,9 @@
  *	  cache (#11/#12) all land at Stage 2-3 真值激活 spec.
  *
  *	  Each BufferDesc in pgrac 1.6+ contains ~76B of cluster fields:
- *	    - 12B hot tail in cache line 1 ([52, 64); buffer_type / pcm_state
+ *	    - 12B hot tail in 64B BufferDesc segment 1 ([52, 64); buffer_type / pcm_state
  *	      / pi_flags / cluster_padding_1 / block_scn).
- *	    - 64B cold body in cache line 2 ([64, 128); cr_chain_head /
+ *	    - 64B cold body in 64B BufferDesc segment 2 ([64, 128); cr_chain_head /
  *	      cr_chain_next / cr_scn / pi_buf_id / pi_lsn / grd_master_node
  *	      / grd_master_seq / cf_state / cf_owner_node / cf_request_count
  *	      / pcm_lock / pi_created_at).
@@ -26,11 +26,11 @@
  *	  USE_PGRAC_CLUSTER mode -- see buf_internals.h).  PG-original
  *	  fields occupy [0, 52) on PG 16.13 (BufferTag 20B + buf_id 4B +
  *	  state 4B + wait_backend 4B + freeNext 4B + content_lock 16B); the
- *	  cluster hot tail fits in the remaining 12B of cache line 1 so
+ *	  cluster hot tail fits in the remaining 12B of 64B BufferDesc segment 1 so
  *	  existing PG hot paths still read 1 cache line.  block_scn is the
- *	  Stage 2-3 visibility hot field and stays in cache line 1 by
+ *	  Stage 2-3 visibility hot field and stays in 64B BufferDesc segment 1 by
  *	  design (PIVOT B 2026-05-02 user approve); cr_chain_head is cold
- *	  (CR construction path only) and lives at the cache line 2
+ *	  (CR construction path only) and lives at the 64B BufferDesc segment 2
  *	  boundary.
  *
  *	  Critical layout invariant (Q2 + Q7 audit + PIVOT B):
@@ -43,8 +43,8 @@
  *	    The Q2 invariant is that cluster fields appear *after*
  *	    content_lock so the reverse-deref keeps yielding a valid
  *	    BufferDesc pointer.  StaticAssertDecls in buf_internals.h
- *	    enforce this semantically (block_scn stays in cache line 1;
- *	    cr_chain_head starts cache line 2; cluster fields follow
+ *	    enforce this semantically (block_scn stays in 64B BufferDesc segment 1;
+ *	    cr_chain_head starts 64B BufferDesc segment 2; cluster fields follow
  *	    content_lock).  Any future reorder breaking these semantics
  *	    fails to compile.
  *

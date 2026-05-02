@@ -57,6 +57,10 @@
 #include "storage/bufpage.h"
 #include "varatt.h"
 
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_itl_slot.h"	/* PGRAC: CLUSTER_ITL_SLOT_UNALLOCATED for ClusterHeapTupleHeaderInitItlSlot helper */
+#endif
+
 /*
  * MaxTupleAttributeNumber limits the number of (user) columns in a tuple.
  * The key limit on this value is that the size of the fixed overhead for
@@ -240,6 +244,41 @@ struct HeapTupleHeaderData
 /* typedef appears in htup.h */
 
 #define SizeofHeapTupleHeader offsetof(HeapTupleHeaderData, t_bits)
+
+/*
+ * PGRAC: ClusterHeapTupleHeaderInitItlSlot -- write the Stage 1.5
+ *	t_itl_slot_idx placeholder sentinel (255 = unallocated) on a
+ *	freshly-allocated HeapTupleHeader.
+ *
+ *	Spec-1.5 hardening (codex review 2026-05-02 P1 #1+#2): every code
+ *	path that allocates a new HeapTupleHeader must call this helper so
+ *	t_itl_slot_idx never carries the calloc/palloc0/MemSet zero default.
+ *	Zero is a *valid* future ITL slot index (slot 0); 255 is the
+ *	reserved "no slot assigned" sentinel for the Stage 1.5 placeholder
+ *	era and Stage 3 visibility era alike.
+ *
+ *	Callers (8 paths covered by spec-stage1-codex-fixes Deliverable 1):
+ *	  - heap_form_tuple                        (heaptuple.c, replaces explicit assignment)
+ *	  - expand_tuple heap target               (heaptuple.c)
+ *	  - expand_tuple minimal target            (heaptuple.c)
+ *	  - heap_form_minimal_tuple                (heaptuple.c)
+ *	  - heap_xlog_insert / multi_insert / update redo paths (heapam.c)
+ *	  - logical decoding tuple reconstruction  (decode.c)
+ *
+ *	Disable-cluster builds: helper is a no-op (USE_PGRAC_CLUSTER guard).
+ *
+ *	Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 1 + spec-1.5 §11 hardening
+ */
+static inline void
+ClusterHeapTupleHeaderInitItlSlot(HeapTupleHeader td)
+{
+#ifdef USE_PGRAC_CLUSTER
+	td->t_itl_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+#endif
+}
+
+/* ClusterMinimalTupleInitItlSlot: defined below after MinimalTupleData
+ * struct (which is defined later in this file). */
 
 /*
  * information stored in t_infomask:
@@ -752,6 +791,29 @@ struct MinimalTupleData
 /* typedef appears in htup.h */
 
 #define SizeofMinimalTupleHeader offsetof(MinimalTupleData, t_bits)
+
+/*
+ * PGRAC: ClusterMinimalTupleInitItlSlot -- mirror of
+ *	ClusterHeapTupleHeaderInitItlSlot for MinimalTupleData (which embeds
+ *	its own t_itl_slot_idx mirror field at the same offset relative to
+ *	t_bits).
+ *
+ *	Required because executor materialize paths produce minimal tuples
+ *	that later get converted back to heap tuples via
+ *	heap_tuple_from_minimal_tuple (memcpy-based copy preserves the
+ *	mirror byte exactly).  Without this helper, palloc0-zeroed minimal
+ *	tuples carry t_itl_slot_idx = 0 (a valid future ITL slot index) into
+ *	the converted heap tuple.
+ *
+ *	Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 1 + spec-1.5 §11 hardening
+ */
+static inline void
+ClusterMinimalTupleInitItlSlot(MinimalTuple mtup)
+{
+#ifdef USE_PGRAC_CLUSTER
+	mtup->t_itl_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+#endif
+}
 
 
 /*

@@ -17,12 +17,38 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_itl_slot.h"	/* PGRAC: CLUSTER_ITL_ARRAY_SIZE */
+#endif
+
+/*
+ * PGRAC (stage 1.5 hardening, codex review 2026-05-02 P2 #3):
+ *
+ * Heap pages reserve CLUSTER_ITL_ARRAY_SIZE (384B) bytes of special
+ * space for the ITL slot array (PIVOT A: ITL lives in PG special area
+ * at page tail).  All heap-only capacity formulas must subtract this
+ * reserved area; index am pages have separate special areas and are
+ * not affected by this macro.
+ *
+ * Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 2 + spec-1.5 §11
+ */
+#ifdef USE_PGRAC_CLUSTER
+#define HeapPageSpecialSize CLUSTER_ITL_ARRAY_SIZE
+#else
+#define HeapPageSpecialSize 0
+#endif
+
 /*
  * Find the maximum size of a tuple if there are to be N tuples per page.
+ *
+ * PGRAC: subtract HeapPageSpecialSize so toast thresholds reflect actual
+ * heap page capacity after ITL reservation.  Pre-1.5 PG path used
+ * BLCKSZ - SizeOfPageHeaderData; pgrac heap path subtracts ITL.
  */
 #define MaximumBytesPerTuple(tuplesPerPage) \
 	MAXALIGN_DOWN((BLCKSZ - \
-				   MAXALIGN(SizeOfPageHeaderData + (tuplesPerPage) * sizeof(ItemIdData))) \
+				   MAXALIGN(SizeOfPageHeaderData + (tuplesPerPage) * sizeof(ItemIdData)) \
+				   - HeapPageSpecialSize) \
 				  / (tuplesPerPage))
 
 /*

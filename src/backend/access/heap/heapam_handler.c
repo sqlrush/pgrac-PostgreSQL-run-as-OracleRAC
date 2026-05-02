@@ -2095,8 +2095,15 @@ heapam_relation_toast_am(Relation rel)
 
 #define HEAP_OVERHEAD_BYTES_PER_TUPLE \
 	(MAXALIGN(SizeofHeapTupleHeader) + sizeof(ItemIdData))
+/*
+ * PGRAC (stage 1.5 hardening): heap pages reserve HeapPageSpecialSize
+ * (384B for cluster, 0 for vanilla) for the ITL slot array.  Planner
+ * row-per-page estimates must reflect the actual usable space; without
+ * this fix the planner overestimates tuples per page.
+ * Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 2.
+ */
 #define HEAP_USABLE_BYTES_PER_PAGE \
-	(BLCKSZ - SizeOfPageHeaderData)
+	(BLCKSZ - SizeOfPageHeaderData - HeapPageSpecialSize)
 
 static void
 heapam_estimate_rel_size(Relation rel, int32 *attr_widths,

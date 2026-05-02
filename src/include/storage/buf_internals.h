@@ -15,12 +15,12 @@
  * Modified by: SqlRush <sqlrush@gmail.com>
  *
  * What changed (USE_PGRAC_CLUSTER guarded):
- *   1. BufferDesc struct: append 12B hot cluster tail in cache line 1
- *      ([52, 64)) + 64B cold cluster fields in cache line 2 ([64, 128))
+ *   1. BufferDesc struct: append 12B hot cluster tail in 64B BufferDesc segment 1
+ *      ([52, 64)) + 64B cold cluster fields in 64B BufferDesc segment 2 ([64, 128))
  *      after PG-original 52B (PG 16.13: BufferTag 20B + buf_id 4B +
  *      state 4B + wait_backend 4B + freeNext 4B + content_lock 16B).
- *      block_scn lives in cache line 1 (Stage 2-3 visibility hot path);
- *      cr_chain_head in cache line 2 (cold; CR construction path only).
+ *      block_scn lives in 64B BufferDesc segment 1 (Stage 2-3 visibility hot path);
+ *      cr_chain_head in 64B BufferDesc segment 2 (cold; CR construction path only).
  *      See spec-1.6 PIVOT B (2026-05-02 user approve).
  *   2. BUFFERDESC_PAD_TO_SIZE bumped 64 -> 128 (cluster fields require
  *      2 cache lines per slot).
@@ -28,7 +28,7 @@
  *      placeholder values at InitBufferPool / InitLocalBuffers time.
  *   4. 5 StaticAssertDecl layout invariants -- catch field reorder /
  *      size drift at compile time using semantic constraints (block_scn
- *      stays in cache line 1; cr_chain_head starts cache line 2;
+ *      stays in 64B BufferDesc segment 1; cr_chain_head starts 64B BufferDesc segment 2;
  *      cluster fields follow PG-original content_lock so bufmgr.c:3275
  *      AssertNotCatalogBufferLock reverse-deref stays correct).
  *
@@ -37,7 +37,7 @@
  *   Fusion + GRD master cache fields per buffer (Stage 2-3 真值激活).
  *   Stage 1.6 places the structural foundation; runtime semantics land
  *   later.  Hot path performance preserved by keeping all hot fields
- *   in cache line 1 (PG 16.13: 52B + cluster 12B tail = 64B).
+ *   in 64B BufferDesc segment 1 (PG 16.13: 52B + cluster 12B tail = 64B).
  *
  * Spec: spec-1.6-buffer-descriptor.md (frozen 2026-05-02)
  * Design: docs/buffer-pool-design.md v1.2 §4.3 + §12 + §15.4
@@ -299,13 +299,13 @@ typedef struct BufferDesc
 	 * On PG 16.13 the original BufferDesc fields above end at offset 52
 	 * (BufferTag 20B + buf_id 4B + state 4B + wait_backend_pgprocno 4B
 	 * + freeNext 4B + content_lock 16B = 52B).  This leaves only 12B of
-	 * cache line 1 for cluster fields ([52, 64)) -- the "12B hot
+	 * 64B BufferDesc segment 1 for cluster fields ([52, 64)) -- the "12B hot
 	 * cluster tail".  Cache line 2 ([64, 128)) holds the 64B cold
 	 * cluster fields accessed only on cluster-specific paths.
 	 *
 	 * PIVOT B (2026-05-02 user approve): block_scn must stay in cache
 	 * line 1 because it's read on every visibility check (Stage 2-3
-	 * hot path).  cr_chain_head moves to cache line 2 because CR
+	 * hot path).  cr_chain_head moves to 64B BufferDesc segment 2 because CR
 	 * construction is a cold path.  See spec-1.6 §1.4 example #5 and
 	 * docs/buffer-pool-design.md v1.2 §4.3.
 	 *
@@ -325,7 +325,7 @@ typedef struct BufferDesc
 	uint8		pi_flags;		/* offset 54; BufferFlags bitfield; 0 at stage 1.6 (no PI) */
 	uint8		cluster_padding_1;	/* offset 55; 1B padding for 8B alignment of block_scn; 0 at stage 1.6 */
 	SCN			block_scn;		/* offset 56; page-level SCN (spec-1.4 typedef); InvalidScn at stage 1.6 */
-	/* end of cache line 1 at offset 64 */
+	/* end of 64B BufferDesc segment 1 at offset 64 */
 
 	/* === Cache line 2 cold cluster fields ([64, 128), 64B) === */
 	int			cr_chain_head;	/* offset 64; CR chain head buf_id; INVALID_BUFFER_ID at stage 1.6 */
@@ -341,7 +341,7 @@ typedef struct BufferDesc
 	uint16		cf_request_count;	/* offset 102; CF transfer request count; 0 at stage 1.6 */
 	LWLock		pcm_lock;		/* offset 104; PCM lock; LWLockInitialize'd at stage 1.6 (not held) */
 	TimestampTz pi_created_at;	/* offset 120; PI creation timestamp; 0 at stage 1.6 */
-	/* end of cache line 2 at offset 128 */
+	/* end of 64B BufferDesc segment 2 at offset 128 */
 #endif							/* USE_PGRAC_CLUSTER */
 } BufferDesc;
 
@@ -368,12 +368,12 @@ typedef struct BufferDesc
 #ifdef USE_PGRAC_CLUSTER
 /*
  * PGRAC: BufferDesc grew from PG-vanilla ~52B (padded to 64) to ~120B
- * (padded to 128) on PG 16.13.  12B hot cluster tail shares cache line 1
- * with PG-original 52B; 64B cold cluster fields occupy cache line 2 and
+ * (padded to 128) on PG 16.13.  12B hot cluster tail shares 64B BufferDesc segment 1
+ * with PG-original 52B; 64B cold cluster fields occupy 64B BufferDesc segment 2 and
  * are accessed only on cluster-specific paths (Stage 2-3 真值激活).
  *
  * Hot path cache behaviour preserved: ReadBuffer / BufferAlloc /
- * UnpinBuffer / IncrBufferRefCount continue to read only cache line 1
+ * UnpinBuffer / IncrBufferRefCount continue to read only 64B BufferDesc segment 1
  * (offsets 0..63), exactly the same cache miss profile as PG vanilla.
  *
  * Spec: spec-1.6-buffer-descriptor.md  Design: docs/buffer-pool-design.md v1.2 §4.3
@@ -419,9 +419,9 @@ StaticAssertDecl(BUFFERDESC_PAD_TO_SIZE == 128,
 StaticAssertDecl(sizeof(BufferDesc) <= BUFFERDESC_PAD_TO_SIZE,
 				 "PGRAC: BufferDesc with cluster fields exceeds padded size");
 StaticAssertDecl(offsetof(BufferDesc, block_scn) + sizeof(SCN) <= 64,
-				 "PGRAC: block_scn must stay in BufferDesc cache line 1 (Stage 2-3 visibility hot path)");
+				 "PGRAC: block_scn must stay in BufferDesc 64B BufferDesc segment 1 (Stage 2-3 visibility hot path)");
 StaticAssertDecl(offsetof(BufferDesc, cr_chain_head) >= 64,
-				 "PGRAC: cr_chain_head (cold field) must start at or after cache line 2 boundary");
+				 "PGRAC: cr_chain_head (cold field) must start at or after 64B BufferDesc segment 2 boundary");
 StaticAssertDecl(offsetof(BufferDesc, content_lock) <
 				 offsetof(BufferDesc, buffer_type),
 				 "PGRAC: cluster fields must follow PG-original content_lock so bufmgr.c:3275 reverse-deref stays correct");
@@ -473,11 +473,14 @@ ClusterInitBufferDescFields(BufferDesc *buf)
 	buf->cf_request_count = 0;
 
 	/*
-	 * pcm_lock: stage 1.6 reuses LWTRANCHE_BUFFER_CONTENT tranche (pcm
-	 * lock is never acquired at stage 1.6; Stage 2 PCM真值激活 spec will
-	 * register a dedicated LWTRANCHE_BUFFER_PCM_LOCK and migrate).
+	 * pcm_lock: dedicated LWTRANCHE_BUFFER_PCM_LOCK tranche (registered
+	 * by spec-stage1-codex-fixes Deliverable 5).  Stage 1.6 hardening:
+	 * independent tranche distinguishes pcm_lock from content_lock in
+	 * lock trace / pg_stat_activity wait events.  Complements the
+	 * bufmgr.c:AssertNotCatalogBufferLock runtime guard (spec-1.6
+	 * hardening) preventing reverse-deref misidentification.
 	 */
-	LWLockInitialize(&buf->pcm_lock, LWTRANCHE_BUFFER_CONTENT);
+	LWLockInitialize(&buf->pcm_lock, LWTRANCHE_BUFFER_PCM_LOCK);
 
 	buf->pi_created_at = 0;
 }

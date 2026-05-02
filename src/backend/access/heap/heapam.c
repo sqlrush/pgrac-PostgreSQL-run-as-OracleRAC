@@ -9865,6 +9865,9 @@ heap_xlog_insert(XLogReaderState *record)
 		htup->t_infomask2 = xlhdr.t_infomask2;
 		htup->t_infomask = xlhdr.t_infomask;
 		htup->t_hoff = xlhdr.t_hoff;
+		/* PGRAC (stage 1.5 hardening): WAL header doesn't carry t_itl_slot_idx;
+		 * write 255 sentinel so replay-created tuples match primary's. */
+		ClusterHeapTupleHeaderInitItlSlot(htup);
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
 		htup->t_ctid = target_tid;
@@ -10009,6 +10012,9 @@ heap_xlog_multi_insert(XLogReaderState *record)
 			htup->t_infomask2 = xlhdr->t_infomask2;
 			htup->t_infomask = xlhdr->t_infomask;
 			htup->t_hoff = xlhdr->t_hoff;
+			/* PGRAC (stage 1.5 hardening): WAL multi_insert doesn't carry
+			 * t_itl_slot_idx; write 255 sentinel. */
+			ClusterHeapTupleHeaderInitItlSlot(htup);
 			HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 			HeapTupleHeaderSetCmin(htup, FirstCommandId);
 			ItemPointerSetBlockNumber(&htup->t_ctid, blkno);
@@ -10286,6 +10292,9 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		htup->t_infomask2 = xlhdr.t_infomask2;
 		htup->t_infomask = xlhdr.t_infomask;
 		htup->t_hoff = xlhdr.t_hoff;
+		/* PGRAC (stage 1.5 hardening): WAL update doesn't carry
+		 * t_itl_slot_idx; write 255 sentinel. */
+		ClusterHeapTupleHeaderInitItlSlot(htup);
 
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);

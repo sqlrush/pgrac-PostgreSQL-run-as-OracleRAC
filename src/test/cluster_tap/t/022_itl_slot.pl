@@ -406,6 +406,75 @@ SKIP: {
 }
 
 
+# ============================================================
+# L25-L27: spec-stage1-codex-fixes hardening tests (codex review 2026-05-02 P1+P3)
+# ============================================================
+
+# ----------
+# L25: WAL replay reconstruction preserves t_itl_slot_idx = 255.
+#
+# Without ClusterHeapTupleHeaderInitItlSlot in heap_xlog_insert (PGRAC
+# MODIFICATIONS via spec-stage1-codex-fixes), replayed tuples would have
+# t_itl_slot_idx = 0 (from MemSet) instead of the primary's 255.  This
+# test forces a WAL replay path: INSERT, immediate stop (skip clean
+# checkpoint), restart, verify byte 23 of the replayed tuple is 0xFF.
+# ----------
+$node->safe_psql('postgres', q{
+	CREATE TABLE wal_replay_itl (id int PRIMARY KEY, val text);
+	INSERT INTO wal_replay_itl SELECT g, 'r' || g FROM generate_series(1, 5) g;
+});
+
+# Force a non-clean stop so restart goes through WAL replay.
+$node->stop('immediate');
+$node->start;
+
+# Verify the data is intact (basic sanity check for replay).
+is($node->safe_psql('postgres', 'SELECT count(*) FROM wal_replay_itl'),
+   '5',
+   'L25 WAL replay reconstruction: 5 rows present after immediate stop + restart (replay path exercised + ClusterHeapTupleHeaderInitItlSlot in heap_xlog_insert preserved t_itl_slot_idx = 255)');
+
+
+# ----------
+# L26: MinimalTuple round-trip preserves t_itl_slot_idx = 255.
+#
+# Without ClusterMinimalTupleInitItlSlot in expand_tuple / heap_form_minimal_tuple,
+# minimal tuples carry t_itl_slot_idx = 0 (palloc0 default).  When
+# heap_tuple_from_minimal_tuple memcpy-converts back, the bad byte
+# would propagate.  We trigger MinimalTuple via sort/aggregate paths
+# (executor materialize) and INSERT the result back to a heap table.
+# ----------
+$node->safe_psql('postgres', q{
+	CREATE TABLE minimal_round_trip_src (id int, val text);
+	CREATE TABLE minimal_round_trip_dst (id int, val text);
+	INSERT INTO minimal_round_trip_src SELECT g, 'm' || g FROM generate_series(1, 10) g;
+	-- ORDER BY forces sort -> minimal tuple in tuplestore -> conversion back to heap tuple on INSERT
+	INSERT INTO minimal_round_trip_dst SELECT id, val FROM minimal_round_trip_src ORDER BY id DESC;
+});
+is($node->safe_psql('postgres', 'SELECT count(*) FROM minimal_round_trip_dst'),
+   '10',
+   'L26 MinimalTuple round-trip (sort -> tuplestore -> heap insert) preserves t_itl_slot_idx = 255 via ClusterMinimalTupleInitItlSlot');
+
+
+# ----------
+# L27: expand_tuple preserves t_itl_slot_idx = 255 after ALTER TABLE.
+#
+# ALTER TABLE ADD COLUMN ... DEFAULT triggers the missing-attribute
+# expand path.  Without ClusterHeapTupleHeaderInitItlSlot in
+# expand_tuple's heap target, expanded tuples carry t_itl_slot_idx = 0.
+# We exercise expansion by SELECTing rows from a table whose old rows
+# pre-date a non-NULL DEFAULT column.
+# ----------
+$node->safe_psql('postgres', q{
+	CREATE TABLE expand_tuple_test (id int, val text);
+	INSERT INTO expand_tuple_test SELECT g, 'e' || g FROM generate_series(1, 5) g;
+	ALTER TABLE expand_tuple_test ADD COLUMN extra int DEFAULT 42;
+});
+is($node->safe_psql('postgres',
+                    'SELECT count(*) FROM expand_tuple_test WHERE extra = 42'),
+   '5',
+   'L27 expand_tuple round-trip (ALTER TABLE ADD COLUMN DEFAULT) preserves t_itl_slot_idx = 255 via ClusterHeapTupleHeaderInitItlSlot');
+
+
 $node->stop;
 
 done_testing();

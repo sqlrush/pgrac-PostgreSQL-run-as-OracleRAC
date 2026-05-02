@@ -3263,6 +3263,9 @@ AssertNotCatalogBufferLock(LWLock *lock, LWLockMode mode,
 	BufferDesc *bufHdr;
 	BufferTag	tag;
 	Oid			relid;
+#ifdef USE_PGRAC_CLUSTER
+	ptrdiff_t	delta;
+#endif
 
 	if (mode != LW_EXCLUSIVE)
 		return;
@@ -3270,6 +3273,37 @@ AssertNotCatalogBufferLock(LWLock *lock, LWLockMode mode,
 	if (!((BufferDescPadded *) lock > BufferDescriptors &&
 		  (BufferDescPadded *) lock < BufferDescriptors + NBuffers))
 		return;					/* not a buffer lock */
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.6 hardening, codex review 2026-05-02 P1/P2 #1):
+	 *
+	 *	BufferDesc now contains both content_lock (offset 36 on PG 16.13)
+	 *	and pcm_lock (offset 104).  The address-range check above matches
+	 *	both -- pcm_lock is also "in BufferDescriptors range".
+	 *
+	 *	Without this guard, when Stage 2 真值激活 acquires pcm_lock
+	 *	exclusively, this debug helper would interpret it as content_lock
+	 *	and reverse-deref using offsetof(content_lock) -- yielding a
+	 *	BufferDesc pointer pointing to garbage (pcm_lock_addr - 36 falls
+	 *	in the middle of a previous slot's cold-section fields).  Reading
+	 *	bufHdr->tag would then return random memory, with arbitrary
+	 *	consequences ranging from spurious assertion fail to silent
+	 *	garbage relid checks against system catalog.
+	 *
+	 *	Verify the lock is precisely at content_lock offset within its
+	 *	slot; otherwise it's pcm_lock (or a future second embedded
+	 *	LWLock) and reverse-deref does not apply.  Spec-1.6 5th
+	 *	StaticAssertDecl already locks "cluster fields after content_lock"
+	 *	semantically; this runtime check is the matching debug-time
+	 *	enforcement.
+	 *
+	 *	Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 5 + spec-1.6 §11 hardening
+	 */
+	delta = (char *) lock - (char *) BufferDescriptors;
+	if (delta % sizeof(BufferDescPadded) != offsetof(BufferDesc, content_lock))
+		return;					/* embedded LWLock other than content_lock (e.g. pcm_lock) */
+#endif
 
 	bufHdr = (BufferDesc *)
 		((char *) lock - offsetof(BufferDesc, content_lock));

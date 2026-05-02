@@ -209,6 +209,18 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_PGSTATS_DATA,
 	LWTRANCHE_LAUNCHER_DSA,
 	LWTRANCHE_LAUNCHER_HASH,
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.6 hardening): dedicated tranche for BufferDesc.pcm_lock
+	 * (added at offset 104 in cluster mode).  Independent tranche makes
+	 * lock trace / pg_stat_activity wait-event distinguish content_lock
+	 * from pcm_lock; complements the bufmgr.c:AssertNotCatalogBufferLock
+	 * runtime guard that prevents reverse-deref misidentification.
+	 *
+	 * Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 5 + spec-1.6 §11
+	 */
+	LWTRANCHE_BUFFER_PCM_LOCK,
+#endif
 	LWTRANCHE_FIRST_USER_DEFINED
 }			BuiltinTrancheIds;
 

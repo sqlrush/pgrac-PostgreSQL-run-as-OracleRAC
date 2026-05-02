@@ -17,6 +17,7 @@
 
 #include "access/heapam.h"
 #include "access/hio.h"
+#include "access/heaptoast.h"		/* PGRAC: HeapPageSpecialSize */
 #include "access/htup_details.h"
 #include "access/visibilitymap.h"
 #include "storage/bufmgr.h"
@@ -398,8 +399,16 @@ RelationAddBlocks(Relation relation, BulkInsertState bistate,
 
 		if (use_fsm && i >= not_in_fsm_pages)
 		{
+			/*
+			 * PGRAC (stage 1.5 hardening): subtract HeapPageSpecialSize so
+			 * FSM records actual heap-usable freespace (after ITL 384B).
+			 * Without this, FSM would advertise more free space than the
+			 * page actually has after PageInitHeapPage reserves ITL,
+			 * causing repeated extend churn.
+			 * Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 2.
+			 */
 			Size		freespace = BufferGetPageSize(victim_buffers[i]) -
-				SizeOfPageHeaderData;
+				SizeOfPageHeaderData - HeapPageSpecialSize;
 
 			RecordPageWithFreeSpace(relation, curBlock, freespace);
 		}
