@@ -103,57 +103,58 @@ is($node->safe_psql(
 
 
 # ----------
-# L6: heap PageInit -- create table, insert one tuple, inspect page.
-# pd_lower = 36 (32 header + 4-byte ItemId for the single tuple);
-# pagesize = 8192; layout version = 5.
+# L6-L9: heap PageInit + raw page binary inspection.  These rely on the
+# pageinspect contrib extension; skip them if it is not available
+# (e.g. CI environment that does not build contrib/).
 # ----------
-$node->safe_psql('postgres', q{
-	CREATE EXTENSION IF NOT EXISTS pageinspect;
-	CREATE TABLE t1 (a int);
-	INSERT INTO t1 VALUES (1);
-});
+my $has_pageinspect = $node->safe_psql(
+	'postgres',
+	q{SELECT count(*) FROM pg_available_extensions WHERE name='pageinspect'});
 
-is($node->safe_psql(
-		'postgres',
-		q{SELECT lower::text || ',' || pagesize::text || ',' || version::text
-		    FROM page_header(get_raw_page('t1', 0))}),
-   '36,8192,5',
-   'L6 heap page first INSERT: lower=36, pagesize=8192, version=5');
+SKIP: {
+	skip 'pageinspect contrib extension not available in this build', 4
+		unless $has_pageinspect eq '1';
 
+	$node->safe_psql('postgres', q{
+		CREATE EXTENSION IF NOT EXISTS pageinspect;
+		CREATE TABLE t1 (a int);
+		INSERT INTO t1 VALUES (1);
+	});
 
-# ----------
-# L7: btree index PageInit -- create index, inspect root page header.
-# Btree leaf header has version = 5 too.
-# ----------
-$node->safe_psql('postgres', q{
-	CREATE INDEX t1_idx ON t1 (a);
-});
+	# L6: heap PageInit -- pd_lower = 36 (32 header + 4-byte ItemId);
+	# pagesize = 8192; layout version = 5.
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT lower::text || ',' || pagesize::text || ',' || version::text
+			    FROM page_header(get_raw_page('t1', 0))}),
+	   '36,8192,5',
+	   'L6 heap page first INSERT: lower=36, pagesize=8192, version=5');
 
-is($node->safe_psql(
-		'postgres',
-		q{SELECT version FROM page_header(get_raw_page('t1_idx', 0))}),
-   '5',
-   'L7 btree index page version = 5 (PageInit goes through new path)');
+	# L7: btree index PageInit -- root page version = 5.
+	$node->safe_psql('postgres', q{
+		CREATE INDEX t1_idx ON t1 (a);
+	});
 
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT version FROM page_header(get_raw_page('t1_idx', 0))}),
+	   '5',
+	   'L7 btree index page version = 5 (PageInit goes through new path)');
 
-# ----------
-# L8: pd_block_scn raw bytes at offset 24-31 must be 8 zero bytes.
-# ----------
-is($node->safe_psql(
-		'postgres',
-		q{SELECT encode(substring(get_raw_page('t1', 0), 25, 8), 'hex')}),
-   '0000000000000000',
-   'L8 pd_block_scn raw bytes are 8 zeros (InvalidScn placeholder)');
+	# L8: pd_block_scn raw bytes at offset 24-31 must be 8 zero bytes.
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT encode(substring(get_raw_page('t1', 0), 25, 8), 'hex')}),
+	   '0000000000000000',
+	   'L8 pd_block_scn raw bytes are 8 zeros (InvalidScn placeholder)');
 
-
-# ----------
-# L9: pd_pagesize_version raw bytes at offset 18-19 = 0x2005 little-endian.
-# ----------
-is($node->safe_psql(
-		'postgres',
-		q{SELECT encode(substring(get_raw_page('t1', 0), 19, 2), 'hex')}),
-   '0520',
-   'L9 pd_pagesize_version raw bytes = 0520 LE = 0x2005 (BLCKSZ 8192 | layout 5)');
+	# L9: pd_pagesize_version raw bytes at offset 18-19 = 0x2005 LE.
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT encode(substring(get_raw_page('t1', 0), 19, 2), 'hex')}),
+	   '0520',
+	   'L9 pd_pagesize_version raw bytes = 0520 LE = 0x2005 (BLCKSZ 8192 | layout 5)');
+}
 
 
 # ----------
