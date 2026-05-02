@@ -11,6 +11,25 @@
  *	  src/backend/storage/page/bufpage.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (6th):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, PageInit
+ *	               explicitly sets pd_block_scn = InvalidScn after the
+ *	               MemSet zero-fill.  Although MemSet already zeroes
+ *	               the field (and InvalidScn = 0 by spec-1.4 §8 Q2),
+ *	               the explicit assignment + comment makes the
+ *	               placeholder semantics readable and survives any
+ *	               future change to InvalidScn's value.
+ *	Why:           Stage 1.4 ships pd_block_scn as a placeholder field;
+ *	               spec-1.16 takes over real local_scn writeback at
+ *	               commit time.  The explicit InvalidScn assignment is
+ *	               the SSOT for that placeholder; the same line later
+ *	               becomes `p->pd_block_scn = scn_encode(node, local)`
+ *	               when spec-1.16 lands.
+ *	               See specs/spec-1.4-block-format-pageheader-scn.md
+ *	               §1.4 example 3 (PageInit placeholder write strategy).
  */
 #include "postgres.h"
 
@@ -57,6 +76,18 @@ PageInit(Page page, Size pageSize, Size specialSize)
 	p->pd_special = pageSize - specialSize;
 	PageSetPageSizeAndVersion(page, pageSize, PG_PAGE_LAYOUT_VERSION);
 	/* p->pd_prune_xid = InvalidTransactionId;		done by above MemSet */
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.4): explicit placeholder for pd_block_scn.
+	 *
+	 *	MemSet above already zeroed pd_block_scn (and InvalidScn = 0
+	 *	per spec-1.4 §8 Q2), but writing the assignment explicitly
+	 *	keeps the placeholder semantics visible.  Stage 1.16 will
+	 *	replace this line with scn_encode(cluster_node_id, local_scn)
+	 *	at commit time.
+	 */
+	p->pd_block_scn = InvalidScn;
+#endif
 }
 
 

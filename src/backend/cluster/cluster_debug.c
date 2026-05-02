@@ -74,7 +74,9 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_elog.h" /* cluster_phase */
 #include "cluster/cluster_guc.h"
-#include "cluster/cluster_ic.h" /* ClusterICOps_Active, ClusterICTier */
+#include "cluster/cluster_ic.h"	 /* ClusterICOps_Active, ClusterICTier */
+#include "cluster/cluster_scn.h" /* SCN typedef (stage 1.4) */
+#include "storage/bufpage.h"	 /* PG_PAGE_LAYOUT_VERSION, SizeOfPageHeaderData (stage 1.4) */
 #include "cluster/cluster_pgstat.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/storage/cluster_shared_fs.h" /* dump_shared_fs (stage 1.1) */
@@ -387,6 +389,26 @@ dump_shared_fs(ReturnSetInfo *rsinfo)
 			 fmt_int32(cluster_smgr_active_relation_count()));
 }
 
+/*
+ * dump_block_format -- Stage 1.4 page header / SCN type metadata.
+ *
+ *	Emits 4 rows surfacing the spec-1.4 block format invariants so DBA
+ *	can verify the binary's expectations (page_layout_version = 5,
+ *	page_header_size = 32, scn_size_bytes = 8, invalid_scn_value = 0)
+ *	match disk via pageinspect.  These are compile-time constants in
+ *	this build; the values flag any future binary that fails to bump
+ *	one when the layout actually changes (a real risk during pg_upgrade
+ *	work in spec-1.25).
+ */
+static void
+dump_block_format(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "block_format", "page_layout_version", fmt_int32(PG_PAGE_LAYOUT_VERSION));
+	emit_row(rsinfo, "block_format", "page_header_size", fmt_int32((int32)SizeOfPageHeaderData));
+	emit_row(rsinfo, "block_format", "scn_size_bytes", fmt_int32((int32)sizeof(SCN)));
+	emit_row(rsinfo, "block_format", "invalid_scn_value", "0");
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -417,6 +439,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_pgstat(rsinfo);
 		dump_conf(rsinfo);
 		dump_shared_fs(rsinfo);
+		dump_block_format(rsinfo);
 		dump_phase(rsinfo);
 	}
 #else

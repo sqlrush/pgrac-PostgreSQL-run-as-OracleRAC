@@ -85,6 +85,12 @@
 /*               injection points + pg_cluster_state.shmem extended with */
 /*               region.<name>.* keys (spec-1.3, stage 1.3; registry */
 /*               replaces hard-coded dispatch from spec-0.14). */
-#define CATALOG_VERSION_NO	202605030
+/*  - 202605040: cluster block format change: PageHeaderData +8B */
+/*               pd_block_scn + PG_PAGE_LAYOUT_VERSION 4 -> 5 + */
+/*               cluster_scn.h SCN typedef stub + pg_cluster_state.shmem */
+/*               + block_format category 4 keys (spec-1.4, stage 1.4; */
+/*               binary not compatible with vanilla PG 16; pgrac 1.3 */
+/*               data must be dump+restore migrated to 1.4+). */
+#define CATALOG_VERSION_NO	202605040
 
 #endif

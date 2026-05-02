@@ -1,0 +1,193 @@
+#-------------------------------------------------------------------------
+#
+# 021_block_format.pl
+#    End-to-end regression for the stage-1.4 block format change:
+#    PageHeader +8B pd_block_scn + PG_PAGE_LAYOUT_VERSION 4 -> 5 +
+#    SCN typedef stub + InvalidScn = 0.
+#
+#    Verifies the SQL surface backed by cluster_debug.c block_format
+#    category + the on-disk page binary via pageinspect:
+#
+#      - pg_cluster_state.block_format category exists with 4 keys.
+#      - page_layout_version = 5; page_header_size = 32;
+#        scn_size_bytes = 8; invalid_scn_value = "0".
+#      - Heap PageInit produces page_header() lower = 36 (32 header
+#        + 4 byte first ItemId) on first INSERT; pagesize = 8192;
+#        version = 5.
+#      - Btree index PageInit produces page version = 5.
+#      - pd_block_scn raw bytes (offset 24-31) are 8 zero bytes
+#        (InvalidScn placeholder; spec-1.16 takes over real values).
+#      - pd_pagesize_version raw bytes (offset 18-19) encode
+#        BLCKSZ | 5 = 0x2005 little-endian.
+#      - Stage 1.3 baseline (pg_cluster_shmem 2 rows; 24 inject
+#        points; pg_stat_cluster_wait_events 51) unchanged.
+#
+# IDENTIFICATION
+#    src/test/cluster_tap/t/021_block_format.pl
+#
+# Author: SqlRush <sqlrush@gmail.com>
+#
+# Portions Copyright (c) 2026, pgrac contributors
+#
+#-------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use FindBin;
+use lib "$FindBin::RealBin/../lib";
+
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+use PgracClusterNode;
+
+
+my $node = PgracClusterNode->new('main');
+$node->init;
+$node->start;
+
+
+# ----------
+# L1: pg_cluster_state.block_format category exists with 4 rows.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT count(*) FROM pg_cluster_state WHERE category='block_format'}),
+   '4',
+   'L1 pg_cluster_state.block_format category has 4 keys');
+
+
+# ----------
+# L2: page_layout_version key = 5.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='page_layout_version'}),
+   '5',
+   'L2 page_layout_version = 5 (PG vanilla 4 + pgrac 1.4 bump)');
+
+
+# ----------
+# L3: page_header_size key = 32.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='page_header_size'}),
+   '32',
+   'L3 page_header_size = 32 (PG vanilla 24 + 8B pd_block_scn)');
+
+
+# ----------
+# L4: scn_size_bytes key = 8.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='scn_size_bytes'}),
+   '8',
+   'L4 scn_size_bytes = 8 (uint64 typedef alias)');
+
+
+# ----------
+# L5: invalid_scn_value key = "0".
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='invalid_scn_value'}),
+   '0',
+   'L5 invalid_scn_value = "0" (locked by spec-1.4 §8 Q2 = A)');
+
+
+# ----------
+# L6: heap PageInit -- create table, insert one tuple, inspect page.
+# pd_lower = 36 (32 header + 4-byte ItemId for the single tuple);
+# pagesize = 8192; layout version = 5.
+# ----------
+$node->safe_psql('postgres', q{
+	CREATE EXTENSION IF NOT EXISTS pageinspect;
+	CREATE TABLE t1 (a int);
+	INSERT INTO t1 VALUES (1);
+});
+
+is($node->safe_psql(
+		'postgres',
+		q{SELECT lower::text || ',' || pagesize::text || ',' || version::text
+		    FROM page_header(get_raw_page('t1', 0))}),
+   '36,8192,5',
+   'L6 heap page first INSERT: lower=36, pagesize=8192, version=5');
+
+
+# ----------
+# L7: btree index PageInit -- create index, inspect root page header.
+# Btree leaf header has version = 5 too.
+# ----------
+$node->safe_psql('postgres', q{
+	CREATE INDEX t1_idx ON t1 (a);
+});
+
+is($node->safe_psql(
+		'postgres',
+		q{SELECT version FROM page_header(get_raw_page('t1_idx', 0))}),
+   '5',
+   'L7 btree index page version = 5 (PageInit goes through new path)');
+
+
+# ----------
+# L8: pd_block_scn raw bytes at offset 24-31 must be 8 zero bytes.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT encode(substring(get_raw_page('t1', 0), 25, 8), 'hex')}),
+   '0000000000000000',
+   'L8 pd_block_scn raw bytes are 8 zeros (InvalidScn placeholder)');
+
+
+# ----------
+# L9: pd_pagesize_version raw bytes at offset 18-19 = 0x2005 little-endian.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT encode(substring(get_raw_page('t1', 0), 19, 2), 'hex')}),
+   '0520',
+   'L9 pd_pagesize_version raw bytes = 0520 LE = 0x2005 (BLCKSZ 8192 | layout 5)');
+
+
+# ----------
+# L10: Stage 1.3 baseline -- pg_cluster_shmem still 2 rows.
+# ----------
+is($node->safe_psql(
+		'postgres',
+		q{SELECT count(*) FROM pg_cluster_shmem}),
+   '2',
+   'L10 pg_cluster_shmem still 2 rows (block format change is not a shmem region)');
+
+
+# ----------
+# L11: Inject registry baseline -- still 24 entries (1.4 adds no new
+# inject points; structure-only stage with no hot path).
+# ----------
+is($node->safe_psql(
+		'postgres',
+		'SELECT count(*) FROM pg_stat_cluster_injections'),
+   '24',
+   'L11 pg_stat_cluster_injections still 24 (1.4 adds no new injection points)');
+
+
+# ----------
+# L12: pg_stat_cluster_wait_events still 51 rows (block format
+# is structure-only; no new wait events at stage 1.4).
+# ----------
+is($node->safe_psql(
+		'postgres',
+		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
+   '51',
+   'L12 pg_stat_cluster_wait_events still 51 rows after 1.4');
+
+
+$node->stop;
+
+done_testing();

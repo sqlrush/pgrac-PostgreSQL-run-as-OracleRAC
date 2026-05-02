@@ -10,6 +10,27 @@
  * src/include/storage/bufpage.h
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (5th):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, extend
+ *	               PageHeaderData with an 8-byte pd_block_scn field
+ *	               (block-level SCN) and bump PG_PAGE_LAYOUT_VERSION
+ *	               4 -> 5.
+ *	Why:           Stage 1.4 introduces cluster-aware MVCC SCN tracking
+ *	               at the page level; the +8B field is the on-disk
+ *	               anchor for spec-1.16's local_scn maintenance.  The
+ *	               layout version bump uses PG's existing
+ *	               pd_pagesize_version sanity check (every page header
+ *	               byte 14-15) to make pgrac binary refuse vanilla PG
+ *	               16 datafiles (and vice versa) with a clear FATAL,
+ *	               instead of silent corruption.  Stage 1.4 only writes
+ *	               InvalidScn (0) as a placeholder; spec-1.16 takes
+ *	               over real SCN advancement.
+ *	               See docs/block-format-design.md v1.1 §4.2 + §15
+ *	               stage 1, docs/scn-protocol-design.md v1.1 §3.2,
+ *	               specs/spec-1.4-block-format-pageheader-scn.md.
  */
 #ifndef BUFPAGE_H
 #define BUFPAGE_H
@@ -18,6 +39,10 @@
 #include "storage/block.h"
 #include "storage/item.h"
 #include "storage/off.h"
+
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_scn.h" /* SCN typedef + InvalidScn (stage 1.4) */
+#endif
 
 /*
  * A postgres disk page is an abstraction layered on top of a postgres
@@ -164,6 +189,17 @@ typedef struct PageHeaderData
 	LocationIndex pd_special;	/* offset to start of special space */
 	uint16		pd_pagesize_version;
 	TransactionId pd_prune_xid; /* oldest prunable XID, or zero if none */
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.4): block-level SCN for cluster-aware MVCC.
+	 *
+	 *	Placeholder InvalidScn (0) at stage 1.4; spec-1.16 takes over
+	 *	real value advancement (commit_scn-style writeback per AD-008).
+	 *	8 bytes on 64-bit ABI; offset 24 from start of header (after
+	 *	pd_prune_xid) -> SizeOfPageHeaderData becomes 32 (was 24).
+	 */
+	SCN			pd_block_scn;
+#endif
 	ItemIdData	pd_linp[FLEXIBLE_ARRAY_MEMBER]; /* line pointer array */
 } PageHeaderData;
 
@@ -199,8 +235,19 @@ typedef PageHeaderData *PageHeader;
  *
  * As of Release 9.3, the checksum version must also be considered when
  * handling pages.
+ *
+ * pgrac (stage 1.4) uses 5: extends PageHeaderData with pd_block_scn
+ *		(8 bytes), enlarging SizeOfPageHeaderData from 24 to 32.  The
+ *		layout version bump intentionally makes pgrac binary refuse
+ *		vanilla PG 16 datafiles (and vice versa) via PG's existing
+ *		pd_pagesize_version sanity check.  See docs/block-format-design.md
+ *		v1.1 §15 stage 1 + spec-1.4.
  */
+#ifdef USE_PGRAC_CLUSTER
+#define PG_PAGE_LAYOUT_VERSION		5
+#else
 #define PG_PAGE_LAYOUT_VERSION		4
+#endif
 #define PG_DATA_CHECKSUM_VERSION	1
 
 /* ----------------------------------------------------------------

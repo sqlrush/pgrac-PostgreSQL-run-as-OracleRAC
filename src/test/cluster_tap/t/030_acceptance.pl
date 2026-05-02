@@ -367,8 +367,8 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM pg_cluster_state}),
-	'conf,guc,ic,inject,pgstat,phase,shared_fs,shmem',
-	'O2 pg_cluster_state has all 8 categories (7 from stage 0 + shared_fs from stage 1.1)');
+	'block_format,conf,guc,ic,inject,pgstat,phase,shared_fs,shmem',
+	'O2 pg_cluster_state has all 9 categories (7 stage-0 + shared_fs 1.1 + block_format 1.4)');
 
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE value IS NULL}),
@@ -428,6 +428,37 @@ ok( $node->safe_psql(
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) >= 9 FROM pg_proc WHERE oid >= 8898 AND oid <= 8910})
 	eq 't', 'Q3 pg_proc OID 8898-8910 range has >= 9 cluster SRFs (stage 0 catalog complete)');
+
+
+# ============================================================
+# §P  block format change (stage 1.4) -- spec-1.4 acceptance (4 tests)
+# ============================================================
+
+# P1: block_format category exposes 4 keys.
+is($node->safe_psql('postgres',
+		q{SELECT count(*) FROM pg_cluster_state WHERE category='block_format'}),
+	'4', 'P1 block_format category has 4 keys (page_layout_version, page_header_size, scn_size_bytes, invalid_scn_value)');
+
+# P2: page_layout_version = 5 (PG 16 vanilla 4 + pgrac 1.4 bump).
+is($node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='page_layout_version'}),
+	'5', 'P2 page_layout_version = 5');
+
+# P3: page_header_size = 32 (24 + 8 pd_block_scn).
+is($node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='block_format' AND key='page_header_size'}),
+	'32', 'P3 page_header_size = 32 (24 PG vanilla + 8B pd_block_scn)');
+
+# P4: SCN typedef + InvalidScn invariants.
+is($node->safe_psql('postgres',
+		q{SELECT (SELECT value FROM pg_cluster_state
+		           WHERE category='block_format' AND key='scn_size_bytes')
+		     || '|' ||
+		         (SELECT value FROM pg_cluster_state
+		           WHERE category='block_format' AND key='invalid_scn_value')}),
+	'8|0', 'P4 sizeof(SCN) = 8, InvalidScn = 0');
 
 
 $node->stop;
