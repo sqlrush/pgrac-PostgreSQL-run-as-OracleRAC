@@ -113,16 +113,40 @@ is($node->safe_psql(
 
 
 # ----------
-# L5: stub function symbol existence (Q8 user 修订 2026-05-02 strong
-# condition: 1.7 stage cluster_pcm_lock_* are C internal API only;
-# verify symbols are linked into postgres binary without exposing as
-# SQL functions).  We use psql to query a non-PCM SQL function that
-# reaches into the symbol table; the existence test is that postmaster
-# starts cleanly with cluster_pcm_lock.o linked (this fact alone is
-# evidence; if the symbols were missing the binary wouldn't link).
+# L5: stub function symbol existence via `nm postgres` (codex 1.7
+# review P2 修订 2026-05-02 真符号检查; spec-1.7 §1.4 例外 #7 + Q8
+# strong condition).  cluster_pcm_lock_* are C internal API only;
+# verify ALL 5 stub function symbols are linked into postgres binary.
+# A future change that removes/renames any of these would fail this
+# test even if no SQL caller exists yet.
 # ----------
-ok($node->safe_psql('postgres', 'SELECT 1') eq '1',
-   'L5 postgres binary links cleanly with cluster_pcm_lock.o (stage 1.7 stubs available; Q8 strong condition: no SQL function binding)');
+{
+	# Locate the postgres binary that the test cluster is running.
+	my $bindir = $node->config_data('--bindir');
+	my $postgres_bin = "$bindir/postgres";
+	ok(-x $postgres_bin, "L5a postgres binary at $postgres_bin is executable");
+
+	# `nm` lists all symbols (text + data) defined in the binary.
+	# Pipe through grep to filter cluster_pcm_lock_* symbols.  We
+	# expect exactly 5 stub function symbols to appear.
+	my @expected_symbols = qw(
+		cluster_pcm_lock_acquire
+		cluster_pcm_lock_release
+		cluster_pcm_lock_upgrade
+		cluster_pcm_lock_downgrade
+		cluster_pcm_lock_query
+	);
+
+	my $nm_output = `nm '$postgres_bin' 2>/dev/null`;
+	for my $sym (@expected_symbols)
+	{
+		# Match lines like "0000000000123abc T cluster_pcm_lock_acquire"
+		# (T = text section) or "_cluster_pcm_lock_acquire" on macOS
+		# (Mach-O prepends underscore).
+		like($nm_output, qr/\b_?$sym\b/,
+			 "L5b nm postgres contains symbol $sym (Q8 C internal API; spec-1.7 §1.4 #7)");
+	}
+}
 
 
 # ----------
@@ -200,6 +224,56 @@ $node->psql(
 	stderr => \$stderr_l10);
 like($stderr_l10, qr/cannot be (changed|set)/i,
 	 'L10b cluster.pcm_grd_max_entries is PGC_POSTMASTER (SET fails at session level)');
+
+
+# ----------
+# L11: cluster.pcm_grd_max_entries=16 non-default path (codex 1.7
+# review P1 修订 2026-05-02; spec-1.X-cluster-smgr-hardening §1.3.1
+# finding #1).  GUC help explicitly says users may set non-zero to
+# verify shmem pre-allocation startup stability; it's a user-visible
+# path that must be in CI.  Restart with GUC=16 and verify:
+#   - postmaster starts cleanly
+#   - pg_cluster_shmem.cluster_pcm_grd shows size_bytes > 0
+#   - pg_cluster_state.pcm.pcm_grd_allocated_bytes > 0
+#   - pg_cluster_state.pcm.pcm_grd_active_entries = 0 (stub never
+#     populates entries, only allocates the array)
+#   - stub APIs still ereport ERRCODE_FEATURE_NOT_SUPPORTED on call
+#     (verified via inject framework -- shmem allocation does not
+#     change stub behavior).
+# ----------
+$node->stop;
+$node->append_conf('postgresql.conf', "cluster.pcm_grd_max_entries = 16\n");
+$node->start;
+
+is($node->safe_psql('postgres', 'SHOW cluster.pcm_grd_max_entries'),
+   '16',
+   'L11a postmaster started cleanly with cluster.pcm_grd_max_entries=16');
+
+ok($node->safe_psql(
+		'postgres',
+		q{SELECT size_bytes > 0 FROM pg_cluster_shmem
+		   WHERE name = 'pgrac cluster pcm grd'}) eq 't',
+   'L11b pg_cluster_shmem.pgrac cluster pcm grd has size_bytes > 0');
+
+ok($node->safe_psql(
+		'postgres',
+		q{SELECT value::int > 0 FROM pg_cluster_state
+		   WHERE category = 'pcm' AND key = 'pcm_grd_allocated_bytes'}) eq 't',
+   'L11c pcm_grd_allocated_bytes > 0 (16 entries × sizeof(GrdEntry))');
+
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category = 'pcm' AND key = 'pcm_grd_active_entries'}),
+   '0',
+   'L11d pcm_grd_active_entries still 0 (stub never populates entries)');
+
+is($node->safe_psql(
+		'postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category = 'pcm' AND key = 'pcm_api_state'}),
+   'stub',
+   'L11e pcm_api_state still "stub" (allocation does not activate state machine)');
 
 
 $node->stop;

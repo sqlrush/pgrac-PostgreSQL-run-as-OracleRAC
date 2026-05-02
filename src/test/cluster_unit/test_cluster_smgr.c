@@ -252,6 +252,15 @@ TablespaceCreateDbspace(Oid s pg_attribute_unused(), Oid d pg_attribute_unused()
 						bool r pg_attribute_unused())
 {}
 
+/*
+ * miscadmin global referenced by cluster_smgr_init() startup-warning
+ * branch (Sprint A 2026-05-02).  In a real backend it is set by the
+ * postmaster; in this unit-test environment it stays false so the
+ * WARNING path stays inert (cluster_smgr_init() short-circuits when
+ * !IsUnderPostmaster, mirroring the standalone-bootstrap exemption).
+ */
+bool		IsUnderPostmaster = false;
+
 /* md.c stubs (cluster_smgr no longer fallbacks to these but still
  * referenced via header inclusion). */
 void

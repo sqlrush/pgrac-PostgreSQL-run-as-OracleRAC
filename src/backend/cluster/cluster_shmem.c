@@ -318,7 +318,7 @@ cluster_init_shmem_module(void)
 	 * Spec: spec-1.7-pcm-state-placeholder.md §1.2 Deliverable 3 +
 	 *       §11.2 shmem registry checklist.
 	 */
-	if (cluster_shmem_lookup_region("cluster_pcm_grd") == NULL)
+	if (cluster_shmem_lookup_region("pgrac cluster pcm grd") == NULL)
 		cluster_pcm_lock_module_init();
 }
 

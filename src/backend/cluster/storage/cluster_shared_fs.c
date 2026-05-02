@@ -124,13 +124,15 @@ cluster_shared_fs_register_backend(const ClusterSharedFsOps *ops)
 				 errmsg("cluster_shared_fs backend \"%s\" has out-of-range id %d", ops->name, id),
 				 errdetail("Valid range is [0, %d).", CLUSTER_SHARED_FS_BACKEND_MAX)));
 
-	if (ops->open == NULL || ops->close == NULL || ops->read == NULL || ops->write == NULL
-		|| ops->extend == NULL || ops->nblocks == NULL || ops->truncate == NULL
-		|| ops->immedsync == NULL || ops->unlink == NULL || ops->init == NULL
-		|| ops->shutdown == NULL)
+	if (ops->exists == NULL || ops->open_existing == NULL || ops->create == NULL
+		|| ops->close == NULL || ops->read == NULL || ops->write == NULL || ops->extend == NULL
+		|| ops->nblocks == NULL || ops->truncate == NULL || ops->immedsync == NULL
+		|| ops->unlink == NULL || ops->init == NULL || ops->shutdown == NULL)
 		ereport(FATAL, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("cluster_shared_fs backend \"%s\" has NULL callbacks", ops->name),
-						errdetail("All eleven vtable members must be non-NULL.")));
+						errdetail("All thirteen vtable members must be non-NULL "
+								  "(Sprint A 2026-05-02: open split into exists / "
+								  "open_existing / create).")));
 
 	CLUSTER_INJECTION_POINT("cluster-shared-fs-backend-register");
 
@@ -287,12 +289,35 @@ cluster_shared_fs_get_backend_at(int id)
 	} while (0)
 
 
-void
-cluster_shared_fs_open(RelFileLocator rlocator, ForkNumber forknum,
-					   ClusterSharedFsHandle **out_handle)
+/*
+ * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening): vtable split
+ * `open` (ambiguous create-or-open with O_CREAT side effect) into 3
+ * callbacks.  cluster_smgr / future Stage 2 共享存储后端 callers MUST
+ * use the appropriate variant -- exists() for read-only existence
+ * check, open_existing() to open a known-existing file, create() for
+ * new file creation.
+ */
+bool
+cluster_shared_fs_exists(RelFileLocator rlocator, ForkNumber forknum)
 {
 	ENSURE_ACTIVE();
-	cluster_shared_fs_active_ops->open(rlocator, forknum, out_handle);
+	return cluster_shared_fs_active_ops->exists(rlocator, forknum);
+}
+
+void
+cluster_shared_fs_open_existing(RelFileLocator rlocator, ForkNumber forknum,
+								ClusterSharedFsHandle **out_handle)
+{
+	ENSURE_ACTIVE();
+	cluster_shared_fs_active_ops->open_existing(rlocator, forknum, out_handle);
+}
+
+void
+cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum,
+						 ClusterSharedFsHandle **out_handle)
+{
+	ENSURE_ACTIVE();
+	cluster_shared_fs_active_ops->create(rlocator, forknum, out_handle);
 }
 
 

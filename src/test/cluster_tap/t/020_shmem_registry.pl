@@ -83,7 +83,7 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_cluster_shmem}),
-   'cluster_pcm_grd,pgrac cluster conf,pgrac cluster control',
+   'pgrac cluster conf,pgrac cluster control,pgrac cluster pcm grd',
    'L3 pg_cluster_shmem rows are exactly the 3 foundational regions (cluster_ctl + cluster_conf since 1.3, cluster_pcm_grd since 1.7)');
 
 

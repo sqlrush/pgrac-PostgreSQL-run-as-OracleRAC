@@ -57,14 +57,34 @@ pg_attribute_noreturn() static void cluster_shared_fs_stub_reject(const char *ca
 }
 
 
+static bool
+cluster_shared_fs_stub_exists(RelFileLocator rlocator, ForkNumber forknum)
+{
+	(void)rlocator;
+	(void)forknum;
+	cluster_shared_fs_stub_reject("exists");
+	/* unreachable */
+	return false;
+}
+
 static void
-cluster_shared_fs_stub_open(RelFileLocator rlocator, ForkNumber forknum,
-							ClusterSharedFsHandle **out_handle)
+cluster_shared_fs_stub_open_existing(RelFileLocator rlocator, ForkNumber forknum,
+									 ClusterSharedFsHandle **out_handle)
 {
 	(void)rlocator;
 	(void)forknum;
 	(void)out_handle;
-	cluster_shared_fs_stub_reject("open");
+	cluster_shared_fs_stub_reject("open_existing");
+}
+
+static void
+cluster_shared_fs_stub_create(RelFileLocator rlocator, ForkNumber forknum,
+							  ClusterSharedFsHandle **out_handle)
+{
+	(void)rlocator;
+	(void)forknum;
+	(void)out_handle;
+	cluster_shared_fs_stub_reject("create");
 }
 
 
@@ -152,7 +172,9 @@ const ClusterSharedFsOps cluster_shared_fs_stub_ops = {
 	.name = "stub",
 	.id = CLUSTER_SHARED_FS_BACKEND_STUB,
 
-	.open = cluster_shared_fs_stub_open,
+	.exists = cluster_shared_fs_stub_exists,
+	.open_existing = cluster_shared_fs_stub_open_existing,
+	.create = cluster_shared_fs_stub_create,
 	.close = cluster_shared_fs_stub_close,
 	.read = cluster_shared_fs_stub_read,
 	.write = cluster_shared_fs_stub_write,

@@ -206,7 +206,8 @@ cluster_pcm_grd_init(void)
 		return;
 
 	GrdEntries = (struct GrdEntry *)ShmemInitStruct(
-		"cluster_pcm_grd", mul_size(cluster_pcm_grd_max_entries, sizeof(struct GrdEntry)), &found);
+		"pgrac cluster pcm grd", mul_size(cluster_pcm_grd_max_entries, sizeof(struct GrdEntry)),
+		&found);
 
 	if (!found) {
 		/* Zero-init + per-entry LWLockInitialize. */
@@ -229,7 +230,7 @@ cluster_pcm_grd_init(void)
  * ============================================================ */
 
 static const ClusterShmemRegion cluster_pcm_grd_region = {
-	.name = "cluster_pcm_grd",
+	.name = "pgrac cluster pcm grd",
 	.size_fn = cluster_pcm_grd_shmem_size,
 	.init_fn = cluster_pcm_grd_init,
 	.lwlock_count = 0, /* per-entry LWLock initialized in init_fn */

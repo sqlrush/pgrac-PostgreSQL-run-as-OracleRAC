@@ -138,8 +138,21 @@ cluster_smgr_state_lookup(SMgrRelation reln, bool create)
 static ClusterSharedFsHandle *
 cluster_smgr_ensure_handle(ClusterSmgrRelationState *state, ForkNumber forknum)
 {
+	/*
+	 * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening): vtable
+	 * `open` was split into exists / open_existing / create.  This
+	 * lazy-open path is reached from smgr_read / smgr_write / smgr_
+	 * extend etc. -- by the time the caller hits these, smgrcreate
+	 * has already been called for new relations, so the file must
+	 * exist on disk.  Use open_existing (no O_CREAT side effect).
+	 *
+	 * If the file does not exist (e.g. after DROP TABLE while a
+	 * stale SMgrRelation is still cached), open_existing ereports
+	 * ERRCODE_UNDEFINED_FILE which propagates correctly.
+	 */
 	if (state->fork_handles[forknum] == NULL)
-		cluster_shared_fs_open(state->rlocator.locator, forknum, &state->fork_handles[forknum]);
+		cluster_shared_fs_open_existing(state->rlocator.locator, forknum,
+										&state->fork_handles[forknum]);
 	return state->fork_handles[forknum];
 }
 
@@ -192,6 +205,26 @@ cluster_smgr_init(void)
 		 "cluster_smgr: bypass HTAB initialised "
 		 "(initial size %d entries)",
 		 CLUSTER_SMGR_INITIAL_HTAB_SIZE);
+
+	/*
+	 * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening Q3=C):
+	 * issue postmaster startup WARNING when cluster.smgr_user_relations
+	 * is on, because crash recovery durability is not yet guaranteed
+	 * (Sprint B fsync registration lands in Stage 2 共享存储 spec).
+	 *
+	 * Only emitted by the postmaster process (not per-backend) to
+	 * avoid spamming the log.  IsUnderPostmaster is false in the
+	 * postmaster itself; in EXEC_BACKEND children it's true.
+	 */
+	if (cluster_smgr_user_relations && !IsUnderPostmaster)
+		ereport(WARNING,
+				(errmsg("cluster.smgr_user_relations is experimental in Stage 1.X"),
+				 errdetail("cluster_smgr is single-file passthrough; full md.c-equivalent "
+						   "fsync registration / unlink lifecycle is not yet implemented."),
+				 errhint("Crash recovery durability is not guaranteed.  Stage 2 共享存储 "
+						 "spec implements full fsync semantics with shared-storage backend "
+						 "protocol.  See docs/cluster-smgr-design.md and spec-1.X-cluster-"
+						 "smgr-hardening.md for current limitations.")));
 }
 
 
@@ -308,9 +341,16 @@ cluster_smgr_create(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 
 	state = cluster_smgr_state_lookup(reln, true);
 
-	/* cluster_shared_fs_local opens with O_RDWR | O_CREAT, so the
-	 * file is created on first open.  Force the open here. */
-	(void)cluster_smgr_ensure_handle(state, forknum);
+	/*
+	 * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening): use the
+	 * dedicated create() callback (was: implicit O_CREAT side effect
+	 * from open()).  The split makes the create-vs-open distinction
+	 * explicit and lets Stage 2 共享存储后端 implement protocol-aware
+	 * idempotency (e.g. CAS create) instead of inheriting POSIX
+	 * O_CREAT semantics.
+	 */
+	if (state->fork_handles[forknum] == NULL)
+		cluster_shared_fs_create(state->rlocator.locator, forknum, &state->fork_handles[forknum]);
 }
 
 
@@ -318,9 +358,6 @@ bool
 cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 {
 	const ClusterSmgrRelationState *state;
-	char *path;
-	struct stat st;
-	bool exists;
 
 	/*
 	 * Already opened in this backend?  Definitely exists.
@@ -330,20 +367,19 @@ cluster_smgr_exists(SMgrRelation reln, ForkNumber forknum)
 		return true;
 
 	/*
-	 * Path-based existence check, mirroring md.c::mdexists.  We can't
-	 * use cluster_shared_fs_open here because the local backend opens
-	 * with O_CREAT (would always report "exists" by side-effect of
-	 * creating the file).  The path scheme is a pgrac-stable contract
-	 * (see docs/cluster-smgr-design.md §3.3): for stage 1.2's local
-	 * backend the path is the same as md.c's main segment path, so
-	 * stat() is the right check.  Stage 2 backends without paths will
-	 * need an exists() callback added to cluster_shared_fs.
+	 * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening): use the
+	 * vtable exists() callback (newly added by Sprint A item #1).
+	 * This replaces the previous local-stat() hack which:
+	 *   - bypassed the vtable contract (only worked for backends with
+	 *     a valid local path),
+	 *   - prevented Stage 2 共享存储后端 (NFS / S3 / Multi-Attach)
+	 *     from being usable since they may have no local-path
+	 *     fallback.
+	 *
+	 * The exists() callback for the local backend uses POSIX stat();
+	 * Stage 2 backends will use protocol-level existence queries.
 	 */
-	path = relpathbackend(reln->smgr_rlocator.locator, reln->smgr_rlocator.backend, forknum);
-	exists = (stat(path, &st) == 0);
-	pfree(path);
-
-	return exists;
+	return cluster_shared_fs_exists(reln->smgr_rlocator.locator, forknum);
 }
 
 

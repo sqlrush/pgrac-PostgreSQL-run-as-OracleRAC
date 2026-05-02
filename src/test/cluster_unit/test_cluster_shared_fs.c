@@ -257,11 +257,10 @@ UT_TEST(test_shared_fs_vtable_struct_nonempty)
 	/*
 	 * Anchor sizeof to "more than just one int" so an accidental
 	 * structural change (member removed, int replaces a fp) is loud.
-	 * Eleven function pointers + a string + an int lower-bound to
-	 * ~80 bytes on 64-bit, ~50 on 32-bit; we test the conservative
-	 * lower bound.
+	 * Sprint A 2026-05-02: open split into exists / open_existing /
+	 * create -> 13 function pointers + a string + an int.
 	 */
-	UT_ASSERT(sizeof(ClusterSharedFsOps) >= sizeof(void *) * 11);
+	UT_ASSERT(sizeof(ClusterSharedFsOps) >= sizeof(void *) * 13);
 }
 
 
@@ -277,17 +276,19 @@ UT_TEST(test_stub_vtable_callbacks_nonnull)
 	UT_ASSERT_NOT_NULL(ops->name);
 	UT_ASSERT_STR_EQ(ops->name, "stub");
 
-	UT_ASSERT_NOT_NULL((void *)ops->open);
-	UT_ASSERT_NOT_NULL((void *)ops->close);
-	UT_ASSERT_NOT_NULL((void *)ops->read);
-	UT_ASSERT_NOT_NULL((void *)ops->write);
-	UT_ASSERT_NOT_NULL((void *)ops->extend);
-	UT_ASSERT_NOT_NULL((void *)ops->nblocks);
-	UT_ASSERT_NOT_NULL((void *)ops->truncate);
-	UT_ASSERT_NOT_NULL((void *)ops->immedsync);
-	UT_ASSERT_NOT_NULL((void *)ops->unlink);
-	UT_ASSERT_NOT_NULL((void *)ops->init);
-	UT_ASSERT_NOT_NULL((void *)ops->shutdown);
+	UT_ASSERT_NOT_NULL((void *) ops->exists);
+	UT_ASSERT_NOT_NULL((void *) ops->open_existing);
+	UT_ASSERT_NOT_NULL((void *) ops->create);
+	UT_ASSERT_NOT_NULL((void *) ops->close);
+	UT_ASSERT_NOT_NULL((void *) ops->read);
+	UT_ASSERT_NOT_NULL((void *) ops->write);
+	UT_ASSERT_NOT_NULL((void *) ops->extend);
+	UT_ASSERT_NOT_NULL((void *) ops->nblocks);
+	UT_ASSERT_NOT_NULL((void *) ops->truncate);
+	UT_ASSERT_NOT_NULL((void *) ops->immedsync);
+	UT_ASSERT_NOT_NULL((void *) ops->unlink);
+	UT_ASSERT_NOT_NULL((void *) ops->init);
+	UT_ASSERT_NOT_NULL((void *) ops->shutdown);
 }
 
 
@@ -295,28 +296,32 @@ UT_TEST(test_local_vtable_callbacks_nonnull)
 {
 	const ClusterSharedFsOps *ops = &cluster_shared_fs_local_ops;
 
-	UT_ASSERT_EQ((int)ops->id, (int)CLUSTER_SHARED_FS_BACKEND_LOCAL);
+	UT_ASSERT_EQ((int) ops->id, (int) CLUSTER_SHARED_FS_BACKEND_LOCAL);
 	UT_ASSERT_NOT_NULL(ops->name);
 	UT_ASSERT_STR_EQ(ops->name, "local");
 
-	UT_ASSERT_NOT_NULL((void *)ops->open);
-	UT_ASSERT_NOT_NULL((void *)ops->close);
-	UT_ASSERT_NOT_NULL((void *)ops->read);
-	UT_ASSERT_NOT_NULL((void *)ops->write);
-	UT_ASSERT_NOT_NULL((void *)ops->extend);
-	UT_ASSERT_NOT_NULL((void *)ops->nblocks);
-	UT_ASSERT_NOT_NULL((void *)ops->truncate);
-	UT_ASSERT_NOT_NULL((void *)ops->immedsync);
-	UT_ASSERT_NOT_NULL((void *)ops->unlink);
-	UT_ASSERT_NOT_NULL((void *)ops->init);
-	UT_ASSERT_NOT_NULL((void *)ops->shutdown);
+	UT_ASSERT_NOT_NULL((void *) ops->exists);
+	UT_ASSERT_NOT_NULL((void *) ops->open_existing);
+	UT_ASSERT_NOT_NULL((void *) ops->create);
+	UT_ASSERT_NOT_NULL((void *) ops->close);
+	UT_ASSERT_NOT_NULL((void *) ops->read);
+	UT_ASSERT_NOT_NULL((void *) ops->write);
+	UT_ASSERT_NOT_NULL((void *) ops->extend);
+	UT_ASSERT_NOT_NULL((void *) ops->nblocks);
+	UT_ASSERT_NOT_NULL((void *) ops->truncate);
+	UT_ASSERT_NOT_NULL((void *) ops->immedsync);
+	UT_ASSERT_NOT_NULL((void *) ops->unlink);
+	UT_ASSERT_NOT_NULL((void *) ops->init);
+	UT_ASSERT_NOT_NULL((void *) ops->shutdown);
 }
 
 
 UT_TEST(test_stub_and_local_distinct)
 {
-	UT_ASSERT_NE((int)cluster_shared_fs_stub_ops.id, (int)cluster_shared_fs_local_ops.id);
-	UT_ASSERT((void *)cluster_shared_fs_stub_ops.open != (void *)cluster_shared_fs_local_ops.open);
+	UT_ASSERT_NE((int) cluster_shared_fs_stub_ops.id,
+				 (int) cluster_shared_fs_local_ops.id);
+	UT_ASSERT((void *) cluster_shared_fs_stub_ops.exists !=
+			  (void *) cluster_shared_fs_local_ops.exists);
 }
 
 
@@ -346,15 +351,17 @@ UT_TEST(test_accessor_symbols_linkable)
 
 UT_TEST(test_dispatch_wrappers_linkable)
 {
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_open);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_close);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_read);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_write);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_extend);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_nblocks);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_truncate);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_immedsync);
-	UT_ASSERT_NOT_NULL((void *)cluster_shared_fs_unlink);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_exists);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_open_existing);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_create);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_close);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_read);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_write);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_extend);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_nblocks);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_truncate);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_immedsync);
+	UT_ASSERT_NOT_NULL((void *) cluster_shared_fs_unlink);
 }
 
 

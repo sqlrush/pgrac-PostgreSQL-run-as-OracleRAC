@@ -236,4 +236,63 @@ like($log,
 	 'L11 startup log contains the cross-check FATAL message');
 
 
+# ----------
+# Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening Q4=B):
+# minimal crash durability TAP -- 2 cases (write + truncate) with
+# CHECKPOINT + immediate kill + restart.  Records current state of
+# single-node passthrough; does NOT pretend to cover the full crash
+# matrix (Sprint B in Stage 2 共享存储 spec).
+#
+# What this validates at Stage 1.7.1:
+#   - clean restart after immediate kill recovers data persisted by
+#     CHECKPOINT (single-node case; relies on OS fsync + WAL replay).
+#   - truncate persists across immediate kill (durability of the
+#     truncated state, not just write).
+#
+# What this DOES NOT validate (Sprint B / Stage 2 work):
+#   - power-loss simulation (write reaches OS but not platter).
+#   - skipFsync semantics (cluster_smgr currently ignores skipFsync;
+#     pending sync request not yet registered).
+#   - drop / unlink / extend / zeroextend crash matrix.
+#   - multi-node fsync coordination.
+# ----------
+
+# Restart cluster with usable backend (the previous cross-check FATAL
+# left the node stopped).
+$node->adjust_conf('postgresql.conf',
+				   'cluster.shared_storage_backend', 'local');
+$node->start;
+
+# L12 case 1: write + CHECKPOINT + immediate kill + restart preserves data.
+$node->safe_psql('postgres', q{
+	CREATE TABLE crash_write_test (id int, val text);
+	INSERT INTO crash_write_test SELECT g, 'row-' || g
+	  FROM generate_series(1, 200) g;
+	CHECKPOINT;
+});
+$node->stop('immediate');
+$node->start;
+is($node->safe_psql('postgres', 'SELECT count(*) FROM crash_write_test'),
+   '200',
+   'L12 case 1: 200 rows persist after CHECKPOINT + immediate kill + restart (single-node passthrough write durability)');
+
+# L13 case 2: truncate + CHECKPOINT + immediate kill + restart preserves
+# truncated state (rows after the truncate boundary should NOT come
+# back; rows before the truncate boundary remain visible via WAL replay).
+$node->safe_psql('postgres', q{
+	CREATE TABLE crash_truncate_test (id int);
+	INSERT INTO crash_truncate_test SELECT g FROM generate_series(1, 100) g;
+	CHECKPOINT;
+	TRUNCATE crash_truncate_test;
+	CHECKPOINT;
+});
+$node->stop('immediate');
+$node->start;
+is($node->safe_psql('postgres', 'SELECT count(*) FROM crash_truncate_test'),
+   '0',
+   'L13 case 2: TRUNCATE persists after CHECKPOINT + immediate kill + restart (truncated state durability)');
+
+$node->stop;
+
+
 done_testing();

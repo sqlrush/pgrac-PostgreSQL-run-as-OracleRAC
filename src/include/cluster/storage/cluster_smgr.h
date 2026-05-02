@@ -8,12 +8,33 @@
  *	  storage/smgr/smgr.c can populate its second smgrsw[] entry from
  *	  this file's symbols (PGRAC MODIFICATIONS to smgr.c).
  *
- *	  Stage 1.2 = single-node passthrough: on-disk file layout (path,
- *	  1GB segment splitting, fsync semantics) is byte-identical to PG's
- *	  md.c.  Only the I/O entry point changes: smgr -> cluster_smgr ->
- *	  cluster_shared_fs -> active backend (local for stage 1.2) ->
- *	  fd.c.  Stage 2 swaps in real cluster backends (block_device /
- *	  cluster_fs / rbd / multi_attach) without touching this file.
+ *	  Stage 1.2 = single-node passthrough.  Path scheme is the same as
+ *	  md.c (per-relation file under PGDATA/pg_tblspc).  But several
+ *	  contracts intentionally differ from md.c and should not be
+ *	  treated as byte-identical (Sprint A 2026-05-02 hardening,
+ *	  spec-1.X-cluster-smgr-hardening § correcting the original Stage
+ *	  1.2 over-claim):
+ *
+ *	    - Single-file layout: NO 1GB segment splitting (decided in
+ *	      spec-1.2 选 C).  md.c splits relations into 1GB segments
+ *	      (relfilenode, relfilenode.1, .2 ...); cluster_smgr keeps
+ *	      one file per relation per fork to simplify shared-storage
+ *	      backend semantics in Stage 2.
+ *	    - fsync registration NOT EQUIVALENT to md.c: cluster_smgr
+ *	      currently ignores `skipFsync` and does not call PG's
+ *	      RegisterSyncRequest / pending-delete machinery.  Crash
+ *	      recovery durability is NOT GUARANTEED in Stage 1.X.  Full
+ *	      fsync registration (Sprint B) lands in Stage 2 共享存储 spec
+ *	      together with the multi-node fsync protocol design.
+ *	    - GUC `cluster.smgr_user_relations` is EXPERIMENTAL in
+ *	      Stage 1.X (default off; ON triggers postmaster startup
+ *	      WARNING).  Do not enable in production until Stage 2 spec
+ *	      delivers full md.c-equivalent durability semantics.
+ *
+ *	  I/O dispatch chain: smgr -> cluster_smgr -> cluster_shared_fs
+ *	  -> active backend (local for Stage 1.2) -> fd.c.  Stage 2 swaps
+ *	  in real cluster backends (block_device / cluster_fs / rbd /
+ *	  multi_attach) without touching this file.
  *
  *	  Selection happens at smgropen() time via cluster_smgr_which_for():
  *	  permanent (non-temp) relations route to smgr_which=1 when both

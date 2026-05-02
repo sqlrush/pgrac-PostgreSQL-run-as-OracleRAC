@@ -102,13 +102,34 @@ typedef struct ClusterSharedFsHandle ClusterSharedFsHandle;
  *	  - extend zero-fills the new page (PG semantics)
  *	  - immedsync is synchronous; returns only after persistence
  *	  - unlink takes RelFileLocator (caller has already closed handle)
+ *
+ *	Spec-1.X-cluster-smgr-hardening Sprint A 2026-05-02: vtable split
+ *	`open` (ambiguous create-or-open with O_CREAT side effect) into 3
+ *	separate callbacks:
+ *	  - exists():       check whether the relation file exists; no I/O
+ *	  - open_existing(): open an existing file; ENOENT if missing
+ *	  - create():       create a new file; existing-file behavior
+ *	                    backend-defined (local: O_EXCL would error;
+ *	                    stub: ereport NOT_SUPPORTED; Stage 2 共享存储
+ *	                    spec defines whether shared backends use idempotent
+ *	                    create vs error on conflict)
+ *	The legacy single `open` callback is removed since cluster_smgr is
+ *	the only caller; cluster_smgr_exists / cluster_smgr_open / cluster_
+ *	smgr_create call the appropriate split callback directly.  Stage 2
+ *	真后端 (NFS / S3 / Multi-Attach) requires this split because there
+ *	is no "local path stat()" fallback for cluster_smgr_exists hack.
  */
 typedef struct ClusterSharedFsOps {
 	const char *name; /* "stub" / "local" / ... */
 	ClusterSharedFsBackendId id;
 
+	/* Existence + Open + Create (split for vtable契约清晰；Sprint A 2026-05-02). */
+	bool (*exists)(RelFileLocator rlocator, ForkNumber forknum);
+	void (*open_existing)(RelFileLocator rlocator, ForkNumber forknum,
+						  ClusterSharedFsHandle **out_handle);
+	void (*create)(RelFileLocator rlocator, ForkNumber forknum, ClusterSharedFsHandle **out_handle);
+
 	/* Core I/O. */
-	void (*open)(RelFileLocator rlocator, ForkNumber forknum, ClusterSharedFsHandle **out_handle);
 	void (*close)(ClusterSharedFsHandle *handle);
 	int (*read)(ClusterSharedFsHandle *handle, BlockNumber blocknum, char *buf);
 	int (*write)(ClusterSharedFsHandle *handle, BlockNumber blocknum, const char *buf);
@@ -192,8 +213,18 @@ extern const ClusterSharedFsOps *cluster_shared_fs_get_backend_at(int id);
  *	place when stage 6+ wires those in.  Stage 1.1: pure dispatch.
  * ----------
  */
-extern void cluster_shared_fs_open(RelFileLocator rlocator, ForkNumber forknum,
-								   ClusterSharedFsHandle **out_handle);
+/*
+ * Existence + open/create wrappers (split per Sprint A 2026-05-02
+ * spec-1.X-cluster-smgr-hardening).  Replace the old single
+ * cluster_shared_fs_open which had ambiguous create-or-open semantics
+ * with O_CREAT side effect.  Callers (cluster_smgr_exists / cluster_
+ * smgr_open / cluster_smgr_create) MUST use the appropriate variant.
+ */
+extern bool cluster_shared_fs_exists(RelFileLocator rlocator, ForkNumber forknum);
+extern void cluster_shared_fs_open_existing(RelFileLocator rlocator, ForkNumber forknum,
+											ClusterSharedFsHandle **out_handle);
+extern void cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum,
+									 ClusterSharedFsHandle **out_handle);
 extern void cluster_shared_fs_close(ClusterSharedFsHandle *handle);
 extern int cluster_shared_fs_read(ClusterSharedFsHandle *handle, BlockNumber blocknum, char *buf);
 extern int cluster_shared_fs_write(ClusterSharedFsHandle *handle, BlockNumber blocknum,

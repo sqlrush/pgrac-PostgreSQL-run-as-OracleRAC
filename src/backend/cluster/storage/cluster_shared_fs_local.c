@@ -38,6 +38,7 @@
 #include "postgres.h"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "common/relpath.h"
@@ -80,9 +81,29 @@ cluster_shared_fs_local_relpath(RelFileLocator rlocator, ForkNumber forknum)
 }
 
 
+/*
+ * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening): split the
+ * old `_local_open` (which carried O_CREAT side effect violating
+ * vtable contract) into three separate callbacks: exists / open_
+ * existing / create.  This eliminates the cluster_smgr_exists hack
+ * that used local path stat() to bypass the vtable.
+ */
+static bool
+cluster_shared_fs_local_exists(RelFileLocator rlocator, ForkNumber forknum)
+{
+	char *path;
+	struct stat st;
+	bool result;
+
+	path = cluster_shared_fs_local_relpath(rlocator, forknum);
+	result = (stat(path, &st) == 0);
+	pfree(path);
+	return result;
+}
+
 static void
-cluster_shared_fs_local_open(RelFileLocator rlocator, ForkNumber forknum,
-							 ClusterSharedFsHandle **out_handle)
+cluster_shared_fs_local_open_existing(RelFileLocator rlocator, ForkNumber forknum,
+									  ClusterSharedFsHandle **out_handle)
 {
 	ClusterSharedFsHandle *handle;
 	char *path;
@@ -94,14 +115,54 @@ cluster_shared_fs_local_open(RelFileLocator rlocator, ForkNumber forknum,
 	path = cluster_shared_fs_local_relpath(rlocator, forknum);
 
 	/*
-	 * Open with create-if-missing, the same flag set md.c uses for
-	 * smgrcreate-followed-by-extend.  Permission bits are left to PG's
-	 * pg_file_create_mode default.
+	 * O_RDWR only -- caller asserts file exists.  Returns ENOENT path
+	 * if missing (caller is responsible for using create() before
+	 * open_existing() or for handling errcode_for_file_access()).
+	 */
+	vfd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+	if (vfd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("cluster_shared_fs.local: could not open existing file \"%s\": %m", path)));
+
+	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	handle = (ClusterSharedFsHandle *)palloc0(sizeof(ClusterSharedFsHandle));
+	MemoryContextSwitchTo(oldcxt);
+
+	handle->rlocator = rlocator;
+	handle->forknum = forknum;
+	handle->vfd = vfd;
+	handle->opened = true;
+
+	*out_handle = handle;
+
+	pfree(path);
+}
+
+static void
+cluster_shared_fs_local_create(RelFileLocator rlocator, ForkNumber forknum,
+							   ClusterSharedFsHandle **out_handle)
+{
+	ClusterSharedFsHandle *handle;
+	char *path;
+	File vfd;
+	MemoryContext oldcxt;
+
+	CLUSTER_INJECTION_POINT("cluster-shared-fs-local-open");
+
+	path = cluster_shared_fs_local_relpath(rlocator, forknum);
+
+	/*
+	 * O_CREAT (not O_EXCL): create-if-missing matches md.c
+	 * smgrcreate-followed-by-extend pattern; idempotent for repeated
+	 * smgrcreate (e.g. CREATE INDEX CONCURRENTLY rerun).  Stage 2
+	 * 共享存储后端 may use O_EXCL semantics if shared backend
+	 * provides idempotency at protocol layer.
 	 */
 	vfd = PathNameOpenFile(path, O_RDWR | O_CREAT | PG_BINARY);
 	if (vfd < 0)
 		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("cluster_shared_fs.local: could not open file \"%s\": %m", path)));
+						errmsg("cluster_shared_fs.local: could not create file \"%s\": %m", path)));
 
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 	handle = (ClusterSharedFsHandle *)palloc0(sizeof(ClusterSharedFsHandle));
@@ -206,6 +267,31 @@ cluster_shared_fs_local_nblocks(ClusterSharedFsHandle *handle)
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("cluster_shared_fs.local: could not stat file: %m")));
 
+	/*
+	 * Sprint A 2026-05-02 (codex review supplemental P2):
+	 *
+	 * Partial-block detection: file size MUST be a whole multiple of
+	 * BLCKSZ.  Previously this function silently truncated via integer
+	 * division, hiding storage corruption (post-crash truncated tail,
+	 * filesystem misalignment, etc.).  ERROR-out lets the user see the
+	 * issue immediately rather than discovering it via missing rows
+	 * downstream.
+	 *
+	 * Spec: spec-1.X-cluster-smgr-hardening Sprint A item #2.
+	 */
+	if (size % BLCKSZ != 0)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("cluster_shared_fs.local: relation file size " INT64_FORMAT
+							   " is not a multiple of BLCKSZ %d",
+							   (int64)size, BLCKSZ),
+						errdetail("Trailing %ld bytes are partial-block; would have been silently "
+								  "truncated by integer division before Sprint A hardening.",
+								  (long)(size % BLCKSZ)),
+						errhint("This indicates storage corruption (e.g. post-crash truncated "
+								"tail, filesystem misalignment).  "
+								"Restore the relation file from a known-good backup, or run "
+								"pg_resetwal if the cluster is in a recoverable state.")));
+
 	return (BlockNumber)(size / BLCKSZ);
 }
 
@@ -262,7 +348,9 @@ const ClusterSharedFsOps cluster_shared_fs_local_ops = {
 	.name = "local",
 	.id = CLUSTER_SHARED_FS_BACKEND_LOCAL,
 
-	.open = cluster_shared_fs_local_open,
+	.exists = cluster_shared_fs_local_exists,
+	.open_existing = cluster_shared_fs_local_open_existing,
+	.create = cluster_shared_fs_local_create,
 	.close = cluster_shared_fs_local_close,
 	.read = cluster_shared_fs_local_read,
 	.write = cluster_shared_fs_local_write,

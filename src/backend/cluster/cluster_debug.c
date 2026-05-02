@@ -473,8 +473,13 @@ static void
 dump_pcm(ReturnSetInfo *rsinfo)
 {
 	emit_row(rsinfo, "pcm", "pcm_grd_max_entries", fmt_int32(cluster_pcm_grd_max_entries));
+	/*
+	 * fmt_int64 (not int32) per codex 1.7 review P3: Stage 2 default
+	 * NBuffers + large shared_buffers can exceed 32-bit signed range.
+	 * Spec: spec-1.X-cluster-smgr-hardening §1.3.1 finding #4.
+	 */
 	emit_row(rsinfo, "pcm", "pcm_grd_allocated_bytes",
-			 fmt_int32((int32)cluster_pcm_grd_shmem_size()));
+			 fmt_int64((int64)cluster_pcm_grd_shmem_size()));
 	emit_row(rsinfo, "pcm", "pcm_grd_active_entries", fmt_int32(cluster_pcm_grd_count()));
 	emit_row(rsinfo, "pcm", "pcm_lock_mode_count", "3");
 	emit_row(rsinfo, "pcm", "pcm_transition_count", fmt_int32(PCM_TRANSITION_COUNT));
