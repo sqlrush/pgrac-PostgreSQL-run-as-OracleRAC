@@ -44,6 +44,11 @@ nullPointerRedundantCheck:src/include/storage/bufpage.h
 # Reason: PG-upstream xlogreader.h reachable via cluster_smgr.c -> smgr.h
 # transitive include (added in stage 1.2); not pgrac code.
 constParameterPointer:src/include/access/xlogreader.h
+# Reason: stage-1.3 cluster_shmem_register_region uses Assert(region != NULL);
+# region->name pattern.  PG Assert is non-trapping to cppcheck, so it flags
+# the later region != NULL check as redundant.  Same precedent as
+# cluster_shared_fs_local.c suppression added in stage 1.1.
+nullPointerRedundantCheck:src/backend/cluster/cluster_shmem.c
 
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a

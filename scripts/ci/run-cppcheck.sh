@@ -104,6 +104,10 @@ SHAREDFS_SUPP=(
   # the vtable shape fixed across stages.  Suppress at the callback
   # implementation file.
   --suppress=constParameterCallback:src/backend/cluster/storage/cluster_shared_fs_local.c
+  # Reason: stage-1.3 cluster_shmem_register_region uses the same
+  # Assert(region != NULL); region->name pattern that triggers the
+  # PG-Assert false positive (PG's Assert is non-trapping to cppcheck).
+  --suppress=nullPointerRedundantCheck:src/backend/cluster/cluster_shmem.c
 )
 
 echo "## cppcheck $(cppcheck --version)"
