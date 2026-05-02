@@ -45,6 +45,7 @@ OBJS = \
 	cluster_guc.o \
 	cluster_ic.o \
 	cluster_inject.o \
+	cluster_pcm_lock.o \
 	cluster_pgstat.o \
 	cluster_shmem.o \
 	cluster_signal.o \

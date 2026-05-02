@@ -53,11 +53,12 @@
 #include "utils/memutils.h" /* TopMemoryContext */
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_conf.h"	/* cluster_conf_shmem_size / init */
-#include "cluster/cluster_elog.h"	/* CLUSTER_LOG */
-#include "cluster/cluster_guc.h"	/* cluster_node_id / cluster_shmem_max_regions */
-#include "cluster/cluster_ic.h"		/* cluster_ic_init / shutdown (stage 0.18) */
-#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_conf.h"	  /* cluster_conf_shmem_size / init */
+#include "cluster/cluster_elog.h"	  /* CLUSTER_LOG */
+#include "cluster/cluster_guc.h"	  /* cluster_node_id / cluster_shmem_max_regions */
+#include "cluster/cluster_ic.h"		  /* cluster_ic_init / shutdown (stage 0.18) */
+#include "cluster/cluster_inject.h"	  /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_version_macros.h"
 
@@ -306,6 +307,19 @@ cluster_init_shmem_module(void)
 		cluster_shmem_register_region(&cluster_ctl_region);
 	if (cluster_shmem_lookup_region(cluster_conf_region.name) == NULL)
 		cluster_shmem_register_region(&cluster_conf_region);
+
+	/*
+	 * Stage 1.7: register cluster_pcm_grd (PCM GRD master state).
+	 * Region size_fn returns 0 if cluster.pcm_grd_max_entries=0
+	 * (default), so this registration is essentially zero-cost when
+	 * PCM is not enabled.  Stage 2.X PCM 真值激活 spec changes the
+	 * GUC default to NBuffers.
+	 *
+	 * Spec: spec-1.7-pcm-state-placeholder.md §1.2 Deliverable 3 +
+	 *       §11.2 shmem registry checklist.
+	 */
+	if (cluster_shmem_lookup_region("cluster_pcm_grd") == NULL)
+		cluster_pcm_lock_module_init();
 }
 
 

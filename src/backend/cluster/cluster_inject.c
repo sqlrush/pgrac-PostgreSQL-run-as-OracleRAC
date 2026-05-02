@@ -120,6 +120,14 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	{ .name = "cluster-shmem-region-init-pre" },
 	{ .name = "cluster-shmem-register-region" },
 	{ .name = "cluster-shmem-views-srf-entry" },
+
+	/* Stage 1.7 cluster PCM lock framework (4 entries; Q6 user 修订
+	 * 2026-05-02 release-pre instead of release-post for naming honesty
+	 * since 1.7 stub never reaches a 'post' point). */
+	{ .name = "cluster-pcm-acquire-entry" },
+	{ .name = "cluster-pcm-convert-pre" },
+	{ .name = "cluster-pcm-downgrade-pre" },
+	{ .name = "cluster-pcm-release-pre" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)

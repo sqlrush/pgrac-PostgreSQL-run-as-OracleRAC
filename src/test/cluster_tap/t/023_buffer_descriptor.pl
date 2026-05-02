@@ -129,13 +129,14 @@ is($node->safe_psql(
 
 
 # ----------
-# L10: 1.3 baseline -- pg_cluster_shmem still 2 rows (1.6 adds no shmem regions).
+# L10: 1.3 baseline -- pg_cluster_shmem 3 rows (1.6 adds no shmem regions;
+# 1.7 adds cluster_pcm_grd region).
 # ----------
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_cluster_shmem'),
-   '2',
-   'L10 1.3 baseline: pg_cluster_shmem still 2 rows (cluster_ctl + cluster_conf)');
+   '3',
+   'L10 1.3 baseline: pg_cluster_shmem 3 rows (cluster_ctl + cluster_conf + cluster_pcm_grd from 1.7)');
 
 
 # ----------
@@ -144,8 +145,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-   '24',
-   'L11 1.2 baseline: pg_stat_cluster_injections still 24 (1.6 adds no inject points)');
+   '28',
+   'L11 1.2 baseline: pg_stat_cluster_injections is 28 (1.6 adds no inject points; 4 PCM added by 1.7)');
 
 
 # ----------
@@ -155,8 +156,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT category) FROM pg_cluster_state}),
-   '10',
-   'L12 pg_cluster_state has 10 distinct categories (9 from spec-1.5 + buffer_format from spec-1.6)');
+   '11',
+   'L12 pg_cluster_state has 11 distinct categories (10 from spec-1.6 + pcm from spec-1.7)');
 
 
 # ----------
@@ -219,7 +220,7 @@ is($node->safe_psql('postgres',
 my $smoke_categories = $node->safe_psql(
 	'postgres',
 	q{SELECT count(DISTINCT category) FROM pg_cluster_state});
-is($smoke_categories, '10', 'L16 cluster_smoke surface integrates buffer_format (10 categories)');
+is($smoke_categories, '11', 'L16 cluster_smoke surface integrates buffer_format + pcm (11 categories)');
 
 
 # ----------

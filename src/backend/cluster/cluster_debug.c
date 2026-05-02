@@ -78,6 +78,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_scn.h"		 /* SCN typedef (stage 1.4) */
 #include "cluster/cluster_itl_slot.h"	 /* CLUSTER_ITL_* constants (stage 1.5) */
 #include "cluster/cluster_buffer_desc.h" /* BufferType / PcmState enums (stage 1.6) */
+#include "cluster/cluster_pcm_lock.h"	 /* PCM stub API + grd helpers (stage 1.7) */
 #include "storage/bufpage.h"	   /* PG_PAGE_LAYOUT_VERSION, SizeOfPageHeaderData (stage 1.4) */
 #include "storage/buf_internals.h" /* BufferDesc layout (stage 1.6) */
 #include "cluster/cluster_pgstat.h"
@@ -453,6 +454,33 @@ dump_buffer_format(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "buffer_format", "pcm_state_count", "3");
 }
 
+
+/*
+ * dump_pcm -- Stage 1.7 PCM lock framework scaffolding diagnostics.
+ *
+ *	Emits 6 rows surfacing the spec-1.7 PCM stub state for DBA
+ *	visibility.  pcm_api_state="stub" makes it obvious that PCM lock
+ *	manager is in scaffolding mode (not yet truth-activated).
+ *
+ *	Q4 user 修订 2026-05-02 added pcm_grd_allocated_bytes (actual
+ *	shmem occupancy) and pcm_api_state (so DBAs aren't surprised by
+ *	0A000 errors when calling PCM lock functions).
+ *
+ *	Spec: spec-1.7-pcm-state-placeholder.md §1.2 Deliverable 4 +
+ *	      §11.4 pg_cluster_state.pcm checklist.
+ */
+static void
+dump_pcm(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "pcm", "pcm_grd_max_entries", fmt_int32(cluster_pcm_grd_max_entries));
+	emit_row(rsinfo, "pcm", "pcm_grd_allocated_bytes",
+			 fmt_int32((int32)cluster_pcm_grd_shmem_size()));
+	emit_row(rsinfo, "pcm", "pcm_grd_active_entries", fmt_int32(cluster_pcm_grd_count()));
+	emit_row(rsinfo, "pcm", "pcm_lock_mode_count", "3");
+	emit_row(rsinfo, "pcm", "pcm_transition_count", fmt_int32(PCM_TRANSITION_COUNT));
+	emit_row(rsinfo, "pcm", "pcm_api_state", "stub");
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -485,6 +513,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_shared_fs(rsinfo);
 		dump_block_format(rsinfo);
 		dump_buffer_format(rsinfo);
+		dump_pcm(rsinfo);
 		dump_phase(rsinfo);
 	}
 #else

@@ -150,6 +150,16 @@ cluster_injection_assign_hook(const char *newval pg_attribute_unused(),
 
 int cluster_injection_armed_count = 0;
 
+/*
+ * Stage 1.7 stub: cluster_pcm_grd_max_entries lives in
+ * cluster_pcm_lock.c which is not linked into this test binary
+ * (would drag in PG runtime for ereport / LWLockInitialize).  We
+ * provide a local definition matching the type so cluster_guc.c
+ * (which references &cluster_pcm_grd_max_entries via
+ * DefineCustomIntVariable) can link.
+ */
+int cluster_pcm_grd_max_entries = 0;
+
 void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}

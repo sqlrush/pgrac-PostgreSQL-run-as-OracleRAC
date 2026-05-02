@@ -302,7 +302,7 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'24', 'M1 24 injection points (6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs + 3 stage-1.2 smgr + 4 stage-1.3 shmem registry)');
+	'28', 'M1 28 injection points (6 baseline + 8 stage-0.30 sweep + 3 stage-1.1 shared_fs + 3 stage-1.2 smgr + 4 stage-1.3 shmem registry + 4 stage-1.7 pcm lock)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '48',
-	'M5 inject category has 24×2 = 48 sub-keys (.fault_type + .hits)');
+	) eq '56',
+	'M5 inject category has 28×2 = 56 sub-keys (.fault_type + .hits) after 1.7');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
@@ -367,8 +367,8 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM pg_cluster_state}),
-	'block_format,buffer_format,conf,guc,ic,inject,pgstat,phase,shared_fs,shmem',
-	'O2 pg_cluster_state has all 10 categories (7 stage-0 + shared_fs 1.1 + block_format 1.4 + buffer_format 1.6)');
+	'block_format,buffer_format,conf,guc,ic,inject,pcm,pgstat,phase,shared_fs,shmem',
+	'O2 pg_cluster_state has all 11 categories (7 stage-0 + shared_fs 1.1 + block_format 1.4 + buffer_format 1.6 + pcm 1.7)');
 
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE value IS NULL}),

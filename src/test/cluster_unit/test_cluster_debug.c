@@ -182,6 +182,27 @@ cluster_shmem_get_region_count(void)
 {
 	return 0;
 }
+
+/*
+ * Stage 1.7: cluster_debug.c::dump_pcm calls cluster_pcm_grd_count() +
+ * cluster_pcm_grd_shmem_size() + reads cluster_pcm_grd_max_entries
+ * (defined in cluster_pcm_lock.c).  cluster_pcm_lock.o is not linked
+ * here; provide stubs returning the same defaults the real
+ * implementation returns when GUC=0.
+ */
+int cluster_pcm_grd_max_entries = 0;
+
+int
+cluster_pcm_grd_count(void)
+{
+	return 0;
+}
+
+Size
+cluster_pcm_grd_shmem_size(void)
+{
+	return 0;
+}
 Size
 cluster_shmem_get_total_bytes(void)
 {

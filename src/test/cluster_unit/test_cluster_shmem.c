@@ -303,6 +303,21 @@ cluster_injection_assign_hook(const char *newval pg_attribute_unused(),
 							  void *extra pg_attribute_unused())
 {}
 
+/*
+ * Stage 1.7 stubs: cluster_pcm_lock.c (where cluster_pcm_grd_max_entries
+ * lives and cluster_pcm_lock_module_init is defined) is not linked into
+ * this test binary.  cluster_shmem.c references both symbols (via
+ * cluster_init_shmem_module's pcm_grd region registration call).
+ * Provide local stub bodies so linking succeeds; the stub variant of
+ * cluster_pcm_lock_module_init is a no-op since this test never calls
+ * cluster_init_shmem_module anyway.
+ */
+int cluster_pcm_grd_max_entries = 0;
+
+void
+cluster_pcm_lock_module_init(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 

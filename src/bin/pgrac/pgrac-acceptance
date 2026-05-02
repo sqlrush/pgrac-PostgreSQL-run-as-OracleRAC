@@ -262,26 +262,26 @@ check_sql_min "pg_stat_cluster_nodes returns >= 1 row" \
     "SELECT count(*) FROM pg_stat_cluster_nodes" \
     1
 
-# ---- check 7: pg_stat_cluster_injections has 24 registered points ----
-# stage 0 base 14 + spec-0.27 +6 + spec-1.2 +3 + spec-1.3 +4 = 24+ but
-# matched against current count.  030_acceptance.pl §A locks this same
-# value; spec-stage1-codex-fixes Deliverable 9 keeps both in sync.
-check_sql "pg_stat_cluster_injections has 24 registered injection points" \
+# ---- check 7: pg_stat_cluster_injections has 28 registered points ----
+# stage 0 base 14 + spec-0.27 +6 + spec-1.2 +3 + spec-1.3 +4 + spec-1.7 +4
+# = 28.  030_acceptance.pl §M1 / 017_debug.pl §8 lock this same value;
+# spec-1.7 §11.3 inject baseline checklist keeps them in sync.
+check_sql "pg_stat_cluster_injections has 28 registered injection points" \
     "SELECT count(*) FROM pg_stat_cluster_injections" \
-    "^24$"
+    "^28$"
 
 # ---- check 8: cluster.inject.armed_count counter visible -------------
 check_sql_min "pg_stat_cluster_counters has cluster.inject.armed_count" \
     "SELECT count(*) FROM pg_stat_cluster_counters WHERE name = 'cluster.inject.armed_count'" \
     1
 
-# ---- check 9: pg_cluster_state returns 10 categories -----------------
+# ---- check 9: pg_cluster_state returns 11 categories -----------------
 # stage 0 base 7 + shared_fs (1.1) + block_format (1.4) + buffer_format
-# (1.6) = 10.  030_acceptance.pl §O2 locks the exact category set;
-# spec-stage1-codex-fixes Deliverable 9 keeps numeric count in sync.
-check_sql "pg_cluster_state returns 10 categories" \
+# (1.6) + pcm (1.7) = 11.  030_acceptance.pl §O2 locks the exact
+# category set; spec-1.7 §11.4 keeps numeric count in sync.
+check_sql "pg_cluster_state returns 11 categories" \
     "SELECT count(DISTINCT category) FROM pg_cluster_state" \
-    "^10$"
+    "^11$"
 
 # ---- check 10: cluster_phase is 'init' (postmaster booted ok) --------
 check_sql "phase.cluster_phase = 'init'" \

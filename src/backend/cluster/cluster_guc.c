@@ -41,6 +41,7 @@
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"				   /* ClusterICTier enum values */
 #include "cluster/cluster_inject.h"			   /* cluster_injection_assign_hook (stage 0.27) */
+#include "cluster/cluster_pcm_lock.h"		   /* cluster_pcm_grd_max_entries (stage 1.7) */
 #include "cluster/storage/cluster_shared_fs.h" /* ClusterSharedFsBackendId (stage 1.1) */
 
 
@@ -261,6 +262,37 @@ cluster_init_guc(void)
 										 "exceeded\"."),
 							&cluster_shmem_max_regions, 64, 8, 256,
 							PGC_POSTMASTER, /* registry array is palloc'd once at init */
+							0,				/* flags */
+							NULL,			/* check_hook */
+							NULL,			/* assign_hook */
+							NULL);			/* show_hook */
+
+	/*
+	 * Stage 1.7: cluster.pcm_grd_max_entries
+	 *
+	 *	Maximum number of GrdEntry slots in the cluster_pcm_grd shmem
+	 *	region.  Default 0 (Q4 user 修订 2026-05-02): no GRD shmem
+	 *	allocated by default; cluster_pcm_grd_init() handles size=0
+	 *	by early-returning before ShmemInitStruct (Q5 user 修订: PG
+	 *	ShmemInitStruct(name, 0, &found) behavior is undefined).
+	 *	Range [0, 1048576] (max ~128 MB at sizeof(GrdEntry) ~128 B).
+	 *	PGC_POSTMASTER (startup-fixed).
+	 *
+	 *	Stage 2.X PCM 真值激活 spec will change default to NBuffers.
+	 *
+	 *	Spec: spec-1.7-pcm-state-placeholder.md §1.2 Deliverable 3 +
+	 *	      §11.1 GUC checklist.
+	 */
+	DefineCustomIntVariable("cluster.pcm_grd_max_entries",
+							gettext_noop("Maximum entries in the PCM GRD master shmem region."),
+							gettext_noop("Stage 1.7 stub: default 0 means no GRD shmem allocated. "
+										 "Set non-zero to verify shmem pre-allocation startup "
+										 "stability (PCM lock API still ereports SQLSTATE 0A000 "
+										 "FEATURE_NOT_SUPPORTED at this stage).  Stage 2.X PCM "
+										 "lock state machine activation will change the default "
+										 "to NBuffers."),
+							&cluster_pcm_grd_max_entries, 0, 0, 1048576,
+							PGC_POSTMASTER, /* startup-fixed */
 							0,				/* flags */
 							NULL,			/* check_hook */
 							NULL,			/* assign_hook */
