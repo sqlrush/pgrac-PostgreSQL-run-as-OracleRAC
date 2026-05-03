@@ -84,6 +84,13 @@ PG_HEADER_SUPP=(
   # Reason: PG-upstream xlogreader.h reachable via cluster_smgr.c -> smgr.h
   # transitive include; not pgrac code per spec-0.27.5 §1.2 scope.
   --suppress=constParameterPointer:src/include/access/xlogreader.h
+  # Reason: spec-1.10.1 (F1 hardening) made cluster_startup_phase.h include
+  # storage/lwlock.h to expose ClusterPhaseSharedState; lwlock.h transitively
+  # pulls in port/atomics/generic.h.  Two PG-upstream findings surface there
+  # (constParameterPointer + integerOverflowCond on signed -INT_MIN); both
+  # are out of pgrac scope per spec-0.27.5 §1.2.
+  --suppress=constParameterPointer:src/include/port/atomics/generic.h
+  --suppress=integerOverflowCond:src/include/port/atomics/generic.h
 )
 
 # Reason: PG's Assert() is non-trapping by spec to cppcheck (it has no

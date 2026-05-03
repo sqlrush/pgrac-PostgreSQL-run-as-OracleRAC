@@ -44,6 +44,13 @@ nullPointerRedundantCheck:src/include/storage/bufpage.h
 # Reason: PG-upstream xlogreader.h reachable via cluster_smgr.c -> smgr.h
 # transitive include (added in stage 1.2); not pgrac code.
 constParameterPointer:src/include/access/xlogreader.h
+# Reason: spec-1.10.1 (F1 hardening) made cluster_startup_phase.h include
+# storage/lwlock.h to expose ClusterPhaseSharedState; lwlock.h transitively
+# pulls in port/atomics/generic.h.  Two PG-upstream findings surface there
+# (constParameterPointer + integerOverflowCond on signed -INT_MIN); both
+# are out of pgrac scope per spec-0.27.5 §1.2.
+constParameterPointer:src/include/port/atomics/generic.h
+integerOverflowCond:src/include/port/atomics/generic.h
 # Reason: stage-1.3 cluster_shmem_register_region uses Assert(region != NULL);
 # region->name pattern.  PG Assert is non-trapping to cppcheck, so it flags
 # the later region != NULL check as redundant.  Same precedent as
