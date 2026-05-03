@@ -36,6 +36,8 @@
  */
 #include "postgres.h"
 
+#include <signal.h>
+
 #include "cluster/cluster_lmon.h"
 
 #undef printf
