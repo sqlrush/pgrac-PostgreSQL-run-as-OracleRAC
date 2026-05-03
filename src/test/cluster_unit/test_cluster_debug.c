@@ -443,6 +443,24 @@ void
 cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unused())
 {}
 
+/*
+ * Spec-1.11 Sprint A stubs: cluster_startup_phase.o now references
+ * cluster_lmon_start + cluster_lmon_wait_for_ready (phase_1_handler
+ * spawn + sync wait).  test_cluster_debug never invokes phase_1_handler
+ * so these are address-only no-op stubs.
+ */
+int
+cluster_lmon_start(void)
+{
+	return 0;
+}
+
+bool
+cluster_lmon_wait_for_ready(int timeout_ms pg_attribute_unused())
+{
+	return false;
+}
+
 
 UT_DEFINE_GLOBALS();
 

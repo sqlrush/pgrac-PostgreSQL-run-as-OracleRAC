@@ -494,6 +494,18 @@ typedef enum
 	CheckpointerProcess,
 	WalWriterProcess,
 	WalReceiverProcess,
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.11 Sprint A): LMON aux process — first cluster
+	 * background process spawned by postmaster.  Appended to preserve
+	 * existing AuxProcType numeric values; this slot only exists in
+	 * --enable-cluster builds so non-cluster postgres binaries are
+	 * ABI-compatible at the AuxProcType level.  Lifecycle skeleton
+	 * only at 1.11 Sprint A; real reconfig / fence / GRD / heartbeat
+	 * consumption land in Stage 2-6.  See cluster_lmon.h.
+	 */
+	LmonProcess,
+#endif
 
 	NUM_AUXPROCTYPES			/* Must be last! */
 } AuxProcType;
@@ -506,6 +518,9 @@ extern PGDLLIMPORT AuxProcType MyAuxProcType;
 #define AmCheckpointerProcess()		(MyAuxProcType == CheckpointerProcess)
 #define AmWalWriterProcess()		(MyAuxProcType == WalWriterProcess)
 #define AmWalReceiverProcess()		(MyAuxProcType == WalReceiverProcess)
+#ifdef USE_PGRAC_CLUSTER
+#define AmLmonProcess()				(MyAuxProcType == LmonProcess)
+#endif
 
 
 /*****************************************************************************

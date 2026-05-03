@@ -328,6 +328,12 @@ void
 cluster_phase_shmem_register(void)
 {}
 
+/* Spec-1.11 Sprint A stub: cluster_init_shmem_module also calls
+ * cluster_lmon_shmem_register (cluster_lmon.c). */
+void
+cluster_lmon_shmem_register(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 

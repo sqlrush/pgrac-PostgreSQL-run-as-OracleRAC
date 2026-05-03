@@ -123,8 +123,11 @@ is($node->safe_psql('postgres', 'SHOW cluster.phase4_timeout'),
 # ----------
 # L4: elog DEBUG1 phase stub messages observable.
 # ----------
-like($log_l1, qr/Phase 1 stub: skipping interconnect/,
-	 'L4 Phase 1 stub DEBUG1 message logged');
+# Spec-1.11 Sprint A: phase_1_handler upgraded to real LMON spawn +
+# sync wait ready.  Stub message replaced with "LMON ready (pid ...);
+# interconnect listener / heartbeat consumer remain stubs (Stage 1.15+)".
+like($log_l1, qr/cluster phase 1: LMON ready/,
+	 'L4 Phase 1 LMON ready DEBUG1 message logged (spec-1.11 Sprint A real spawn)');
 like($log_l1, qr/Phase 2 stub: skipping LMS/,
 	 'L4 Phase 2 stub DEBUG1 message logged');
 like($log_l1, qr/Phase 3 stub:/,

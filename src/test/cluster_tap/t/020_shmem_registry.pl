@@ -72,20 +72,20 @@ is($node->safe_psql(
 
 
 # ----------
-# L2: stage 1.10.1 baseline -- 4 rows (cluster_ctl + cluster_conf +
+# L2: stage 1.10.1 baseline -- 5 rows (cluster_ctl + cluster_conf +
 # cluster_pcm_grd + cluster startup phase added by spec-1.10.1 F1).
 # ----------
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '4',
-   'L2 pg_cluster_shmem returns 4 baseline rows (cluster_ctl + cluster_conf + cluster_pcm_grd + cluster startup phase)');
+   '5',
+   'L2 pg_cluster_shmem returns 5 baseline rows (cluster_ctl + cluster_conf + cluster_pcm_grd + cluster startup phase + cluster lmon)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_cluster_shmem}),
-   'pgrac cluster conf,pgrac cluster control,pgrac cluster pcm grd,pgrac cluster startup phase',
-   'L3 pg_cluster_shmem rows are exactly the 3 foundational regions (cluster_ctl + cluster_conf since 1.3, cluster_pcm_grd since 1.7)');
+   'pgrac cluster conf,pgrac cluster control,pgrac cluster lmon,pgrac cluster pcm grd,pgrac cluster startup phase',
+   'L3 pg_cluster_shmem rows are exactly the 5 foundational regions (cluster_ctl + cluster_conf + cluster_pcm_grd + cluster startup phase since 1.10.1 + cluster lmon since 1.11 Sprint A)');
 
 
 # ----------
@@ -133,8 +133,8 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'shmem' AND key = 'region_count'}),
-   '4',
-   'L8 pg_cluster_state.shmem.region_count = 4 (cluster_ctl + cluster_conf + cluster_pcm_grd + cluster startup phase from spec-1.10.1)');
+   '5',
+   'L8 pg_cluster_state.shmem.region_count = 5 (cluster_ctl + cluster_conf + cluster_pcm_grd + cluster startup phase from spec-1.10.1)');
 
 is($node->safe_psql(
 		'postgres', q{
@@ -153,15 +153,15 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.bytes'}),
-   '4',
-   'L10 pg_cluster_state.shmem has 4 region.<name>.bytes keys (one per region)');
+   '5',
+   'L10 pg_cluster_state.shmem has 5 region.<name>.bytes keys (one per region)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.owner'}),
-   '4',
-   'L11 pg_cluster_state.shmem has 4 region.<name>.owner keys (one per region)');
+   '5',
+   'L11 pg_cluster_state.shmem has 5 region.<name>.owner keys (one per region)');
 
 
 # ----------
@@ -234,7 +234,7 @@ is($node->safe_psql(
 
 
 # ----------
-# L18: GUC max_regions=8 (boundary minimum) still admits 4 baseline regions.
+# L18: GUC max_regions=8 (boundary minimum) still admits 5 baseline regions.
 # ----------
 $node->stop;
 $node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 8\n");
@@ -243,8 +243,8 @@ $node->start;
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '4',
-   'L18 cluster.shmem_max_regions = 8 still admits the 4 baseline regions');
+   '5',
+   'L18 cluster.shmem_max_regions = 8 still admits the 5 baseline regions');
 
 is($node->safe_psql(
 		'postgres',

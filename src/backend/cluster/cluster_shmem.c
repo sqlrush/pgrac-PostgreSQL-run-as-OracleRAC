@@ -58,6 +58,7 @@
 #include "cluster/cluster_guc.h"	  /* cluster_node_id / cluster_shmem_max_regions */
 #include "cluster/cluster_ic.h"		  /* cluster_ic_init / shutdown (stage 0.18) */
 #include "cluster/cluster_inject.h"	  /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_startup_phase.h" /* cluster_phase_shmem_register (1.10.1) */
@@ -332,6 +333,18 @@ cluster_init_shmem_module(void)
 	 */
 	if (cluster_shmem_lookup_region("pgrac cluster startup phase") == NULL)
 		cluster_phase_shmem_register();
+
+	/*
+	 * Stage 1.11 (Sprint A): register cluster_lmon shmem region.  LMON
+	 * is the first cluster aux process spawned by postmaster; its
+	 * status / spawned_at / ready_at / liveness tick / shutdown flag
+	 * live in shmem (HC3 limited scope: SQL-visible state via shmem,
+	 * postmaster reaper PID stays as process-local LmonPID).
+	 *
+	 * Spec: spec-1.11-lmon-skeleton.md Sprint A D1+D2+D7.
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster lmon") == NULL)
+		cluster_lmon_shmem_register();
 }
 
 

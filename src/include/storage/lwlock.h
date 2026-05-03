@@ -231,6 +231,17 @@ typedef enum BuiltinTrancheIds
 	 * Spec: spec-1.10.1-postmaster-phase-hardening.md F1
 	 */
 	LWTRANCHE_CLUSTER_STARTUP_PHASE,
+	/*
+	 * PGRAC (stage 1.11 Sprint A): dedicated tranche for
+	 * ClusterLmonSharedState lwlock that guards LMON shmem state
+	 * (status enum + pid + spawned_at + ready_at + last_liveness_tick_at +
+	 * main_loop_iters + shutdown_requested).  Single writer at runtime
+	 * is the LMON aux process; postmaster also writes shutdown_requested
+	 * during pmdie reverse path.
+	 *
+	 * Spec: spec-1.11-lmon-skeleton.md Sprint A D1+D2
+	 */
+	LWTRANCHE_CLUSTER_LMON,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 }			BuiltinTrancheIds;

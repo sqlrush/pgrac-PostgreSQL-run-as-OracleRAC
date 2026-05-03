@@ -303,6 +303,21 @@ static pid_t StartupPID = 0,
 			PgArchPID = 0,
 			SysLoggerPID = 0;
 
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * PGRAC (stage 1.11 Sprint A): LMON aux process pid.  Tracked
+ * postmaster-locally (HC3 limited scope: SQL-visible LMON state lives
+ * in shmem ClusterLmonSharedState; postmaster's own bookkeeping for
+ * reaper / signal_child uses process-local static identical to
+ * WalWriterPID / BgWriterPID pattern).  Only postmaster reads/writes
+ * this slot; backends never query it.  EXEC_BACKEND-safe: postmaster
+ * is single instance and not fork-on-exec'd itself.
+ *
+ * Spec: spec-1.11-lmon-skeleton.md Sprint A D5 + 4 实质 HC #1 (HC3 限定版)
+ */
+static pid_t LmonPID = 0;
+#endif
+
 /* Startup process's status */
 typedef enum
 {
@@ -610,6 +625,9 @@ static void ShmemBackendArrayRemove(Backend *bn);
 #define StartCheckpointer()		StartChildProcess(CheckpointerProcess)
 #define StartWalWriter()		StartChildProcess(WalWriterProcess)
 #define StartWalReceiver()		StartChildProcess(WalReceiverProcess)
+#ifdef USE_PGRAC_CLUSTER
+#define StartLmon()				StartChildProcess(LmonProcess)
+#endif
 
 /* Macros to check exit status of a child process */
 #define EXIT_STATUS_0(st)  ((st) == 0)
@@ -1128,27 +1146,6 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	CreateSharedMemoryAndSemaphores();
 
-#ifdef USE_PGRAC_CLUSTER
-	/*
-	 * PGRAC: spec-1.10 (2026-05-03) — drive postmaster startup phase
-	 * machinery (Phase 0 -> 1 -> 2 -> 3 -> 4 -> RUNNING).
-	 *
-	 * HC1 (spec-1.10 §1.5 + CLAUDE.md rule 16 §Postmaster-once): this
-	 * call MUST live in PostmasterMain only, NOT inside
-	 * CreateSharedMemoryAndSemaphores() or any function that
-	 * SubPostmasterMain also invokes on EXEC_BACKEND children.
-	 * cluster_run_startup_sequence() Asserts !IsUnderPostmaster as
-	 * defense in depth.
-	 *
-	 * Stage 1.10 skeleton: Phase 1-3 handlers are no-op stubs;
-	 * Phase 4 delegates to PG's existing walwriter / bgwriter /
-	 * checkpointer / autovacuum spawn paths further below in this
-	 * function.  Stage 1.11-1.14 / Stage 2-4 replace handler bodies
-	 * without changing the driver loop or this call site.
-	 */
-	cluster_run_startup_sequence();
-#endif
-
 	/*
 	 * Estimate number of openable files.  This must happen after setting up
 	 * semaphores, because on some platforms semaphores count as open files.
@@ -1165,6 +1162,37 @@ PostmasterMain(int argc, char *argv[])
 	 * wake up from sleep on postmaster death.
 	 */
 	InitPostmasterDeathWatchHandle();
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC: spec-1.10 (2026-05-03) — drive postmaster startup phase
+	 * machinery (Phase 0 -> 1 -> 2 -> 3 -> 4).
+	 *
+	 * HC1 (spec-1.10 §1.5 + CLAUDE.md rule 16 §Postmaster-once): this
+	 * call MUST live in PostmasterMain only, NOT inside
+	 * CreateSharedMemoryAndSemaphores() or any function that
+	 * SubPostmasterMain also invokes on EXEC_BACKEND children.
+	 * cluster_run_startup_sequence() Asserts !IsUnderPostmaster as
+	 * defense in depth.
+	 *
+	 * **Spec-1.11 Sprint A ordering correction (2026-05-04)**: this
+	 * call moved from "right after CreateSharedMemoryAndSemaphores"
+	 * to "right after InitPostmasterDeathWatchHandle" because phase 1
+	 * now spawns the LMON aux process (spec-1.11), and aux process
+	 * children inherit postmaster_alive_fds[POSTMASTER_FD_WATCH] via
+	 * fork().  If we spawn before InitPostmasterDeathWatchHandle, the
+	 * inherited FD is invalid and InitPostmasterChild's FD_CLOEXEC
+	 * call FATALs with "Bad file descriptor".  Moving the phase
+	 * driver here keeps Stage 1.10 skeleton (no spawn) functionally
+	 * identical and unblocks Stage 1.11 LMON spawn.
+	 *
+	 * Stage 1.11 Sprint A: Phase 1 handler now spawns LMON via
+	 * cluster_postmaster_start_lmon() + sync waits ready.  Phases
+	 * 2-3 are still stubs; Phase 4 delegates to PG's existing
+	 * walwriter / bgwriter / etc. spawn paths further below.
+	 */
+	cluster_run_startup_sequence();
+#endif
 
 #ifdef WIN32
 
@@ -2835,6 +2863,10 @@ process_pm_reload_request(void)
 			signal_child(WalWriterPID, SIGHUP);
 		if (WalReceiverPID != 0)
 			signal_child(WalReceiverPID, SIGHUP);
+#ifdef USE_PGRAC_CLUSTER
+		if (LmonPID != 0)
+			signal_child(LmonPID, SIGHUP);
+#endif
 		if (AutoVacPID != 0)
 			signal_child(AutoVacPID, SIGHUP);
 		if (PgArchPID != 0)
@@ -3291,6 +3323,29 @@ process_pm_child_exit(void)
 			continue;
 		}
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (stage 1.11 Sprint A): LMON aux process exit.  HC5
+		 * normal vs abnormal distinction is handled identically to
+		 * WalWriter: EXIT_STATUS_0 is graceful (postmaster signaled
+		 * shutdown -> LMON proc_exit(0)) and ignored; anything else
+		 * (signal / non-zero) routes to HandleChildCrash which
+		 * triggers restart_after_crash semantics.  LMON crash =
+		 * cluster coordination broken = instance restart cycle, per
+		 * background-process-design.md §3.1.4.
+		 *
+		 * Spec: spec-1.11-lmon-skeleton.md Sprint A D5 + HC5.
+		 */
+		if (pid == LmonPID)
+		{
+			LmonPID = 0;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus,
+								 _("LMON process"));
+			continue;
+		}
+#endif
+
 		/*
 		 * Was it the wal receiver?  If exit status is zero (normal) or one
 		 * (FATAL exit), we assume everything is all right just like normal
@@ -3695,6 +3750,20 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 	else if (WalWriterPID != 0 && take_action)
 		sigquit_child(WalWriterPID);
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (stage 1.11 Sprint A): take care of LMON too.  Same
+	 * pattern as WalWriterPID -- if LMON was the crashing child clear
+	 * its PID; otherwise sigquit it so the crash recovery cycle takes
+	 * down all children uniformly.  HC5 abnormal-exit path routes
+	 * here.
+	 */
+	if (pid == LmonPID)
+		LmonPID = 0;
+	else if (LmonPID != 0 && take_action)
+		sigquit_child(LmonPID);
+#endif
+
 	/* Take care of the walreceiver too */
 	if (pid == WalReceiverPID)
 		WalReceiverPID = 0;
@@ -3846,6 +3915,16 @@ PostmasterStateMachine(void)
 		/* and the walwriter too */
 		if (WalWriterPID != 0)
 			signal_child(WalWriterPID, SIGTERM);
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (stage 1.11 Sprint A): signal LMON to shut down too.
+		 * LMON main loop polls shutdown_requested + ShutdownRequestPending;
+		 * SIGTERM sets the latter via SignalHandlerForShutdownRequest,
+		 * triggering LMON's normal-exit path (HC5).
+		 */
+		if (LmonPID != 0)
+			signal_child(LmonPID, SIGTERM);
+#endif
 		/* If we're in recovery, also stop startup and walreceiver procs */
 		if (StartupPID != 0)
 			signal_child(StartupPID, SIGTERM);
@@ -4218,6 +4297,10 @@ TerminateChildren(int signal)
 		signal_child(AutoVacPID, signal);
 	if (PgArchPID != 0)
 		signal_child(PgArchPID, signal);
+#ifdef USE_PGRAC_CLUSTER
+	if (LmonPID != 0)
+		signal_child(LmonPID, signal);
+#endif
 }
 
 /*
@@ -5629,6 +5712,40 @@ StartAutovacuumWorker(void)
 		avlauncher_needs_signal = true;
 	}
 }
+
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * cluster_postmaster_start_lmon -- spawn the LMON aux process.
+ *
+ *	PGRAC (stage 1.11 Sprint A): postmaster-owned narrow wrapper for
+ *	the cluster module to request LMON spawn (Q2).  StartChildProcess
+ *	is file-static in postmaster.c, so the cluster module cannot call
+ *	it directly; this thin extern wrapper is the single allowed entry
+ *	point.  cluster_lmon.c::cluster_lmon_start() is a thin proxy that
+ *	just forwards here.
+ *
+ *	Returns child pid on success, 0 on fork failure (matching
+ *	StartChildProcess semantics).  Caller (phase_1_handler via
+ *	cluster_lmon_start) decides what to do with 0.
+ *
+ *	HC1 defense in depth: Asserts !IsUnderPostmaster.  Tracks LmonPID
+ *	statically here in postmaster.c so the existing reaper / signal_
+ *	child / restart_after_crash machinery handles LMON the same way
+ *	it handles WalWriterProcess et al.
+ *
+ *	Spec: spec-1.11-lmon-skeleton.md Sprint A D5 (Q2 wrapper) +
+ *	      4 实质 HC #1 (HC3 限定版).
+ */
+pid_t
+cluster_postmaster_start_lmon(void)
+{
+	Assert(!IsUnderPostmaster);
+
+	LmonPID = StartLmon();
+	return LmonPID;
+}
+#endif
+
 
 /*
  * MaybeStartWalReceiver

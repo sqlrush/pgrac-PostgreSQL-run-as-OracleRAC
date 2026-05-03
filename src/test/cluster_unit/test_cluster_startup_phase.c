@@ -236,6 +236,19 @@ void
 cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unused())
 {}
 
+/* Spec-1.11 Sprint A stubs (cluster_startup_phase.o references). */
+int
+cluster_lmon_start(void)
+{
+	return 0;
+}
+
+bool
+cluster_lmon_wait_for_ready(int timeout_ms pg_attribute_unused())
+{
+	return false;
+}
+
 
 UT_DEFINE_GLOBALS();
 

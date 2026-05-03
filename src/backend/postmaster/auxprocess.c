@@ -33,6 +33,10 @@
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_lmon.h"	/* LmonMain (stage 1.11 Sprint A) */
+#endif
+
 
 static void ShutdownAuxiliaryProcess(int code, Datum arg);
 
@@ -80,6 +84,12 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 		case WalReceiverProcess:
 			MyBackendType = B_WAL_RECEIVER;
 			break;
+#ifdef USE_PGRAC_CLUSTER
+		/* PGRAC (stage 1.11 Sprint A): LMON aux process. */
+		case LmonProcess:
+			MyBackendType = B_LMON;
+			break;
+#endif
 		default:
 			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
 			MyBackendType = B_INVALID;
@@ -160,6 +170,20 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 		case WalReceiverProcess:
 			WalReceiverMain();
 			proc_exit(1);
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (stage 1.11 Sprint A): LMON aux process dispatch.
+		 * LmonMain is pg_attribute_noreturn() (proc_exit on shutdown);
+		 * the proc_exit(1) below is a defensive bailout in case the
+		 * compiler does not honor the attribute.
+		 *
+		 * Spec: spec-1.11-lmon-skeleton.md Sprint A D3
+		 */
+		case LmonProcess:
+			LmonMain();
+			proc_exit(1);
+#endif
 
 		default:
 			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);

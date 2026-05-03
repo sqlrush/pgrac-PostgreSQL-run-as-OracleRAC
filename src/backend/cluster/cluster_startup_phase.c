@@ -57,6 +57,7 @@
 #include "cluster/cluster_elog.h"	/* cluster_phase legacy mirror (HC2) */
 #include "cluster/cluster_guc.h"	/* cluster_phase{1..4}_timeout (D2 F2) */
 #include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_lmon.h"	/* cluster_lmon_start / wait_for_ready (1.11 Sprint A) */
 #include "cluster/cluster_shmem.h"	/* cluster_shmem_register_region */
 #include "cluster/cluster_startup_phase.h"
 
@@ -443,9 +444,57 @@ cluster_advance_phase(ClusterStartupPhase target)
 static PhaseRunResult
 phase_1_handler(void)
 {
+	int lmon_pid;
+	bool ready;
+	int wait_budget_ms;
+
 	Assert(!IsUnderPostmaster);
-	elog(DEBUG1, "Phase 1 stub: skipping interconnect listener / heartbeat / LMON "
-				 "(spec-1.11+ replaces this handler)");
+
+	/*
+	 * Stage 1.11 Sprint A: spawn LMON aux process and synchronously
+	 * wait for it to publish CLUSTER_LMON_READY.  Interconnect listener
+	 * and Heartbeat process remain Sprint A stubs (Stage 1.15+).
+	 *
+	 * HC4 (cluster_enabled GUC reader):
+	 *   The runtime cluster_enabled GUC is **NOT yet defined** at
+	 *   spec-1.11 Sprint A; the de-facto cluster gate is the compile-
+	 *   time #ifdef USE_PGRAC_CLUSTER (this whole file is excluded
+	 *   from non-cluster builds).  Adding cluster.enabled PGC_POSTMASTER
+	 *   GUC + the L9 'GUC=off path' acceptance test was deliberately
+	 *   deferred to Sprint B (Sprint A scope excluded GUC additions).
+	 *   When Sprint B lands the GUC, replace this comment block with
+	 *   the runtime check + PHASE_RUN_OK early return when
+	 *   cluster_enabled=false (degrades to spec-1.10 stub behavior).
+	 *
+	 * Spec: spec-1.11-lmon-skeleton.md Sprint A D6 + 4 实质 HC #2.
+	 */
+	lmon_pid = cluster_lmon_start();
+	if (lmon_pid == 0) {
+		ereport(LOG, (errmsg("cluster phase 1: failed to spawn LMON aux process")));
+		return PHASE_RUN_FATAL;
+	}
+
+	/*
+	 * Reserve 5 seconds of timeout headroom for the driver's elapsed
+	 * check; the readiness wait gets the remainder.  cluster.phase1_
+	 * timeout default is 60 s -> 55 s readiness budget.  Sprint B will
+	 * tighten this once cluster_lmon_main_loop_interval GUC exists.
+	 */
+	wait_budget_ms = (cluster_phase1_timeout - 5) * 1000;
+	if (wait_budget_ms < 1000)
+		wait_budget_ms = 1000; /* clamp tiny custom timeouts to 1 s minimum */
+
+	ready = cluster_lmon_wait_for_ready(wait_budget_ms);
+	if (!ready) {
+		ereport(LOG, (errmsg("cluster phase 1: LMON did not publish READY within %d ms",
+							 wait_budget_ms)));
+		return PHASE_RUN_FATAL;
+	}
+
+	elog(DEBUG1,
+		 "cluster phase 1: LMON ready (pid %d); interconnect listener / "
+		 "heartbeat consumer remain stubs (Stage 1.15+)",
+		 lmon_pid);
 	return PHASE_RUN_OK;
 }
 

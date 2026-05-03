@@ -195,6 +195,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"BufferPcmLock",
 	/* PGRAC LWTRANCHE_CLUSTER_STARTUP_PHASE: */
 	"ClusterStartupPhase",
+	/* PGRAC LWTRANCHE_CLUSTER_LMON: */
+	"ClusterLmon",
 #endif
 };
 
