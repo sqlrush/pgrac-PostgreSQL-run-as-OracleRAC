@@ -8,12 +8,16 @@
  *	  storage/smgr/smgr.c can populate its second smgrsw[] entry from
  *	  this file's symbols (PGRAC MODIFICATIONS to smgr.c).
  *
- *	  Stage 1.2 = single-node passthrough.  Path scheme is the same as
- *	  md.c (per-relation file under PGDATA/pg_tblspc).  But several
- *	  contracts intentionally differ from md.c and should not be
- *	  treated as byte-identical (Sprint A 2026-05-02 hardening,
- *	  spec-1.X-cluster-smgr-hardening § correcting the original Stage
- *	  1.2 over-claim):
+ *	  Stage 1.2 = single-node passthrough.  Stage 1.8 verified the
+ *	  end-to-end opt-in workflow (initdb -> postgresql.conf opt-in ->
+ *	  pg_ctl start -> SQL CRUD -> restart -> shutdown) on the local
+ *	  backend; see t/050_shared_storage_initdb.pl L1-L10 matrix.
+ *	  Path scheme is the same as md.c (per-relation file under
+ *	  PGDATA/pg_tblspc).  But several contracts intentionally differ
+ *	  from md.c and should not be treated as byte-identical (Sprint A
+ *	  2026-05-02 hardening, spec-1.X-cluster-smgr-hardening §
+ *	  correcting the original Stage 1.2 over-claim; spec-1.7.2
+ *	  2026-05-03 round 2 hardening):
  *
  *	    - Single-file layout: NO 1GB segment splitting (decided in
  *	      spec-1.2 选 C).  md.c splits relations into 1GB segments
@@ -28,8 +32,13 @@
  *	      together with the multi-node fsync protocol design.
  *	    - GUC `cluster.smgr_user_relations` is EXPERIMENTAL in
  *	      Stage 1.X (default off; ON triggers postmaster startup
- *	      WARNING).  Do not enable in production until Stage 2 spec
- *	      delivers full md.c-equivalent durability semantics.
+ *	      WARNING from cluster_shared_fs_init -- moved here from
+ *	      cluster_smgr_init in spec-1.7.2 F2 fix because PG
+ *	      smgr.c:162 explicitly states smgrinit() is "not called
+ *	      during postmaster start").  Stage 1.8 verifies the opt-in
+ *	      workflow end-to-end but the fsync gap remains -- do not
+ *	      enable in production until Stage 2 spec delivers full
+ *	      md.c-equivalent durability semantics.
  *
  *	  I/O dispatch chain: smgr -> cluster_smgr -> cluster_shared_fs
  *	  -> active backend (local for Stage 1.2) -> fd.c.  Stage 2 swaps

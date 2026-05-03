@@ -13,11 +13,14 @@
 #
 #      L1   GUC default off
 #      L2   GUC=on + shared_storage_backend=local restart
+#      L2b  postmaster startup logfile contains EXPERIMENTAL WARNING
+#           (DoD #19 spec-1.7.2 F2 regression防御)
 #      L3   CREATE TABLE / INSERT / SELECT under GUC=on
 #      L4   > 1GB single-file extend (~1.5GB via generate_series)
 #      L5   VACUUM / TRUNCATE / DROP transparency
 #      L6   TEMP relations always route through md.c
 #      L7   restart preserves data
+#      L7b  WARNING re-emitted on restart (>=2 occurrences)
 #      L8   3 cluster_smgr injection points exposed
 #      L9   pg_cluster_state shared_fs.smgr_user_relations on
 #      L10  pg_cluster_state shared_fs.smgr_active_relations grows
@@ -71,7 +74,7 @@ $node->assert_cluster_guc('cluster.shared_storage_backend', 'local',
 	'L2 cluster.shared_storage_backend = local applies across restart');
 
 # ----------
-# L3: postmaster startup logfile must contain the EXPERIMENTAL WARNING.
+# L2b: postmaster startup logfile must contain the EXPERIMENTAL WARNING.
 #
 # Spec-1.7.2 2026-05-03 DoD #19: hard regression assert that the WARNING
 # emitted by cluster_shared_fs_init() (when cluster.smgr_user_relations
@@ -83,11 +86,15 @@ $node->assert_cluster_guc('cluster.shared_storage_backend', 'local',
 #
 # Without this assertion a future regression that re-broke the WARNING
 # lifecycle would silently slip through.
+#
+# Codex round 3 P3 finding 5 (2026-05-03): renamed from L3 to L2b so
+# the audit matrix has no duplicate L3 with the existing L3 (CREATE
+# TABLE round-trip below).  L1, L2, L2b, L3, L4, ..., L11.
 # ----------
 my $log_after_l2 = slurp_file($node->logfile);
 like($log_after_l2,
 	qr/cluster\.smgr_user_relations is experimental/,
-	'L3 postmaster logfile contains EXPERIMENTAL WARNING (spec-1.7.2 F2 regression防御)');
+	'L2b postmaster logfile contains EXPERIMENTAL WARNING (spec-1.7.2 F2 regression防御)');
 
 
 # ----------

@@ -514,6 +514,42 @@ is($node->safe_psql('postgres',
 	'3|3', 'P10 BufferType has 3 values (CURRENT/CR/PI), PcmState has 3 values (N/S/X)');
 
 
+
+# ============================================================
+# §R  cluster_smgr end-to-end (stage 1.8) -- spec-1.8 acceptance (1 test)
+# ============================================================
+
+# R1: 1.8 milestone roll-up.  spec-1.8 is the end-to-end verification
+# milestone tying together spec-1.1 (cluster_shared_fs vtable) +
+# spec-1.2 (cluster_smgr in smgrsw[1] 方案 C) + spec-1.7.1 Sprint A
+# (EXPERIMENTAL WARNING) + spec-1.7.2 (WARNING lifecycle fix +
+# create(isRedo) signature).  The comprehensive matrix is in
+# t/050_shared_storage_initdb.pl L1-L10; this acceptance test rolls
+# up the milestone-level invariant: when GUC is opt-in (on + local),
+# cluster_smgr is actually engaged for non-temp permanent relations.
+#
+# Done at 030 level so the 1.8 milestone is included in the Stage 1
+# cross-spec acceptance roll-up alongside earlier milestones.
+$node->safe_psql('postgres',
+	"ALTER SYSTEM SET cluster.shared_storage_backend = 'local'");
+$node->safe_psql('postgres',
+	"ALTER SYSTEM SET cluster.smgr_user_relations = 'on'");
+
+$node->restart;
+
+$node->safe_psql('postgres',
+	'CREATE TABLE r1_smoke (id int); INSERT INTO r1_smoke VALUES (1)');
+my $r1_active = $node->safe_psql(
+	'postgres',
+	"SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
+);
+ok( $r1_active > 0,
+	"R1 stage-1.8 milestone: cluster_smgr engaged when GUC=on (smgr_active_relations=$r1_active; spec-1.8 end-to-end verified at 030 acceptance level)"
+);
+
+$node->safe_psql('postgres', 'DROP TABLE r1_smoke');
+
+
 $node->stop;
 
 done_testing();

@@ -189,9 +189,12 @@ cluster_smgr_init(void)
 	HASHCTL info;
 
 	/*
-	 * smgrinit() is called once per backend (and once in postmaster).
-	 * Idempotent: if cluster_smgr_init runs twice in the same process,
-	 * the second call is a no-op.
+	 * PG's smgrinit() is called by BaseInit() during backend startup
+	 * (normal or standalone), but NOT during postmaster start
+	 * (see PG smgr.c:162 and spec-1.7.2 F2 fix discussion).  Each
+	 * backend therefore lazy-initialises its own bypass HTAB on first
+	 * use.  Idempotent: if cluster_smgr_init runs twice in the same
+	 * process, the second call is a no-op.
 	 */
 	if (cluster_smgr_relations != NULL)
 		return;

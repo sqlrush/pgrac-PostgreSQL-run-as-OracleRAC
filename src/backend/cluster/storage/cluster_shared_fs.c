@@ -219,7 +219,7 @@ cluster_shared_fs_init(void)
 
 	/*
 	 * PGRAC: spec-1.7.2 2026-05-03 F2 fix — EXPERIMENTAL WARNING
-	 * lifecycle.
+	 * lifecycle (post-codex round 3 IsUnderPostmaster guard).
 	 *
 	 * Spec-1.7.1 Sprint A originally placed this WARNING in
 	 * cluster_smgr_init() (cluster_smgr.c) under the !IsUnderPostmaster
@@ -229,18 +229,26 @@ cluster_shared_fs_init(void)
 	 * the WARNING never actually fired in normal flow -- a P1 lifecycle
 	 * bug.
 	 *
-	 * cluster_shared_fs_init runs from cluster_init() at postmaster
-	 * startup (and once per EXEC_BACKEND child).  Same call site as the
-	 * stub-backend FATAL cross-check above: GUC has been parsed,
-	 * backends have been registered.  Emitting here guarantees one
-	 * WARNING per postmaster start and zero per backend (ordinary
-	 * startup) when cluster.smgr_user_relations is on.
+	 * cluster_shared_fs_init runs from CreateSharedMemoryAndSemaphores
+	 * (storage/ipc/ipci.c).  On Linux/macOS fork model the postmaster
+	 * runs it once with IsUnderPostmaster=false; child backends inherit
+	 * shared state via fork() without re-running it.  But on Windows
+	 * EXEC_BACKEND mode every child re-runs it with IsUnderPostmaster=
+	 * true, so without an !IsUnderPostmaster guard we'd get one WARNING
+	 * per backend startup -- spammy and contrary to "postmaster-once"
+	 * semantics (codex round 3 P2 finding 1, 2026-05-03).
 	 *
-	 * 019_smgr_cluster.pl L3 / L8 assert this WARNING appears in the
+	 * Same call site as the stub-backend FATAL cross-check above: GUC
+	 * has been parsed, backends have been registered.  Emitting here
+	 * with !IsUnderPostmaster guarantees one WARNING per postmaster
+	 * startup and zero per backend on ALL platforms when cluster.smgr_
+	 * user_relations is on.
+	 *
+	 * 019_smgr_cluster.pl L2b / L8 assert this WARNING appears in the
 	 * postmaster logfile, so future regressions are caught.  Spec-1.7.2
 	 * DoD #19 makes this a hard gate.
 	 */
-	if (cluster_smgr_user_relations)
+	if (cluster_smgr_user_relations && !IsUnderPostmaster)
 		ereport(WARNING,
 				(errmsg("cluster.smgr_user_relations is experimental in Stage 1.X"),
 				 errdetail("cluster_smgr is single-file passthrough; full md.c-equivalent "

@@ -72,6 +72,16 @@
 int cluster_shared_storage_backend = 0;
 bool cluster_smgr_user_relations = false;
 
+/*
+ * miscadmin global referenced by cluster_shared_fs_init's WARNING
+ * branch (spec-1.7.2 codex round 3 P2 finding 1: !IsUnderPostmaster
+ * guard).  Real backends set this; in this unit-test environment it
+ * stays false so the guard short-circuits the WARNING (we never run
+ * cluster_shared_fs_init() in the test anyway -- only take the
+ * function address).
+ */
+bool IsUnderPostmaster = false;
+
 /* Cluster injection support (CLUSTER_INJECTION_POINT() macro expansion). */
 #include "cluster/cluster_inject.h"
 int cluster_injection_armed_count = 0;
@@ -409,12 +419,17 @@ typedef void (*PgracCreateCallbackSig)(RelFileLocator rlocator, ForkNumber forkn
 UT_TEST(test_create_signature_has_isRedo)
 {
 	/*
-	 * Take the address of the dispatch wrapper through the explicit
-	 * post-1.7.2 signature.  Compile fails (no implicit conversion
-	 * between incompatible function-pointer types) if anyone drops
-	 * isRedo from cluster_shared_fs_create.
+	 * Take the address of the dispatch wrapper WITHOUT a cast.  The
+	 * compiler refuses to assign one function-pointer type to another
+	 * with mismatched parameters under -Wincompatible-pointer-types
+	 * (PG default), so a future drop of `bool isRedo` from cluster_
+	 * shared_fs_create would surface as a build warning here.
+	 *
+	 * (Codex round 3 P3 finding 3 2026-05-03: the previous explicit
+	 * cast suppressed the very type mismatch this test is designed
+	 * to catch.)
 	 */
-	PgracCreateCallbackSig fn = (PgracCreateCallbackSig)cluster_shared_fs_create;
+	PgracCreateCallbackSig fn = cluster_shared_fs_create;
 
 	UT_ASSERT_NOT_NULL((void *)fn);
 }
@@ -425,11 +440,10 @@ UT_TEST(test_stub_create_signature_has_isRedo)
 	/*
 	 * Same compile-time signature check on the stub backend's vtable
 	 * slot, ensuring built-in backends keep matching the new
-	 * signature.  Local backend's slot is also captured implicitly
-	 * by the vtable_callbacks_nonnull tests above (the assignment
-	 * into ClusterSharedFsOps.create requires matching signature).
+	 * signature.  No cast, same rationale as
+	 * test_create_signature_has_isRedo.
 	 */
-	PgracCreateCallbackSig fn = (PgracCreateCallbackSig)cluster_shared_fs_stub_ops.create;
+	PgracCreateCallbackSig fn = cluster_shared_fs_stub_ops.create;
 
 	UT_ASSERT_NOT_NULL((void *)fn);
 }
