@@ -93,9 +93,10 @@ typedef struct ClusterSharedFsHandle ClusterSharedFsHandle;
 /*
  * ClusterSharedFsOps -- vtable.
  *
- *	Nine I/O callbacks plus init/shutdown lifecycle.  Every member
- *	must be non-NULL when registered; cluster_shared_fs_register_backend
- *	rejects partial implementations to make link-time auditing clean.
+ *	Eleven storage callbacks plus two lifecycle callbacks, thirteen
+ *	function pointers total.  Every member must be non-NULL when
+ *	registered; cluster_shared_fs_register_backend rejects partial
+ *	implementations to make link-time auditing clean.
  *
  *	Semantic invariants (see docs/cluster-shared-fs-design.md §2.2):
  *	  - read / write operate at BLCKSZ granularity; no partial I/O
@@ -108,26 +109,36 @@ typedef struct ClusterSharedFsHandle ClusterSharedFsHandle;
  *	separate callbacks:
  *	  - exists():       check whether the relation file exists; no I/O
  *	  - open_existing(): open an existing file; ENOENT if missing
- *	  - create():       create a new file; existing-file behavior
- *	                    backend-defined (local: O_EXCL would error;
- *	                    stub: ereport NOT_SUPPORTED; Stage 2 共享存储
- *	                    spec defines whether shared backends use idempotent
- *	                    create vs error on conflict)
+ *	  - create(rlocator, forknum, isRedo, &handle):
+ *	                    create a new file; matches md.c mdcreate()
+ *	                    semantics:
+ *	                      !isRedo -> O_CREAT|O_EXCL: error on existing
+ *	                      isRedo  -> idempotent: existing file is OK
+ *	                    Stage 2 共享存储 spec defines whether shared
+ *	                    backends use idempotent CAS-create or O_EXCL
+ *	                    semantics.
  *	The legacy single `open` callback is removed since cluster_smgr is
  *	the only caller; cluster_smgr_exists / cluster_smgr_open / cluster_
  *	smgr_create call the appropriate split callback directly.  Stage 2
  *	真后端 (NFS / S3 / Multi-Attach) requires this split because there
  *	is no "local path stat()" fallback for cluster_smgr_exists hack.
+ *
+ *	Spec-1.7.2-cluster-smgr-warning-create-lifecycle 2026-05-03:
+ *	`create` callback signature extended with `bool isRedo` parameter
+ *	to match PG md.c mdcreate (see md.c:218).  Internal ABI bugfix-
+ *	level amend; total still thirteen function pointers.
  */
 typedef struct ClusterSharedFsOps {
 	const char *name; /* "stub" / "local" / ... */
 	ClusterSharedFsBackendId id;
 
-	/* Existence + Open + Create (split for vtable契约清晰；Sprint A 2026-05-02). */
+	/* Existence + Open + Create (split for vtable契约清晰；Sprint A 2026-05-02;
+	 * create(isRedo) signature extended Sprint round 2 2026-05-03 spec-1.7.2). */
 	bool (*exists)(RelFileLocator rlocator, ForkNumber forknum);
 	void (*open_existing)(RelFileLocator rlocator, ForkNumber forknum,
 						  ClusterSharedFsHandle **out_handle);
-	void (*create)(RelFileLocator rlocator, ForkNumber forknum, ClusterSharedFsHandle **out_handle);
+	void (*create)(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
+				   ClusterSharedFsHandle **out_handle);
 
 	/* Core I/O. */
 	void (*close)(ClusterSharedFsHandle *handle);
@@ -223,7 +234,12 @@ extern const ClusterSharedFsOps *cluster_shared_fs_get_backend_at(int id);
 extern bool cluster_shared_fs_exists(RelFileLocator rlocator, ForkNumber forknum);
 extern void cluster_shared_fs_open_existing(RelFileLocator rlocator, ForkNumber forknum,
 											ClusterSharedFsHandle **out_handle);
-extern void cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum,
+/*
+ * Spec-1.7.2 2026-05-03: create() takes isRedo to match md.c mdcreate
+ * semantics.  !isRedo -> O_CREAT|O_EXCL (error on existing); isRedo ->
+ * idempotent (existing OK).  Internal ABI bugfix-level amend.
+ */
+extern void cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
 									 ClusterSharedFsHandle **out_handle);
 extern void cluster_shared_fs_close(ClusterSharedFsHandle *handle);
 extern int cluster_shared_fs_read(ClusterSharedFsHandle *handle, BlockNumber blocknum, char *buf);

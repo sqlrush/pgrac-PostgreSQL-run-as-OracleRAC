@@ -70,6 +70,25 @@ $node->assert_cluster_guc('cluster.smgr_user_relations', 'on',
 $node->assert_cluster_guc('cluster.shared_storage_backend', 'local',
 	'L2 cluster.shared_storage_backend = local applies across restart');
 
+# ----------
+# L3: postmaster startup logfile must contain the EXPERIMENTAL WARNING.
+#
+# Spec-1.7.2 2026-05-03 DoD #19: hard regression assert that the WARNING
+# emitted by cluster_shared_fs_init() (when cluster.smgr_user_relations
+# is on) actually reaches the postmaster log.  Spec-1.7.1 Sprint A
+# originally placed this WARNING in cluster_smgr_init(); codex review
+# 2026-05-03 found that smgrinit() never runs in the postmaster (PG
+# smgr.c:162) so the WARNING never fired -- a P1 lifecycle bug.
+# Spec-1.7.2 F2 fix moved the WARNING to cluster_shared_fs_init().
+#
+# Without this assertion a future regression that re-broke the WARNING
+# lifecycle would silently slip through.
+# ----------
+my $log_after_l2 = slurp_file($node->logfile);
+like($log_after_l2,
+	qr/cluster\.smgr_user_relations is experimental/,
+	'L3 postmaster logfile contains EXPERIMENTAL WARNING (spec-1.7.2 F2 regression防御)');
+
 
 # ----------
 # L3: CREATE TABLE / INSERT / SELECT round-trip with cluster_smgr.
@@ -177,6 +196,18 @@ $node->restart;
 
 is($node->safe_psql('postgres', 'SELECT sum(n) FROM persistent'),
 	'6', 'L7 cluster_smgr-stored data survives restart');
+
+# Spec-1.7.2 DoD #19: WARNING must reappear in logfile after restart
+# (every postmaster startup with GUC=on must emit the WARNING; a single
+# occurrence at original start would not catch a regression that broke
+# the lifecycle on restart).
+my $log_after_restart = slurp_file($node->logfile);
+my @warning_hits = ($log_after_restart =~
+	m/cluster\.smgr_user_relations is experimental/g);
+ok(scalar(@warning_hits) >= 2,
+   "L7b EXPERIMENTAL WARNING re-emitted after restart "
+   . "(saw " . scalar(@warning_hits) . " occurrences across L2 + L7 starts; "
+   . "spec-1.7.2 F2 regression防御)");
 
 
 # ----------

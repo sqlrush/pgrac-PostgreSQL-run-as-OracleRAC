@@ -11,9 +11,12 @@
  *	    - cluster_smgr_init / _shutdown lifecycle (called from PG's
  *	      smgrinit / smgrshutdown via smgrsw[1]);
  *	    - cluster_smgr_which_for() routing decision read by smgropen;
- *	    - sixteen f_smgr callbacks: nine core I/O ops dispatch to
- *	      cluster_shared_fs; three advisory ops (zeroextend, prefetch,
- *	      writeback) fall through to md.c; four lifecycle / structural
+ *	    - sixteen f_smgr callbacks: eleven core I/O ops dispatch to
+ *	      cluster_shared_fs (which has eleven storage callbacks plus
+ *	      two lifecycle callbacks, thirteen function pointers total
+ *	      after spec-1.X Sprint A vtable split + spec-1.7.2 create
+ *	      isRedo amend); three advisory ops (zeroextend, prefetch,
+ *	      writeback) fall through to md.c; two lifecycle / structural
  *	      callbacks have local logic.
  *
  *	  Stage 1.2 deliberately does NOT split relations into 1GB
@@ -53,7 +56,6 @@
 
 #include "commands/tablespace.h"
 #include "common/relpath.h"
-#include "miscadmin.h"
 #include "storage/md.h"
 #include "utils/hsearch.h"
 
@@ -205,26 +207,6 @@ cluster_smgr_init(void)
 		 "cluster_smgr: bypass HTAB initialised "
 		 "(initial size %d entries)",
 		 CLUSTER_SMGR_INITIAL_HTAB_SIZE);
-
-	/*
-	 * Sprint A 2026-05-02 (spec-1.X-cluster-smgr-hardening Q3=C):
-	 * issue postmaster startup WARNING when cluster.smgr_user_relations
-	 * is on, because crash recovery durability is not yet guaranteed
-	 * (Sprint B fsync registration lands in Stage 2 共享存储 spec).
-	 *
-	 * Only emitted by the postmaster process (not per-backend) to
-	 * avoid spamming the log.  IsUnderPostmaster is false in the
-	 * postmaster itself; in EXEC_BACKEND children it's true.
-	 */
-	if (cluster_smgr_user_relations && !IsUnderPostmaster)
-		ereport(WARNING,
-				(errmsg("cluster.smgr_user_relations is experimental in Stage 1.X"),
-				 errdetail("cluster_smgr is single-file passthrough; full md.c-equivalent "
-						   "fsync registration / unlink lifecycle is not yet implemented."),
-				 errhint("Crash recovery durability is not guaranteed.  Stage 2 共享存储 "
-						 "spec implements full fsync semantics with shared-storage backend "
-						 "protocol.  See docs/cluster-smgr-design.md and spec-1.X-cluster-"
-						 "smgr-hardening.md for current limitations.")));
 }
 
 
@@ -348,9 +330,16 @@ cluster_smgr_create(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 	 * explicit and lets Stage 2 共享存储后端 implement protocol-aware
 	 * idempotency (e.g. CAS create) instead of inheriting POSIX
 	 * O_CREAT semantics.
+	 *
+	 * Spec-1.7.2 round 2 2026-05-03: forward isRedo so the local
+	 * backend can use O_CREAT|O_EXCL (!isRedo) vs idempotent open
+	 * (isRedo) per md.c mdcreate semantics.  Without isRedo a stale
+	 * relfilenode file from a crashed CREATE could be silently reused
+	 * with stale block contents -- P1.
 	 */
 	if (state->fork_handles[forknum] == NULL)
-		cluster_shared_fs_create(state->rlocator.locator, forknum, &state->fork_handles[forknum]);
+		cluster_shared_fs_create(state->rlocator.locator, forknum, isRedo,
+								 &state->fork_handles[forknum]);
 }
 
 

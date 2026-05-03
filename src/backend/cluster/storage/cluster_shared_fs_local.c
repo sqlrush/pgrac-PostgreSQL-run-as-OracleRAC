@@ -37,6 +37,7 @@
  */
 #include "postgres.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -96,7 +97,29 @@ cluster_shared_fs_local_exists(RelFileLocator rlocator, ForkNumber forknum)
 	bool result;
 
 	path = cluster_shared_fs_local_relpath(rlocator, forknum);
-	result = (stat(path, &st) == 0);
+
+	/*
+	 * PGRAC: spec-1.7.2 2026-05-03 F3 fix — distinguish "file does not
+	 * exist" (ENOENT) from "stat failed for another reason" (EACCES,
+	 * EIO, ENOTDIR, etc.).  Treating every stat() failure as "does
+	 * not exist" hid permission and I/O errors as "file missing", which
+	 * could let a corrupted catalog claim a relation is gone.
+	 */
+	if (stat(path, &st) == 0) {
+		result = true;
+	} else if (errno == ENOENT) {
+		result = false;
+	} else {
+		int save_errno = errno;
+
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not stat cluster_shared_fs.local file \"%s\": %m", path),
+						errhint("Check filesystem permissions and disk health.")));
+		/* unreachable (errcode_for_file_access reads errno) */
+		errno = save_errno;
+		result = false;
+	}
+
 	pfree(path);
 	return result;
 }
@@ -140,7 +163,7 @@ cluster_shared_fs_local_open_existing(RelFileLocator rlocator, ForkNumber forknu
 }
 
 static void
-cluster_shared_fs_local_create(RelFileLocator rlocator, ForkNumber forknum,
+cluster_shared_fs_local_create(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
 							   ClusterSharedFsHandle **out_handle)
 {
 	ClusterSharedFsHandle *handle;
@@ -153,13 +176,23 @@ cluster_shared_fs_local_create(RelFileLocator rlocator, ForkNumber forknum,
 	path = cluster_shared_fs_local_relpath(rlocator, forknum);
 
 	/*
-	 * O_CREAT (not O_EXCL): create-if-missing matches md.c
-	 * smgrcreate-followed-by-extend pattern; idempotent for repeated
-	 * smgrcreate (e.g. CREATE INDEX CONCURRENTLY rerun).  Stage 2
-	 * 共享存储后端 may use O_EXCL semantics if shared backend
-	 * provides idempotency at protocol layer.
+	 * PGRAC: spec-1.7.2 2026-05-03 F1 fix — match md.c mdcreate
+	 * (md.c:218) semantics:
+	 *   !isRedo -> O_CREAT|O_EXCL: error on existing file
+	 *   isRedo  -> O_CREAT (no O_EXCL): idempotent for WAL redo replay
+	 *
+	 * Without this, a stale relfilenode file from a crashed CREATE
+	 * could be silently reused, leaving stale block contents visible
+	 * to the new relation -- a P1 data integrity hole.
+	 *
+	 * Mirrors md.c's two-step retry: try O_CREAT|O_EXCL first; on
+	 * EEXIST during redo, fall back to opening the existing file.
 	 */
-	vfd = PathNameOpenFile(path, O_RDWR | O_CREAT | PG_BINARY);
+	vfd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	if (vfd < 0 && isRedo && errno == EEXIST) {
+		/* Redo replay: existing file is OK; reopen without O_EXCL. */
+		vfd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+	}
 	if (vfd < 0)
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("cluster_shared_fs.local: could not create file \"%s\": %m", path)));

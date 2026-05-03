@@ -38,7 +38,10 @@
 #ifdef USE_PGRAC_CLUSTER
 
 /*
- * One canonical errhint, reused by all nine I/O callbacks.  Centralised
+ * One canonical errhint, reused by every I/O callback (eleven storage
+ * callbacks plus two lifecycle callbacks, thirteen function pointers
+ * total — the lifecycle init/shutdown stubs do nothing, so only the
+ * storage callbacks reach this errhint).  Centralised
  * so that wording stays consistent if the Stage 2 backends move (the
  * test harness in 018_shared_fs.pl matches part of this hint).
  */
@@ -78,11 +81,12 @@ cluster_shared_fs_stub_open_existing(RelFileLocator rlocator, ForkNumber forknum
 }
 
 static void
-cluster_shared_fs_stub_create(RelFileLocator rlocator, ForkNumber forknum,
+cluster_shared_fs_stub_create(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
 							  ClusterSharedFsHandle **out_handle)
 {
 	(void)rlocator;
 	(void)forknum;
+	(void)isRedo;
 	(void)out_handle;
 	cluster_shared_fs_stub_reject("create");
 }

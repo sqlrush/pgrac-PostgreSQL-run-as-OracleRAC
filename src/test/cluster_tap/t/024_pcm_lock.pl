@@ -127,14 +127,20 @@ is($node->safe_psql(
 	ok(-x $postgres_bin, "L5a postgres binary at $postgres_bin is executable");
 
 	# `nm` lists all symbols (text + data) defined in the binary.
-	# Pipe through grep to filter cluster_pcm_lock_* symbols.  We
-	# expect exactly 5 stub function symbols to appear.
+	# Pipe through grep to filter cluster_pcm_lock_* / cluster_pcm_grd_*
+	# symbols.  Spec-1.7.2 2026-05-03 F4 fix: extend coverage from 5
+	# lock APIs to all 8 symbols (5 lock + 3 grd helpers) so that
+	# accidental inline-elision or removal of a grd helper is caught
+	# at TAP time rather than slipping through to runtime.
 	my @expected_symbols = qw(
 		cluster_pcm_lock_acquire
 		cluster_pcm_lock_release
 		cluster_pcm_lock_upgrade
 		cluster_pcm_lock_downgrade
 		cluster_pcm_lock_query
+		cluster_pcm_grd_count
+		cluster_pcm_grd_shmem_size
+		cluster_pcm_grd_init
 	);
 
 	my $nm_output = `nm '$postgres_bin' 2>/dev/null`;

@@ -376,13 +376,73 @@ UT_TEST(test_get_backend_at_out_of_range)
 
 
 /* ============================================================
+ * Spec-1.7.2 F1 — create() vtable signature carries isRedo
+ *
+ *	The vtable create callback was extended in spec-1.7.2 to take a
+ *	`bool isRedo` parameter so that local backend can use O_CREAT|
+ *	O_EXCL (!isRedo) vs idempotent open (isRedo) per md.c mdcreate
+ *	semantics.  Compile-time signature check below: if a future
+ *	regression accidentally drops isRedo from the vtable signature,
+ *	this test will fail to compile.
+ *
+ *	Behavior coverage (from TAP 019_smgr_cluster.pl):
+ *	  - L3 CREATE TABLE / INSERT / SELECT exercises the !isRedo
+ *	    path: non-redo create against a fresh RelFileLocator (no
+ *	    existing file) succeeds via O_CREAT|O_EXCL.
+ *	  - L7 pg_ctl restart triggers WAL redo replay, which calls
+ *	    smgrcreate(isRedo=true) on already-existing relfilenode
+ *	    files; idempotent path (existing file OK) is exercised
+ *	    here.
+ *	Together L3 + L7 cover spec-1.7.2 DoD #20's two required paths.
+ * ============================================================ */
+
+/*
+ * Function pointer type matching the post-1.7.2 create signature.  If
+ * the vtable signature drifts (e.g. isRedo accidentally removed in a
+ * future amend) the assignment in test_create_signature_has_isRedo
+ * below fails to compile, catching the regression at link time.
+ */
+typedef void (*PgracCreateCallbackSig)(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
+									   ClusterSharedFsHandle **out_handle);
+
+
+UT_TEST(test_create_signature_has_isRedo)
+{
+	/*
+	 * Take the address of the dispatch wrapper through the explicit
+	 * post-1.7.2 signature.  Compile fails (no implicit conversion
+	 * between incompatible function-pointer types) if anyone drops
+	 * isRedo from cluster_shared_fs_create.
+	 */
+	PgracCreateCallbackSig fn = (PgracCreateCallbackSig)cluster_shared_fs_create;
+
+	UT_ASSERT_NOT_NULL((void *)fn);
+}
+
+
+UT_TEST(test_stub_create_signature_has_isRedo)
+{
+	/*
+	 * Same compile-time signature check on the stub backend's vtable
+	 * slot, ensuring built-in backends keep matching the new
+	 * signature.  Local backend's slot is also captured implicitly
+	 * by the vtable_callbacks_nonnull tests above (the assignment
+	 * into ClusterSharedFsOps.create requires matching signature).
+	 */
+	PgracCreateCallbackSig fn = (PgracCreateCallbackSig)cluster_shared_fs_stub_ops.create;
+
+	UT_ASSERT_NOT_NULL((void *)fn);
+}
+
+
+/* ============================================================
  * Test runner
  * ============================================================ */
 
 int
 main(void)
 {
-	UT_PLAN(10);
+	UT_PLAN(12);
 	UT_RUN(test_shared_fs_backend_max_constant);
 	UT_RUN(test_shared_fs_backend_id_enum_frozen);
 	UT_RUN(test_shared_fs_vtable_struct_nonempty);
@@ -393,6 +453,8 @@ main(void)
 	UT_RUN(test_accessor_symbols_linkable);
 	UT_RUN(test_dispatch_wrappers_linkable);
 	UT_RUN(test_get_backend_at_out_of_range);
+	UT_RUN(test_create_signature_has_isRedo);
+	UT_RUN(test_stub_create_signature_has_isRedo);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

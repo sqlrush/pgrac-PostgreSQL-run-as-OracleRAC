@@ -9,8 +9,9 @@
  *	      ClusterSharedFsBackendId);
  *	    - cluster_shared_fs_init / _shutdown lifecycle hooks called
  *	      from cluster_init / before_shmem_exit;
- *	    - the nine caller-facing I/O dispatch wrappers that forward to
- *	      active_ops->*.
+ *	    - the eleven caller-facing I/O dispatch wrappers that forward
+ *	      to active_ops->* (eleven storage callbacks plus two lifecycle
+ *	      callbacks, thirteen function pointers total).
  *
  *	  Backend selection is start-time only and freezes for the
  *	  postmaster's lifetime (see docs/cluster-shared-fs-design.md §0
@@ -216,6 +217,40 @@ cluster_shared_fs_init(void)
 						 "to enable cluster_smgr routing, or revert "
 						 "cluster.smgr_user_relations=off.")));
 
+	/*
+	 * PGRAC: spec-1.7.2 2026-05-03 F2 fix — EXPERIMENTAL WARNING
+	 * lifecycle.
+	 *
+	 * Spec-1.7.1 Sprint A originally placed this WARNING in
+	 * cluster_smgr_init() (cluster_smgr.c) under the !IsUnderPostmaster
+	 * guard.  Codex review 2026-05-03 found that PG smgrinit() is "called
+	 * during backend startup, *not* during postmaster start" (see
+	 * smgr.c:162) AND backends always have IsUnderPostmaster=true, so
+	 * the WARNING never actually fired in normal flow -- a P1 lifecycle
+	 * bug.
+	 *
+	 * cluster_shared_fs_init runs from cluster_init() at postmaster
+	 * startup (and once per EXEC_BACKEND child).  Same call site as the
+	 * stub-backend FATAL cross-check above: GUC has been parsed,
+	 * backends have been registered.  Emitting here guarantees one
+	 * WARNING per postmaster start and zero per backend (ordinary
+	 * startup) when cluster.smgr_user_relations is on.
+	 *
+	 * 019_smgr_cluster.pl L3 / L8 assert this WARNING appears in the
+	 * postmaster logfile, so future regressions are caught.  Spec-1.7.2
+	 * DoD #19 makes this a hard gate.
+	 */
+	if (cluster_smgr_user_relations)
+		ereport(WARNING,
+				(errmsg("cluster.smgr_user_relations is experimental in Stage 1.X"),
+				 errdetail("cluster_smgr is single-file passthrough; full md.c-equivalent "
+						   "fsync registration / unlink lifecycle is not yet implemented."),
+				 errhint("Crash recovery durability is not guaranteed.  Stage 2 共享存储 "
+						 "spec implements full fsync semantics with shared-storage backend "
+						 "protocol.  See docs/cluster-smgr-design.md and "
+						 "spec-1.7.2-cluster-smgr-warning-create-lifecycle.md for current "
+						 "limitations.")));
+
 	cluster_shared_fs_init_in_progress = false;
 
 	/*
@@ -313,11 +348,11 @@ cluster_shared_fs_open_existing(RelFileLocator rlocator, ForkNumber forknum,
 }
 
 void
-cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum,
+cluster_shared_fs_create(RelFileLocator rlocator, ForkNumber forknum, bool isRedo,
 						 ClusterSharedFsHandle **out_handle)
 {
 	ENSURE_ACTIVE();
-	cluster_shared_fs_active_ops->create(rlocator, forknum, out_handle);
+	cluster_shared_fs_active_ops->create(rlocator, forknum, isRedo, out_handle);
 }
 
 
