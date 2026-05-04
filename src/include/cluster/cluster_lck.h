@@ -108,11 +108,11 @@
  *	preserve the existing 0..4 mapping when amending.
  */
 typedef enum ClusterLckStatus {
-	CLUSTER_LCK_NOT_STARTED = 0,	/* postmaster has not yet spawned LCK */
-	CLUSTER_LCK_SPAWNING = 1,		/* StartChildProcess returned a pid; LCK main not yet active */
-	CLUSTER_LCK_READY = 2,			/* LCK main loop active; phase 2 driver may advance */
+	CLUSTER_LCK_NOT_STARTED = 0,   /* postmaster has not yet spawned LCK */
+	CLUSTER_LCK_SPAWNING = 1,	   /* StartChildProcess returned a pid; LCK main not yet active */
+	CLUSTER_LCK_READY = 2,		   /* LCK main loop active; phase 2 driver may advance */
 	CLUSTER_LCK_SHUTTING_DOWN = 3, /* shutdown_requested set; LCK exiting */
-	CLUSTER_LCK_EXITED = 4			/* LCK proc_exit complete; postmaster reaper to harvest */
+	CLUSTER_LCK_EXITED = 4		   /* LCK proc_exit complete; postmaster reaper to harvest */
 } ClusterLckStatus;
 
 #define CLUSTER_LCK_STATUS_LAST CLUSTER_LCK_EXITED
