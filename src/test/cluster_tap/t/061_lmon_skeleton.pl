@@ -338,12 +338,12 @@ $node_lx->stop;
 	$node_l9->init;
 	$node_l9->append_conf('postgresql.conf',
 		"log_min_messages = debug1\n"
-		. "cluster.injection_points = 'cluster-lmon-pre-spawn:error'\n");
+		. "cluster.injection_points = 'cluster-lmon-pre-spawn:skip'\n");
 
 	$node_l9->start(fail_ok => 1);
 	my $log_l9 = slurp_file($node_l9->logfile);
 	like($log_l9,
-		 qr/cluster injection point "cluster-lmon-pre-spawn" armed with ERROR|SQLSTATE 53R0A|LMON_SPAWN_FAILED|cluster phase 1: failed to spawn LMON/i,
+		 qr/SQLSTATE 53R0A|LMON_SPAWN_FAILED|cluster phase 1: failed to spawn LMON/i,
 		 'L9 phase 1 FATAL out path works when LMON spawn is interrupted by injection (F13 fail_ctx plumbing reachable)');
 
 	$node_l9->stop('immediate', fail_ok => 1);

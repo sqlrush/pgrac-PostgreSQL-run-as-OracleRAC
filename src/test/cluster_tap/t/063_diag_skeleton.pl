@@ -337,13 +337,13 @@ $node_lx->stop;
 	$node_l9->init;
 	$node_l9->append_conf('postgresql.conf',
 		"log_min_messages = debug1\n"
-		. "cluster.injection_points = 'cluster-diag-pre-spawn:error'\n");
+		. "cluster.injection_points = 'cluster-diag-pre-spawn:skip'\n");
 
 	$node_l9->start(fail_ok => 1);
 	my $log_l9 = slurp_file($node_l9->logfile);
 	like($log_l9,
-		 qr/cluster injection point "cluster-diag-pre-spawn" armed with ERROR|SQLSTATE 53R0E|DIAG_SPAWN_FAILED|cluster phase 2: failed to spawn DIAG/i,
-		 'L9 phase 2 FATAL out path works when DIAG spawn is interrupted by injection (F13 fail_ctx plumbing reachable)');
+		 qr/SQLSTATE 53R0E|DIAG_SPAWN_FAILED|cluster phase 4: failed to spawn DIAG/i,
+		 'L9 phase 4 FATAL out via 53R0E DIAG_SPAWN_FAILED 真实 plumbing (spec-1.14.1 F20: inject :skip → return 0 → fail_ctx 53R0E → driver FATAL)');
 
 	$node_l9->stop('immediate', fail_ok => 1);
 }

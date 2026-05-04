@@ -167,6 +167,12 @@ cluster_diag_start(void)
 	/* Sprint B inject: pre-spawn (testable spawn-failure injection). */
 	CLUSTER_INJECTION_POINT("cluster-diag-pre-spawn");
 
+	/* spec-1.14.1 F20: see cluster_lmon_start; 'skip' simulates spawn
+	 * failure without ereport so 53R0E plumbing can be verified. */
+	if (cluster_injection_should_skip("cluster-diag-pre-spawn"))
+		return 0;
+
+
 	/*
 	 * Q2 thin proxy: forward to the postmaster-owned wrapper that
 	 * lives in postmaster.c.  cluster_diag.c does NOT directly call

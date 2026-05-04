@@ -72,7 +72,7 @@ is($cluster_stats_count, '1',
 # ----------
 my $log_l2 = slurp_file($node->logfile);
 my $cluster_stats_ready_pos
-	= index($log_l2, "cluster phase 4: DIAG ready");
+	= index($log_l2, "Cluster Stats ready");
 my $phase3_pos
 	= index($log_l2, "cluster startup: phase4_normal -> running");
 ok($cluster_stats_ready_pos >= 0, 'L2 postmaster log contains Cluster Stats ready message');
@@ -337,12 +337,12 @@ $node_lx->stop;
 	$node_l9->init;
 	$node_l9->append_conf('postgresql.conf',
 		"log_min_messages = debug1\n"
-		. "cluster.injection_points = 'cluster-stats-pre-spawn:error'\n");
+		. "cluster.injection_points = 'cluster-stats-pre-spawn:skip'\n");
 
 	$node_l9->start(fail_ok => 1);
 	my $log_l9 = slurp_file($node_l9->logfile);
 	like($log_l9,
-		 qr/cluster injection point "cluster-stats-pre-spawn" armed with ERROR|SQLSTATE 53R10|STATS_SPAWN_FAILED|cluster phase 4: failed to spawn Cluster Stats/i,
+		 qr/SQLSTATE 53R10|STATS_SPAWN_FAILED|cluster phase 4: failed to spawn Cluster Stats/i,
 		 'L9 phase 4 FATAL out path works when Cluster Stats spawn is interrupted by injection (F13 fail_ctx plumbing reachable)');
 
 	$node_l9->stop('immediate', fail_ok => 1);

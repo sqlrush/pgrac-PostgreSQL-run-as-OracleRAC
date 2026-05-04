@@ -184,6 +184,12 @@ char *cluster_injection_points = NULL;
 void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}
+/* spec-1.14.1 F20 stub. */
+bool
+cluster_injection_should_skip(const char *name pg_attribute_unused())
+{
+	return false;
+}
 
 /* libpq + procsignal stubs (pulled in transitively via cluster_lck.c
  * includes; LckMain runtime is not invoked). */

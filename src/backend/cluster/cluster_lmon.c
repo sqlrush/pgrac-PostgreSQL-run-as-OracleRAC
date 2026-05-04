@@ -168,6 +168,21 @@ cluster_lmon_start(void)
 	CLUSTER_INJECTION_POINT("cluster-lmon-pre-spawn");
 
 	/*
+	 * spec-1.14.1 F20: when inject 'skip' is armed on cluster-lmon-
+	 * pre-spawn, simulate a spawn failure (return 0) WITHOUT firing
+	 * ereport.  This is the only way to truly exercise the
+	 * 53R0A LMON_SPAWN_FAILED path in phase_1_handler:
+	 *   start() returns 0 → handler fills fail_ctx with 53R0A →
+	 *   driver ereport(FATAL, 53R0A, ...).
+	 *
+	 * Without this skip path, inject 'error' fires ereport(ERROR)
+	 * with generic ERRCODE_INTERNAL_ERROR — bypassing the 53R0A
+	 * plumbing entirely.  TAP regression: 061 L9.
+	 */
+	if (cluster_injection_should_skip("cluster-lmon-pre-spawn"))
+		return 0;
+
+	/*
 	 * Q2 thin proxy: forward to the postmaster-owned wrapper that
 	 * lives in postmaster.c.  cluster_lmon.c does NOT directly call
 	 * StartChildProcess (file-static) and does NOT bypass postmaster

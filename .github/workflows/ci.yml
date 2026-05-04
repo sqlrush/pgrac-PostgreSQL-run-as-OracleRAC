@@ -59,6 +59,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-format clang-tidy
 
+      - name: Check no test artifacts tracked (spec-1.14.1 F19)
+        run: |
+          tracked=$(git ls-files | grep -E '/(tmp_check|log)/|regression\.(diffs|out)$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::test ephemeral artifacts tracked in git tree:"
+            echo "$tracked"
+            echo "::error::run: git rm --cached <file>; .gitignore should already exclude"
+            exit 1
+          fi
+          echo "OK: no tmp_check / log / regression.diffs in tracked tree"
+
       - name: Check comment headers (CLAUDE.md rule 11)
         run: ./scripts/ci/check-comment-headers.sh
 
