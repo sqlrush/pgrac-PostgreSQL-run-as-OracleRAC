@@ -72,10 +72,11 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #ifdef USE_PGRAC_CLUSTER
 
 #include "cluster/cluster_conf.h"
-#include "cluster/cluster_elog.h" /* cluster_phase */
-#include "cluster/cluster_diag.h" /* cluster_diag_status (spec-1.13 D12) */
-#include "cluster/cluster_lck.h"  /* cluster_lck_status (spec-1.12 D12) */
-#include "cluster/cluster_lmon.h" /* cluster_lmon_status (spec-1.11 Sprint B D12) */
+#include "cluster/cluster_elog.h"  /* cluster_phase */
+#include "cluster/cluster_diag.h"  /* cluster_diag_status (spec-1.13 D12) */
+#include "cluster/cluster_lck.h"   /* cluster_lck_status (spec-1.12 D12) */
+#include "cluster/cluster_stats.h" /* cluster_stats_status (spec-1.14 D12) */
+#include "cluster/cluster_lmon.h"  /* cluster_lmon_status (spec-1.11 Sprint B D12) */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"			   /* ClusterICOps_Active, ClusterICTier */
 #include "cluster/cluster_scn.h"		   /* SCN typedef (stage 1.4) */
@@ -507,6 +508,42 @@ dump_diag(ReturnSetInfo *rsinfo)
 
 
 /*
+ * dump_cluster_stats -- Stage 1.14 Cluster Stats state diagnostics
+ * (mirrors dump_diag F11 7-key complete model: 2 status + 5 lifecycle).
+ */
+static void
+dump_cluster_stats(ReturnSetInfo *rsinfo)
+{
+	ClusterStatsStatus s = cluster_stats_status();
+	pid_t pid;
+	TimestampTz spawned_at, ready_at, last_tick;
+	int64 iters;
+
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_status", cluster_stats_status_to_string(s));
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_status_enum_value", fmt_int32((int32)s));
+
+	pid = cluster_stats_pid();
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_pid",
+			 pid == 0 ? "(unset)" : fmt_int64((int64)pid));
+
+	spawned_at = cluster_stats_spawned_at();
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_spawned_at",
+			 spawned_at == 0 ? "(unset)" : pstrdup(timestamptz_to_str(spawned_at)));
+
+	ready_at = cluster_stats_ready_at();
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_ready_at",
+			 ready_at == 0 ? "(unset)" : pstrdup(timestamptz_to_str(ready_at)));
+
+	last_tick = cluster_stats_last_liveness_tick_at();
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_last_liveness_tick_at",
+			 last_tick == 0 ? "(unset)" : pstrdup(timestamptz_to_str(last_tick)));
+
+	iters = cluster_stats_main_loop_iters();
+	emit_row(rsinfo, "cluster_stats", "cluster_stats_main_loop_iters", fmt_int64(iters));
+}
+
+
+/*
  * dump_shared_fs -- Stage 1.1 cluster_shared_fs runtime state.
  *
  *	Emits two rows: the active backend's name (or "(none)" if init has
@@ -676,6 +713,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_lmon(rsinfo);
 		dump_lck(rsinfo);
 		dump_diag(rsinfo);
+		dump_cluster_stats(rsinfo);
 	}
 #else
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

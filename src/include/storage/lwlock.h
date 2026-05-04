@@ -245,6 +245,13 @@ typedef enum BuiltinTrancheIds {
 	 * Spec: spec-1.13-diag-skeleton.md Sprint A D1+D2
 	 */
 	LWTRANCHE_CLUSTER_DIAG,
+	/*
+	 * PGRAC (stage 1.14 Sprint A): dedicated tranche for
+	 * ClusterStatsSharedState lwlock — same pattern as LMON / LCK / DIAG.
+	 *
+	 * Spec: spec-1.14-cluster-stats-skeleton.md Sprint A D1+D2
+	 */
+	LWTRANCHE_CLUSTER_STATS,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

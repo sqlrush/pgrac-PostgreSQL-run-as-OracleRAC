@@ -57,6 +57,7 @@
 #include "cluster/cluster_elog.h"	/* cluster_phase legacy mirror (HC2) */
 #include "cluster/cluster_diag.h"	/* cluster_diag_start / wait_for_ready (1.13 Sprint A) */
 #include "cluster/cluster_guc.h"	/* cluster_phase{1..4}_timeout (D2 F2) */
+#include "cluster/cluster_stats.h"	/* cluster_stats_start / wait_for_ready (1.14 Sprint A) */
 #include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
 #include "cluster/cluster_lck.h"	/* cluster_lck_start / wait_for_ready (1.12 Sprint A) */
 #include "cluster/cluster_lmon.h"	/* cluster_lmon_start / wait_for_ready (1.11 Sprint A) */
@@ -566,28 +567,78 @@ phase_3_handler(PhaseRunFailContext *fail_ctx pg_attribute_unused())
 }
 
 
+/*
+ * phase4_remaining_budget_ms -- spec-1.14 Q3 user 修订 single deadline.
+ *
+ *	Returns max(deadline - now - driver_buffer_ms, 100ms floor).  Each
+ *	child wait inside phase_4_handler computes its budget off the same
+ *	phase4_deadline so the sum of all children's wait times cannot
+ *	exceed cluster.phase4_timeout.  Without this, two serial waits
+ *	(DIAG + Cluster Stats) each of (phase4_timeout - 5s) would total
+ *	2 * (30s - 5s) = 50s, breaching the 30s contract.
+ *
+ *	Driver buffer (5s default) is reserved for the outer driver's
+ *	TimestampDifferenceExceeds check so 53R09 PHASE_TRANSITION_TIMEOUT
+ *	can still trip cleanly if a child wait runs to its full slice.
+ *	Min 100ms floor guarantees at least one polling iteration so
+ *	wait_for_ready does not spuriously fail on a tight overflow.
+ */
+static int
+phase4_remaining_budget_ms(TimestampTz deadline, int driver_buffer_ms)
+{
+	long secs;
+	int microsecs;
+	long remaining_ms;
+
+	TimestampDifference(GetCurrentTimestamp(), deadline, &secs, &microsecs);
+	remaining_ms = secs * 1000 + microsecs / 1000 - driver_buffer_ms;
+	return remaining_ms > 100 ? (int)remaining_ms : 100;
+}
+
 static PhaseRunResult
 phase_4_handler(PhaseRunFailContext *fail_ctx)
 {
 	int diag_pid;
-	int phase4_timeout_ms;
+	int stats_pid;
+	int diag_remaining_ms;
+	int stats_remaining_ms;
+	TimestampTz phase4_start;
+	TimestampTz phase4_deadline;
 
 	Assert(!IsUnderPostmaster);
 
 	/*
-	 * HC4 (spec-1.13 §1.4 #4): if cluster.enabled = false, phase 4
-	 * degrades to spec-1.10 stub behavior — no DIAG spawn, no FATAL.
-	 * Tested by 063 L10.
+	 * HC4 (spec-1.13 §1.4 #4 / spec-1.14 §1.4): if cluster.enabled =
+	 * false, phase 4 degrades to spec-1.10 stub behavior — no DIAG
+	 * spawn AND no Cluster Stats spawn, no FATAL.  Tested by 063 L10
+	 * (DIAG-only) + 064 L10 (DIAG + Cluster Stats双 process disabled).
 	 */
 	if (!cluster_enabled) {
-		elog(DEBUG1, "cluster phase 4: cluster.enabled=false; skipping DIAG spawn "
-					 "(degraded to spec-1.10 stub behavior).  PG-native "
-					 "walwriter / bgwriter / checkpointer / autovacuum spawn "
-					 "unchanged.");
+		elog(DEBUG1, "cluster phase 4: cluster.enabled=false; skipping DIAG + "
+					 "Cluster Stats spawn (degraded to spec-1.10 stub behavior).  "
+					 "PG-native walwriter / bgwriter / checkpointer / autovacuum "
+					 "spawn unchanged.");
 		return PHASE_RUN_OK;
 	}
 
-	/* spec-1.13 D6: real DIAG spawn via Q2 narrow wrapper. */
+	/*
+	 * spec-1.14 Q3 user 修订: phase 4 single deadline pattern.
+	 *
+	 *	Both child waits below compute remaining budget off the same
+	 *	phase4_deadline (= phase4_start + cluster.phase4_timeout).
+	 *	This caps the sum of all child waits so phase 4 cannot run
+	 *	past cluster.phase4_timeout regardless of how many children
+	 *	live in this phase (1.14: DIAG + Cluster Stats; Stage 2+ may
+	 *	add Sinval Broadcaster etc.).
+	 */
+	phase4_start = GetCurrentTimestamp();
+	phase4_deadline = TimestampTzPlusMilliseconds(
+		phase4_start, cluster_phase_timeout_for(CLUSTER_PHASE_4_NORMAL) * 1000);
+
+	/* ----------
+	 * spec-1.13 D6: DIAG spawn + sync wait ready (first phase 4 child).
+	 * ----------
+	 */
 	diag_pid = cluster_diag_start();
 	if (diag_pid <= 0) {
 		fail_ctx->errcode = ERRCODE_CLUSTER_DIAG_SPAWN_FAILED;
@@ -599,17 +650,8 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 		return PHASE_RUN_FATAL;
 	}
 
-	/*
-	 * spec-1.13 D6: bounded readiness wait via shmem polling.  Use the
-	 * phase 4 timeout minus a 5-second driver elapsed buffer so that
-	 * driver TimestampDifferenceExceeds() can still trip and raise
-	 * 53R09 PHASE_TRANSITION_TIMEOUT cleanly even if the DIAG handle
-	 * goes pathological.  5s is the same buffer LCK/LMON use.
-	 */
-	phase4_timeout_ms = cluster_phase_timeout_for(CLUSTER_PHASE_4_NORMAL) * 1000;
-	if (phase4_timeout_ms > 5000)
-		phase4_timeout_ms -= 5000;
-	if (!cluster_diag_wait_for_ready(phase4_timeout_ms)) {
+	diag_remaining_ms = phase4_remaining_budget_ms(phase4_deadline, 5000);
+	if (!cluster_diag_wait_for_ready(diag_remaining_ms)) {
 		fail_ctx->errcode = ERRCODE_CLUSTER_DIAG_NOT_READY;
 		fail_ctx->errmsg = "cluster phase 4: DIAG did not publish READY in time";
 		fail_ctx->errhint = "Check postmaster log for DIAG-side errors.  If DIAG is "
@@ -617,11 +659,39 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 		return PHASE_RUN_FATAL;
 	}
 
+	/* ----------
+	 * spec-1.14 D6: Cluster Stats spawn + sync wait ready (second
+	 * phase 4 child).  Remaining budget recomputed off the same
+	 * phase4_deadline (Q3 single deadline pattern).
+	 * ----------
+	 */
+	stats_pid = cluster_stats_start();
+	if (stats_pid <= 0) {
+		fail_ctx->errcode = ERRCODE_CLUSTER_STATS_SPAWN_FAILED;
+		fail_ctx->errmsg = "cluster phase 4: failed to spawn Cluster Stats aux process";
+		fail_ctx->errhint = "Check postmaster log for fork() error.  Confirm OS process "
+							"limits (ulimit -u) leave room for the Cluster Stats aux "
+							"process; if the limit is exhausted, raise it via ulimit "
+							"or systemd LimitNPROC and restart postmaster.";
+		return PHASE_RUN_FATAL;
+	}
+
+	stats_remaining_ms = phase4_remaining_budget_ms(phase4_deadline, 5000);
+	if (!cluster_stats_wait_for_ready(stats_remaining_ms)) {
+		fail_ctx->errcode = ERRCODE_CLUSTER_STATS_NOT_READY;
+		fail_ctx->errmsg = "cluster phase 4: Cluster Stats did not publish READY in time";
+		fail_ctx->errhint = "Check postmaster log for Cluster Stats-side errors.  If "
+							"Cluster Stats is slow on this hardware, raise "
+							"cluster.phase4_timeout (PGC_SIGHUP).";
+		return PHASE_RUN_FATAL;
+	}
+
 	elog(DEBUG1,
-		 "cluster phase 4: DIAG ready (pid %d); Cluster Stats remain stub "
-		 "(Stage 1.14).  PG-native walwriter / bgwriter / checkpointer / "
-		 "autovacuum spawn unchanged.",
-		 diag_pid);
+		 "cluster phase 4: DIAG ready (pid %d) + Cluster Stats ready (pid %d).  "
+		 "PG-native walwriter / bgwriter / checkpointer / autovacuum spawn "
+		 "unchanged.  Sinval Broadcaster / Recovery Coordinator deferred to "
+		 "Stage 2+.",
+		 diag_pid, stats_pid);
 
 	return PHASE_RUN_OK;
 }

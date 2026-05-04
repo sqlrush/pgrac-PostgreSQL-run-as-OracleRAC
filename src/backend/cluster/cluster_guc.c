@@ -87,6 +87,9 @@ int cluster_lck_main_loop_interval = 1000;
 /* spec-1.13 D8: cluster.diag_main_loop_interval (mirror). */
 int cluster_diag_main_loop_interval = 1000;
 
+/* spec-1.14 D8: cluster.cluster_stats_main_loop_interval (mirror). */
+int cluster_cluster_stats_main_loop_interval = 1000;
+
 
 /*
  * cluster.enabled (Stage 1.11 Sprint B HC4 闭环; spec-1.11 D8).
@@ -425,6 +428,18 @@ cluster_init_guc(void)
 					 "value in range is functionally equivalent at this stage."),
 		&cluster_diag_main_loop_interval, 1000, 100, 60000, PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL,
 		NULL);
+
+	DefineCustomIntVariable("cluster.cluster_stats_main_loop_interval",
+							gettext_noop("Cluster Stats main-loop tick interval in milliseconds."),
+							gettext_noop("Same semantics as cluster.diag_main_loop_interval; "
+										 "controls the Cluster Stats aux process main-loop "
+										 "WaitLatch timeout (spec-1.14 D8).  Cluster Stats 1.14 "
+										 "has no real consumer work yet (pg_stat_cluster_* view "
+										 "filling / cross-node aggregation / history retention "
+										 "land in Stage 2+), so any value in range is "
+										 "functionally equivalent at this stage."),
+							&cluster_cluster_stats_main_loop_interval, 1000, 100, 60000, PGC_SIGHUP,
+							GUC_UNIT_MS, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 		"cluster.enabled",

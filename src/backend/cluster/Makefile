@@ -53,6 +53,7 @@ OBJS = \
 	cluster_shmem.o \
 	cluster_signal.o \
 	cluster_startup_phase.o \
+	cluster_stats.o \
 	cluster_version.o \
 	cluster_views.o \
 	storage/cluster_shared_fs.o \

@@ -344,6 +344,11 @@ void
 cluster_diag_shmem_register(void)
 {}
 
+/* Spec-1.14 Sprint A stub: same for Cluster Stats. */
+void
+cluster_stats_shmem_register(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 

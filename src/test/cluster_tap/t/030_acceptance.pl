@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'59', 'E1 pg_stat_cluster_wait_events returns 59 rows (with DIAG BgProc 1.13)');
+	'60', 'E1 pg_stat_cluster_wait_events returns 60 rows (1.14 Cluster Stats BgProc)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'59', 'E4 pg_stat_gcluster_wait_events returns 59 rows (single-node)');
+	'60', 'E4 pg_stat_gcluster_wait_events returns 60 rows (single-node)');
 
 
 # ============================================================
@@ -302,7 +302,7 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'63', 'M1 63 injection points (1.13 adds 6 cluster-diag-*)');
+	'69', 'M1 69 injection points (1.14 adds 6 cluster-stats-*)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '126',
-	'M5 inject category has 63×2 = 126 sub-keys (.fault_type + .hits) after 1.13');
+	) eq '138',
+	'M5 inject category has 69×2 = 138 sub-keys (.fault_type + .hits) after 1.14');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
@@ -367,8 +367,8 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM pg_cluster_state}),
-	'block_format,buffer_format,conf,diag,guc,ic,inject,lck,lmon,pcm,pgstat,phase,shared_fs,shmem',
-	'O2 pg_cluster_state has all 14 categories (7 stage-0 + shared_fs 1.1 + block_format 1.4 + buffer_format 1.6 + pcm 1.7 + lmon 1.11 + lck 1.12 + diag 1.13)');
+	'block_format,buffer_format,cluster_stats,conf,diag,guc,ic,inject,lck,lmon,pcm,pgstat,phase,shared_fs,shmem',
+	'O2 pg_cluster_state has all 15 categories (7 stage-0 + shared_fs 1.1 + block_format 1.4 + buffer_format 1.6 + pcm 1.7 + lmon 1.11 + lck 1.12 + diag 1.13 + cluster_stats 1.14)');
 
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE value IS NULL}),

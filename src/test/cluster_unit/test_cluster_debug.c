@@ -601,6 +601,55 @@ cluster_diag_main_loop_iters(void)
 	return 0;
 }
 
+/* Spec-1.14 D6+D12 stubs: cluster_startup_phase.o references
+ * cluster_stats_start + cluster_stats_wait_for_ready; cluster_debug.o
+ * dump_cluster_stats references 7 cluster_stats_* accessors. */
+int
+cluster_stats_start(void)
+{
+	return 0;
+}
+bool
+cluster_stats_wait_for_ready(int timeout_ms pg_attribute_unused())
+{
+	return false;
+}
+int
+cluster_stats_status(void)
+{
+	return 0;
+}
+const char *
+cluster_stats_status_to_string(int s pg_attribute_unused())
+{
+	return "(stub)";
+}
+pid_t
+cluster_stats_pid(void)
+{
+	return 0;
+}
+TimestampTz
+cluster_stats_spawned_at(void)
+{
+	return 0;
+}
+TimestampTz
+cluster_stats_ready_at(void)
+{
+	return 0;
+}
+TimestampTz
+cluster_stats_last_liveness_tick_at(void)
+{
+	return 0;
+}
+int64
+cluster_stats_main_loop_iters(void)
+{
+	return 0;
+}
+
 
 UT_DEFINE_GLOBALS();
 

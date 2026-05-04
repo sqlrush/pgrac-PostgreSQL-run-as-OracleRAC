@@ -315,6 +315,9 @@ static pid_t LckPID = 0;
 
 /* PGRAC (stage 1.13 Sprint A): DIAG aux process pid; same pattern. */
 static pid_t DiagPID = 0;
+
+/* PGRAC (stage 1.14 Sprint A): Cluster Stats aux process pid; same pattern. */
+static pid_t ClusterStatsPID = 0;
 #endif
 
 /* Startup process's status */
@@ -621,6 +624,7 @@ static void ShmemBackendArrayRemove(Backend *bn);
 #define StartLmon() StartChildProcess(LmonProcess)
 #define StartLck() StartChildProcess(LckProcess)
 #define StartDiag() StartChildProcess(DiagProcess)
+#define StartClusterStats() StartChildProcess(ClusterStatsProcess)
 #endif
 
 /* Macros to check exit status of a child process */
@@ -1862,6 +1866,16 @@ ServerLoop(void)
 		 */
 		if (cluster_enabled && DiagPID == 0 && pmState == PM_RUN)
 			DiagPID = StartDiag();
+
+		/*
+		 * PGRAC: spec-1.14 Sprint A — same ServerLoop respawn for
+		 * Cluster Stats (codex round 3 P1.1+P1.2 preempted, fourth
+		 * instance).  Cluster Stats is the second cluster aux process
+		 * spawned post PM_RUN by phase4_sequence; respawn here closes
+		 * restart_after_crash recovery + external-SIGTERM paths.
+		 */
+		if (cluster_enabled && ClusterStatsPID == 0 && pmState == PM_RUN)
+			ClusterStatsPID = StartClusterStats();
 #endif
 
 		/*
@@ -2721,6 +2735,8 @@ process_pm_reload_request(void)
 			signal_child(LckPID, SIGHUP);
 		if (DiagPID != 0)
 			signal_child(DiagPID, SIGHUP);
+		if (ClusterStatsPID != 0)
+			signal_child(ClusterStatsPID, SIGHUP);
 #endif
 		if (AutoVacPID != 0)
 			signal_child(AutoVacPID, SIGHUP);
@@ -3201,6 +3217,19 @@ process_pm_child_exit(void)
 				HandleChildCrash(pid, exitstatus, _("DIAG process"));
 			continue;
 		}
+		/*
+		 * PGRAC: stage 1.14 Sprint A — Cluster Stats aux process exit
+		 * handling mirrors DIAG / LCK / LMON.  Same HC5 normal/abnormal
+		 * split.
+		 *
+		 * Spec: spec-1.14-cluster-stats-skeleton.md Sprint A D5 + HC5.
+		 */
+		if (pid == ClusterStatsPID) {
+			ClusterStatsPID = 0;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus, _("cluster stats process"));
+			continue;
+		}
 #endif
 
 		/*
@@ -3595,6 +3624,12 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		DiagPID = 0;
 	else if (DiagPID != 0 && take_action)
 		sigquit_child(DiagPID);
+
+	/* PGRAC (stage 1.14 Sprint A): same pattern for Cluster Stats. */
+	if (pid == ClusterStatsPID)
+		ClusterStatsPID = 0;
+	else if (ClusterStatsPID != 0 && take_action)
+		sigquit_child(ClusterStatsPID);
 #endif
 
 	/* Take care of the walreceiver too */
@@ -3741,19 +3776,32 @@ PostmasterStateMachine(void)
 			signal_child(WalWriterPID, SIGTERM);
 #ifdef USE_PGRAC_CLUSTER
 		/*
-		 * PGRAC (stage 1.11 Sprint A): signal LMON to shut down too.
-		 * LMON main loop polls shutdown_requested + ShutdownRequestPending;
-		 * SIGTERM sets the latter via SignalHandlerForShutdownRequest,
-		 * triggering LMON's normal-exit path (HC5).
+		 * PGRAC: spec-1.14 Q10 LIFO shutdown — Cluster Stats first,
+		 * DIAG second, LCK third, LMON last (reverse spawn order).
+		 * Send SIGTERM in reverse spawn order so the last-spawned
+		 * child starts its cleanup BEFORE earlier ones.  Subsequent
+		 * PM_WAIT_BACKENDS waits for all PIDs == 0 and reaps them.
+		 *
+		 * IMPORTANT: LIFO ordering must live in the actual signal_
+		 * child path (here, in pmdie SIGTERM) — placing it in
+		 * cluster_run_shutdown_sequence (which fires AFTER children
+		 * already exited) has no effect.  Q10 user-finding 2026-05-04.
 		 */
-		if (LmonPID != 0)
-			signal_child(LmonPID, SIGTERM);
-		/* PGRAC (stage 1.12 Sprint A): same SIGTERM for LCK. */
-		if (LckPID != 0)
-			signal_child(LckPID, SIGTERM);
-		/* PGRAC (stage 1.13 Sprint A): same SIGTERM for DIAG. */
+		/* spec-1.14 Q10 LIFO: Cluster Stats first (last-spawned). */
+		if (ClusterStatsPID != 0)
+			signal_child(ClusterStatsPID, SIGTERM);
+		/* spec-1.13 Q10 LIFO: DIAG second. */
 		if (DiagPID != 0)
 			signal_child(DiagPID, SIGTERM);
+		/* spec-1.12 Q10 LIFO: LCK third. */
+		if (LckPID != 0)
+			signal_child(LckPID, SIGTERM);
+		/* spec-1.11 Q10 LIFO: LMON last (first-spawned).  LMON main
+		 * loop polls shutdown_requested + ShutdownRequestPending; SIGTERM
+		 * sets the latter via SignalHandlerForShutdownRequest, triggering
+		 * LMON's normal-exit path (HC5). */
+		if (LmonPID != 0)
+			signal_child(LmonPID, SIGTERM);
 #endif
 		/* If we're in recovery, also stop startup and walreceiver procs */
 		if (StartupPID != 0)
@@ -3802,6 +3850,8 @@ PostmasterStateMachine(void)
 			LckPID == 0 &&
 			/* PGRAC: spec-1.13 Sprint A — same wait for DIAG. */
 			DiagPID == 0 &&
+			/* PGRAC: spec-1.14 Sprint A — same wait for Cluster Stats. */
+			ClusterStatsPID == 0 &&
 #endif
 			AutoVacPID == 0) {
 			if (Shutdown >= ImmediateShutdown || FatalError) {
@@ -4143,6 +4193,8 @@ TerminateChildren(int signal)
 		signal_child(LckPID, signal);
 	if (DiagPID != 0)
 		signal_child(DiagPID, signal);
+	if (ClusterStatsPID != 0)
+		signal_child(ClusterStatsPID, signal);
 #endif
 }
 
@@ -5522,6 +5574,30 @@ cluster_postmaster_start_diag(void)
 
 	DiagPID = StartDiag();
 	return DiagPID;
+}
+
+/*
+ * cluster_postmaster_start_stats -- spawn the Cluster Stats aux process.
+ *
+ *	PGRAC (stage 1.14 Sprint A): postmaster-owned narrow wrapper for
+ *	the cluster module to request Cluster Stats spawn (Q2).  Mirrors
+ *	cluster_postmaster_start_diag -- StartChildProcess is file-static,
+ *	so cluster_stats.c::cluster_stats_start() forwards here.
+ *
+ *	Note: Cluster Stats spawn is driven from cluster_run_phase4_sequence()
+ *	in the reaper PM_RUN transition path, AFTER DIAG ready (1.14 Q9
+ *	partial upgrade — phase 4 has two children DIAG + Cluster Stats;
+ *	Sinval Broadcaster / Recovery Coord etc. are Stage 2+).
+ *
+ *	Spec: spec-1.14-cluster-stats-skeleton.md Sprint A D5.
+ */
+pid_t
+cluster_postmaster_start_stats(void)
+{
+	Assert(!IsUnderPostmaster);
+
+	ClusterStatsPID = StartClusterStats();
+	return ClusterStatsPID;
 }
 #endif
 

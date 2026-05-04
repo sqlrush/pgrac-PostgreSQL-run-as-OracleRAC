@@ -514,6 +514,16 @@ typedef enum {
 	 * fully wired.  See cluster_diag.h.
 	 */
 	DiagProcess,
+	/*
+	 * Cluster Stats (Cluster Statistics process) is stage 1.14 Sprint
+	 * A's fourth real cluster background process; pg_stat_cluster_*
+	 * view filling / cross-node aggregation / wait event tracking /
+	 * history retention placeholder.  Appended after DiagProcess to
+	 * preserve numeric values.  Lifecycle skeleton only; real protocols
+	 * land in Stage 2+ when interconnect is fully wired.  See
+	 * cluster_stats.h.
+	 */
+	ClusterStatsProcess,
 #endif
 
 	NUM_AUXPROCTYPES /* Must be last! */
@@ -531,6 +541,7 @@ extern PGDLLIMPORT AuxProcType MyAuxProcType;
 #define AmLmonProcess() (MyAuxProcType == LmonProcess)
 #define AmLckProcess() (MyAuxProcType == LckProcess)
 #define AmDiagProcess() (MyAuxProcType == DiagProcess)
+#define AmClusterStatsProcess() (MyAuxProcType == ClusterStatsProcess)
 #endif
 
 

@@ -23,13 +23,13 @@ selecting default max_connections ... 100
 selecting default shared_buffers ... 128MB
 selecting default time zone ... Asia/Shanghai
 creating configuration files ... ok
-running bootstrap script ... 2026-05-04 13:33:54.239 CST [16612] LOG:  [cluster node=-1 phase=pre_init] cluster shmem control block allocated (24 bytes, magic=0x50475243, version=0x00020007)
-2026-05-04 13:33:54.239 CST [16612] LOG:  cluster_conf: "pgrac.conf" not found, falling back to single-node mode (node_id=-1)
-2026-05-04 13:33:54.239 CST [16612] LOG:  cluster_shared_fs: active backend is "stub" (id 0)
+running bootstrap script ... 2026-05-04 20:33:41.423 CST [56148] LOG:  [cluster node=-1 phase=pre_init] cluster shmem control block allocated (24 bytes, magic=0x50475243, version=0x00020007)
+2026-05-04 20:33:41.424 CST [56148] LOG:  cluster_conf: "pgrac.conf" not found, falling back to single-node mode (node_id=-1)
+2026-05-04 20:33:41.424 CST [56148] LOG:  cluster_shared_fs: active backend is "stub" (id 0)
 ok
-performing post-bootstrap initialization ... 2026-05-04 13:33:54.365 CST [16614] LOG:  [cluster node=-1 phase=pre_init] cluster shmem control block allocated (24 bytes, magic=0x50475243, version=0x00020007)
-2026-05-04 13:33:54.365 CST [16614] LOG:  cluster_conf: "pgrac.conf" not found, falling back to single-node mode (node_id=-1)
-2026-05-04 13:33:54.365 CST [16614] LOG:  cluster_shared_fs: active backend is "stub" (id 0)
+performing post-bootstrap initialization ... 2026-05-04 20:33:41.551 CST [56150] LOG:  [cluster node=-1 phase=pre_init] cluster shmem control block allocated (24 bytes, magic=0x50475243, version=0x00020007)
+2026-05-04 20:33:41.551 CST [56150] LOG:  cluster_conf: "pgrac.conf" not found, falling back to single-node mode (node_id=-1)
+2026-05-04 20:33:41.551 CST [56150] LOG:  cluster_shared_fs: active backend is "stub" (id 0)
 ok
 
 Sync to disk skipped.

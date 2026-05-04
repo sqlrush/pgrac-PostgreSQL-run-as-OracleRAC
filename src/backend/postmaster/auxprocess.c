@@ -34,9 +34,10 @@
 #include "utils/rel.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_diag.h" /* DiagMain (stage 1.13 Sprint A) */
-#include "cluster/cluster_lck.h"  /* LckMain (stage 1.12 Sprint A) */
-#include "cluster/cluster_lmon.h" /* LmonMain (stage 1.11 Sprint A) */
+#include "cluster/cluster_diag.h"  /* DiagMain (stage 1.13 Sprint A) */
+#include "cluster/cluster_lck.h"   /* LckMain (stage 1.12 Sprint A) */
+#include "cluster/cluster_lmon.h"  /* LmonMain (stage 1.11 Sprint A) */
+#include "cluster/cluster_stats.h" /* ClusterStatsMain (stage 1.14 Sprint A) */
 #endif
 
 
@@ -97,6 +98,10 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	/* PGRAC (stage 1.13 Sprint A): DIAG aux process. */
 	case DiagProcess:
 		MyBackendType = B_DIAG;
+		break;
+	/* PGRAC (stage 1.14 Sprint A): Cluster Stats aux process. */
+	case ClusterStatsProcess:
+		MyBackendType = B_CLUSTER_STATS;
 		break;
 #endif
 	default:
@@ -198,6 +203,10 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	/* PGRAC (stage 1.13 Sprint A): DIAG aux process dispatch. */
 	case DiagProcess:
 		DiagMain();
+		proc_exit(1);
+	/* PGRAC (stage 1.14 Sprint A): Cluster Stats aux process dispatch. */
+	case ClusterStatsProcess:
+		ClusterStatsMain();
 		proc_exit(1);
 #endif
 

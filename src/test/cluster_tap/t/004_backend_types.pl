@@ -87,21 +87,22 @@ is($unknown_count, '0',
 # Spec-1.11 Sprint A: LMON aux process is the first pgrac background
 # process actually spawned by postmaster.  Spec-1.12 Sprint A: LCK
 # aux process is the second.  Spec-1.13 Sprint A: DIAG aux process
-# is the third.  Other types (cluster stats / heartbeat /
-# interconnect listener / etc) remain deferred to Stage 1.14 + Stage
-# 2-6.  Excluded 'lmon', 'lck', 'diag' from the "no pgrac process
-# visible" assertion accordingly.
+# is the third.  Spec-1.14 Sprint A: Cluster Stats aux process is
+# the fourth.  Other types (heartbeat / interconnect listener / etc)
+# remain deferred to Stage 2-6.  Excluded 'lmon', 'lck', 'diag',
+# 'cluster stats' from the "no pgrac process visible" assertion
+# accordingly.
 my $pgrac_visible = $node->safe_psql(
 	'postgres',
 	q{SELECT count(*) FROM pg_stat_activity
 	   WHERE backend_type IN (
-	       'cluster stats', 'heartbeat', 'interconnect listener',
+	       'heartbeat', 'interconnect listener',
 	       'lmd', 'lms worker',
 	       'managed recovery process', 'recovery coordinator',
 	       'recovery worker', 'sinval broadcaster',
 	       'tt gc', 'undo cleaner')});
 is($pgrac_visible, '0',
-	'no pgrac process descriptor visible at stage 0.10 except LMON (1.11) + LCK (1.12) + DIAG (1.13) Sprint A (others deferred to 1.14 + Stage 2-6)');
+	'no pgrac process descriptor visible at stage 0.10 except LMON (1.11) + LCK (1.12) + DIAG (1.13) + Cluster Stats (1.14) Sprint A (others deferred to Stage 2-6)');
 
 # LMON is spawned by postmaster (spec-1.11 Sprint A).  Verify it
 # appears in pg_stat_activity exactly once.
@@ -127,6 +128,15 @@ my $diag_visible = $node->safe_psql(
 	q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'diag'});
 is($diag_visible, '1',
 	'DIAG aux process visible in pg_stat_activity (spec-1.13 Sprint A)');
+
+# Cluster Stats is spawned by postmaster (spec-1.14 Sprint A) at
+# the same phase 4 driver site, after DIAG (Q2 phase 4 内串行).
+# Verify it appears in pg_stat_activity exactly once.
+my $cluster_stats_visible = $node->safe_psql(
+	'postgres',
+	q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'cluster stats'});
+is($cluster_stats_visible, '1',
+	'Cluster Stats aux process visible in pg_stat_activity (spec-1.14 Sprint A)');
 
 
 $node->stop;
