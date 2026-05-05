@@ -44,7 +44,7 @@
 #include <signal.h>
 #include <string.h>
 
-#include "access/xact.h"		/* PGRAC: spec-1.18 xl_xact_scn struct */
+#include "access/xact.h" /* PGRAC: spec-1.18 xl_xact_scn struct */
 #include "cluster/cluster_scn.h"
 #include "port/atomics.h"
 #include "storage/lwlock.h"
@@ -560,7 +560,7 @@ UT_TEST(test_spec118_recovery_replay_observe_linkable)
 
 UT_TEST(test_spec118_xl_xact_scn_size_is_8_bytes)
 {
-	UT_ASSERT_EQ(sizeof(xl_xact_scn), (size_t) 8);
+	UT_ASSERT_EQ(sizeof(xl_xact_scn), (size_t)8);
 }
 
 
