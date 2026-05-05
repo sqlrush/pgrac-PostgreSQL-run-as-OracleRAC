@@ -89,12 +89,13 @@ typedef enum {
 /*
  * UBA -- Undo Block Address (16 bytes).
  *
- *	Stub at stage 1.5; full encoding (segment_id, block, slot, row)
- *	lands at spec-1.20-1.22 (TT slot + undo segment header).  Until
- *	then all UBA fields are zero-init'd (treated as InvalidUba).
+ *	Stub at stage 1.5.  TTSlot in spec-1.20 reuses this typedef for
+ *	first_undo_block; the 16-byte width is locked at stage 1.5 so the
+ *	on-disk ITL slot format never changes when the encoding lands.
  *
- *	The 16-byte width is locked at stage 1.5 so the on-disk ITL slot
- *	format never changes when the encoding lands.
+ *	Full encoding (segment_id, block, slot, row) is deferred to a
+ *	later spec; until then all UBA fields are zero-init'd (treated as
+ *	InvalidUba).
  */
 typedef struct UBA {
 	uint64 raw[2]; /* 16 bytes; all zero = InvalidUba */

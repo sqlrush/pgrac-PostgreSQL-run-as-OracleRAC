@@ -137,6 +137,12 @@
 /*  XLP_CLUSTER_FLAGS_RESERVED) automatically.  No on-disk format */
 /*  change -> NO catversion bump (Q1=A approve).  Spec: */
 /*  spec-1.19-wal-page-header-thread-id.md APPROVED v0.2. */
+/* Stage 1.20: TTSlot type definition only (cluster_tt_slot.h NEW; 32 */
+/*  byte struct + sentinel constants + StaticAssertDecl + inline */
+/*  helpers).  No on-disk artefact in Stage 1.20: undo segment header */
+/*  is created by spec-1.21; dedicated undo tablespace is created by */
+/*  spec-1.22.  Therefore: NO catversion bump.  Spec: */
+/*  spec-1.20-tt-slot-data-structure.md APPROVED v0.2. */
 #define CATALOG_VERSION_NO	202605181
 
 #endif
