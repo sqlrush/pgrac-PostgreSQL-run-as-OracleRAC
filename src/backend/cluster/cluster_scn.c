@@ -312,6 +312,7 @@ void
 cluster_scn_observe(SCN remote_scn)
 {
 	uint64 remote_local;
+	uint64 target_local;
 	bool bumped = false;
 
 	Assert(cluster_scn_state != NULL);
@@ -325,12 +326,67 @@ cluster_scn_observe(SCN remote_scn)
 
 	remote_local = scn_local(remote_scn);
 
+	/*
+	 * Hardening v1.0.1 (round 9 P1 finding 3): wraparound guard BEFORE
+	 * lock acquisition.  Without this guard, observe(scn_encode(X,
+	 * SCN_MAX_LOCAL)) would compute remote_local + 1 which overflows
+	 * the 56-bit local field.  Subsequent scn_encode(node, target) hits
+	 * Assert(local <= SCN_MAX_LOCAL) on assert builds and silently
+	 * masks back to 0 on production builds (re-using SCNs is a
+	 * correctness disaster).
+	 *
+	 * Reject remote SCN whose local would push us past SCN_MAX_LOCAL.
+	 * In practice this is the same theoretical 2^56 ceiling that
+	 * scn_check_wraparound_watermark guards on advance(); reaching it
+	 * via observe is similarly a runaway / external-manipulation
+	 * sentinel.
+	 */
+	if (remote_local >= SCN_MAX_LOCAL) {
+		ereport(WARNING,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cluster_scn_observe: remote local_scn (" UINT64_FORMAT
+						") at or above SCN_MAX_LOCAL; observe rejected to prevent overflow",
+						remote_local),
+				 errhint("Remote SCN approaching 2^56 sentinel; investigate runaway advance / "
+						 "external manipulation upstream.")));
+		return;
+	}
+
 	LWLockAcquire(&cluster_scn_state->lwlock, LW_EXCLUSIVE);
 
-	/* Lamport bump: current = max(current, remote + 1). */
-	if (remote_local > cluster_scn_state->current_local_scn) {
-		cluster_scn_state->current_local_scn = remote_local + 1;
+	/*
+	 * Lamport receive: current = max(current, remote) + 1 when an event
+	 * with timestamp >= ours arrives (causal-ordering rule).
+	 *
+	 * Hardening v1.0.1 (round 9 P1 finding 2): condition is `>=` not
+	 * `>`.  Standard Lamport: when a remote event with the SAME
+	 * timestamp as ours arrives, the receive event has happened-after
+	 * relative to both -- so it must get a strictly greater timestamp.
+	 * The spec-1.16 §3.4 docstring already locked this as
+	 * "current = max(current, remote + 1)"; the v1.0.0 implementation
+	 * used `>` which let two causally-related events share the same
+	 * local SCN when remote == current.
+	 *
+	 * Hardening v1.0.1 (round 9 P2 finding 4): observe_bump_count and
+	 * total_advance_count both incremented INSIDE the same LW_EXCLUSIVE
+	 * section as current_local_scn so dump_scn never observes a partial
+	 * state (current advanced but counters lagging).  observe is a
+	 * real local SCN advance per the Lamport rule; total_advance_count
+	 * therefore reflects ALL advances (commit + abort + observe bump).
+	 */
+	if (remote_local >= cluster_scn_state->current_local_scn) {
+		target_local = remote_local + 1;
+
+		/* Wraparound watermark check inside the same LWLock (round 9 P1
+		 * finding 3): bump may push past 2^50 WARNING / 2^55 PANIC
+		 * thresholds; advance() runs the check after fetch_add and so
+		 * must observe(). */
+		scn_check_wraparound_watermark(target_local);
+
+		cluster_scn_state->current_local_scn = target_local;
 		cluster_scn_state->last_advance_at = GetCurrentTimestamp();
+		pg_atomic_fetch_add_u64(&cluster_scn_state->observe_bump_count, 1);
+		pg_atomic_fetch_add_u64(&cluster_scn_state->total_advance_count, 1);
 		bumped = true;
 	}
 
@@ -340,8 +396,7 @@ cluster_scn_observe(SCN remote_scn)
 
 	LWLockRelease(&cluster_scn_state->lwlock);
 
-	if (bumped)
-		pg_atomic_fetch_add_u64(&cluster_scn_state->observe_bump_count, 1);
+	(void)bumped; /* result not currently used by callers */
 }
 
 /*
@@ -363,6 +418,16 @@ cluster_scn_observe(SCN remote_scn)
 static inline bool
 cluster_scn_skip_hook_in_pre_running(void)
 {
+	/*
+	 * Hardening v1.0.1 (round 9 P1 finding 1): cluster.enabled=off
+	 * runtime toggle must silence commit/abort SCN advance to satisfy
+	 * cluster_finalize_startup_running() docstring "set cluster_enabled
+	 * =off for vanilla PG behaviour".  Without this guard, a user with
+	 * cluster.enabled=off + cluster.node_id=7 would still see SCN
+	 * advance on every commit, contradicting the documented contract.
+	 */
+	if (!cluster_enabled)
+		return true; /* runtime "vanilla PG" toggle */
 	if (cluster_scn_state == NULL)
 		return true; /* shmem not yet initialised */
 	if (!SCN_NODE_ID_VALID(cluster_scn_state->node_id))

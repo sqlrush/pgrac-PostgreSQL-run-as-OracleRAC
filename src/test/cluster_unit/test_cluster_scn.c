@@ -159,6 +159,11 @@ GetCurrentTimestamp(void)
 }
 
 NodeId cluster_node_id = 0; /* GUC backing store mock */
+/* Spec-1.16 Hardening v1.0.1 (round 9 P1 finding 1): cluster_scn skip
+ * helper now references cluster_enabled.  Pin to true so unit-test
+ * advance/observe paths aren't silently skipped (behavior tests live
+ * in TAP 066 L12). */
+bool cluster_enabled = true;
 
 /* superuser stub for SQL UDF wrappers (never called in this binary). */
 bool
