@@ -606,6 +606,21 @@ dump_scn(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_scn_abort_advance_count()));
 	emit_row(rsinfo, "scn", "scn_observe_bump_count",
 			 fmt_int64((int64)cluster_scn_observe_bump_count()));
+	/* spec-1.17 D6 (Q5 dump_scn 10 -> 14 keys): BOC sweep stats.
+	 * scn_last_advance_at semantics changed in spec-1.17: now BOC
+	 * approximation (refreshed at sweep, ≤ boc_sweep_interval_ms
+	 * staleness vs spec-1.16 per-commit refresh). */
+	{
+		TimestampTz boc_at = cluster_scn_boc_last_sweep_at();
+		emit_row(rsinfo, "scn", "scn_boc_sweep_count",
+				 fmt_int64((int64)cluster_scn_boc_sweep_count()));
+		emit_row(rsinfo, "scn", "scn_boc_last_sweep_at",
+				 boc_at == 0 ? "(unset)" : pstrdup(timestamptz_to_str(boc_at)));
+		emit_row(rsinfo, "scn", "scn_boc_pending_at_last_sweep",
+				 fmt_int64((int64)cluster_scn_boc_pending_at_last_sweep()));
+		emit_row(rsinfo, "scn", "scn_boc_max_batch_size",
+				 fmt_int64((int64)cluster_scn_boc_max_batch_size()));
+	}
 }
 
 

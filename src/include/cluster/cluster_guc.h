@@ -245,6 +245,13 @@ extern int cluster_diag_main_loop_interval;
  */
 extern int cluster_cluster_stats_main_loop_interval;
 
+/*
+ * cluster.boc_sweep_interval_ms (spec-1.17 D4): walwriter BOC sweep
+ * staleness target in ms.  Range [1, 1000]; default 1.  walwriter wake
+ * rate caps actual sweep frequency (Min(WalWriterDelay, this)).
+ */
+extern int cluster_boc_sweep_interval_ms;
+
 
 /*
  * cluster.enabled: runtime cluster mode gate (Stage 1.11 Sprint B; HC4

@@ -38,6 +38,32 @@
  *	  src/backend/postmaster/walwriter.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (spec-1.17 v0.2)
+ *
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *	Spec: spec-1.17-walwriter-boc.md
+ *
+ *	What changed:
+ *	  - WalWriterMain main loop: cluster_scn_boc_tick() called between
+ *	    XLogBackgroundFlush() and pgstat_report_wal() (after PG WAL flush
+ *	    work, before stats emit).  Q4 anchor (walwriter.c:~258).
+ *	  - cur_timeout capped to cluster.boc_sweep_interval_ms so walwriter
+ *	    wakes at least every BOC sweep interval, ensuring SCN staleness
+ *	    bound.  Without this cap, WalWriterDelay (default 200ms) would
+ *	    dominate.
+ *	  - Hibernate inhibition: when current_local_scn advanced since the
+ *	    last sweep (cluster_scn_boc_pending_since_last_sweep > 0),
+ *	    reset left_till_hibernate so walwriter doesn't enter long sleep
+ *	    while pending advances exist.
+ *
+ *	Why:
+ *	  spec-1.17 atomic SCN hot path moves last_advance_at refresh +
+ *	  wraparound watermark check + BOC pulse emit to walwriter sweep.
+ *	  cluster_enabled=off path silenced via cluster_scn_boc_tick()
+ *	  internal gate (no #ifdef-skip needed here; tick is no-op).  All
+ *	  hooks gated by USE_PGRAC_CLUSTER so --disable-cluster build is
+ *	  symbol-equivalent to vanilla PG.
  */
 #include "postgres.h"
 
@@ -47,6 +73,12 @@
 #include "access/xlog.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC: spec-1.17 BOC tick + GUC + pending helper. */
+#include "cluster/cluster_guc.h"
+#include "cluster/cluster_scn.h"
+#endif
 #include "pgstat.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/walwriter.h"
@@ -256,6 +288,28 @@ WalWriterMain(void)
 		else if (left_till_hibernate > 0)
 			left_till_hibernate--;
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
+		 * What changed: cluster_scn_boc_tick() runs after WAL flush work
+		 * but before pgstat emit.  Tick internally throttles by
+		 * cluster.boc_sweep_interval_ms; cluster.enabled=off path
+		 * silently no-ops (spec-1.16.1 L20 lesson inheritance).
+		 * Why: spec-1.17 v0.2 Q4 anchor; ereport-safe (no critical
+		 * section); see cluster_scn.c::cluster_scn_boc_tick().
+		 */
+		cluster_scn_boc_tick();
+
+		/*
+		 * PGRAC: hibernate inhibition (spec-1.17 v0.2 Q4).  If SCN
+		 * advanced since the last sweep, reset hibernation counter so
+		 * the next iteration runs the BOC sweep promptly rather than
+		 * sleeping for a hibernate-multiplied interval.
+		 */
+		if (cluster_scn_boc_pending_since_last_sweep() > 0)
+			left_till_hibernate = LOOPS_UNTIL_HIBERNATE;
+#endif
+
 		/* report pending statistics to the cumulative stats system */
 		pgstat_report_wal(false);
 
@@ -268,6 +322,19 @@ WalWriterMain(void)
 			cur_timeout = WalWriterDelay;	/* in ms */
 		else
 			cur_timeout = WalWriterDelay * HIBERNATE_FACTOR;
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC: cur_timeout cap (spec-1.17 v0.2 Q4).  walwriter must
+		 * wake at least every cluster.boc_sweep_interval_ms so BOC tick
+		 * meets staleness target.  Without this cap, WalWriterDelay
+		 * (default 200ms) dominates and 1ms-class sweep target is
+		 * unreachable.  cluster_enabled=off case: tick is a no-op so
+		 * cap-to-1ms is harmless extra wake; choose to keep gate
+		 * lightweight (no per-tick branch).
+		 */
+		cur_timeout = Min(cur_timeout, cluster_boc_sweep_interval_ms);
+#endif
 
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,

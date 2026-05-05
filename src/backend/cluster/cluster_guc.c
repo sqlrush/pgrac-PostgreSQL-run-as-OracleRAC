@@ -90,6 +90,16 @@ int cluster_diag_main_loop_interval = 1000;
 /* spec-1.14 D8: cluster.cluster_stats_main_loop_interval (mirror). */
 int cluster_cluster_stats_main_loop_interval = 1000;
 
+/*
+ * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
+ * sweep target staleness in ms.  Range [1, 1000]; default 1ms.  Actual
+ * sweep frequency is bounded by Min(WalWriterDelay, this); user must
+ * tune wal_writer_delay to match if sub-WalWriterDelay sweep wanted.
+ * 100us range deferred to a future high-frequency-timing spec (custom
+ * timer / wakeup mechanism, not walwriter loop).
+ */
+int cluster_boc_sweep_interval_ms = 1;
+
 
 /*
  * cluster.enabled (Stage 1.11 Sprint B HC4 闭环; spec-1.11 D8).
@@ -443,6 +453,24 @@ cluster_init_guc(void)
 										 "functionally equivalent at this stage."),
 							&cluster_cluster_stats_main_loop_interval, 1000, 100, 60000, PGC_SIGHUP,
 							GUC_UNIT_MS, NULL, NULL, NULL);
+
+	/*
+	 * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).
+	 * walwriter periodic BOC sweep staleness target.  Default 1ms;
+	 * range [1, 1000] ms.  walwriter wake rate (WalWriterDelay default
+	 * 200ms) caps actual sweep frequency.
+	 */
+	DefineCustomIntVariable(
+		"cluster.boc_sweep_interval_ms",
+		gettext_noop("walwriter BOC sweep staleness target in milliseconds."),
+		gettext_noop("walwriter cluster_scn_boc_tick() runs at most every "
+					 "cluster.boc_sweep_interval_ms.  Used for last_advance_at "
+					 "timestamp refresh, wraparound watermark check, and Stage 2+ "
+					 "cross-node broadcast pulse.  Actual frequency is bounded by "
+					 "Min(WalWriterDelay, this); set wal_writer_delay below this "
+					 "value if you want sub-200ms BOC.  100us-class precision "
+					 "needs a future high-frequency-timing spec."),
+		&cluster_boc_sweep_interval_ms, 1, 1, 1000, PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 		"cluster.enabled",

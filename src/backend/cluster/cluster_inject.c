@@ -195,6 +195,9 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	{ .name = "cluster-scn-abort-pre-advance" },
 	{ .name = "cluster-scn-abort-post-advance" },
 	{ .name = "cluster-scn-observe-bump-pre" },
+	/* Stage 1.17 (spec-1.17 D5) — 2 walwriter BOC sweep injects. */
+	{ .name = "cluster-scn-boc-sweep-pre" },
+	{ .name = "cluster-scn-boc-sweep-post" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)

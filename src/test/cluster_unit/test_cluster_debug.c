@@ -701,6 +701,27 @@ cluster_scn_observe_bump_count(void)
 {
 	return 0;
 }
+/* Spec-1.17 BOC stat accessor stubs. */
+uint64
+cluster_scn_boc_sweep_count(void)
+{
+	return 0;
+}
+TimestampTz
+cluster_scn_boc_last_sweep_at(void)
+{
+	return 0;
+}
+uint64
+cluster_scn_boc_pending_at_last_sweep(void)
+{
+	return 0;
+}
+uint64
+cluster_scn_boc_max_batch_size(void)
+{
+	return 0;
+}
 
 
 UT_DEFINE_GLOBALS();

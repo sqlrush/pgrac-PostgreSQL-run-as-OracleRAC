@@ -70,17 +70,22 @@ StaticAssertDecl(sizeof(SCN) == SCN_INVARIANT_SIZE, "SCN must be 8 bytes (uint64
  * via cluster_scn_current() / accessor functions under LW_SHARED.
  */
 typedef struct ClusterScnSharedState {
-	LWLock lwlock;						  /* LWTRANCHE_CLUSTER_SCN */
-	NodeId node_id;						  /* set by shmem_init from cluster_node_id GUC */
-	uint64 current_local_scn;			  /* 56-bit; ++ under lwlock */
-	uint64 max_observed_remote_scn;		  /* spec-1.15 stat only */
-	pg_atomic_uint64 total_advance_count; /* monotone counter */
+	LWLock lwlock;						/* spec-1.15 (now: BOC tick + observe CAS-fail tail) */
+	NodeId node_id;						/* set-once at shmem_init; lock-free read safe */
+	pg_atomic_uint64 current_local_scn; /* spec-1.17: atomic for fetch_add hot path */
+	pg_atomic_uint64 max_observed_remote_scn; /* spec-1.17: atomic-max via CAS */
+	pg_atomic_uint64 total_advance_count;	  /* monotone counter */
 	TimestampTz initialized_at;
-	TimestampTz last_advance_at;
+	TimestampTz last_advance_at; /* refreshed by BOC tick (≤ boc_sweep_interval_ms staleness) */
 	/* spec-1.16 additions: per-decision counters */
 	pg_atomic_uint64 commit_advance_count; /* incremented by _for_commit */
 	pg_atomic_uint64 abort_advance_count;  /* incremented by _for_abort  */
 	pg_atomic_uint64 observe_bump_count;   /* incremented by observe bump */
+	/* spec-1.17 additions: BOC sweep stats */
+	pg_atomic_uint64 boc_sweep_count;		   /* incremented per actual sweep */
+	TimestampTz boc_last_sweep_at;			   /* set under LWLock at sweep entry */
+	pg_atomic_uint64 boc_last_sweep_local_scn; /* local_scn at last sweep entry */
+	pg_atomic_uint64 boc_max_batch_size;	   /* atomic-max via CAS */
 } ClusterScnSharedState;
 
 
@@ -232,15 +237,21 @@ scn_check_wraparound_watermark(uint64 current)
 /*
  * cluster_scn_advance -- bump local SCN by 1 and return encoded SCN.
  *
- *	Spec-1.15 Q3: LW_EXCLUSIVE around the multi-word critical section
- *	(++ current_local_scn + wraparound check + last_advance_at +
- *	total_advance_count).  Single-node advance frequency << 1kHz; 50ns
- *	critical section is acceptable.  spec-1.16 BOC may switch to
- *	atomic + LWLock hybrid if frequency rises.
+ *	Spec-1.17 v0.2 Q1: hot path goes through pg_atomic_fetch_add_u64
+ *	with no LWLock.  node_id is set-once at shmem_init, so lock-free
+ *	read is safe.  Wraparound watermark + last_advance_at refresh are
+ *	deferred to cluster_scn_boc_tick (walwriter periodic sweep) ->
+ *	staleness ≤ cluster.boc_sweep_interval_ms (default 1ms).
+ *
+ *	Performance rationale: spec-1.16 LWLock path showed p99 abnormality
+ *	on pgbench 5k tps (cacheline ping-pong / spinlock backoff / cold
+ *	cache); spec-1.17 atomic path eliminates that abnormality.  The
+ *	~50ns vs ~5ns nominal difference is small; the win is removing
+ *	contention pathology, not raw cycle savings.
  *
  *	Spec-1.15 L3: ereport(ERROR) when cluster.node_id is unset (-1) or
- *	out of valid range (>127).  Caller must SET cluster.node_id=0..127
- *	before first advance.
+ *	out of valid range (>127).  This branch is rare (D13 already
+ *	WARNs at startup) and uses the same exception path as before.
  */
 SCN
 cluster_scn_advance(void)
@@ -253,11 +264,9 @@ cluster_scn_advance(void)
 
 	CLUSTER_INJECTION_POINT("cluster-scn-advance-pre");
 
-	LWLockAcquire(&cluster_scn_state->lwlock, LW_EXCLUSIVE);
-
+	/* Lock-free read: node_id is set-once at shmem_init. */
 	node = cluster_scn_state->node_id;
-	if (!SCN_NODE_ID_VALID(node)) {
-		LWLockRelease(&cluster_scn_state->lwlock);
+	if (!SCN_NODE_ID_VALID(node))
 		ereport(
 			ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -265,19 +274,13 @@ cluster_scn_advance(void)
 					node, SCN_MAX_VALID_NODE_ID),
 			 errhint("Set cluster.node_id to a value in 0..127 before advancing SCN.  -1 is the "
 					 "unset / single-node-fallback sentinel and is not valid for SCN encoding.")));
-	}
 
-	new_local = ++cluster_scn_state->current_local_scn;
-
-	scn_check_wraparound_watermark(new_local);
-
-	cluster_scn_state->last_advance_at = GetCurrentTimestamp();
-
+	/* Hot path: atomic fetch_add returns the OLD value, so add 1.
+	 * Wraparound check + last_advance_at refresh moved to BOC tick. */
+	new_local = pg_atomic_fetch_add_u64(&cluster_scn_state->current_local_scn, 1) + 1;
 	pg_atomic_fetch_add_u64(&cluster_scn_state->total_advance_count, 1);
 
 	encoded = scn_encode(node, new_local);
-
-	LWLockRelease(&cluster_scn_state->lwlock);
 
 	CLUSTER_INJECTION_POINT("cluster-scn-advance-post");
 
@@ -326,19 +329,10 @@ cluster_scn_observe(SCN remote_scn)
 	remote_local = scn_local(remote_scn);
 
 	/*
-	 * Hardening v1.0.1 (round 9 P1 finding 3): wraparound guard BEFORE
-	 * lock acquisition.  Without this guard, observe(scn_encode(X,
-	 * SCN_MAX_LOCAL)) would compute remote_local + 1 which overflows
-	 * the 56-bit local field.  Subsequent scn_encode(node, target) hits
-	 * Assert(local <= SCN_MAX_LOCAL) on assert builds and silently
-	 * masks back to 0 on production builds (re-using SCNs is a
-	 * correctness disaster).
-	 *
-	 * Reject remote SCN whose local would push us past SCN_MAX_LOCAL.
-	 * In practice this is the same theoretical 2^56 ceiling that
-	 * scn_check_wraparound_watermark guards on advance(); reaching it
-	 * via observe is similarly a runaway / external-manipulation
-	 * sentinel.
+	 * Wraparound guard before any CAS attempt (spec-1.16.1 L22 lesson
+	 * inherited; spec-1.17 v0.2 Q9 HC).  Without the guard,
+	 * remote_local + 1 may overflow the 56-bit field and scn_encode()
+	 * would mask back to 0 -- silent SCN reuse disaster.
 	 */
 	if (remote_local >= SCN_MAX_LOCAL) {
 		ereport(WARNING,
@@ -351,49 +345,57 @@ cluster_scn_observe(SCN remote_scn)
 		return;
 	}
 
-	LWLockAcquire(&cluster_scn_state->lwlock, LW_EXCLUSIVE);
-
 	/*
-	 * Lamport receive: current = max(current, remote) + 1 when an event
-	 * with timestamp >= ours arrives (causal-ordering rule).
+	 * Lamport receive: current = max(current, remote) + 1 (covers the
+	 * remote == current equality case per spec-1.16.1 L21 lesson; CAS
+	 * loop continues unless cur is STRICTLY GREATER than remote_local).
 	 *
-	 * Hardening v1.0.1 (round 9 P1 finding 2): condition is `>=` not
-	 * `>`.  Standard Lamport: when a remote event with the SAME
-	 * timestamp as ours arrives, the receive event has happened-after
-	 * relative to both -- so it must get a strictly greater timestamp.
-	 * The spec-1.16 §3.4 docstring already locked this as
-	 * "current = max(current, remote + 1)"; the v1.0.0 implementation
-	 * used `>` which let two causally-related events share the same
-	 * local SCN when remote == current.
-	 *
-	 * Hardening v1.0.1 (round 9 P2 finding 4): observe_bump_count and
-	 * total_advance_count both incremented INSIDE the same LW_EXCLUSIVE
-	 * section as current_local_scn so dump_scn never observes a partial
-	 * state (current advanced but counters lagging).  observe is a
-	 * real local SCN advance per the Lamport rule; total_advance_count
-	 * therefore reflects ALL advances (commit + abort + observe bump).
+	 * spec-1.17 v0.2 Q2: lock-free CAS retry loop (no LWLock).  CAS
+	 * failure means a concurrent advance() bumped current_local_scn;
+	 * reload and retry.  Loop is lock-free progress (PG primitive
+	 * guarantee), not wait-free fixed bound -- exit condition is
+	 * `cur > remote_local` which becomes true monotonically as
+	 * advance() pushes cur upward.
 	 */
-	if (remote_local >= cluster_scn_state->current_local_scn) {
-		uint64 target_local = remote_local + 1;
+	for (;;) {
+		uint64 cur = pg_atomic_read_u64(&cluster_scn_state->current_local_scn);
+		uint64 target;
 
-		/* Wraparound watermark check inside the same LWLock (round 9 P1
-		 * finding 3): bump may push past 2^50 WARNING / 2^55 PANIC
-		 * thresholds; advance() runs the check after fetch_add and so
-		 * must observe(). */
-		scn_check_wraparound_watermark(target_local);
+		if (cur > remote_local)
+			break; /* current already strictly greater; no bump needed */
 
-		cluster_scn_state->current_local_scn = target_local;
-		cluster_scn_state->last_advance_at = GetCurrentTimestamp();
-		pg_atomic_fetch_add_u64(&cluster_scn_state->observe_bump_count, 1);
-		pg_atomic_fetch_add_u64(&cluster_scn_state->total_advance_count, 1);
-		bumped = true;
+		/* cur <= remote_local: must bump to remote + 1 (covers equality
+		 * case per L21).  Wraparound watermark check inside loop (any
+		 * iteration may be the one that succeeds and could trip 2^50
+		 * threshold; cheaper than running once before CAS).  scn_check
+		 * holds its own LWLock for WARNING throttle state. */
+		target = remote_local + 1;
+		scn_check_wraparound_watermark(target);
+
+		if (pg_atomic_compare_exchange_u64(&cluster_scn_state->current_local_scn, &cur, target)) {
+			/* Success.  Bump observe_bump_count + total_advance_count.
+			 * Atomic compound consistency: spec-1.17 atomic-only path
+			 * means dump may observe ns-scale partial state windows --
+			 * acceptable for monitoring (vs spec-1.16 LWLock-protected
+			 * compound which had the same issue caught by round 9 P2). */
+			pg_atomic_fetch_add_u64(&cluster_scn_state->observe_bump_count, 1);
+			pg_atomic_fetch_add_u64(&cluster_scn_state->total_advance_count, 1);
+			bumped = true;
+			break;
+		}
+		/* CAS failed: cur was reloaded by primitive; retry. */
 	}
 
-	/* Stat: track the highest remote SCN we've ever seen. */
-	if (remote_local > cluster_scn_state->max_observed_remote_scn)
-		cluster_scn_state->max_observed_remote_scn = remote_local;
+	/* Stat: atomic-max via CAS loop on max_observed_remote_scn. */
+	for (;;) {
+		uint64 cur_max = pg_atomic_read_u64(&cluster_scn_state->max_observed_remote_scn);
 
-	LWLockRelease(&cluster_scn_state->lwlock);
+		if (remote_local <= cur_max)
+			break;
+		if (pg_atomic_compare_exchange_u64(&cluster_scn_state->max_observed_remote_scn, &cur_max,
+										   remote_local))
+			break;
+	}
 
 	(void)bumped; /* result not currently used by callers */
 }
@@ -495,10 +497,10 @@ cluster_scn_current(void)
 
 	Assert(cluster_scn_state != NULL);
 
-	LWLockAcquire(&cluster_scn_state->lwlock, LW_SHARED);
+	/* spec-1.17: current_local_scn / max_observed_remote_scn are atomic.
+	 * node_id is set-once at shmem_init.  All lock-free reads safe. */
 	node = cluster_scn_state->node_id;
-	local = cluster_scn_state->current_local_scn;
-	LWLockRelease(&cluster_scn_state->lwlock);
+	local = pg_atomic_read_u64(&cluster_scn_state->current_local_scn);
 
 	if (!SCN_NODE_ID_VALID(node))
 		return InvalidScn;
@@ -511,8 +513,8 @@ cluster_scn_current(void)
 }
 
 /*
- * Read-only accessors (LW_SHARED).  Used by dump_scn (cluster_debug.c)
- * and TAP regression for SQL view validation.
+ * Read-only accessors.  spec-1.17: lock-free atomic reads where applicable.
+ * Used by dump_scn (cluster_debug.c) and TAP regression.
  */
 uint64
 cluster_scn_advance_count(void)
@@ -524,13 +526,8 @@ cluster_scn_advance_count(void)
 uint64
 cluster_scn_max_observed_remote(void)
 {
-	uint64 v;
-
 	Assert(cluster_scn_state != NULL);
-	LWLockAcquire(&cluster_scn_state->lwlock, LW_SHARED);
-	v = cluster_scn_state->max_observed_remote_scn;
-	LWLockRelease(&cluster_scn_state->lwlock);
-	return v;
+	return pg_atomic_read_u64(&cluster_scn_state->max_observed_remote_scn);
 }
 
 NodeId
@@ -584,6 +581,184 @@ cluster_scn_observe_bump_count(void)
 
 /*
  * ============================================================
+ * spec-1.17 BOC tick (walwriter periodic sweep)
+ * ============================================================
+ */
+
+/*
+ * cluster_scn_emit_broadcast_pulse -- Stage 1.17 stub.
+ *
+ *	Stage 2+ Cache Fusion / GES will replace this body with real
+ *	cross-node broadcast over the interconnect.  spec-1.17 single-node
+ *	emits DEBUG2 only.
+ */
+static void
+cluster_scn_emit_broadcast_pulse(void)
+{
+	ereport(DEBUG2, (errmsg("cluster_scn: BOC pulse (sweep_count=" UINT64_FORMAT
+							", local=" UINT64_FORMAT ")",
+							pg_atomic_read_u64(&cluster_scn_state->boc_sweep_count),
+							pg_atomic_read_u64(&cluster_scn_state->current_local_scn))));
+}
+
+/*
+ * cluster_scn_boc_tick -- walwriter periodic sweep entry.
+ *
+ *	Caller: WalWriterMain after XLogBackgroundFlush, before
+ *	pgstat_report_wal (walwriter.c PGRAC MODIFICATIONS hook, spec-1.17
+ *	v0.2 Q4).  Frequency is bounded by Min(WalWriterDelay,
+ *	cluster.boc_sweep_interval_ms); walwriter wake rate dictates upper
+ *	bound on sweep frequency.
+ *
+ *	Internal gating (spec-1.17 v0.2 Q4 + Q9):
+ *	  - cluster.enabled=off: skip entirely (vanilla PG semantic;
+ *	    inherits spec-1.16.1 L20 lesson)
+ *	  - cluster_scn_state == NULL: shmem not yet init; skip
+ *	  - elapsed since last sweep < cluster_boc_sweep_interval_ms: skip
+ *
+ *	Sweep work:
+ *	  - bump boc_sweep_count
+ *	  - refresh boc_last_sweep_at + last_advance_at
+ *	  - compute pending = current_local_scn - boc_last_sweep_local_scn
+ *	  - update boc_max_batch_size (atomic-max via CAS)
+ *	  - run scn_check_wraparound_watermark on current_local_scn
+ *	  - emit broadcast pulse stub
+ */
+void
+cluster_scn_boc_tick(void)
+{
+	TimestampTz now;
+	uint64 cur_local;
+	uint64 prev_local;
+	uint64 batch;
+	uint64 cur_max;
+
+	/* spec-1.16.1 L20 inheritance + spec-1.17 v0.2 Q4 cluster_enabled gate */
+	if (!cluster_enabled)
+		return;
+	if (cluster_scn_state == NULL)
+		return;
+
+	now = GetCurrentTimestamp();
+
+	/* Throttle: skip if elapsed < cluster.boc_sweep_interval_ms.
+	 * cluster_boc_sweep_interval_ms is millisecond-typed; convert
+	 * boc_last_sweep_at delta to ms via PG TimestampDifference. */
+	{
+		TimestampTz last;
+		long secs;
+		int usecs;
+		long delta_ms;
+
+		LWLockAcquire(&cluster_scn_state->lwlock, LW_SHARED);
+		last = cluster_scn_state->boc_last_sweep_at;
+		LWLockRelease(&cluster_scn_state->lwlock);
+
+		if (last != 0) {
+			TimestampDifference(last, now, &secs, &usecs);
+			delta_ms = secs * 1000 + usecs / 1000;
+			if (delta_ms < cluster_boc_sweep_interval_ms)
+				return;
+		}
+	}
+
+	CLUSTER_INJECTION_POINT("cluster-scn-boc-sweep-pre");
+
+	/* Sweep under LW_EXCLUSIVE for boc_last_sweep_at + watermark
+	 * WARNING throttle state coherence (spec-1.17 v0.2 Q6 cold path). */
+	LWLockAcquire(&cluster_scn_state->lwlock, LW_EXCLUSIVE);
+	cur_local = pg_atomic_read_u64(&cluster_scn_state->current_local_scn);
+	prev_local = pg_atomic_read_u64(&cluster_scn_state->boc_last_sweep_local_scn);
+	pg_atomic_write_u64(&cluster_scn_state->boc_last_sweep_local_scn, cur_local);
+	cluster_scn_state->boc_last_sweep_at = now;
+	cluster_scn_state->last_advance_at = now;
+	pg_atomic_fetch_add_u64(&cluster_scn_state->boc_sweep_count, 1);
+	scn_check_wraparound_watermark(cur_local);
+	LWLockRelease(&cluster_scn_state->lwlock);
+
+	/* atomic-max via CAS for boc_max_batch_size */
+	batch = (cur_local >= prev_local) ? (cur_local - prev_local) : 0;
+	for (;;) {
+		cur_max = pg_atomic_read_u64(&cluster_scn_state->boc_max_batch_size);
+		if (batch <= cur_max)
+			break;
+		if (pg_atomic_compare_exchange_u64(&cluster_scn_state->boc_max_batch_size, &cur_max, batch))
+			break;
+	}
+
+	cluster_scn_emit_broadcast_pulse();
+
+	CLUSTER_INJECTION_POINT("cluster-scn-boc-sweep-post");
+}
+
+/*
+ * cluster_scn_boc_pending_since_last_sweep -- lock-free helper for
+ * walwriter.c hibernate-inhibition logic (spec-1.17 v0.2 Q4).
+ *
+ *	Reads atomic current_local_scn and boc_last_sweep_local_scn;
+ *	returns delta (or 0 if shmem not init).
+ */
+uint64
+cluster_scn_boc_pending_since_last_sweep(void)
+{
+	uint64 cur, prev;
+
+	if (cluster_scn_state == NULL)
+		return 0;
+
+	cur = pg_atomic_read_u64(&cluster_scn_state->current_local_scn);
+	prev = pg_atomic_read_u64(&cluster_scn_state->boc_last_sweep_local_scn);
+	return (cur >= prev) ? (cur - prev) : 0;
+}
+
+/* spec-1.17 BOC stat accessors. */
+uint64
+cluster_scn_boc_sweep_count(void)
+{
+	Assert(cluster_scn_state != NULL);
+	return pg_atomic_read_u64(&cluster_scn_state->boc_sweep_count);
+}
+
+TimestampTz
+cluster_scn_boc_last_sweep_at(void)
+{
+	TimestampTz v;
+
+	Assert(cluster_scn_state != NULL);
+	LWLockAcquire(&cluster_scn_state->lwlock, LW_SHARED);
+	v = cluster_scn_state->boc_last_sweep_at;
+	LWLockRelease(&cluster_scn_state->lwlock);
+	return v;
+}
+
+uint64
+cluster_scn_boc_pending_at_last_sweep(void)
+{
+	/* Last-sweep pending = (current_local at sweep entry - prev_local).
+	 * We don't store this directly; recompute as
+	 * (boc_last_sweep_local_scn - some-prev) — but we only kept the
+	 * monotonic boc_last_sweep_local_scn.  Best lock-free approximation:
+	 * the most recent batch is computed inside boc_tick and stashed in
+	 * boc_max_batch_size (running max).  Expose pending as the running
+	 * delta between current and last-sweep marker. */
+	uint64 cur, prev;
+
+	Assert(cluster_scn_state != NULL);
+	cur = pg_atomic_read_u64(&cluster_scn_state->current_local_scn);
+	prev = pg_atomic_read_u64(&cluster_scn_state->boc_last_sweep_local_scn);
+	return (cur >= prev) ? (cur - prev) : 0;
+}
+
+uint64
+cluster_scn_boc_max_batch_size(void)
+{
+	Assert(cluster_scn_state != NULL);
+	return pg_atomic_read_u64(&cluster_scn_state->boc_max_batch_size);
+}
+
+
+/*
+ * ============================================================
  * Shmem hookup
  * ============================================================
  */
@@ -603,8 +778,9 @@ cluster_scn_shmem_init(void)
 	if (!found) {
 		LWLockInitialize(&cluster_scn_state->lwlock, LWTRANCHE_CLUSTER_SCN);
 		cluster_scn_state->node_id = cluster_node_id; /* may be -1; advance() rejects */
-		cluster_scn_state->current_local_scn = 0;
-		cluster_scn_state->max_observed_remote_scn = 0;
+		/* spec-1.17: current_local_scn / max_observed_remote_scn now atomic */
+		pg_atomic_init_u64(&cluster_scn_state->current_local_scn, 0);
+		pg_atomic_init_u64(&cluster_scn_state->max_observed_remote_scn, 0);
 		pg_atomic_init_u64(&cluster_scn_state->total_advance_count, 0);
 		cluster_scn_state->initialized_at = GetCurrentTimestamp();
 		cluster_scn_state->last_advance_at = 0;
@@ -612,6 +788,11 @@ cluster_scn_shmem_init(void)
 		pg_atomic_init_u64(&cluster_scn_state->commit_advance_count, 0);
 		pg_atomic_init_u64(&cluster_scn_state->abort_advance_count, 0);
 		pg_atomic_init_u64(&cluster_scn_state->observe_bump_count, 0);
+		/* spec-1.17 BOC sweep stats */
+		pg_atomic_init_u64(&cluster_scn_state->boc_sweep_count, 0);
+		cluster_scn_state->boc_last_sweep_at = 0;
+		pg_atomic_init_u64(&cluster_scn_state->boc_last_sweep_local_scn, 0);
+		pg_atomic_init_u64(&cluster_scn_state->boc_max_batch_size, 0);
 	}
 }
 

@@ -266,6 +266,30 @@ extern uint64 cluster_scn_commit_advance_count(void);
 extern uint64 cluster_scn_abort_advance_count(void);
 extern uint64 cluster_scn_observe_bump_count(void);
 
+/*
+ * spec-1.17: walwriter BOC tick + 4 stat accessors.
+ *
+ *	cluster_scn_boc_tick -- walwriter periodic sweep (called from
+ *	WalWriterMain after XLogBackgroundFlush, before pgstat_report_wal).
+ *	Internal gating: spec-1.17 v0.2 Q4 -- skips if cluster.enabled=off
+ *	or sweep interval not elapsed.  Sweep work: refresh
+ *	last_advance_at, run wraparound watermark check, bump
+ *	boc_sweep_count, compute pending_at_last_sweep, update
+ *	boc_max_batch_size, emit broadcast_pulse stub (Stage 2+ wires
+ *	interconnect).
+ *
+ *	cluster_scn_boc_pending_since_last_sweep -- lock-free read of
+ *	(current_local_scn - boc_last_sweep_local_scn).  walwriter uses
+ *	this to inhibit hibernation when SCN advanced since last sweep.
+ */
+extern void cluster_scn_boc_tick(void);
+extern uint64 cluster_scn_boc_pending_since_last_sweep(void);
+
+extern uint64 cluster_scn_boc_sweep_count(void);
+extern TimestampTz cluster_scn_boc_last_sweep_at(void);
+extern uint64 cluster_scn_boc_pending_at_last_sweep(void);
+extern uint64 cluster_scn_boc_max_batch_size(void);
+
 
 /*
  * Shmem hookup.

@@ -204,6 +204,18 @@ TimestampDifferenceExceeds(TimestampTz a pg_attribute_unused(), TimestampTz b pg
 	return false;
 }
 
+/* spec-1.17 D2: TimestampDifference stub for boc_tick throttle. */
+void
+TimestampDifference(TimestampTz a pg_attribute_unused(), TimestampTz b pg_attribute_unused(),
+					long *secs, int *usecs)
+{
+	*secs = 0;
+	*usecs = 0;
+}
+
+/* spec-1.17 D4: cluster_boc_sweep_interval_ms GUC backing var. */
+int cluster_boc_sweep_interval_ms = 1;
+
 /* shmem region registry stub (advance/observe path NOT exercised) */
 void
 cluster_shmem_register_region(const void *r pg_attribute_unused())
@@ -514,11 +526,29 @@ UT_TEST(test_spec116_observe_bump_count_linkable)
 	UT_ASSERT_NOT_NULL((void *)cluster_scn_observe_bump_count);
 }
 
+/* spec-1.17 BOC tick + 4 stat accessor symbol-linkable tests. */
+UT_TEST(test_spec117_boc_tick_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_tick);
+}
+UT_TEST(test_spec117_boc_sweep_count_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_sweep_count);
+}
+UT_TEST(test_spec117_boc_pending_at_last_sweep_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_pending_at_last_sweep);
+}
+UT_TEST(test_spec117_boc_max_batch_size_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_max_batch_size);
+}
+
 
 int
 main(void)
 {
-	UT_PLAN(22);
+	UT_PLAN(26);
 
 	/* Stage 1.4 stub (5) */
 	UT_RUN(test_scn_typedef_size_is_8_bytes);
@@ -547,6 +577,12 @@ main(void)
 	UT_RUN(test_spec116_commit_advance_count_linkable);
 	UT_RUN(test_spec116_abort_advance_count_linkable);
 	UT_RUN(test_spec116_observe_bump_count_linkable);
+
+	/* Spec-1.17 BOC tick + accessor symbols (4) */
+	UT_RUN(test_spec117_boc_tick_linkable);
+	UT_RUN(test_spec117_boc_sweep_count_linkable);
+	UT_RUN(test_spec117_boc_pending_at_last_sweep_linkable);
+	UT_RUN(test_spec117_boc_max_batch_size_linkable);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
