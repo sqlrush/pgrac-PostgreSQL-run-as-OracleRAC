@@ -30,10 +30,19 @@
  *	    existing report_invalid_record() helper so the same code path
  *	    runs in both backend (server log) and frontend (pg_waldump
  *	    stderr) contexts.
- *	  - XLogReaderGetThreadId() — new accessor helper that returns
- *	    state->latestPageHeader.xlp_thread_id.  Stage 1 always returns
+ *	  - XLogReaderGetThreadId() — new accessor helper that returns the
+ *	    xlp_thread_id of the page currently buffered in state->readBuf
+ *	    (cast through XLogPageHeader).  Stage 1 always returns
  *	    XLP_THREAD_ID_LEGACY (0); spec-1.21+ feature-037 merged-apply
- *	    consumes this for routing.
+ *	    consumes this for routing.  Hardening v1.0.1 P3-4 (codex review
+ *	    2026-05-05): comment previously referenced a non-existent
+ *	    state->latestPageHeader field; the implementation has always
+ *	    read from state->readBuf.
+ *	  - Hardening v1.0.1 P2-2 (codex review 2026-05-05): the validator
+ *	    hook now delegates to
+ *	    cluster_xlog_validate_page_header_stage1_invariant (cluster_xlog.h)
+ *	    so cluster_unit tests can exercise the predicate without a full
+ *	    XLogReaderState fixture.  Behaviour is unchanged.
  *
  *	Why:
  *	  user 反审 #2 (Q3 v0.2 修订 → B): PG's existing
@@ -59,6 +68,7 @@
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
 #include "catalog/pg_control.h"
+#include "cluster/cluster_xlog.h"	/* PGRAC: spec-1.19 Stage 1 invariant helper */
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
 
@@ -1307,15 +1317,20 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 	/*
 	 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
 	 * What changed: spec-1.19 -- enforce Stage 1 invariant on the
-	 * xlp_thread_id + xlp_cluster_flags placeholder fields.
+	 * xlp_thread_id + xlp_cluster_flags placeholder fields, delegating
+	 * the predicate to cluster_xlog_validate_page_header_stage1_invariant
+	 * (cluster_xlog.h) so cluster_unit tests can exercise the same
+	 * predicate without a full XLogReaderState fixture (Hardening v1.0.1
+	 * P2-2; codex review 2026-05-05).
 	 * Why: PG's preceding magic and info bits checks do NOT cover the
 	 * new cluster fields (user 反审 #2 / Q3 v0.2 → B).  Catches mixed
 	 * binaries and padding corruption.  Stage 2+ feature-034 will
-	 * replace this check with a real range test
-	 * (XLP_THREAD_ID_FIRST_REAL .. XLP_THREAD_ID_MAX_REAL).
+	 * update the helper body to a real range test
+	 * (XLP_THREAD_ID_FIRST_REAL .. XLP_THREAD_ID_MAX_REAL); the call
+	 * site here stays unchanged.
 	 */
-	if (hdr->xlp_thread_id != XLP_THREAD_ID_LEGACY ||
-		hdr->xlp_cluster_flags != XLP_CLUSTER_FLAGS_RESERVED)
+	if (!cluster_xlog_validate_page_header_stage1_invariant(hdr->xlp_thread_id,
+															hdr->xlp_cluster_flags))
 	{
 		char		fname[MAXFNAMELEN];
 

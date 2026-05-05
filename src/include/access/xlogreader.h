@@ -380,6 +380,18 @@ extern void XLogReaderResetError(XLogReaderState *state);
  * currently buffered in state->readBuf.  Stage 1 always returns
  * XLP_THREAD_ID_LEGACY (0); spec-1.21+ feature-037 merged-apply consumes
  * this for routing.  Caller MUST have a validated page in readBuf.
+ *
+ * API contract caveat (Hardening v1.0.1 P2-1; codex review 2026-05-05):
+ *   readBuf is the *current buffered page* of the reader, not a stable
+ *   property of the decoded record.  When a record spans a page boundary
+ *   (XLP_FIRST_IS_CONTRECORD), the record's "thread_id" is ambiguous —
+ *   the start page and continuation page may belong to different threads
+ *   in Stage 2+ (feature-034 / feature-037 routing).  Stage 1 is safe
+ *   because every page has thread_id = LEGACY (0), but spec-1.21+ users
+ *   doing cross-page-boundary record routing MUST switch to consuming
+ *   thread_id from DecodedXLogRecord (or define an explicit "record
+ *   start page thread_id" accessor).  TODO: track this via spec-1.21
+ *   forward-link.
  */
 extern uint16 XLogReaderGetThreadId(XLogReaderState *state);
 

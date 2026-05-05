@@ -510,10 +510,19 @@ cluster_scn_advance_for_abort(void)
  *	checks and forwards real values to the existing CAS-Lamport
  *	machinery.
  *
- *	HC5 note: this code path is ERROR-safe (recovery has not entered a
- *	critical section yet at xact_redo_commit / xact_redo_abort entry).
- *	The cluster-scn-replay-observe-pre inject point is registered so
- *	tests can fault-inject ERROR here without triggering PANIC.
+ *	HC5 note: this wrapper's pre-inject point (cluster-scn-replay-
+ *	observe-pre) fires in xact_redo_commit / xact_redo_abort entry
+ *	context, which has not entered a critical section yet — :error
+ *	fault here is ERROR-safe.
+ *
+ *	Caveat (Hardening v1.0.1 P3-2; codex review 2026-05-05): this only
+ *	covers the wrapper's own inject point.  cluster_scn_observe()
+ *	called below has additional inject points (cluster-scn-observe-
+ *	entry, cluster-scn-observe-bump-pre) and may also raise WARNING via
+ *	scn_check_wraparound_watermark; arming :error on those points
+ *	independently can still surface ERROR in this code path.  Tests
+ *	that need a guaranteed ERROR-safe path should arm only this
+ *	wrapper's inject point.
  */
 void
 cluster_scn_recovery_replay_observe(SCN scn)

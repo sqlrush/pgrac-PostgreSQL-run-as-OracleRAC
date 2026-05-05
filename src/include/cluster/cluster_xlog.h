@@ -51,13 +51,14 @@
 
 
 /*
- * cluster_xlog_validate_page_header_thread_id -- Stage 1 invariant check.
+ * cluster_xlog_validate_page_header_thread_id -- Stage 1 thread_id check.
  *
  *	Returns true iff `tid` equals the legacy sentinel value (= 0).
- *	XLogReaderValidatePageHeader (xlogreader.c) already enforces this
- *	invariant on every reader path; this helper is for direct callers
- *	(unit tests, ad-hoc verification scripts) that want to validate a
- *	thread_id field in isolation.
+ *	Convenience wrapper for direct callers (unit tests, ad-hoc
+ *	verification scripts) that want to validate a thread_id field in
+ *	isolation; the full Stage 1 invariant (thread_id AND cluster_flags)
+ *	is exposed via cluster_xlog_validate_page_header_stage1_invariant
+ *	below.
  *
  *	Stage 2+ feature-034 will replace the body with a real range check
  *	XLP_THREAD_ID_FIRST_REAL <= tid <= XLP_THREAD_ID_MAX_REAL.  The
@@ -74,6 +75,34 @@ static inline bool
 cluster_xlog_validate_page_header_thread_id(uint16 tid)
 {
 	return tid == XLP_THREAD_ID_LEGACY;
+}
+
+
+/*
+ * cluster_xlog_validate_page_header_stage1_invariant -- full Stage 1 check.
+ *
+ *	Returns true iff (thread_id == LEGACY && cluster_flags == RESERVED).
+ *	This is the SAME predicate enforced by XLogReaderValidatePageHeader
+ *	at xlogreader.c — exposing it as a testable helper here so cluster_unit
+ *	(no PG state) can verify the predicate in isolation; the reader
+ *	hook calls this helper to keep logic in one place.
+ *
+ *	Stage 2+ feature-034 / future spec will replace the body with a real
+ *	range check (thread_id in [FIRST_REAL..MAX_REAL]; cluster_flags
+ *	mask of valid bits).  Function name is stable across stages so the
+ *	xlogreader hook + cluster_unit tests track the evolving predicate
+ *	without churn.
+ *
+ *	Hardening v1.0.1 P2-2 (codex review 2026-05-05): added so the
+ *	negative-path xlogreader rejection logic has unit-test coverage.
+ *	Previously only the inline thread_id helper had tests; the
+ *	xlogreader hook itself had zero tests, meaning an accidental delete
+ *	or condition flip would not be caught by CI.
+ */
+static inline bool
+cluster_xlog_validate_page_header_stage1_invariant(uint16 thread_id, uint16 cluster_flags)
+{
+	return thread_id == XLP_THREAD_ID_LEGACY && cluster_flags == XLP_CLUSTER_FLAGS_RESERVED;
 }
 
 

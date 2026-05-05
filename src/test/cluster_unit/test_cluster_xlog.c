@@ -117,10 +117,59 @@ UT_TEST(test_spec119_validate_thread_id_helper_invalid_fails)
 }
 
 
+/*
+ * Hardening v1.0.1 P2-2 (codex review 2026-05-05): negative-path
+ * coverage for the Stage 1 invariant predicate that the xlogreader
+ * validator hook delegates to.  Without these tests, an accidental
+ * delete or condition flip in
+ * cluster_xlog_validate_page_header_stage1_invariant (cluster_xlog.h)
+ * or in the XLogReaderValidatePageHeader call site (xlogreader.c)
+ * would not be caught by CI -- the inline thread_id helper alone did
+ * not exercise the cluster_flags branch.
+ *
+ * Four quadrants cover the full (thread_id × cluster_flags) cartesian:
+ *   (LEGACY,        RESERVED)   -> true   passes
+ *   (LEGACY,        non-zero)   -> false  rejects on cluster_flags
+ *   (non-zero,      RESERVED)   -> false  rejects on thread_id
+ *   (non-zero,      non-zero)   -> false  rejects on both
+ */
+UT_TEST(test_spec119_stage1_invariant_legacy_reserved_passes)
+{
+	UT_ASSERT(cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_LEGACY,
+																 XLP_CLUSTER_FLAGS_RESERVED));
+}
+
+UT_TEST(test_spec119_stage1_invariant_legacy_nonzero_flags_fails)
+{
+	UT_ASSERT(
+		!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_LEGACY, (uint16)0x0001));
+	UT_ASSERT(
+		!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_LEGACY, (uint16)0xFFFF));
+}
+
+UT_TEST(test_spec119_stage1_invariant_nonzero_thread_legacy_flags_fails)
+{
+	UT_ASSERT(!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_FIRST_REAL,
+																  XLP_CLUSTER_FLAGS_RESERVED));
+	UT_ASSERT(!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_MAX_REAL,
+																  XLP_CLUSTER_FLAGS_RESERVED));
+	UT_ASSERT(!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_INVALID,
+																  XLP_CLUSTER_FLAGS_RESERVED));
+}
+
+UT_TEST(test_spec119_stage1_invariant_both_nonzero_fails)
+{
+	UT_ASSERT(!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_FIRST_REAL,
+																  (uint16)0x0001));
+	UT_ASSERT(
+		!cluster_xlog_validate_page_header_stage1_invariant(XLP_THREAD_ID_INVALID, (uint16)0xFFFF));
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(9);
+	UT_PLAN(13);
 
 	/* Layout invariants (5) */
 	UT_RUN(test_spec119_xlog_page_header_size_is_24_bytes);
@@ -132,10 +181,16 @@ main(void)
 	/* Sentinel constants invariant (1) */
 	UT_RUN(test_spec119_sentinel_constants);
 
-	/* Validator helper (3) */
+	/* thread_id helper (3) */
 	UT_RUN(test_spec119_validate_thread_id_helper_legacy_passes);
 	UT_RUN(test_spec119_validate_thread_id_helper_first_real_fails);
 	UT_RUN(test_spec119_validate_thread_id_helper_invalid_fails);
+
+	/* Stage 1 invariant predicate, full quadrant coverage (4) -- v1.0.1 P2-2 */
+	UT_RUN(test_spec119_stage1_invariant_legacy_reserved_passes);
+	UT_RUN(test_spec119_stage1_invariant_legacy_nonzero_flags_fails);
+	UT_RUN(test_spec119_stage1_invariant_nonzero_thread_legacy_flags_fails);
+	UT_RUN(test_spec119_stage1_invariant_both_nonzero_fails);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

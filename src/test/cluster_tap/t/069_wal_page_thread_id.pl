@@ -55,14 +55,17 @@ $node->append_conf('postgresql.conf', "cluster.node_id = 7\n");
 $node->start;
 
 
-# Helper: pg_waldump current WAL slice covering [start, end].  Returns
-# combined stdout + stderr.
+# Helper: pg_waldump WAL slice on a specific node covering [start, end].
+# Hardening v1.0.1 P3-3 (codex review 2026-05-05): now takes the target
+# node as its first argument so L3's $node2 (a fresh bootstrap instance)
+# is actually inspected — the v1.0 helper hard-coded $node and
+# silently dumped the wrong instance.
 sub waldump_range
 {
-	my ($start_lsn, $end_lsn) = @_;
-	my $bin_dir = $node->config_data('--bindir');
+	my ($target, $start_lsn, $end_lsn) = @_;
+	my $bin_dir = $target->config_data('--bindir');
 	my $pg_waldump = "$bin_dir/pg_waldump";
-	my $wal_dir = $node->data_dir . '/pg_wal';
+	my $wal_dir = $target->data_dir . '/pg_wal';
 	return `"$pg_waldump" --path="$wal_dir" --start=$start_lsn --end=$end_lsn 2>&1`;
 }
 
@@ -77,7 +80,7 @@ $node->safe_psql('postgres',
 my $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (2); COMMIT;');
 my $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
-my $dump = waldump_range($start_lsn, $end_lsn);
+my $dump = waldump_range($node, $start_lsn, $end_lsn);
 like($dump, qr/thread:\s*0/,
 	'L1 WAL page header thread_id == 0 (legacy sentinel)');
 
@@ -91,7 +94,7 @@ for (1..50) {
 		"BEGIN; INSERT INTO t1 VALUES ($_); COMMIT;");
 }
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
-$dump = waldump_range($start_lsn, $end_lsn);
+$dump = waldump_range($node, $start_lsn, $end_lsn);
 unlike($dump, qr/thread:\s*[1-9]/,
 	'L2 50 commits never produce non-zero thread_id (Stage 1 unconditional 0)');
 
@@ -107,7 +110,7 @@ $node2->append_conf('postgresql.conf', "cluster.node_id = 8\n");
 $node2->start;
 my $first_lsn = $node2->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node2->safe_psql('postgres', 'CHECKPOINT');
-my $first_dump = waldump_range($first_lsn, $first_lsn);
+my $first_dump = waldump_range($node2, $first_lsn, $first_lsn);
 # 即使 dump 范围空，也至少应当不报错 invalid cluster fields。
 unlike($first_dump, qr/invalid Stage 1 cluster fields/,
 	'L3 BootStrapXLOG-emitted page header passes Stage 1 invariant');
@@ -125,7 +128,7 @@ $node->start;
 $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (100); COMMIT;');
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
-$dump = waldump_range($start_lsn, $end_lsn);
+$dump = waldump_range($node, $start_lsn, $end_lsn);
 like($dump, qr/thread:\s*0/,
 	'L4 cluster.enabled=off page init still writes thread_id == 0 (Q6 unconditional)');
 unlike($dump, qr/thread:\s*[1-9]/,
@@ -232,7 +235,7 @@ SKIP: {
 $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (9999); COMMIT;');
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
-$dump = waldump_range($start_lsn, $end_lsn);
+$dump = waldump_range($node, $start_lsn, $end_lsn);
 my @thread_lines = ($dump =~ /thread:\s*(\d+)/g);
 my $non_zero = grep { $_ != 0 } @thread_lines;
 is($non_zero, 0,
