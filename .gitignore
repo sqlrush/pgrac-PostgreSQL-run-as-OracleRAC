@@ -57,3 +57,8 @@ src/test/cluster_*/regression.out
 # at the cwd used to run prove (repo root in some flows); F19 hygiene.
 /log/
 /portlock/
+
+# Local cppcheck artifacts when running scripts/ci/run-cppcheck.sh from
+# repo root (spec-1.18.1 ship-time hygiene).
+/cppcheck.xml
+/cppcheck-summary.txt

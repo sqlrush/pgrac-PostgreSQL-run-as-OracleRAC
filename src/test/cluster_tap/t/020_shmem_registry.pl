@@ -199,7 +199,7 @@ is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
    '82',
-   'L15 total injection registry size is 73 (69 baseline + 4 SCN encoding-layer at 1.15)');
+   'L15 total injection registry size is 82 (76 baseline + 4 SCN 1.15 + 2 BOC 1.17 + 2 spec-1.18 WAL emit/replay)');
 
 
 # ----------
