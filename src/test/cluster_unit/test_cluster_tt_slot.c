@@ -154,17 +154,30 @@ UT_TEST(test_spec120_helper_is_unused_active_fails)
 	UT_ASSERT(!TTSlot_is_committed(&slot));
 }
 
-UT_TEST(test_spec120_helper_is_committed_only_committed_passes)
+UT_TEST(test_spec120_helper_is_committed_requires_status_and_scn)
 {
 	TTSlot slot;
 
 	memset(&slot, 0, sizeof(slot));
 
+	/*
+	 * COMMITTED status with InvalidScn (e.g., crash mid-write before
+	 * commit_scn populated) MUST return false -- the helper contract
+	 * is "committed AND commit_scn populated", not status alone.
+	 */
 	slot.status = TT_SLOT_COMMITTED;
+	slot.commit_scn = InvalidScn;
+	UT_ASSERT(!TTSlot_is_unused(&slot));
+	UT_ASSERT(!TTSlot_is_committed(&slot));
+
+	/* COMMITTED + valid commit_scn = true (the only positive case). */
+	slot.commit_scn = (SCN)42;
 	UT_ASSERT(!TTSlot_is_unused(&slot));
 	UT_ASSERT(TTSlot_is_committed(&slot));
 
+	/* ABORTED with any commit_scn = false. */
 	slot.status = TT_SLOT_ABORTED;
+	slot.commit_scn = (SCN)42;
 	UT_ASSERT(!TTSlot_is_unused(&slot));
 	UT_ASSERT(!TTSlot_is_committed(&slot));
 }
@@ -208,7 +221,7 @@ main(void)
 	UT_RUN(test_spec120_helper_is_unused_zero_init_passes);
 	UT_RUN(test_spec120_helper_is_unused_recyclable_passes);
 	UT_RUN(test_spec120_helper_is_unused_active_fails);
-	UT_RUN(test_spec120_helper_is_committed_only_committed_passes);
+	UT_RUN(test_spec120_helper_is_committed_requires_status_and_scn);
 
 	/* UBA dependency (1) -- skipped from PLAN count via SKIP for now? No, listed below. */
 	UT_RUN(test_spec120_uba_is_invalid_on_zero_init_slot);

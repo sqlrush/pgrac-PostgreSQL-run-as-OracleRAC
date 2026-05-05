@@ -109,6 +109,9 @@ StaticAssertDecl(sizeof(TTSlot) == 32,
 				 "spec-1.20 invariant: TTSlot on-disk size MUST stay 32 bytes; "
 				 "growth requires catversion bump in a separate spec");
 StaticAssertDecl(offsetof(TTSlot, xid) == 0, "spec-1.20 invariant: xid at byte 0");
+StaticAssertDecl(offsetof(TTSlot, wrap) == 4, "spec-1.20 invariant: wrap at byte 4");
+StaticAssertDecl(offsetof(TTSlot, status) == 6, "spec-1.20 invariant: status at byte 6");
+StaticAssertDecl(offsetof(TTSlot, flags) == 7, "spec-1.20 invariant: flags at byte 7");
 StaticAssertDecl(offsetof(TTSlot, commit_scn) == 8, "spec-1.20 invariant: commit_scn at byte 8");
 StaticAssertDecl(offsetof(TTSlot, first_undo_block) == 16,
 				 "spec-1.20 invariant: first_undo_block at byte 16");
@@ -135,8 +138,13 @@ StaticAssertDecl(offsetof(TTSlot, first_undo_block) == 16,
  *   for status==UNUSED; Stage 3+ also returns true for RECYCLABLE so
  *   callers don't break across stages.
  *
- *   TTSlot_is_committed: returns true iff the slot's tx committed and
- *   commit_scn is populated.
+ *   TTSlot_is_committed: returns true iff the slot's tx committed AND
+ *   commit_scn is populated (a real SCN, not InvalidScn).  Both
+ *   conditions matter for visibility paths -- status alone could be
+ *   COMMITTED with commit_scn==InvalidScn after a crash mid-write
+ *   (Stage 3+ failure mode).  Conservative: treat such inconsistent
+ *   slots as not-yet-committed so visibility code falls back to undo
+ *   chain inspection.
  */
 static inline bool
 TTSlot_is_unused(const TTSlot *slot)
@@ -147,7 +155,7 @@ TTSlot_is_unused(const TTSlot *slot)
 static inline bool
 TTSlot_is_committed(const TTSlot *slot)
 {
-	return slot->status == TT_SLOT_COMMITTED;
+	return slot->status == TT_SLOT_COMMITTED && SCN_VALID(slot->commit_scn);
 }
 
 
