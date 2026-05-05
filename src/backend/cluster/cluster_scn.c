@@ -180,17 +180,28 @@ static void
 scn_check_wraparound_watermark(uint64 current)
 {
 	if (current >= SCN_WRAP_PANIC_THRESHOLD) {
+		/* Hardening v1.0.1 (round 8 P3): use the registered SQLSTATE
+		 * (ERRCODE_CLUSTER_SCN_WRAPAROUND_PANIC = 53R12) instead of the
+		 * generic INTERNAL_ERROR -- the catalog entry was previously
+		 * unreachable, which made the registry surface decorative.  */
 		ereport(
 			PANIC,
-			(errcode(ERRCODE_INTERNAL_ERROR),
-			 errmsg("cluster_scn: local_scn (%lu) reached PANIC threshold (2^55 ≈ 228000 years of "
-					"advance)",
-					(unsigned long)current),
+			(errcode(ERRCODE_CLUSTER_SCN_WRAPAROUND_PANIC),
+			 errmsg("cluster_scn: local_scn (" UINT64_FORMAT
+					") reached PANIC threshold (2^55 ≈ 228000 years of advance)",
+					current),
 			 errhint(
 				 "This is a theoretical sentinel; reaching it indicates a runaway advance loop or "
 				 "external manipulation.  spec-1.16 introduces real wraparound protection.")));
 	} else if (current >= SCN_WRAP_WARNING_THRESHOLD) {
 		TimestampTz now_ts = GetCurrentTimestamp();
+
+		/* Hardening v1.0.1 (round 8 P3): the cluster-scn-wraparound-
+		 * warning inject point was registered in cluster_inject.c but
+		 * had no CLUSTER_INJECTION_POINT() call site -- making it
+		 * unreachable.  Add the call site here so injection :error /
+		 * :warning at this point actually fires. */
+		CLUSTER_INJECTION_POINT("cluster-scn-wraparound-warning");
 
 		/* Throttle: at most 1 WARNING per minute. */
 		if (last_warn_emitted_at == 0
@@ -198,9 +209,9 @@ scn_check_wraparound_watermark(uint64 current)
 			last_warn_emitted_at = now_ts;
 			ereport(WARNING,
 					(errcode(ERRCODE_WARNING),
-					 errmsg("cluster_scn: local_scn (%lu) crossed WARNING threshold (2^50 ≈ 3568 "
-							"years of advance)",
-							(unsigned long)current),
+					 errmsg("cluster_scn: local_scn (" UINT64_FORMAT
+							") crossed WARNING threshold (2^50 ≈ 3568 years of advance)",
+							current),
 					 errhint("Theoretical sentinel for monitoring discipline; spec-1.16 implements "
 							 "full wrap protection.  WARNING throttled to 1/min.")));
 		}
@@ -311,12 +322,18 @@ cluster_scn_observe(SCN remote_scn)
 /*
  * cluster_scn_current -- read current encoded SCN without advancing.
  *
- *	Single-node fallback (cluster.node_id = -1): returns InvalidScn
- *	rather than asserting in scn_encode.  Spec-1.15 L3: SCN encoding
- *	requires a valid node_id (0..127) so single-node mode (-1) cannot
- *	produce real SCN values; cluster_scn_advance() reports the same
- *	condition via ereport(ERROR).  Read paths (dump_scn, SRF) must not
- *	crash when called before cluster.node_id is configured.
+ *	Returns InvalidScn (= 0) in two cases:
+ *	  (1) cluster.node_id = -1: encoding cannot produce a real SCN
+ *	      (spec-1.15 L3); cluster_scn_advance() reports via ereport.
+ *	  (2) current_local_scn = 0 (post-init / pre-first-advance):
+ *	      Hardening v1.0.1 (round 8 P1) -- otherwise scn_encode(node!=0,
+ *	      0) returns a non-zero bit pattern that PASSES SCN_VALID() but
+ *	      compares equal to InvalidScn under scn_time_cmp() (both have
+ *	      local_scn=0).  That ambiguity propagates into visibility code
+ *	      paths once they consume cluster_scn_current().  Treating
+ *	      local_scn=0 as "absent" sentinel matches PG's
+ *	      InvalidTransactionId convention and the spec-1.4 §8 Q2 = A
+ *	      docstring already locking InvalidScn=0 to "real values >= 1".
  */
 SCN
 cluster_scn_current(void)
@@ -334,6 +351,9 @@ cluster_scn_current(void)
 
 	if (!SCN_NODE_ID_VALID(node))
 		return InvalidScn;
+
+	if (local == 0)
+		return InvalidScn; /* spec-1.4 §8 Q2: real values >= 1 */
 
 	encoded = scn_encode(node, local);
 	return encoded;
@@ -506,10 +526,41 @@ cluster_scn_observe_sql(PG_FUNCTION_ARGS)
 {
 #ifdef USE_PGRAC_CLUSTER
 	int64 remote_int = PG_GETARG_INT64(0);
+	NodeId remote_node;
 
 	if (!superuser())
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						errmsg("cluster_scn_observe() is restricted to superuser")));
+
+	/* Hardening v1.0.1 (round 8 P2): reject negative SQL input.  int8 is
+	 * signed; -1 cast to uint64 becomes 0xFFFFFFFFFFFFFFFF and scn_local()
+	 * extracts 2^56-1, which would permanently poison
+	 * max_observed_remote_scn until restart.  Legal encoded SCNs with
+	 * node_id 0..127 always fit non-negative int8, so rejecting
+	 * remote_int < 0 is safe. */
+	if (remote_int < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cluster_scn_observe(): remote_scn must be non-negative (got %ld)",
+						(long)remote_int),
+				 errhint("Encoded SCN values for valid node_id (0..127) always fit in non-negative "
+						 "int8.  Caller passing a synthetic SCN must construct it via "
+						 "(node_id::bigint << 56) | local_scn.")));
+
+	/* Hardening v1.0.1 (round 8 P2): reject reserved / invalid node_id.
+	 * The encoding allocates 8 bits but only 0..127 are valid; 128..255
+	 * are reserved for forward-compat (Stage 2+ thousand-node).  Letting
+	 * remote SCNs with reserved node_id leak into max_observed_remote_scn
+	 * is a forward-compat hazard. */
+	remote_node = scn_node_id((SCN)remote_int);
+	if ((SCN)remote_int != InvalidScn && !SCN_NODE_ID_VALID(remote_node))
+		ereport(
+			ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("cluster_scn_observe(): remote_scn carries reserved node_id %d (valid 0..%d)",
+					remote_node, SCN_MAX_VALID_NODE_ID),
+			 errhint("Reserved node_id range 128..255 is for forward-compatibility; "
+					 "single-node Stage 1.15 only emits 0..127.")));
 
 	cluster_scn_observe((SCN)remote_int);
 	PG_RETURN_VOID();

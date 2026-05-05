@@ -119,6 +119,9 @@
 /*  format change.  catversion stays at 202605050. */
 /* Stage 1.15: bump for cluster_scn_advance / current / observe SQL */
 /*  UDFs (3 new pg_proc entries OID 8911-8913); spec-1.15 Q7+Q10+L1. */
-#define CATALOG_VERSION_NO	202605151
+/* Stage 1.15.1 (round 8 P3): cluster_scn_current pg_proc.dat */
+/*  provolatile s -> v + proparallel s -> r (it reads dynamically- */
+/*  mutating shmem state).  Catalog row attribute change => bump. */
+#define CATALOG_VERSION_NO	202605152
 
 #endif

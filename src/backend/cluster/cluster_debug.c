@@ -143,6 +143,16 @@ fmt_uint32_hex(uint32 v)
 	return psprintf("0x%08X", v);
 }
 
+/* Hardening v1.0.1 (round 8 P2): full 64-bit hex formatter for SCN
+ * and other 64-bit identifiers.  scn_current_encoded was previously
+ * truncated to the high 32 bits, hiding the entire local_scn (low 56
+ * bits).  All future cluster shmem 64-bit fields should use this. */
+static char *
+fmt_uint64_hex(uint64 v)
+{
+	return psprintf("0x%016" INT64_MODIFIER "X", v);
+}
+
 static char *
 fmt_bool(bool v)
 {
@@ -577,9 +587,12 @@ dump_scn(ReturnSetInfo *rsinfo)
 
 	emit_row(rsinfo, "scn", "scn_node_id", fmt_int32((int32)node_id));
 	emit_row(rsinfo, "scn", "scn_current_local", fmt_int64((int64)current_local));
-	emit_row(rsinfo, "scn", "scn_current_encoded", fmt_uint32_hex((uint32)(current >> 32)));
-	/* high 32-bit hex for cross-instance debugging convenience; full
-	 * 64-bit value is observable via scn_current_local + scn_node_id. */
+	/* Hardening v1.0.1 (round 8 P2): full 64-bit hex.  Previously
+	 * truncated to the high 32 bits, which collapsed every (node, local)
+	 * pair sharing the same node into one displayed value -- node=7,
+	 * local=1 and node=7, local=999 both showed 0x07000000.  Reading
+	 * the full 64-bit pattern is the documented "encoded SCN". */
+	emit_row(rsinfo, "scn", "scn_current_encoded", fmt_uint64_hex((uint64)current));
 	emit_row(rsinfo, "scn", "scn_max_observed_remote", fmt_int64((int64)max_remote));
 	emit_row(rsinfo, "scn", "scn_total_advance_count", fmt_int64((int64)advance_count));
 	emit_row(rsinfo, "scn", "scn_initialized_at",

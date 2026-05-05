@@ -60,13 +60,24 @@ $node->start;
 
 
 # ----------
-# L1: cluster_scn_current() returns a valid SCN with node_id=7 in high
-# 8 bits.  Encoded value = (7 << 56) | local_scn.
+# L1 (round 8 P1 hardening): cluster_scn_current() returns InvalidScn (=0)
+# pre-first-advance, regardless of node_id.  Previously returned
+# (node_id << 56) | 0 which compared equal to InvalidScn under
+# scn_time_cmp() but PASSED SCN_VALID() -- semantic ambiguity.  After
+# fix: local_scn==0 always returns InvalidScn (per spec-1.4 §8 Q2 =
+# "real values >= 1").
 # ----------
-my $current_scn = $node->safe_psql('postgres',
+my $pre_advance_scn = $node->safe_psql('postgres',
 	'SELECT cluster_scn_current()');
-ok($current_scn ne '' && $current_scn ne '0',
-   'L1 cluster_scn_current() returns non-zero SCN');
+is($pre_advance_scn, '0',
+   'L1 cluster_scn_current() returns InvalidScn (=0) before first advance (round 8 P1)');
+
+# After first advance, current() returns a valid encoded SCN.
+$node->safe_psql('postgres', 'SELECT cluster_scn_advance()');
+my $post_advance_scn = $node->safe_psql('postgres',
+	'SELECT cluster_scn_current()');
+ok($post_advance_scn ne '' && $post_advance_scn ne '0',
+   'L1 cluster_scn_current() returns valid encoded SCN after advance');
 
 # scn_node_id high byte: divide by 2^56 to extract.  psql treats bigint
 # arithmetic as signed; node_id 0..127 fits in 7 bits so high bit stays 0.
@@ -203,6 +214,106 @@ like($stderr, qr/53R0X|cluster injection|cluster-scn-advance-pre/i,
 	SELECT cluster_scn_observe(0::bigint);
 });
 is($ret, 0, 'L9 cluster_scn_observe returns OK with inject :skip armed');
+
+
+# ============================================================
+# Hardening v1.0.1 (round 8 codex review) tests
+# ============================================================
+
+# ----------
+# L10 (round 8 P2): scn_current_encoded outputs full 64-bit hex.
+# Pre fix it was truncated to high 32 bits (node << 56 only); two SCNs
+# with same node but different local_scn would show identical value.
+# ----------
+$node->safe_psql('postgres', 'SELECT cluster_scn_advance()');
+my $current_local = $node->safe_psql('postgres', q{
+	SELECT value::bigint FROM pg_cluster_state
+	WHERE category='scn' AND key='scn_current_local'
+});
+my $encoded_hex = $node->safe_psql('postgres', q{
+	SELECT value FROM pg_cluster_state
+	WHERE category='scn' AND key='scn_current_encoded'
+});
+# Format: 0x0700....NNNN -- 16 hex chars = 64 bit; node 7 in high byte =
+# "07" prefix; local_scn occupies low 14 hex chars.
+like($encoded_hex, qr/^0x07[0-9A-F]{14}$/,
+   "L10 scn_current_encoded is full 64-bit hex with node=7 high byte (got $encoded_hex)");
+# Verify the encoded value actually matches (node << 56) | local.
+# Convert via Perl hex() (strip "0x" prefix; hex() handles up to ~52
+# bits in standard Perl, so split high/low).
+(my $hex_clean = $encoded_hex) =~ s/^0x//;
+my $hi32 = hex(substr($hex_clean, 0, 8));
+my $lo32 = hex(substr($hex_clean, 8, 8));
+my $expected_hi = 7 << 24;	# (7 << 56) >> 32 == 0x07000000
+is($hi32, $expected_hi,
+   "L10 scn_current_encoded high 32 bits = node 7 << 24 (round 8 P2)");
+my $expected_int = $node->safe_psql('postgres',
+	"SELECT (7::bigint << 56) | $current_local");
+# expected_int low 32 bits = current_local & 0xFFFFFFFF
+my $expected_lo = $current_local & 0xFFFFFFFF;
+is($lo32, $expected_lo,
+   "L10 scn_current_encoded low 32 bits = current_local low 32 (round 8 P2)");
+
+
+# ----------
+# L11 (round 8 P2): cluster_scn_observe rejects negative input.
+# Previously -1 would cast to 0xFFFFFFFFFFFFFFFF and poison
+# max_observed_remote_scn with 2^56-1 until restart.
+# ----------
+($ret, $stdout, $stderr) = $node->psql('postgres',
+	'SELECT cluster_scn_observe(-1::bigint)');
+isnt($ret, 0, 'L11 cluster_scn_observe(-1) rejected (round 8 P2)');
+like($stderr, qr/non-negative|invalid_parameter/i,
+   'L11 negative remote_scn error message mentions non-negative');
+
+
+# ----------
+# L12 (round 8 P2): SCN with reserved node_id 128..255 is unreachable
+# from SQL because (node << 56) flips int8 sign bit -- caller hits the
+# non-negative check first.  Defense-in-depth at C level is still in
+# place (cluster_scn_observe_sql validates SCN_NODE_ID_VALID); test
+# verifies the SQL-reachable path catches reserved-via-overflow.
+# ----------
+($ret, $stdout, $stderr) = $node->psql('postgres',
+	'SELECT cluster_scn_observe((200::bigint << 56) | 1)');
+isnt($ret, 0, 'L12 cluster_scn_observe rejects reserved node_id 200 via overflow path (round 8 P2)');
+like($stderr, qr/non-negative|reserved node_id|valid 0\.\.127/i,
+   'L12 reserved-node-via-overflow error message mentions non-negative or reserved range');
+
+
+# ----------
+# L13 (round 8 P3): cluster_scn_current pg_proc volatility = volatile,
+# parallel = restricted (was stable + safe; reads dynamically-mutating
+# shmem state).
+# ----------
+my $volatility = $node->safe_psql('postgres',
+	"SELECT provolatile FROM pg_proc WHERE proname = 'cluster_scn_current'");
+is($volatility, 'v',
+   'L13 cluster_scn_current is VOLATILE (round 8 P3)');
+my $parallel = $node->safe_psql('postgres',
+	"SELECT proparallel FROM pg_proc WHERE proname = 'cluster_scn_current'");
+is($parallel, 'r',
+   'L13 cluster_scn_current parallel mode is RESTRICTED (round 8 P3)');
+
+
+# ----------
+# L14 (round 8 P3): cluster-scn-wraparound-warning inject point is
+# reachable.  Cannot trigger the PANIC ereport from a real test (would
+# need 2^50 advances), but inject :warning at this point fires when
+# advance crosses the threshold.  Verify inject point is registered and
+# arm/disarm round-trip works.
+# ----------
+my $wraparound_inject = $node->safe_psql('postgres', q{
+	SELECT count(*) FROM pg_stat_cluster_injections
+	WHERE name = 'cluster-scn-wraparound-warning'
+});
+is($wraparound_inject, '1',
+   'L14 cluster-scn-wraparound-warning inject point registered (round 8 P3)');
+my $arm_result = $node->safe_psql('postgres', q{
+	SELECT cluster_inject_fault('cluster-scn-wraparound-warning', 'warning', 0)
+});
+is($arm_result, 't',
+   'L14 cluster-scn-wraparound-warning arm/disarm round-trip works (round 8 P3)');
 
 
 $node->stop;

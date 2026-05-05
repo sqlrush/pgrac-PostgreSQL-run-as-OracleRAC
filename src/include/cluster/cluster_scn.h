@@ -83,13 +83,17 @@ typedef uint64 SCN;
 /*
  * SCN_FORMAT / SCN_FORMAT_ARG -- printf-style format helpers.
  *
- *	Use the (unsigned long) cast in SCN_FORMAT_ARG for portability:
- *	uint64 prints as %lu on 64-bit Linux/macOS and as %llu on 32-bit
- *	platforms; (unsigned long) defers the choice to the caller's ABI
- *	while guaranteeing %lu is always correct.
+ *	Hardening v1.0.1 (round 8 P2): use PG's UINT64_FORMAT macro instead
+ *	of "%lu" + (unsigned long) cast.  Rationale:
+ *	  - Windows LLP64: unsigned long = 32 bits; "%lu" truncates the
+ *	    upper 32 bits of a 56-bit local_scn.
+ *	  - 32-bit platforms: same truncation.
+ *	  - PG's UINT64_FORMAT expands to "%lu" / "%llu" / "%I64u" per ABI
+ *	    and accepts a uint64 argument directly; SCN_FORMAT_ARG returns
+ *	    the SCN as uint64 unchanged.
  */
-#define SCN_FORMAT "%lu"
-#define SCN_FORMAT_ARG(scn) ((unsigned long)(scn))
+#define SCN_FORMAT UINT64_FORMAT
+#define SCN_FORMAT_ARG(scn) ((uint64)(scn))
 
 
 /* ============================================================

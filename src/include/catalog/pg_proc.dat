@@ -12238,7 +12238,7 @@
   prorettype => 'int8', proargtypes => '',
   prosrc => 'cluster_scn_advance_sql' },
 { oid => '8912', descr => 'read current cluster SCN (encoded uint64)',
-  proname => 'cluster_scn_current', provolatile => 's', proparallel => 's',
+  proname => 'cluster_scn_current', provolatile => 'v', proparallel => 'r',
   prorettype => 'int8', proargtypes => '',
   prosrc => 'cluster_scn_current_sql' },
 { oid => '8913', descr => 'observe a remote SCN (single-node 1.15: stat-only; superuser)',
