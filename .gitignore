@@ -53,4 +53,7 @@ src/test/cluster_*/log/
 src/test/cluster_*/results/
 src/test/cluster_*/regression.diffs
 src/test/cluster_*/regression.out
+# spec-1.16.1 round 9 ship-time finding: PG TAP creates log/regress_log_*
+# at the cwd used to run prove (repo root in some flows); F19 hygiene.
+/log/
 /portlock/
