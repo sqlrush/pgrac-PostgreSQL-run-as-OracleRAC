@@ -266,12 +266,16 @@ unlike($log_content, qr/invalid Stage 1 cluster fields/,
 
 
 # ----------
-# L12: catversion 维持 202605181 (Q1=A approve, no bump).
+# L12: spec-1.19 itself does NOT bump catversion (Q1=A approve);
+# the lower bound is the catversion that was current when 1.19 shipped
+# (202605181, the spec-1.18 bump).  Later specs may bump further (e.g.
+# spec-1.22 -> 202605190); use a >=-style regex to avoid having to amend
+# this test on every subsequent catversion bump.
 # ----------
 my $pg_controldata = $node->config_data('--bindir') . '/pg_controldata';
 my $controldata_out = `$pg_controldata @{[$node->data_dir]}`;
-like($controldata_out, qr/Catalog version number:\s+202605181/,
-	'L12 catversion stays 202605181 (Q1=A approve; no bump)');
+like($controldata_out, qr/Catalog version number:\s+20260519\d|20260518[1-9]/,
+	'L12 catversion >= 202605181 (Q1=A spec-1.19 itself no bump; later specs may bump)');
 
 
 $node->stop;
