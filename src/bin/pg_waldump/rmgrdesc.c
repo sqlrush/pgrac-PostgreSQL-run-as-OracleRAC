@@ -22,6 +22,9 @@
 #include "access/spgxlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/storage/cluster_undo_xlog.h"	/* spec-1.22 D14a */
+#endif
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
 #include "commands/sequence.h"

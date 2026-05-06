@@ -69,6 +69,10 @@
 #include "catalog/pg_class_d.h" /* pgrminclude ignore */
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_database_d.h"	/* pgrminclude ignore */
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/cluster_undo_segment.h"   /* UNDO_SEGMENT_SIZE_BYTES */
+#include "cluster/cluster_undo_segment_init.h"  /* seed segment helper */
+#endif
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
@@ -246,6 +250,19 @@ static const char *const subdirs[] = {
 	"pg_logical",
 	"pg_logical/snapshots",
 	"pg_logical/mappings"
+#ifdef USE_PGRAC_CLUSTER
+	,
+	/*
+	 * PGRAC stage 1.22: dedicated undo tablespace under $PGDATA/pg_undo.
+	 * Stage 1 single-node ships only instance_0/; Stage 2+ multi-node
+	 * adds instance_1/...  The seed segment (instance_0/seg_0.dat) is
+	 * created below by pgrac_create_undo_seed_segment(), called after
+	 * subdirs are made.  See specs/spec-1.22-undo-tablespace-bootstrap.md
+	 * §D4.
+	 */
+	"pg_undo",
+	"pg_undo/instance_0"
+#endif
 };
 
 
@@ -3038,6 +3055,78 @@ initialize_data_directory(void)
 	}
 
 	check_ok();
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC stage 1.22: write a single seed undo segment file
+	 *   $PGDATA/pg_undo/instance_0/seg_0.dat (64 MB)
+	 * with block 0 initialized to a freshly-allocated
+	 * UndoSegmentHeaderData layout.  This is the equivalent of how
+	 * vanilla initdb writes pg_control / template1: initial cluster
+	 * image bytes written directly via libpgport (no WAL emit -- the
+	 * cluster has no WAL stream yet at initdb time).
+	 *
+	 * Frontend-safe: cluster_undo_segment_make_header_bytes lives in
+	 * src/common/ so initdb (frontend) and bufpage.c
+	 * PageInitUndoSegmentHeader (backend) produce byte-identical pages.
+	 *
+	 * See specs/spec-1.22-undo-tablespace-bootstrap.md §D4 (v0.2 P1-B).
+	 */
+	printf(_("creating undo tablespace seed segment ... "));
+	fflush(stdout);
+	{
+		char		seed_path[MAXPGPATH];
+		PGAlignedBlock page;
+		int			fd;
+		int			ret;
+
+		ret = snprintf(seed_path, sizeof(seed_path),
+					   "%s/pg_undo/instance_0/seg_0.dat", pg_data);
+		if (ret < 0 || (size_t) ret >= sizeof(seed_path))
+			pg_fatal("undo seed segment path too long");
+
+		cluster_undo_segment_make_header_bytes(0,	/* segment_id */
+											   1,	/* owner_instance */
+											   page.data);
+
+		fd = open(seed_path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+				  pg_file_create_mode);
+		if (fd < 0)
+			pg_fatal("could not create undo seed segment \"%s\": %m",
+					 seed_path);
+
+		if (write(fd, page.data, BLCKSZ) != BLCKSZ)
+		{
+			(void) close(fd);
+			pg_fatal("could not write undo seed segment header to \"%s\"",
+					 seed_path);
+		}
+
+		/*
+		 * Extend file to UNDO_SEGMENT_SIZE_BYTES (64 MB) via ftruncate.
+		 * Tail bytes are sparse zeros; allocator path will write actual
+		 * undo records lazily.
+		 */
+		if (ftruncate(fd, (off_t) UNDO_SEGMENT_SIZE_BYTES) != 0)
+		{
+			(void) close(fd);
+			pg_fatal("could not extend undo seed segment \"%s\" to %d bytes: %m",
+					 seed_path, UNDO_SEGMENT_SIZE_BYTES);
+		}
+
+		if (fsync(fd) != 0)
+		{
+			(void) close(fd);
+			pg_fatal("could not fsync undo seed segment \"%s\": %m",
+					 seed_path);
+		}
+
+		if (close(fd) != 0)
+			pg_fatal("could not close undo seed segment \"%s\": %m",
+					 seed_path);
+	}
+	check_ok();
+#endif
 
 	/* Top level PG_VERSION is checked by bootstrapper, so make it first */
 	write_version_file(NULL);

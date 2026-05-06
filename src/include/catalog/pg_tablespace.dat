@@ -9,6 +9,35 @@
 # src/include/catalog/pg_tablespace.dat
 #
 #----------------------------------------------------------------------
+#
+# PGRAC MODIFICATIONS (Nth, stage 1.22):
+#    Modified by: SqlRush <sqlrush@gmail.com>
+#
+#    What changed:  Add a third hard-coded system tablespace:
+#                   UNDOTABLESPACE_OID = 9100, spcname = 'pg_undo'.
+#                   Like pg_default / pg_global it predates the user-
+#                   created tablespace mechanism (CREATE TABLESPACE)
+#                   and uses a direct $PGDATA/pg_undo path instead of
+#                   pg_tblspc/<oid> symlink.  D14b (misc.c +
+#                   tablespace.c + pg_dumpall.c) wires user-visible
+#                   tablespace helpers to special-case UNDOTABLESPACE_OID
+#                   the same way they already special-case 1663 + 1664.
+#    Why:           Stage 1.22 ships the dedicated undo tablespace +
+#                   atomic batch on-disk format change.  See
+#                   specs/spec-1.22-undo-tablespace-bootstrap.md §D3
+#                   Q-2 (★ A) + Q-10 (★ A: direct $PGDATA path).
+#
+#                   v0.2 Q-2 ★ A originally proposed OID 1665 (next
+#                   after pg_global = 1664), but Sprint A discovered
+#                   1665 is already taken by pg_get_serial_sequence
+#                   (pg_proc.dat:3850) -- triggers genbki.pl
+#                   "Duplicate OIDs detected" FATAL.  Per spec §6 R2
+#                   fallback rationale, switched to 9100 (verified
+#                   free across all .dat files; in PG hand-assigned
+#                   reserve range >= 5000).  spec-1.22 ## Hardening
+#                   v1.0.2 amend documents this post-ship.
+#
+#----------------------------------------------------------------------
 
 [
 
@@ -16,5 +45,7 @@
   spcname => 'pg_default', spcacl => '_null_', spcoptions => '_null_' },
 { oid => '1664', oid_symbol => 'GLOBALTABLESPACE_OID',
   spcname => 'pg_global', spcacl => '_null_', spcoptions => '_null_' },
+{ oid => '9100', oid_symbol => 'UNDOTABLESPACE_OID',
+  spcname => 'pg_undo', spcacl => '_null_', spcoptions => '_null_' },
 
 ]

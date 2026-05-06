@@ -275,4 +275,18 @@ extern int cluster_boc_sweep_interval_ms;
 extern bool cluster_enabled;
 
 
+/*
+ * cluster.undo_segments_per_instance (spec-1.22 D7).
+ *
+ *	Reserved undo segment count per cluster instance.  Stage 1.22
+ *	declares the GUC + default 16; real consumption deferred to
+ *	feature-117 retention activation.
+ *
+ *	context: PGC_POSTMASTER
+ *	default: 16
+ *	range:   [1, 1024]
+ */
+extern int cluster_undo_segments_per_instance;
+
+
 #endif /* CLUSTER_GUC_H */

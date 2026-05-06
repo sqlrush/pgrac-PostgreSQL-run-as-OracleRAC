@@ -55,6 +55,34 @@
  *	               so the placeholder semantics are readable in source.
  *	               See specs/spec-1.5-itl-slot.md §1.4 例外说明 #5,
  *	               docs/block-format-design.md v1.2 §15 阶段 2 ✦.
+ *
+ * PGRAC MODIFICATIONS (Nth, stage 1.22):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  Add PageInitUndoSegmentHeader(page, pageSize,
+ *	               segment_id, owner_instance) -- block 0 initializer
+ *	               for undo segment files.  Mirrors PageInitHeapPage
+ *	               above but writes UndoSegmentHeaderData layout
+ *	               (cluster_undo_segment.h) instead of ITL slot array.
+ *	               Sets PD_UNDO_SEG_HEADER bit (0x0010).
+ *
+ *	               Body delegates to the frontend-safe helper
+ *	               cluster_undo_segment_make_header_bytes (in
+ *	               src/common/cluster_undo_segment_init.c) so backend
+ *	               and initdb (frontend) produce byte-identical pages.
+ *	Why:           Stage 1.22 ships dedicated undo tablespace (pg_undo
+ *	               OID 1665) + atomic batch on-disk format change.
+ *	               PageInitUndoSegmentHeader is the SSOT entry point
+ *	               for segment-block-0 initialization on the backend
+ *	               buffer-manager path (cluster_undo_alloc.c calls it
+ *	               with an exclusively locked buffer; emits B-lite
+ *	               XLOG_UNDO_SEGMENT_INIT WAL record afterwards).
+ *	               Stage 1.22 only writes placeholder TT slots (48 ×
+ *	               TT_SLOT_UNUSED); feature-117 activates real TT
+ *	               slot allocation on first transaction binding.
+ *	               See specs/spec-1.22-undo-tablespace-bootstrap.md
+ *	               §2.2 + §D2 + §D14c, docs/undo-segment-design.md
+ *	               §3.4-§3.6.
  */
 #include "postgres.h"
 
@@ -68,6 +96,8 @@
 
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_itl_slot.h" /* PageInitHeapPage placeholder writes (stage 1.5) */
+#include "cluster/cluster_undo_segment.h"  /* UndoSegmentHeaderData (stage 1.21) */
+#include "cluster/cluster_undo_segment_init.h" /* shared header bytes helper (stage 1.22 D14c) */
 #endif
 
 
@@ -222,6 +252,42 @@ PageInitHeapPage(Page page, Size pageSize, Size specialSize)
 		itl[i].write_scn = InvalidScn;
 		itl[i].first_change_lsn = InvalidXLogRecPtr;
 	}
+}
+
+/*
+ * PageInitUndoSegmentHeader
+ *		Initialize block 0 of an undo segment file.
+ *
+ * Stage 1.22 (spec-1.22 §2.2 + §D2): writes a freshly-allocated
+ * UndoSegmentHeaderData layout (cluster_undo_segment.h) to `page`.
+ * Mirrors PageInitHeapPage above but for undo segment headers
+ * instead of heap pages.
+ *
+ * Body is a thin wrapper around cluster_undo_segment_make_header_bytes
+ * (src/common/cluster_undo_segment_init.c) which is the single source of
+ * truth for segment-header byte generation -- backend (this function)
+ * and frontend (initdb seed segment writer) both call the same helper
+ * so produced pages are byte-identical.
+ *
+ * specialSize is implicit 0 (undo segment header uses the entire 8 KB
+ * block as a fixed-layout struct; no PG special area).
+ *
+ * Caller responsibilities (Asserts):
+ *   - pageSize must equal BLCKSZ (helper currently assumes BLCKSZ; future
+ *     non-8KB block sizes need a parallel helper variant)
+ *   - owner_instance must be in [1, UNDO_OWNER_INSTANCE_MAX]
+ *
+ * Spec: spec-1.22-undo-tablespace-bootstrap.md §2.2.
+ */
+void
+PageInitUndoSegmentHeader(Page page, Size pageSize,
+						  uint32 segment_id, uint8 owner_instance)
+{
+	Assert(pageSize == BLCKSZ);
+	Assert(owner_instance >= 1 && owner_instance <= UNDO_OWNER_INSTANCE_MAX);
+
+	cluster_undo_segment_make_header_bytes(segment_id, owner_instance,
+										   (char *) page);
 }
 #endif /* USE_PGRAC_CLUSTER */
 

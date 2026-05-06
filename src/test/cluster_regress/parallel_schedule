@@ -4,3 +4,4 @@
 # procedure.
 
 test: cluster_smoke
+test: undo_tablespace

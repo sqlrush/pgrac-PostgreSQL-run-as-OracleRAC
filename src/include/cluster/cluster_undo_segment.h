@@ -3,13 +3,22 @@
  * cluster_undo_segment.h
  *	  pgrac Undo Segment header type definition (placeholder).
  *
- *	  Stage 1 ships ONLY the on-disk struct (8192-byte block), the
- *	  segment_state enum, seven sentinel constants, six
- *	  StaticAssertDecl invariants, and three inline helpers.  No
- *	  segment creation / allocation / TT slot binding / commit_scn
- *	  write / WAL emission in Stage 1 -- those land in spec-1.22
- *	  (dedicated undo tablespace + PageInitUndoSegmentHeader caller)
- *	  and Stage 3 (visibility activation).
+ *	  Stage 1.21 shipped ONLY the on-disk struct (8192-byte block),
+ *	  the segment_state enum, seven sentinel constants, six
+ *	  StaticAssertDecl invariants, and three inline helpers.
+ *
+ *	  Stage 1.22 (spec-1.22 ATOMIC BATCH) activated:
+ *	    - PageInitUndoSegmentHeader caller in cluster_undo_alloc.c
+ *	    - PD_UNDO_SEG_HEADER pd_flags bit 0x0010 in storage/bufpage.h
+ *	    - dedicated undo tablespace pg_undo (UNDOTABLESPACE_OID = 9100)
+ *	    - per-instance subdir layout $PGDATA/pg_undo/instance_<N>/
+ *	    - initdb seed segment writer (frontend-safe via D14c helper)
+ *	    - RM_CLUSTER_UNDO WAL resource manager + XLOG_UNDO_SEGMENT_INIT
+ *	      record (D14a B-lite; XLOG_FPI rejected per v0.2 P1-A)
+ *	    - catversion bump 202605181 -> 202605190
+ *
+ *	  Still deferred to feature-117 / feature-120: TT slot real
+ *	  allocation + commit_scn write + segment recycling / retention.
  *
  *	  Byte layout (8192 bytes total; matches PG block size):
  *

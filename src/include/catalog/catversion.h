@@ -148,6 +148,34 @@
 /*  are created by spec-1.22 (atomic with PageInitUndoSegmentHeader */
 /*  caller and PD_UNDO_SEG_HEADER bufpage.h definition).  Therefore: */
 /*  NO catversion bump.  Spec: spec-1.21-undo-segment-header.md v0.2. */
-#define CATALOG_VERSION_NO	202605181
+/* Stage 1.22: dedicated undo tablespace + atomic batch on-disk */
+/*  format change.  Bundles 7 atomic changes in a single commit, */
+/*  any one of which would individually require a catversion bump: */
+/*    1. UNDOTABLESPACE_OID = 9100 added to pg_tablespace.dat (v0.2 */
+/*       Hardening v1.0.2 amend: original 1665 conflicted with */
+/*       pg_get_serial_sequence in pg_proc.dat; fallback to 9100 per */
+/*       spec §6 R2). */
+/*    2. $PGDATA/pg_undo/instance_<N>/seg_<id>.dat layout established */
+/*       at initdb time (subdirs[] += "pg_undo", "pg_undo/instance_0"). */
+/*    3. PD_UNDO_SEG_HEADER = 0x0010 added to bufpage.h pd_flags + */
+/*       PD_VALID_FLAG_BITS bumped 0x000F -> 0x001F (cluster mode). */
+/*    4. PageInitUndoSegmentHeader() shipped (bufpage.c) + initdb seed */
+/*       segment writer (initdb.c) -- both call shared frontend-safe */
+/*       helper cluster_undo_segment_make_header_bytes (D14c). */
+/*    5. UndoSegmentHeaderData on-disk format (block 0 of every */
+/*       seg_<id>.dat) materialized -- spec-1.21 placeholder type now */
+/*       written for real. */
+/*    6. RM_CLUSTER_UNDO_ID resource manager registered in rmgrlist.h */
+/*       with one subtype XLOG_UNDO_SEGMENT_INIT (D14a B-lite; XLOG_FPI */
+/*       was rejected per v0.2 P1-A because RelFileLocator routing */
+/*       can't address $PGDATA/pg_undo paths). */
+/*    7. user-visible tablespace helpers special-case UNDOTABLESPACE_OID */
+/*       (misc.c pg_tablespace_location + pg_tablespace_databases; */
+/*       tablespace.c Alter*TableSpace* reject; D14b v0.2 P1-C 联动). */
+/*  Stage 1.21 datadir cannot be opened by 1.22 binary (FATAL via */
+/*  pg_control catversion check) and vice versa; users must dump+ */
+/*  restore (pg_upgrade 1.21->1.22 lands in feature-117). */
+/*  Spec: spec-1.22-undo-tablespace-bootstrap.md APPROVED v0.2. */
+#define CATALOG_VERSION_NO	202605190
 
 #endif

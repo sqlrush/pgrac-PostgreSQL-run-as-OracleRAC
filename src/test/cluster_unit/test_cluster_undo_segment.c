@@ -248,10 +248,39 @@ UT_TEST(test_spec121_tt_slot_dependency_zero_init)
 }
 
 
+/*
+ * spec-1.22 D9 extension tests: PD_UNDO_SEG_HEADER bit invariants
+ * (declared in storage/bufpage.h alongside spec-1.5 PD_HAS_ITL).
+ * These pin the bit value + valid-flag mask, and the disjoint-by-
+ * relation-type contract between heap pages (PD_HAS_ITL) and undo
+ * segment headers (PD_UNDO_SEG_HEADER).
+ */
+UT_TEST(test_spec122_pd_undo_seg_header_bit_value)
+{
+	UT_ASSERT_EQ((unsigned)PD_UNDO_SEG_HEADER, 0x0010u);
+}
+
+UT_TEST(test_spec122_pd_valid_flag_bits_bumped)
+{
+	/* spec-1.22 cluster mode: PD_VALID_FLAG_BITS = 0x001F (5 bits).
+	 * spec-1.5 had 0x000F; spec-1.22 added 0x0010 = 0x001F mask. */
+	UT_ASSERT_EQ((unsigned)PD_VALID_FLAG_BITS, 0x001Fu);
+}
+
+UT_TEST(test_spec122_pd_has_itl_undo_disjoint)
+{
+	/* PD_HAS_ITL (heap) and PD_UNDO_SEG_HEADER (undo) are disjoint by
+	 * relation type but on different bits so tooling can distinguish
+	 * three page kinds: vanilla index / ITL heap / undo seg header. */
+	UT_ASSERT_NE(PD_HAS_ITL, PD_UNDO_SEG_HEADER);
+	UT_ASSERT_EQ(PD_HAS_ITL & PD_UNDO_SEG_HEADER, 0u);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(18);
+	UT_PLAN(21);
 
 	/* Layout invariants (9) */
 	UT_RUN(test_spec121_segheader_size_is_8192_bytes);
@@ -280,6 +309,11 @@ main(void)
 
 	/* TT slot dependency (1) */
 	UT_RUN(test_spec121_tt_slot_dependency_zero_init);
+
+	/* spec-1.22 D9 extension: PD_UNDO_SEG_HEADER bit invariants (3) */
+	UT_RUN(test_spec122_pd_undo_seg_header_bit_value);
+	UT_RUN(test_spec122_pd_valid_flag_bits_bumped);
+	UT_RUN(test_spec122_pd_has_itl_undo_disjoint);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

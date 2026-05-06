@@ -34,6 +34,10 @@
 #include "utils/builtins.h"
 #include "utils/relmapper.h"
 
+#ifdef USE_PGRAC_CLUSTER
+#include "cluster/storage/cluster_undo_xlog.h"	/* RM_CLUSTER_UNDO_ID handlers */
+#endif
+
 /* must be kept in sync with RmgrData definition in xlog_internal.h */
 #define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask,decode) \
 	{ name, redo, desc, identify, startup, cleanup, mask, decode },

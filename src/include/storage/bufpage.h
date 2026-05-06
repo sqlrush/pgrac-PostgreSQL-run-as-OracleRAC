@@ -73,6 +73,36 @@
  *	               spgist / gin already use the special area.
  *	               See specs/spec-1.5-itl-slot.md §1.4 例外说明 #6,
  *	               docs/block-format-design.md v1.2 §4.1 layout.
+ *
+ * PGRAC MODIFICATIONS (Nth, stage 1.22):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, declare:
+ *	               1. PD_UNDO_SEG_HEADER flag bit (0x0010) -- set by
+ *	                  PageInitUndoSegmentHeader; reader uses it to
+ *	                  identify block 0 of an undo segment file
+ *	                  (pg_undo/instance_<N>/seg_<id>.dat).  Mutually
+ *	                  exclusive with PD_HAS_ITL by relation type.
+ *	               2. PD_VALID_FLAG_BITS bumped 0x000F -> 0x001F to
+ *	                  account for the new bit (cluster mode only).
+ *	               3. PageInitUndoSegmentHeader extern -- writes a
+ *	                  freshly-allocated UndoSegmentHeaderData layout
+ *	                  to the page (delegates byte generation to the
+ *	                  frontend-safe helper in cluster_undo_segment_init.h
+ *	                  so backend and initdb produce byte-identical pages).
+ *	               4. PageIsUndoSegmentHeader inline helper.
+ *	Why:           Stage 1.22 ships the dedicated undo tablespace
+ *	               (pg_undo OID 1665) + atomic batch on-disk format
+ *	               change.  block 0 of every seg_<id>.dat is laid out
+ *	               as UndoSegmentHeaderData (cluster_undo_segment.h);
+ *	               PD_UNDO_SEG_HEADER lets tooling and visibility paths
+ *	               distinguish three page kinds (vanilla index / ITL
+ *	               heap / undo segment header).  Stage 1.22 only writes
+ *	               placeholder TT slots (TT_SLOT_UNUSED) + zero
+ *	               retention/statistics fields; feature-117 activates
+ *	               real TT slot allocation and retention.
+ *	               See specs/spec-1.22-undo-tablespace-bootstrap.md §2.1
+ *	               + §2.2 + §D1, docs/undo-segment-design.md §3.4-§3.6.
  */
 #ifndef BUFPAGE_H
 #define BUFPAGE_H
@@ -274,7 +304,24 @@ typedef PageHeaderData *PageHeader;
  * 384 bytes of ClusterItlSlotData or the start of pd_linp.
  */
 #define PD_HAS_ITL			0x0008
-#define PD_VALID_FLAG_BITS	0x000F	/* OR of all valid pd_flags bits */
+/*
+ * PGRAC (stage 1.22): block 0 of every undo segment file
+ * (pg_undo/instance_<N>/seg_<id>.dat) is laid out as
+ * UndoSegmentHeaderData (cluster_undo_segment.h).  Set by
+ * PageInitUndoSegmentHeader (cluster_undo_alloc.c path); never set
+ * by heap or index paths.  Mutually exclusive with PD_HAS_ITL by
+ * relation type — heap pages have ITL slots, undo segment header
+ * pages have segment metadata + 48 TT slots.
+ *
+ * Tooling (pg_filedump etc.) can distinguish 3 page kinds:
+ *   vanilla index    : neither bit
+ *   ITL heap         : PD_HAS_ITL only
+ *   undo seg header  : PD_UNDO_SEG_HEADER only
+ *
+ * Spec: spec-1.22-undo-tablespace-bootstrap.md §2.1 Q-1 ★ A.
+ */
+#define PD_UNDO_SEG_HEADER	0x0010
+#define PD_VALID_FLAG_BITS	0x001F	/* OR of all valid pd_flags bits */
 #else
 #define PD_VALID_FLAG_BITS	0x0007	/* OR of all valid pd_flags bits */
 #endif
@@ -669,6 +716,49 @@ ClusterPageGetItlSlot(Page page, uint8 slot_idx)
 {
 	Assert(slot_idx < CLUSTER_ITL_INITRANS_DEFAULT);
 	return &ClusterPageGetItlSlots(page)[slot_idx];
+}
+
+/*
+ * PageInitUndoSegmentHeader -- initialize block 0 of an undo segment.
+ *
+ *	Stage 1.22: writes a freshly-allocated UndoSegmentHeaderData layout
+ *	to `page` (8 KB).  Mirrors PageInitHeapPage (spec-1.5) and PageInit
+ *	(vanilla) but for undo segment header blocks instead of heap / index
+ *	pages.  Sets PD_UNDO_SEG_HEADER bit; specialSize is fixed to 0
+ *	(undo segment header uses the entire 8 KB block as a fixed-layout
+ *	struct; no special area).
+ *
+ *	Caller responsibilities:
+ *	  - hold an exclusive lock on the buffer (or be running in
+ *	    single-process initdb / bootstrap context)
+ *	  - pageSize must equal BLCKSZ (asserted)
+ *	  - owner_instance must be in [1, UNDO_OWNER_INSTANCE_MAX] (asserted)
+ *
+ *	Body delegates byte-generation to the frontend-safe helper
+ *	cluster_undo_segment_make_header_bytes (cluster_undo_segment_init.h)
+ *	so backend (this function) and frontend (initdb) write byte-identical
+ *	pages.
+ *
+ *	Spec: spec-1.22-undo-tablespace-bootstrap.md §2.2 + §D2 (v0.2 Q-6 ★ A).
+ */
+extern void PageInitUndoSegmentHeader(Page page,
+									  Size pageSize,
+									  uint32 segment_id,
+									  uint8 owner_instance);
+
+/*
+ * PageIsUndoSegmentHeader -- is this page block 0 of an undo segment?
+ *
+ *	Read PD_UNDO_SEG_HEADER bit; only set by PageInitUndoSegmentHeader
+ *	above.  Mutually exclusive with PD_HAS_ITL (heap pages do not have
+ *	segment headers and undo pages do not have ITL slots).
+ *
+ *	Use this guard before casting (UndoSegmentHeaderData *) page.
+ */
+static inline bool
+PageIsUndoSegmentHeader(Page page)
+{
+	return (((PageHeader) page)->pd_flags & PD_UNDO_SEG_HEADER) != 0;
 }
 #endif
 extern bool PageIsVerifiedExtended(Page page, BlockNumber blkno, int flags);

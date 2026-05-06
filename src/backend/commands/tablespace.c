@@ -43,6 +43,24 @@
  *	  src/backend/commands/tablespace.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (Nth, stage 1.22):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, RenameTableSpace
+ *	               and AlterTableSpaceOptions reject UNDOTABLESPACE_OID
+ *	               (9100) with ERRCODE_FEATURE_NOT_SUPPORTED.
+ *	Why:           Stage 1.22 ships pg_undo as a hard-coded system
+ *	               tablespace at $PGDATA/pg_undo (no pg_tblspc/<oid>
+ *	               symlink).  ALTER TABLESPACE pg_undo would break the
+ *	               OID-based runtime dispatch (cluster_undo_alloc.c
+ *	               hard-codes UNDOTABLESPACE_OID as a constant) and
+ *	               break pg_dumpall round-trip.  Reject the operation
+ *	               at the catalog API level.
+ *	               See specs/spec-1.22-undo-tablespace-bootstrap.md
+ *	               §3.7 + §D14b (v0.2 P1-C 联动修订).
+ *
+ *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
@@ -965,6 +983,20 @@ RenameTableSpace(const char *oldname, const char *newname)
 
 	table_endscan(scan);
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC stage 1.22 (D14b): pg_undo is a hard-coded system tablespace;
+	 * renaming it would break OID-based runtime dispatch and pg_dumpall
+	 * round-trip.  See specs/spec-1.22-undo-tablespace-bootstrap.md §3.7.
+	 */
+	if (tspId == UNDOTABLESPACE_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pg_undo cannot be altered"),
+				 errhint("pg_undo is a hard-coded system tablespace and "
+						 "cannot be renamed.")));
+#endif
+
 	/* Must be owner */
 	if (!object_ownercheck(TableSpaceRelationId, tspId, GetUserId()))
 		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLESPACE, oldname);
@@ -1049,6 +1081,20 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 						stmt->tablespacename)));
 
 	tablespaceoid = ((Form_pg_tablespace) GETSTRUCT(tup))->oid;
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC stage 1.22 (D14b): pg_undo is a hard-coded system tablespace
+	 * managed by the cluster runtime; users must not ALTER it.  See
+	 * specs/spec-1.22-undo-tablespace-bootstrap.md §3.7 + §D14b.
+	 */
+	if (tablespaceoid == UNDOTABLESPACE_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pg_undo cannot be altered"),
+				 errhint("pg_undo is managed by the cluster runtime; "
+						 "Stage 1.22 does not support modifying its options.")));
+#endif
 
 	/* Must be owner of the existing object */
 	if (!object_ownercheck(TableSpaceRelationId, tablespaceoid, GetUserId()))

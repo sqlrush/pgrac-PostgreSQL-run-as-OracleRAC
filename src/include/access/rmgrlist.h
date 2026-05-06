@@ -11,6 +11,31 @@
  *
  * src/include/access/rmgrlist.h
  *---------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (Nth, stage 1.22):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, register a new
+ *	               built-in resource manager RM_CLUSTER_UNDO_ID with
+ *	               cluster_undo_redo / cluster_undo_desc /
+ *	               cluster_undo_identify (defined in
+ *	               src/backend/cluster/storage/cluster_undo_xlog.c).
+ *	Why:           Stage 1.22 ships dedicated undo tablespace + atomic
+ *	               batch on-disk format change (spec-1.22 Q-7 ★ B-LITE
+ *	               REVISED).  The XLOG_FPI alternative depends on PG's
+ *	               WAL block tag (RelFileLocator/ForkNumber/BlockNumber)
+ *	               routing, which is incompatible with $PGDATA/pg_undo/
+ *	               instance_N/seg_M.dat self-managed paths.  A narrow
+ *	               custom RM with one subtype (XLOG_UNDO_SEGMENT_INIT)
+ *	               carries the page image directly; redo handler pwrites
+ *	               the file bypassing buffer manager + smgr.
+ *	               feature-117 / feature-120 add additional subtypes
+ *	               to this same RM (retention / recycling / TT slot
+ *	               binding / commit_scn write) without breaking the
+ *	               1.22 ABI.
+ *	               See specs/spec-1.22-undo-tablespace-bootstrap.md
+ *	               §D14a, src/backend/cluster/storage/cluster_undo_xlog.c.
+ *---------------------------------------------------------------------------
  */
 
 /* there is deliberately not an #ifndef RMGRLIST_H here */
@@ -47,3 +72,7 @@ PG_RMGR(RM_COMMIT_TS_ID, "CommitTs", commit_ts_redo, commit_ts_desc, commit_ts_i
 PG_RMGR(RM_REPLORIGIN_ID, "ReplicationOrigin", replorigin_redo, replorigin_desc, replorigin_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, NULL, NULL, generic_mask, NULL)
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL, logicalmsg_decode)
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC stage 1.22: see banner above + spec-1.22 §D14a. */
+PG_RMGR(RM_CLUSTER_UNDO_ID, "ClusterUndo", cluster_undo_redo, cluster_undo_desc, cluster_undo_identify, NULL, NULL, NULL, NULL)
+#endif

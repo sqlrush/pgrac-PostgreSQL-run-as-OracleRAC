@@ -91,6 +91,17 @@ int cluster_diag_main_loop_interval = 1000;
 int cluster_cluster_stats_main_loop_interval = 1000;
 
 /*
+ * cluster.undo_segments_per_instance (spec-1.22 D7).  Number of undo
+ * segment files reserved per cluster instance.  Stage 1.22 declares
+ * this GUC + default value only; real consumption (segment pool sizing
+ * + on-demand allocation) lands in feature-117 retention activation.
+ *
+ * Range [1, 1024].  Default 16 ≈ 1 GB undo capacity per instance with
+ * 64 MB segments (per docs/undo-segment-design.md §3.5).
+ */
+int cluster_undo_segments_per_instance = 16;
+
+/*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
  * sweep target staleness in ms.  Range [1, 1000]; default 1ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
@@ -460,6 +471,22 @@ cluster_init_guc(void)
 	 * range [1, 1000] ms.  walwriter wake rate (WalWriterDelay default
 	 * 200ms) caps actual sweep frequency.
 	 */
+	/*
+	 * cluster.undo_segments_per_instance (spec-1.22 D7).  Reserved
+	 * undo segment count per instance.  Stage 1.22 ships the GUC +
+	 * default 16; real consumption deferred to feature-117.
+	 */
+	DefineCustomIntVariable("cluster.undo_segments_per_instance",
+							gettext_noop("Reserved undo segment count per cluster instance."),
+							gettext_noop("Default 16 segments × 64 MB = 1 GB undo capacity "
+										 "per instance.  Stage 1.22 declares this GUC and "
+										 "default value only; segment pool sizing + "
+										 "on-demand allocation activates in feature-117 "
+										 "(undo retention).  See "
+										 "docs/undo-segment-design.md §3.5."),
+							&cluster_undo_segments_per_instance, 16, 1, 1024, PGC_POSTMASTER, 0,
+							NULL, NULL, NULL);
+
 	DefineCustomIntVariable(
 		"cluster.boc_sweep_interval_ms",
 		gettext_noop("walwriter BOC sweep staleness target in milliseconds."),

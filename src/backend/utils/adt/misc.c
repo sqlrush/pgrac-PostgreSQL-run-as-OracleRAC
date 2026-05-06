@@ -11,6 +11,31 @@
  *	  src/backend/utils/adt/misc.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (Nth, stage 1.22):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined, pg_tablespace_location
+ *	               and pg_tablespace_databases special-case
+ *	               UNDOTABLESPACE_OID (9100) the same way they already
+ *	               special-case DEFAULTTABLESPACE_OID (1663) and
+ *	               GLOBALTABLESPACE_OID (1664):
+ *	                 - pg_tablespace_location returns "pg_undo" instead
+ *	                   of trying to readlink() a non-existent
+ *	                   pg_tblspc/9100 symlink (which would ERROR).
+ *	                 - pg_tablespace_databases returns an empty
+ *	                   tuplestore (pg_undo has no database catalog
+ *	                   subdirs; it stores undo segment files under
+ *	                   per-instance subdirs).
+ *	Why:           Stage 1.22 ships pg_undo as a hard-coded system
+ *	               tablespace at $PGDATA/pg_undo (no pg_tblspc/<oid>
+ *	               symlink).  Without these special cases, every
+ *	               psql \db / pg_dumpall / SELECT pg_tablespace_location
+ *	               would error on the new OID.
+ *	               See specs/spec-1.22-undo-tablespace-bootstrap.md
+ *	               §3.7 + §D14b (v0.2 P1-C 联动修订).
+ *
+ *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
@@ -239,6 +264,18 @@ pg_tablespace_databases(PG_FUNCTION_ARGS)
 		return (Datum) 0;
 	}
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC stage 1.22 (D14b): pg_undo holds undo segment files, not
+	 * databases.  Mirror the GLOBALTABLESPACE_OID short-circuit; return
+	 * empty tuplestore without touching the directory tree (pg_undo/
+	 * uses per-instance subdirs, not PG_16_<catver>/<dboid>/ layout).
+	 * See specs/spec-1.22-undo-tablespace-bootstrap.md §3.7.
+	 */
+	if (tablespaceOid == UNDOTABLESPACE_OID)
+		return (Datum) 0;
+#endif
+
 	if (tablespaceOid == DEFAULTTABLESPACE_OID)
 		location = "base";
 	else
@@ -320,6 +357,20 @@ pg_tablespace_location(PG_FUNCTION_ARGS)
 	if (tablespaceOid == DEFAULTTABLESPACE_OID ||
 		tablespaceOid == GLOBALTABLESPACE_OID)
 		PG_RETURN_TEXT_P(cstring_to_text(""));
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC stage 1.22 (D14b): pg_undo lives at $PGDATA/pg_undo (no
+	 * pg_tblspc/<oid> symlink); return the path explicitly instead of
+	 * trying to readlink() a non-existent symlink.  Empty string would
+	 * mirror DEFAULTTABLESPACE_OID/GLOBALTABLESPACE_OID semantics, but
+	 * since pg_undo's location is not the database default we surface
+	 * the actual relative path so introspection / debug tooling sees
+	 * the truth.  See specs/spec-1.22-undo-tablespace-bootstrap.md §3.7.
+	 */
+	if (tablespaceOid == UNDOTABLESPACE_OID)
+		PG_RETURN_TEXT_P(cstring_to_text("pg_undo"));
+#endif
 
 	/*
 	 * Find the location of the tablespace by reading the symbolic link that

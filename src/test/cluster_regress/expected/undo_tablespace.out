@@ -1,0 +1,55 @@
+-- ============================================================
+-- undo_tablespace -- pgrac Stage 1.22 cluster surface regression.
+--
+--	Locks the catalog row + GUC default introduced by spec-1.22
+--	atomic batch.  Output must be deterministic across host /
+--	port / OS.  See specs/spec-1.22-undo-tablespace-bootstrap.md
+--	§D12 + spec-0.21-cluster-regress.md §2.2.
+--
+--	Author: SqlRush <sqlrush@gmail.com>
+--	Portions Copyright (c) 2026, pgrac contributors
+-- ============================================================
+-- ----------
+-- 1. pg_undo entry exists in pg_tablespace with OID 9100.
+--    (Spec-1.22 v0.2 Hardening v1.0.2: 1665 conflicted with
+--    pg_get_serial_sequence in pg_proc.dat; fallback per §6 R2.)
+-- ----------
+SELECT oid, spcname FROM pg_tablespace WHERE spcname = 'pg_undo';
+ oid  | spcname 
+------+---------
+ 9100 | pg_undo
+(1 row)
+
+-- ----------
+-- 2. Three system tablespaces total: pg_default + pg_global + pg_undo.
+--    Vanilla PG has 2; spec-1.22 adds the third.
+-- ----------
+SELECT count(*) FROM pg_tablespace;
+ count 
+-------
+     3
+(1 row)
+
+-- ----------
+-- 3. pg_tablespace_location(9100) returns 'pg_undo' relative path.
+--    D14b special case -- without it the call would readlink()
+--    pg_tblspc/9100 which doesn't exist and raise an error.
+-- ----------
+SELECT pg_tablespace_location(9100);
+ pg_tablespace_location 
+------------------------
+ pg_undo
+(1 row)
+
+-- ----------
+-- 4. cluster.undo_segments_per_instance GUC default = 16
+--    (D7; reserved per-instance segment count).
+-- ----------
+SELECT setting, vartype, context
+  FROM pg_settings
+ WHERE name = 'cluster.undo_segments_per_instance';
+ setting | vartype |  context   
+---------+---------+------------
+ 16      | integer | postmaster
+(1 row)
+
