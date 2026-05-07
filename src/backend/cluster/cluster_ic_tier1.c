@@ -67,6 +67,8 @@
 #include "utils/elog.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"          /* WAIT_EVENT_CLUSTER_IC_* (Hardening v1.0.1 F4) */
+#include "pgstat.h"                    /* pgstat_report_wait_start/end */
 
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_elog.h"
@@ -399,8 +401,12 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	{
 		int rem = tier1_outbound_remaining[target_node_id];
 		int off = (int) sizeof(tier1_outbound_buf[0]) - rem;
-		ssize_t drained = send(fd, &tier1_outbound_buf[target_node_id][off],
-							   (size_t) rem, 0);
+		ssize_t drained;
+
+		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
+		drained = send(fd, &tier1_outbound_buf[target_node_id][off],
+					   (size_t) rem, 0);
+		pgstat_report_wait_end();
 		if (drained < 0)
 		{
 			int saved = errno;
@@ -430,7 +436,9 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	 * via the path above.  HEARTBEAT (24B header) fits in the buffer;
 	 * spec-2.4 framing will generalize for larger payloads.
 	 */
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
 	sent = send(fd, buf, len, 0);
+	pgstat_report_wait_end();
 	if (sent < 0)
 	{
 		int saved_errno = errno;
@@ -561,7 +569,9 @@ tier1_recv_bytes(int32 *out_sender_node_id, void *buf, size_t bufsize,
 	if (fd < 0)
 		return true;            /* race: closed between peek and now */
 
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
 	got = recv(fd, buf, bufsize, 0);
+	pgstat_report_wait_end();
 	if (got < 0)
 	{
 		int saved_errno = errno;
@@ -799,7 +809,9 @@ cluster_ic_tier1_accept_one(int *out_peer_fd, int32 *out_peer_id)
 	if (listener_fd < 0)
 		return false;
 
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_ACCEPT);
 	cfd = accept(listener_fd, (struct sockaddr *) &ca, &clen);
+	pgstat_report_wait_end();
 	if (cfd < 0)
 	{
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -891,7 +903,9 @@ cluster_ic_tier1_connect_one(int32 peer_id, int *out_peer_fd)
 		return false;
 	}
 
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_CONNECT);
 	rc = connect(fd, (struct sockaddr *) &sa, sizeof(sa));
+	pgstat_report_wait_end();
 	if (rc < 0 && errno != EINPROGRESS)
 	{
 		int saved = errno;
@@ -973,8 +987,10 @@ cluster_ic_tier1_continue_hello_send(int32 peer_id, int peer_fd)
 		return true;     /* nothing to do (already complete) */
 
 	off = PGRAC_IC_HELLO_BYTES - rem;
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
 	sent = send(peer_fd, &tier1_hello_send_buf[peer_id][off],
 				(size_t) rem, 0);
+	pgstat_report_wait_end();
 
 	if (sent < 0)
 	{
@@ -1020,7 +1036,9 @@ cluster_ic_tier1_recv_and_verify_hello(int32 peer_id, int peer_fd)
 	const char *self_cluster_name;
 	const ClusterNodeInfo *peer_info;
 
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
 	got = recv(peer_fd, hello_buf, PGRAC_IC_HELLO_BYTES, MSG_WAITALL);
+	pgstat_report_wait_end();
 	if (got != PGRAC_IC_HELLO_BYTES)
 	{
 		int saved = (got < 0) ? errno : 0;
@@ -1158,8 +1176,10 @@ cluster_ic_tier1_continue_hello_recv(int anon_slot, int peer_fd,
 
 	if (need > 0)
 	{
+		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
 		got = recv(peer_fd, &tier1_anon_hello_buf[anon_slot][len],
 				   (size_t) need, 0);
+		pgstat_report_wait_end();
 		if (got < 0)
 		{
 			int saved = errno;
@@ -1283,8 +1303,10 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 
 		Assert(need > 0);
 
+		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
 		got = recv(peer_fd, &tier1_recv_buf[peer_id][buf_len],
 				   (size_t) need, 0);
+		pgstat_report_wait_end();
 		if (got < 0)
 		{
 			int saved = errno;
