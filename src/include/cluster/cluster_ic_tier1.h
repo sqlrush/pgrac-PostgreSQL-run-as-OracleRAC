@@ -169,6 +169,15 @@ extern bool cluster_ic_tier1_recv_and_verify_hello(int32 peer_id, int peer_fd);
 extern bool cluster_ic_tier1_send_heartbeat(int32 peer_id);
 
 /*
+ * Drain pending heartbeat frames from peer_fd.  Reads until EAGAIN,
+ * accumulating bytes into a per-peer recv buffer; for each fully
+ * received 24-byte ClusterMsgHeader (msg_type=HEARTBEAT, payload_len=0,
+ * CRC OK) bumps heartbeat_recv_count + last_heartbeat_recv_at.
+ * Returns false on hard recv error (caller should close_peer).
+ */
+extern bool cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd);
+
+/*
  * Mark a peer's connection as lost (state DOWN, close fd, schedule
  * reconnect via exponential backoff handled by LMON main loop).
  * Idempotent; safe to call repeatedly during shutdown.

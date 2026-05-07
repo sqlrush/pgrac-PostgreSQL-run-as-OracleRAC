@@ -109,6 +109,15 @@ static ClusterICTier1Shmem *Tier1Shmem = NULL;
 static int tier1_peer_fds[CLUSTER_MAX_NODES];
 static bool tier1_peer_fds_initialised = false;
 
+/*
+ * Per-peer recv buffer for accumulating partial ClusterMsgHeader frames
+ * across multiple WL_SOCKET_READABLE wakeups.  TCP can deliver bytes
+ * in any chunk size; the LMON loop reads what's available and parses
+ * complete frames as they assemble.  Process-local (LMON only).
+ */
+static uint8 tier1_recv_buf[CLUSTER_MAX_NODES][PGRAC_IC_HEADER_BYTES];
+static int   tier1_recv_buf_len[CLUSTER_MAX_NODES];
+
 
 /* ============================================================
  * Static helpers.
@@ -892,22 +901,119 @@ bool
 cluster_ic_tier1_send_heartbeat(int32 peer_id)
 {
 	/*
-	 * Step 6 placeholder.  Step 7 wires this via the cluster_msg_send
-	 * path with msg_type = HEARTBEAT (TBD assign in spec-2.4 framing
-	 * spec; for Step 7 we use an internal-only PGRAC_IC_MSG_HEARTBEAT
-	 * constant).
+	 * spec-2.2 §2.4 wire format -- HEARTBEAT is a 24-byte ClusterMsgHeader
+	 * with msg_type = PGRAC_IC_MSG_HEARTBEAT and payload_len = 0.  The
+	 * frame is built and CRC'd by cluster_msg_send (the higher-level
+	 * entry point); we delegate so wire framing stays single-source.
 	 *
-	 * Step 6 records the bookkeeping so the view shows non-zero counts
-	 * once Step 7 lights up the actual send.
+	 * Per §3.6 boundary invariant: heartbeat carries IC transport
+	 * liveness only -- it does NOT trigger fence / membership / quorum.
 	 */
 	if (peer_id < 0 || peer_id >= CLUSTER_MAX_NODES || Tier1Shmem == NULL)
 		return false;
 	if (Tier1Shmem->peers[peer_id].state != (int32) CLUSTER_IC_PEER_CONNECTED)
 		return false;
+	if (tier1_peer_fds[peer_id] < 0)
+		return false;
+
+	if (!cluster_msg_send(peer_id, PGRAC_IC_MSG_HEARTBEAT, NULL, 0))
+		return false;
 
 	pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_send_count, 1);
 	Tier1Shmem->peers[peer_id].last_heartbeat_sent_at = GetCurrentTimestamp();
 	return true;
+}
+
+/*
+ * Drain pending heartbeat frames from peer_fd.  Called by LMON when
+ * the per-peer fd is WL_SOCKET_READABLE in CONNECTED state.  Reads
+ * non-blocking until EAGAIN, accumulating bytes into tier1_recv_buf
+ * for that peer; for each complete 24-byte ClusterMsgHeader emits
+ * one heartbeat_recv_count tick + last_heartbeat_recv_at update.
+ *
+ * Returns false on hard recv error / EOF / malformed frame -- caller
+ * is expected to close_peer().  Returns true on EAGAIN (no more bytes
+ * available right now) -- the loop will resume on next WL_SOCKET_READABLE.
+ */
+bool
+cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
+{
+	if (peer_id < 0 || peer_id >= CLUSTER_MAX_NODES || Tier1Shmem == NULL)
+		return false;
+	if (peer_fd < 0)
+		return false;
+
+	for (;;)
+	{
+		ssize_t got;
+		int     buf_len = tier1_recv_buf_len[peer_id];
+		int     need    = PGRAC_IC_HEADER_BYTES - buf_len;
+
+		Assert(need > 0);
+
+		got = recv(peer_fd, &tier1_recv_buf[peer_id][buf_len],
+				   (size_t) need, 0);
+		if (got < 0)
+		{
+			int saved = errno;
+
+			if (saved == EAGAIN || saved == EWOULDBLOCK)
+				return true;       /* drained for now */
+
+			peer_record_error(peer_id, saved, "08006",
+							  "heartbeat recv: %s", strerror(saved));
+			return false;
+		}
+		if (got == 0)
+		{
+			peer_record_error(peer_id, 0, "08006",
+							  "peer closed connection (heartbeat drain)");
+			return false;
+		}
+
+		buf_len += (int) got;
+		tier1_recv_buf_len[peer_id] = buf_len;
+
+		if (Tier1Shmem != NULL)
+		{
+			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].bytes_recv,
+									(uint64) got);
+			Tier1Shmem->peers[peer_id].last_recv_at = GetCurrentTimestamp();
+		}
+
+		if (buf_len < PGRAC_IC_HEADER_BYTES)
+			continue;              /* partial frame, keep reading */
+
+		/*
+		 * One full header assembled.  Validate magic + msg_type; we don't
+		 * verify CRC here because spec-2.2 only carries HEARTBEAT and
+		 * cluster_msg_send already CRC'd it -- a corrupted frame on a
+		 * loopback TCP socket is a bug, not a runtime concern (real
+		 * CRC enforcement lands with general msg routing in spec-2.4).
+		 */
+		{
+			ClusterMsgHeader hdr;
+
+			memcpy(&hdr, tier1_recv_buf[peer_id], PGRAC_IC_HEADER_BYTES);
+
+			if (hdr.magic != PGRAC_IC_MAGIC
+				|| hdr.msg_type != PGRAC_IC_MSG_HEARTBEAT
+				|| hdr.payload_len != 0)
+			{
+				peer_record_error(peer_id, 0, "08P01",
+								  "malformed heartbeat header (magic=0x%x type=%u plen=%u)",
+								  hdr.magic, hdr.msg_type, hdr.payload_len);
+				tier1_recv_buf_len[peer_id] = 0;
+				return false;
+			}
+
+			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_recv_count,
+									1);
+			Tier1Shmem->peers[peer_id].last_heartbeat_recv_at = GetCurrentTimestamp();
+			tier1_recv_buf_len[peer_id] = 0;
+			/* loop again; peer may have queued multiple frames */
+		}
+	}
 }
 
 void
