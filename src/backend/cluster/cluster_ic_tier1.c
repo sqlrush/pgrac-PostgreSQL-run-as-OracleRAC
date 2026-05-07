@@ -91,8 +91,20 @@
 
 typedef struct ClusterICTier1Shmem
 {
-	int      listener_fd;                                  /* -1 if unbound */
+	/*
+	 * Listener metadata only -- the actual listener fd is process-local
+	 * in LMON (see tier1_listener_fd below).  Hardening v1.0.1 F3:
+	 * fd is a process-local kernel resource; the integer that names it
+	 * is meaningful only in the process that opened it.  After LMON
+	 * respawn the old fd value is closed (or, worse, reassigned to an
+	 * unrelated fd in the new process).  Storing fd in shmem caused
+	 * silent listener failure on respawn.  Now shmem holds only
+	 * (port, owner pid, incarnation counter); the fd lives in
+	 * tier1_listener_fd in the running LMON process.
+	 */
 	int      listener_port;                                /* cached self port */
+	pid_t    listener_pid;                                 /* current LMON pid */
+	uint64   listener_incarnation;                         /* ++ on each LMON respawn */
 	uint32   magic;                                        /* sanity check */
 	ClusterICPeerStateShmem peers[CLUSTER_MAX_NODES];
 } ClusterICTier1Shmem;
@@ -100,6 +112,15 @@ typedef struct ClusterICTier1Shmem
 #define PGRAC_IC_TIER1_SHMEM_MAGIC ((uint32)0x54494331U)   /* "TIC1" */
 
 static ClusterICTier1Shmem *Tier1Shmem = NULL;
+
+/*
+ * Listener fd -- process-local; valid only in the LMON aux process that
+ * called listener_bind().  Shmem stores listener_pid + incarnation so
+ * other backends can observe "which LMON owns this listener" for
+ * diagnostic views, but the fd itself is never crossed between
+ * processes (Hardening v1.0.1 F3).
+ */
+static int tier1_listener_fd = -1;
 
 /*
  * Per-peer fds (process-local, valid only in LMON aux process where
@@ -268,8 +289,9 @@ tier1_shmem_init(void)
 
 		memset(Tier1Shmem, 0, tier1_shmem_size());
 		Tier1Shmem->magic = PGRAC_IC_TIER1_SHMEM_MAGIC;
-		Tier1Shmem->listener_fd = -1;
 		Tier1Shmem->listener_port = -1;
+		Tier1Shmem->listener_pid = 0;
+		Tier1Shmem->listener_incarnation = 0;
 
 		for (i = 0; i < CLUSTER_MAX_NODES; i++)
 		{
@@ -502,10 +524,16 @@ tier1_tier_shutdown(void)
 		}
 	}
 
-	if (Tier1Shmem != NULL && Tier1Shmem->listener_fd >= 0)
+	/*
+	 * Hardening v1.0.1 F3: listener fd is process-local; close from
+	 * the in-process variable.  Shmem only holds metadata, which we
+	 * leave for the next LMON respawn to overwrite (pid + incarnation
+	 * bumped in listener_bind).
+	 */
+	if (tier1_listener_fd >= 0)
 	{
-		(void) close(Tier1Shmem->listener_fd);
-		Tier1Shmem->listener_fd = -1;
+		(void) close(tier1_listener_fd);
+		tier1_listener_fd = -1;
 	}
 }
 
@@ -540,8 +568,17 @@ cluster_ic_tier1_listener_bind(void)
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("cluster_ic tier1 shmem not initialised before listener_bind")));
 
-	if (Tier1Shmem->listener_fd >= 0)
-		return Tier1Shmem->listener_fd;     /* already bound (re-entry safe) */
+	/*
+	 * Hardening v1.0.1 F3: re-entry within the SAME LMON process is
+	 * idempotent (same fd returned).  Across-process must always open
+	 * a fresh fd: the integer in shmem from a previous LMON has no
+	 * meaning here -- after that LMON crashed the kernel reaped its
+	 * fd, and reusing the integer would either land on an unrelated
+	 * fd in this process (silent listener failure) or simply be -1.
+	 * The previous shmem-stored listener_fd is therefore IGNORED.
+	 */
+	if (tier1_listener_fd >= 0)
+		return tier1_listener_fd;
 
 	self = cluster_conf_lookup_node(cluster_node_id);
 	if (self == NULL)
@@ -622,12 +659,21 @@ cluster_ic_tier1_listener_bind(void)
 						self_host, self_port)));
 	}
 
-	Tier1Shmem->listener_fd = fd;
+	/*
+	 * Hardening v1.0.1 F3: store fd in process-local; record metadata
+	 * (port + owner pid + incarnation) in shmem for diagnostic views.
+	 * Bumping incarnation lets observers detect "this LMON has
+	 * respawned" without trusting stale fd values.
+	 */
+	tier1_listener_fd = fd;
 	Tier1Shmem->listener_port = self_port;
+	Tier1Shmem->listener_pid = MyProcPid;
+	Tier1Shmem->listener_incarnation++;
 
 	ereport(LOG,
-			(errmsg("cluster_ic tier1 listener bound on %s:%d (fd=%d)",
-					self_host, self_port, fd)));
+			(errmsg("cluster_ic tier1 listener bound on %s:%d (pid=%d incarnation=%lu)",
+					self_host, self_port, (int) MyProcPid,
+					(unsigned long) Tier1Shmem->listener_incarnation)));
 	return fd;
 }
 
@@ -1070,9 +1116,38 @@ cluster_ic_tier1_peer_get(int32 peer_id)
 int
 cluster_ic_tier1_get_listener_fd(void)
 {
-	if (Tier1Shmem == NULL)
-		return -1;
-	return Tier1Shmem->listener_fd;
+	/*
+	 * Hardening v1.0.1 F3: returns process-local fd.  Valid only inside
+	 * the LMON process that bound the listener.  Other processes get
+	 * -1 (their tier1_listener_fd static is its own per-process copy
+	 * and is never set in non-LMON processes).
+	 */
+	return tier1_listener_fd;
+}
+
+/*
+ * Hardening v1.0.1 F3: listener metadata accessors -- shmem-backed
+ * so any backend can observe "which LMON owns the listener" and
+ * "how many times has it respawned".  Used by cluster_debug.c
+ * (pg_cluster_state) for observability + by t/077 TAP for respawn
+ * verification.
+ */
+pid_t
+cluster_ic_tier1_get_listener_pid(void)
+{
+	return Tier1Shmem != NULL ? Tier1Shmem->listener_pid : 0;
+}
+
+uint64
+cluster_ic_tier1_get_listener_incarnation(void)
+{
+	return Tier1Shmem != NULL ? Tier1Shmem->listener_incarnation : 0;
+}
+
+int
+cluster_ic_tier1_get_listener_port(void)
+{
+	return Tier1Shmem != NULL ? Tier1Shmem->listener_port : -1;
 }
 
 int

@@ -80,6 +80,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_lmon.h"  /* cluster_lmon_status (spec-1.11 Sprint B D12) */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"			   /* ClusterICOps_Active, ClusterICTier */
+#include "cluster/cluster_ic_tier1.h"	   /* listener metadata accessors (Hardening v1.0.1 F3) */
 #include "cluster/cluster_scn.h"		   /* SCN typedef (stage 1.4) */
 #include "cluster/cluster_itl_slot.h"	   /* CLUSTER_ITL_* constants (stage 1.5) */
 #include "cluster/cluster_buffer_desc.h"   /* BufferType / PcmState enums (stage 1.6) */
@@ -303,6 +304,22 @@ dump_ic(ReturnSetInfo *rsinfo)
 		tier_name = ClusterICOps_Active->tier_name;
 
 	emit_row(rsinfo, "ic", "active_tier_name", tier_name);
+
+	/*
+	 * Hardening v1.0.1 F3: expose listener metadata so observers can
+	 * detect "LMON has respawned, listener was rebound".  Useful for
+	 * t/077 TAP and runtime diagnostics; the fd itself is process-
+	 * local and never exposed.
+	 */
+	if (ClusterICOps_Active == &ClusterICOps_Tier1)
+	{
+		emit_row(rsinfo, "ic", "tier1_listener_pid",
+				 fmt_int32((int32) cluster_ic_tier1_get_listener_pid()));
+		emit_row(rsinfo, "ic", "tier1_listener_incarnation",
+				 psprintf(UINT64_FORMAT, cluster_ic_tier1_get_listener_incarnation()));
+		emit_row(rsinfo, "ic", "tier1_listener_port",
+				 fmt_int32((int32) cluster_ic_tier1_get_listener_port()));
+	}
 }
 
 static void

@@ -205,6 +205,18 @@ extern int cluster_ic_tier1_get_listener_fd(void);
  */
 extern int cluster_ic_tier1_get_peer_fd(int32 peer_id);
 
+/*
+ * Hardening v1.0.1 F3: listener metadata accessors -- read from shmem
+ * (visible to any backend; not the fd itself which is process-local).
+ * pid = LMON pid that opened the current listener fd; incarnation
+ * monotonically increments on every successful listener_bind, so
+ * observers can detect "this LMON has respawned and rebound".
+ * Returns 0/0 if listener has never been bound.
+ */
+extern pid_t cluster_ic_tier1_get_listener_pid(void);
+extern uint64 cluster_ic_tier1_get_listener_incarnation(void);
+extern int cluster_ic_tier1_get_listener_port(void);
+
 #endif /* USE_PGRAC_CLUSTER */
 
 #endif /* CLUSTER_IC_TIER1_H */

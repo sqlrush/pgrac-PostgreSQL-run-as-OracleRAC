@@ -92,6 +92,15 @@ char *cluster_injection_points = NULL;
 /* cluster_ic */
 const ClusterICOps *ClusterICOps_Active = NULL;
 
+/* cluster_ic_tier1 — Hardening v1.0.1 F3 listener metadata accessors
+ * (cluster_debug.c references these via dump_ic).  Stubs return zeros
+ * since this unit test never binds a real listener. */
+#include "cluster/cluster_ic_tier1.h"
+const ClusterICOps ClusterICOps_Tier1 = {0};
+pid_t cluster_ic_tier1_get_listener_pid(void) { return 0; }
+uint64 cluster_ic_tier1_get_listener_incarnation(void) { return 0; }
+int cluster_ic_tier1_get_listener_port(void) { return -1; }
+
 /* cluster_inject (armed_count + iterator) */
 int cluster_injection_armed_count = 0;
 
