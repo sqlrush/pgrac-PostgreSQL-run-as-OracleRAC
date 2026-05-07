@@ -563,6 +563,7 @@ LmonMain(void)
 			int8         substate;
 			bool         is_active;
 			TimestampTz  next_attempt_at;
+			TimestampTz  connect_started_at;     /* F2: connect_timeout deadline base */
 		} LmonPeerTrack;
 
 		const long  HEARTBEAT_INTERVAL_MS = cluster_interconnect_heartbeat_interval_ms;
@@ -582,6 +583,7 @@ LmonMain(void)
 			lmon_peer_track[pi].substate = LMON_SUB_DOWN;
 			lmon_peer_track[pi].is_active = false;
 			lmon_peer_track[pi].next_attempt_at = 0;
+			lmon_peer_track[pi].connect_started_at = 0;
 			lmon_pending_fds[pi] = -1;
 
 			if (pi == self_id)
@@ -638,7 +640,70 @@ LmonMain(void)
 				{
 					lmon_peer_track[pi].fd = new_fd;
 					lmon_peer_track[pi].substate = LMON_SUB_CONNECT_PEND;
+					lmon_peer_track[pi].connect_started_at = now;   /* F2 timeout base */
 					wes_dirty = true;
+				}
+			}
+
+			/*
+			 * Hardening v1.0.1 F2: timeout / liveness scan.
+			 *
+			 *  - CONNECT_PEND or HELLO_SENDING > connect_timeout_ms since
+			 *    connect_started_at -> close (peer never came up).
+			 *  - CONNECTED + last_heartbeat_recv_at older than 3x heartbeat
+			 *    interval -> close (silent peer death; pre-fix kept a
+			 *    connection alive for ~2 hours via TCP keepalive default).
+			 *
+			 * Both paths transition to DOWN; next reconnect tick re-attempts
+			 * via the active-role connect loop above.  spec-2.2 §3.6:
+			 * heartbeat liveness is transport-only; this drop does NOT
+			 * trigger fence / membership change (that is spec-2.29).
+			 */
+			{
+				int64 connect_to_us =
+					(int64) cluster_interconnect_connect_timeout_ms * INT64CONST(1000);
+				int64 liveness_to_us =
+					3L * (int64) HEARTBEAT_INTERVAL_MS * INT64CONST(1000);
+
+				for (pi = 0; pi < CLUSTER_MAX_NODES; pi++)
+				{
+					if (lmon_peer_track[pi].fd < 0) continue;
+
+					if ((lmon_peer_track[pi].substate == LMON_SUB_CONNECT_PEND
+						 || lmon_peer_track[pi].substate == LMON_SUB_HELLO_SENDING
+						 || lmon_peer_track[pi].substate == LMON_SUB_HELLO_WAIT)
+						&& lmon_peer_track[pi].connect_started_at > 0
+						&& now > lmon_peer_track[pi].connect_started_at + connect_to_us)
+					{
+						cluster_ic_tier1_close_peer(pi, "connect timeout");
+						lmon_peer_track[pi].fd = -1;
+						lmon_peer_track[pi].substate = LMON_SUB_DOWN;
+						lmon_peer_track[pi].connect_started_at = 0;
+						wes_dirty = true;
+						continue;
+					}
+
+					if (lmon_peer_track[pi].substate == LMON_SUB_CONNECTED)
+					{
+						const ClusterICPeerStateShmem *p = cluster_ic_tier1_peer_get(pi);
+						TimestampTz last;
+
+						if (p == NULL) continue;
+						last = p->last_heartbeat_recv_at;
+
+						/* Skip if no heartbeat ever received yet (just CONNECTED;
+						 * give peer 1 full liveness window before judging). */
+						if (last == 0)
+							continue;
+						if (now > last + liveness_to_us)
+						{
+							cluster_ic_tier1_close_peer(pi, "heartbeat liveness timeout");
+							lmon_peer_track[pi].fd = -1;
+							lmon_peer_track[pi].substate = LMON_SUB_DOWN;
+							lmon_peer_track[pi].connect_started_at = 0;
+							wes_dirty = true;
+						}
+					}
 				}
 			}
 
