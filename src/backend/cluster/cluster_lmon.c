@@ -54,6 +54,12 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timestamp.h"
+
+#include "cluster/cluster_conf.h"
+#include "cluster/cluster_guc.h"
+#include "cluster/cluster_ic.h"
+#include "cluster/cluster_ic_tier1.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h" /* WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP (1.11 Sprint B) */
 
 #include "cluster/cluster_guc.h"
@@ -471,43 +477,194 @@ LmonMain(void)
 	CLUSTER_INJECTION_POINT("cluster-lmon-ready-publish");
 
 	/*
-	 * Sprint A has no startup-side initialization beyond shmem state
-	 * registration (no interconnect, no heartbeat consumer, no GRD).
-	 * Move directly to READY.
+	 * spec-2.2 D5 Step 7 -- Tier1 listener bind (gated on cluster_enabled
+	 * AND interconnect_tier == tier1).  Per spec-2.2 §3.7 cluster_enabled
+	 * gate is double-checked (caller cluster_init_shmem already gated;
+	 * defensive here too -- L15 belt-and-suspenders).  Per §3.10
+	 * listener bind is the ONLY transport-setup path that may FATAL
+	 * the postmaster; everything else (HELLO failure / connect failure
+	 * / heartbeat timeout) is connection-level.
+	 *
+	 * Per §3.8 startup non-deadlock invariant: LMON READY := listener
+	 * bind ok + accept loop running.  We do NOT wait for any peer to
+	 * connect before publishing READY (that would deadlock when this
+	 * node starts before its peers).
+	 */
+	if (cluster_enabled
+		&& (ClusterICTier) cluster_interconnect_tier == CLUSTER_IC_TIER_1)
+	{
+		(void) cluster_ic_tier1_listener_bind();    /* FATAL on failure */
+	}
+
+	/*
+	 * Move to READY.  In Tier1 mode this means listener is bound and
+	 * accept loop is about to enter; peers will connect / handshake
+	 * asynchronously over the lifetime of the loop.
 	 */
 	lmon_publish_status(CLUSTER_LMON_READY);
 
 	/*
-	 * Sprint B main loop — WaitLatch with explicit timeout +
-	 * WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP wait event so
-	 * pg_stat_activity surfaces idle LMON cleanly.  GUC-driven
-	 * interval (re-read each iteration so SIGHUP propagates on the
-	 * next tick).
+	 * Main loop: two flavours selected at startup.
 	 *
-	 * HC6: tick is LOCAL liveness only — no inter-node heartbeat.
+	 * - Tier1 mode: WaitEventSet multiplexes the latch + listener fd
+	 *   + heartbeat timer.  Per spec-2.2 约束 1, the existing
+	 *   WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP wait event is reserved
+	 *   for the IDLE tick path (no socket activity, waiting for next
+	 *   heartbeat tick) and is NOT reused for IC socket waits; the 6
+	 *   new wait events (ClusterICTcpAccept / ...Connect / ...Recv /
+	 *   ...Send / ...HeartbeatWait / ...Reconnect) land in Step 8.
+	 *   Until Step 8 ships those wait events, the listener event in
+	 *   the WaitEventSet uses WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP
+	 *   as a placeholder so pg_stat_activity still surfaces a sane
+	 *   wait state.
+	 *
+	 * - Stub / mock mode: existing simple WaitLatch loop preserved
+	 *   verbatim (regression baseline; spec-1.11 contract unchanged).
+	 *
+	 * HC6: tick is LOCAL liveness only -- no inter-node heartbeat
+	 *      semantic in stub/mock mode.  In tier1 mode heartbeat is
+	 *      transport liveness only, NOT membership (per §3.6 boundary).
 	 */
-	for (;;) {
-		int rc;
+	if (cluster_enabled
+		&& (ClusterICTier) cluster_interconnect_tier == CLUSTER_IC_TIER_1)
+	{
+		/*
+		 * spec-2.2 §2.1 Tier1 main loop.
+		 *
+		 * Heartbeat interval -- hard-coded to 1000ms in Step 7.
+		 * Step 8 D7 wires the cluster.interconnect_heartbeat_interval_ms
+		 * PGC_POSTMASTER GUC; spec-2.2 §3.3 default value is 1000.
+		 */
+		const long  HEARTBEAT_INTERVAL_MS = 1000;
+		WaitEventSet *wes = NULL;
+		int           listener_fd = cluster_ic_tier1_get_listener_fd();
+		TimestampTz   next_heartbeat_at;
 
-		CHECK_FOR_INTERRUPTS();
+		/*
+		 * Build the WaitEventSet.  Capacity: latch + listener +
+		 * CLUSTER_MAX_NODES per-peer fds (Step 7 only adds latch +
+		 * listener; per-peer fd registration in subsequent steps).
+		 */
+		wes = CreateWaitEventSet(CurrentMemoryContext, 2 + CLUSTER_MAX_NODES);
+		AddWaitEventToSet(wes, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch, NULL);
+		if (listener_fd >= 0)
+			AddWaitEventToSet(wes, WL_SOCKET_READABLE, listener_fd, NULL,
+							  /* user_data tag for dispatch */ (void *) (uintptr_t) -1);
 
-		if (ConfigReloadPending) {
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+		next_heartbeat_at = GetCurrentTimestamp() + HEARTBEAT_INTERVAL_MS * INT64CONST(1000);
+
+		for (;;) {
+			WaitEvent ev[8];
+			int       n_events;
+			long      wait_ms;
+			TimestampTz now;
+			int32     i;
+
+			CHECK_FOR_INTERRUPTS();
+
+			if (ConfigReloadPending) {
+				ConfigReloadPending = false;
+				ProcessConfigFile(PGC_SIGHUP);
+			}
+
+			if (ShutdownRequestPending || lmon_shutdown_requested())
+				break;
+
+			lmon_advance_liveness_tick();
+
+			CLUSTER_INJECTION_POINT("cluster-lmon-main-loop-iter");
+
+			now = GetCurrentTimestamp();
+			wait_ms = (next_heartbeat_at > now)
+				? (long) ((next_heartbeat_at - now) / 1000)    /* us -> ms */
+				: 0;
+			if (wait_ms < 0)
+				wait_ms = 0;
+			if (wait_ms > HEARTBEAT_INTERVAL_MS)
+				wait_ms = HEARTBEAT_INTERVAL_MS;
+
+			n_events = WaitEventSetWait(wes, wait_ms, ev,
+										lengthof(ev),
+										WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP);
+
+			for (i = 0; i < n_events; i++)
+			{
+				if (ev[i].events & WL_LATCH_SET)
+				{
+					ResetLatch(MyLatch);
+				}
+				else if (ev[i].events & WL_SOCKET_READABLE)
+				{
+					/*
+					 * Tag -1 in user_data => listener readable.  Step 7
+					 * accepts the new fd and immediately closes it (no
+					 * per-peer fd registration yet -- Steps 11+ wire
+					 * the full HELLO handshake when 076 ClusterPair TAP
+					 * exercises 2-node interaction).  For Step 7 the
+					 * accept call itself proves the listener works +
+					 * doesn't FATAL; full peer state machine drive is
+					 * the next milestone.
+					 */
+					if ((intptr_t) ev[i].user_data == -1)
+					{
+						int peer_fd = -1;
+						int32 peer_id = -1;
+
+						if (cluster_ic_tier1_accept_one(&peer_fd, &peer_id))
+						{
+							/*
+							 * Step 7 placeholder: close immediately.
+							 * Step 11 will recv + verify HELLO and
+							 * keep the fd in the WaitEventSet.
+							 */
+							if (peer_fd >= 0)
+								(void) close(peer_fd);
+						}
+					}
+				}
+			}
+
+			now = GetCurrentTimestamp();
+			if (now >= next_heartbeat_at)
+			{
+				/*
+				 * Step 7 heartbeat tick: bookkeeping only.  Step 11
+				 * will iterate connected peers and call
+				 * cluster_ic_tier1_send_heartbeat to actually emit
+				 * heartbeats once 2-node TAP can exercise it.
+				 */
+				next_heartbeat_at = now + HEARTBEAT_INTERVAL_MS * INT64CONST(1000);
+			}
 		}
 
-		if (ShutdownRequestPending || lmon_shutdown_requested())
-			break;
+		FreeWaitEventSet(wes);
+	}
+	else
+	{
+		/* Stub / mock / disabled mode -- preserve spec-1.11 simple loop. */
+		for (;;) {
+			int rc;
 
-		lmon_advance_liveness_tick();
+			CHECK_FOR_INTERRUPTS();
 
-		/* Sprint B inject: main-loop-iter (test mid-loop fault). */
-		CLUSTER_INJECTION_POINT("cluster-lmon-main-loop-iter");
+			if (ConfigReloadPending) {
+				ConfigReloadPending = false;
+				ProcessConfigFile(PGC_SIGHUP);
+			}
 
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   cluster_lmon_main_loop_interval, WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP);
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
+			if (ShutdownRequestPending || lmon_shutdown_requested())
+				break;
+
+			lmon_advance_liveness_tick();
+
+			CLUSTER_INJECTION_POINT("cluster-lmon-main-loop-iter");
+
+			rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						   cluster_lmon_main_loop_interval,
+						   WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP);
+			if (rc & WL_LATCH_SET)
+				ResetLatch(MyLatch);
+		}
 	}
 
 	/* Sprint B inject: shutdown-pre (test cleanup-time fault). */

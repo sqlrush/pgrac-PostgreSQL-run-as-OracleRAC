@@ -181,6 +181,74 @@ int cluster_lmon_main_loop_interval = 1000;
 #include "cluster/cluster_inject.h"
 int cluster_injection_armed_count = 0;
 char *cluster_injection_points = NULL;
+
+/*
+ * spec-2.2 D5 Step 7 stubs -- cluster_lmon.c now references tier1
+ * helpers + WaitEventSet API + cluster_enabled / cluster_interconnect_tier
+ * GUCs.  Stub here because this unit test only takes function addresses
+ * and never invokes LmonMain at runtime; runtime behaviour is verified
+ * at TAP layer (075/076 in spec-2.2 Steps 10-11).
+ */
+bool cluster_enabled = false;
+int  cluster_interconnect_tier = 0;        /* CLUSTER_IC_TIER_STUB */
+
+#include "cluster/cluster_ic_tier1.h"
+
+int
+cluster_ic_tier1_listener_bind(void)
+{
+	return -1;
+}
+bool
+cluster_ic_tier1_accept_one(int *out_peer_fd pg_attribute_unused(),
+							int32 *out_peer_id pg_attribute_unused())
+{
+	return false;
+}
+int
+cluster_ic_tier1_get_listener_fd(void)
+{
+	return -1;
+}
+
+/* WaitEventSet API stubs (storage/latch.h).  Never invoked at unit-test
+ * runtime because the test doesn't call LmonMain. */
+struct WaitEventSet;
+struct WaitEvent;
+typedef struct WaitEventSet WaitEventSet;
+typedef struct WaitEvent WaitEvent;
+
+/* CurrentMemoryContext type is MemoryContext (struct MemoryContextData *)
+ * declared in utils/memutils.h indirectly via cluster_lmon.c includes. */
+MemoryContext CurrentMemoryContext = NULL;
+WaitEventSet *
+CreateWaitEventSet(MemoryContext cxt pg_attribute_unused(),
+				   int nevents pg_attribute_unused())
+{
+	return NULL;
+}
+int
+AddWaitEventToSet(WaitEventSet *set pg_attribute_unused(),
+				  uint32 events pg_attribute_unused(),
+				  int fd pg_attribute_unused(),
+				  void *latch pg_attribute_unused(),
+				  void *user_data pg_attribute_unused())
+{
+	return -1;
+}
+int
+WaitEventSetWait(WaitEventSet *set pg_attribute_unused(),
+				 long timeout pg_attribute_unused(),
+				 WaitEvent *occurred_events pg_attribute_unused(),
+				 int nevents pg_attribute_unused(),
+				 uint32 wait_event_info pg_attribute_unused())
+{
+	return 0;
+}
+void
+FreeWaitEventSet(WaitEventSet *set pg_attribute_unused())
+{
+}
 void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}
