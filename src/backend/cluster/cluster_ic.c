@@ -967,90 +967,12 @@ const ClusterICOps ClusterICOps_Mock = {
 };
 
 
-/* ============================================================
- * spec-2.2 D2 -- ClusterICOps_Tier1 stub (transitional).
- *
- * Real Tier1 vtable lives in cluster_ic_tier1.c (spec-2.2 D3 NEW).
- * Until D3 lands in this Sprint A round, this stub provides
- * linker-resolved function pointers so cluster_unit (test_cluster_ic
- * test_tier1_vtable_extern_linkable) builds cleanly and so postmaster
- * with cluster.interconnect_tier=tier1 fails with a clear D3-pending
- * message at the FIRST send/recv call (rather than at link time).
- *
- * Once D3 ships the real const struct in cluster_ic_tier1.c, this
- * stub block must be DELETED -- otherwise the linker will report a
- * duplicate symbol.  D3's commit message must explicitly call out
- * the stub removal step.
- * ============================================================ */
-
-static bool
-tier1_stub_send_bytes(int32 target_node_id pg_attribute_unused(),
-					  const void *buf pg_attribute_unused(),
-					  size_t len pg_attribute_unused())
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cluster_ic tier1 send_bytes is not yet implemented"),
-			 errhint("spec-2.2 D3 (cluster_ic_tier1.c NEW) lands later in "
-					 "this Sprint A round; for now stay on tier=stub or "
-					 "tier=mock for IC tests.")));
-	return false; /* unreachable */
-}
-
-static bool
-tier1_stub_recv_bytes(int32 *out_sender_node_id pg_attribute_unused(),
-					  void *buf pg_attribute_unused(),
-					  size_t bufsize pg_attribute_unused(),
-					  size_t *out_received_len pg_attribute_unused())
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cluster_ic tier1 recv_bytes is not yet implemented"),
-			 errhint("spec-2.2 D3 (cluster_ic_tier1.c NEW) lands later in "
-					 "this Sprint A round.")));
-	return false; /* unreachable */
-}
-
-static void
-tier1_stub_tier_init(void)
-{
-	/*
-	 * Per spec-2.2 §3.7 + §3.9 the caller (cluster_init_shmem) gates
-	 * on cluster_enabled; cluster_ic_init has its own defensive guard
-	 * (v1.0.2 D-I1).  This stub init is reached only when
-	 * cluster.enabled=on AND cluster.interconnect_tier=tier1; it must
-	 * not FATAL the postmaster (per §3.10 -- only listener bind failure
-	 * may FATAL).  Emit a clear LOG instead so operators see the
-	 * D3-pending status; first send/recv will then ERROR.
-	 */
-	ereport(LOG,
-			(errmsg("cluster_ic tier1 stub active -- Sprint A D3 implementation pending"),
-			 errhint("Postmaster will start; first cluster_ic_send_bytes / recv_bytes "
-					 "call will ERROR until cluster_ic_tier1.c (spec-2.2 D3) ships.")));
-}
-
-static void
-tier1_stub_tier_shutdown(void)
-{
-	/* No-op: stub allocated nothing. */
-}
-
-static bool
-tier1_stub_peek_sender(int32 *out_sender_node_id pg_attribute_unused())
-{
-	/* Stub never has data ready; D3 will implement real peek over
-	 * per-peer fd readability. */
-	return false;
-}
-
-const ClusterICOps ClusterICOps_Tier1 = {
-	.send_bytes = tier1_stub_send_bytes,
-	.recv_bytes = tier1_stub_recv_bytes,
-	.peek_sender = tier1_stub_peek_sender,
-	.tier_init = tier1_stub_tier_init,
-	.tier_shutdown = tier1_stub_tier_shutdown,
-	.tier_name = "tier1-stub-pending-D3",
-};
+/*
+ * spec-2.2 D3 (Step 6) -- ClusterICOps_Tier1 transitional stub
+ * REMOVED.  Real Tier1 vtable now lives in cluster_ic_tier1.c
+ * (NEW file added in this commit).  Keeping the stub here would
+ * cause a duplicate-symbol link error on ClusterICOps_Tier1.
+ */
 
 #endif /* USE_PGRAC_CLUSTER */
 

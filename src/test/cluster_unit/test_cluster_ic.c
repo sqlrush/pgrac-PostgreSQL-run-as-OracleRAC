@@ -91,6 +91,40 @@ int cluster_interconnect_tier = 0; /* CLUSTER_IC_TIER_STUB */
  */
 bool cluster_enabled = true;
 
+/*
+ * spec-2.2 D3 (post-codex review) -- test-local ClusterICOps_Tier1 stub.
+ *
+ * The real Tier1 vtable lives in cluster_ic_tier1.c (production build);
+ * cluster_ic.c references ClusterICOps_Tier1 from cluster_ic_init, so
+ * any binary that links cluster_ic.o must resolve the symbol.  In the
+ * standalone test_cluster_ic binary we DON'T link cluster_ic_tier1.o
+ * (which would drag in cluster_conf / cluster_shmem / GetCurrentTimestamp
+ * / atomics state that the unit-test stub doesn't model).  Provide our
+ * own const struct with non-NULL placeholder function pointers; these
+ * functions are never invoked because cluster_unit only takes addresses
+ * (test_tier1_vtable_extern_linkable).  Real behaviour is verified at
+ * TAP layer (075 single-instance + 076 2-node A-lite, in Steps 10-11).
+ */
+static bool tier1_test_stub_send(int32 t pg_attribute_unused(),
+								 const void *b pg_attribute_unused(),
+								 size_t l pg_attribute_unused()) { return false; }
+static bool tier1_test_stub_recv(int32 *s pg_attribute_unused(),
+								 void *b pg_attribute_unused(),
+								 size_t bs pg_attribute_unused(),
+								 size_t *r pg_attribute_unused()) { return false; }
+static bool tier1_test_stub_peek(int32 *s pg_attribute_unused()) { return false; }
+static void tier1_test_stub_init(void) { }
+static void tier1_test_stub_shutdown(void) { }
+
+const ClusterICOps ClusterICOps_Tier1 = {
+	.send_bytes = tier1_test_stub_send,
+	.recv_bytes = tier1_test_stub_recv,
+	.peek_sender = tier1_test_stub_peek,
+	.tier_init = tier1_test_stub_init,
+	.tier_shutdown = tier1_test_stub_shutdown,
+	.tier_name = "tier1-unit-test-stub",
+};
+
 void
 ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 					 const char *fileName pg_attribute_unused(),
