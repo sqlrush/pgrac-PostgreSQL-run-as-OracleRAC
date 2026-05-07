@@ -105,9 +105,12 @@ use Test::More;
 #
 # node1 declares a different cluster_name in its pgrac.conf.  When
 # node0 (active connector for the 0,1 pair) sends HELLO, node1 reads
-# HELLO, sees mismatched cluster_name, sends back rejection, closes
-# connection.  Postmaster on BOTH sides must STAY UP (per spec-2.2
-# §3.10 hard invariant: HELLO failure is connection-level only).
+# HELLO, sees mismatched cluster_name, silently closes the socket
+# (no rejection frame -- protocol is asymmetric per spec-2.2 §2.4 +
+# Hardening v1.0.1 F5).  node0 detects the rejection on the next
+# heartbeat send/recv, marks peer DOWN, retries connect.  Postmaster
+# on BOTH sides must STAY UP (per spec-2.2 §3.10 hard invariant:
+# HELLO failure is connection-level only).
 # ============================================================
 {
 	my $pair = PostgreSQL::Test::ClusterPair->new_pair(
@@ -199,6 +202,65 @@ use Test::More;
 
 	close $blocker if $blocker;
 	# node1 was never started by L8.
+}
+
+
+# ============================================================
+# L9: F5 protocol doc cleanliness -- no stale "HELLO_ACK" references.
+# Hardening v1.0.1 F5 fix; closes spec-2.2 §3.10 wording drift.
+# ============================================================
+{
+	# Authoritative header file -- the ABI/protocol declaration.
+	# Test file itself excluded (would self-match the grep patterns).
+	my $df = "../../../src/include/cluster/cluster_ic.h";
+	if (-r $df)
+	{
+		my $content = do { local (@ARGV, $/) = $df; <> };
+		# "No HELLO_ACK frame" mentions HELLO_ACK in negation context;
+		# only flag positive claims that the frame exists.
+		my $bad_ack = ($content =~ /\bHELLO_ACK\b/
+			&& $content !~ /No HELLO_ACK frame/) ? 1 : 0;
+		ok(!$bad_ack,
+			"L9 cluster_ic.h has no stale HELLO_ACK claim (asymmetric protocol)");
+
+		ok(($content !~ /sends back rejection/),
+			"L9 cluster_ic.h has no stale 'sends back rejection' claim");
+	}
+	else
+	{
+		fail("L9 cluster_ic.h not readable at $df");
+	}
+}
+
+
+# ============================================================
+# L10: §3.9 scope guard runtime -- non-LMON backend cannot send
+# IC msg in tier1 mode.  Closes 075 L5 scope-guard test debt.
+# Hardening v1.0.1 F5 sub-item.
+#
+# We trigger the scope guard via cluster_ic_mock_inject, the only SQL
+# entry point that exercises the cluster_ic_send_bytes / cluster_msg_send
+# path from a backend.  In tier1 mode any non-LMON caller (regular
+# backend) hits the §3.9 guard -> ERRCODE_FEATURE_NOT_SUPPORTED.
+# ============================================================
+{
+	my $pair = PostgreSQL::Test::ClusterPair->new_pair('pgrac076e');
+	$pair->start_pair;
+
+	ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+		'L10 setup: node0 sees peer 1 connected');
+
+	# Try to invoke cluster_ic_mock_inject from a backend in tier1 mode.
+	# Expected: ERROR with ERRCODE_FEATURE_NOT_SUPPORTED (mock SRF
+	# refuses outside tier=mock OR §3.9 guard refuses non-LMON caller).
+	my ($stdout, $stderr) = ('', '');
+	$pair->node0->psql('postgres',
+		q{SELECT cluster_ic_mock_inject(1, '\xDE'::bytea)},
+		stdout => \$stdout, stderr => \$stderr);
+	like($stderr, qr/(mock|interconnect|FEATURE_NOT_SUPPORTED|tier1|LMON)/i,
+		"L10 backend cluster_ic call rejected in tier1 mode (got: $stderr)");
+
+	$pair->stop_pair;
 }
 
 

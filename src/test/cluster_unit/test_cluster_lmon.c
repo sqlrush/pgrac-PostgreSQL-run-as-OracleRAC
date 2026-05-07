@@ -254,6 +254,35 @@ cluster_ic_tier1_close_peer(int32 peer_id pg_attribute_unused(),
 							const char *reason pg_attribute_unused())
 {}
 
+/* Hardening v1.0.1 stubs (F1 + F2). */
+bool
+cluster_ic_tier1_continue_hello_send(int32 peer_id pg_attribute_unused(),
+									 int peer_fd pg_attribute_unused())
+{
+	return false;
+}
+int
+cluster_ic_tier1_hello_send_remaining(int32 peer_id pg_attribute_unused())
+{
+	return 0;
+}
+bool
+cluster_ic_tier1_continue_hello_recv(int anon_slot pg_attribute_unused(),
+									 int peer_fd pg_attribute_unused(),
+									 int32 *out_learned_peer_id)
+{
+	if (out_learned_peer_id != NULL) *out_learned_peer_id = -1;
+	return false;
+}
+void
+cluster_ic_tier1_anon_hello_reset(int anon_slot pg_attribute_unused())
+{}
+const ClusterICPeerStateShmem *
+cluster_ic_tier1_peer_get(int32 peer_id pg_attribute_unused())
+{
+	return NULL;
+}
+
 /* spec-2.2 D5 LMON drive references cluster_conf_lookup_node + cluster_node_id. */
 const struct ClusterNodeInfo *
 cluster_conf_lookup_node(int32 node_id pg_attribute_unused())

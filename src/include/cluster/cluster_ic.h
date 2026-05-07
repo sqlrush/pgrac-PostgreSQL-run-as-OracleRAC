@@ -219,9 +219,18 @@ extern const ClusterICOps *ClusterICOps_Active;
 
 /*
  * spec-2.2 D1 -- HELLO handshake message exchanged on every newly
- * established TCP connection (active connect side sends first; passive
- * accept side verifies + responds with HELLO_ACK using the same
- * struct shape).  Fixed 64-byte ABI for cross-version safety
+ * established TCP connection.
+ *
+ * Protocol shape (asymmetric; spec-2.2 §2.4 + Hardening v1.0.1 F5):
+ *   - Active connect side sends HELLO and considers itself CONNECTED
+ *     once the 64 bytes are fully written.  No HELLO_ACK frame.
+ *   - Passive accept side verifies HELLO (cluster_name +
+ *     source_node_id + version match per §3.10); on success flips
+ *     peer state to CONNECTED, on rejection silently closes the
+ *     socket.  Active side detects rejection via the next heartbeat
+ *     send/recv error -> close + DOWN -> reconnect.
+ *
+ * Fixed 64-byte ABI for cross-version safety
  * (StaticAssertDecl in cluster_ic_tier1.c).
  *
  * Per spec-2.2 §2.4, HELLO carries:
