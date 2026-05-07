@@ -84,12 +84,11 @@ PG_FUNCTION_INFO_V1(cluster_get_ic_peers);
 
 
 /*
- * Compile-time anchor for the wire format.  Mirrors the constant in
- * cluster_ic.h; if anyone changes ClusterMsgHeader without updating
- * the constant the build fails here.
+ * spec-2.3 D3: spec-2.2 ClusterMsgHeader StaticAssertDecl removed
+ * along with the struct.  The ABI lock now lives in
+ * cluster_ic_envelope.c (4 StaticAssertDecl on 36-byte
+ * ClusterICEnvelope).
  */
-StaticAssertDecl(sizeof(ClusterMsgHeader) == PGRAC_IC_HEADER_BYTES,
-				 "ClusterMsgHeader must be exactly PGRAC_IC_HEADER_BYTES");
 
 
 /*
@@ -270,30 +269,20 @@ cluster_ic_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	Assert(ClusterICOps_Active != NULL);
 
 	/*
-	 * spec-2.2 §3.9 hard scope guard (post-codex review L60 audit) --
-	 * caller-level enforcement.
+	 * spec-2.3 D3: spec-2.2 §3.9 byte-level B_LMON scope guard removed.
+	 * The producer scope check now lives at the higher-level
+	 * cluster_ic_send_envelope (cluster_ic_router.c) where it is
+	 * msg_type-aware: each registered msg_type carries
+	 * allowed_producer_mask listing which BackendType values may
+	 * invoke send for that msg_type.  HEARTBEAT is registered with
+	 * mask = CLUSTER_IC_PRODUCER_LMON, preserving spec-2.2 §3.9
+	 * LMON-only invariant.  Future SCN_BROADCAST etc widen via OR.
 	 *
-	 * In tier1 mode this byte-level send entry point is reserved for
-	 * the LMON aux process (heartbeat path).  Any backend / autovacuum
-	 * / etc calling cluster_ic_send_bytes directly is rejected with
-	 * ERR_FEATURE_NOT_SUPPORTED.  General-purpose backend IC routing
-	 * lands in spec-2.3+ / spec-2.4+ (see cluster_ic.h
-	 * PGRAC_IC_MSG_HEARTBEAT comment).  msg_type-level enforcement is
-	 * at cluster_msg_send (the higher-level entry that has msg_type
-	 * as a parameter) -- this byte-level guard cannot reliably parse
-	 * msg_type from buf because cluster_msg_send issues TWO sends per
-	 * message (header bytes + payload bytes); either one's `buf` may
-	 * arrive here.  Belt-and-suspenders: both layers enforce.
+	 * Byte-level cluster_ic_send_bytes is the lowest layer (vtable
+	 * dispatch); it deliberately does NOT enforce producer policy
+	 * because by the time bytes reach here, the higher layer has
+	 * validated.
 	 */
-	if (ClusterICOps_Active == &ClusterICOps_Tier1 && MyBackendType != B_LMON)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("cluster_ic_send_bytes via tier1 is restricted to "
-							   "LMON aux process in spec-2.2"),
-						errhint("General-purpose backend IC routing lands in "
-								"spec-2.3+ (envelope ABI ratify) and spec-2.4+ "
-								"(framing + epoch enforce).  For non-LMON IC "
-								"tests use cluster.interconnect_tier=mock.")));
-
 	return ClusterICOps_Active->send_bytes(target_node_id, buf, len);
 }
 
@@ -441,7 +430,9 @@ cluster_ic_recv_exact(int32 *out_sender_node_id, void *buf, size_t bufsize,
  * partition per target node for back-pressure / dedupe.
  * ============================================================ */
 
-static uint32 ic_global_seq_no = 0;
+/* spec-2.3 D3: ic_global_seq_no removed along with cluster_msg_send.
+ * Per-target sequencing (if needed) lives in cluster_ic_router.c
+ * future spec-2.4 additions. */
 
 
 /* ============================================================
@@ -562,21 +553,17 @@ cluster_ic_parse_hello(const uint8 in_buf[PGRAC_IC_HELLO_BYTES], ClusterICHelloM
 	return true;
 }
 
-static pg_crc32c
-compute_msg_crc(const ClusterMsgHeader *hdr, const void *payload, uint32 payload_len)
-{
-	pg_crc32c crc;
-	const uint8 *hdr_bytes = (const uint8 *)hdr;
-	const size_t crc_offset = offsetof(ClusterMsgHeader, crc32);
-
-	INIT_CRC32C(crc);
-	COMP_CRC32C(crc, hdr_bytes, crc_offset);
-	if (payload_len > 0)
-		COMP_CRC32C(crc, payload, payload_len);
-	FIN_CRC32C(crc);
-	return crc;
-}
-
+/* spec-2.3 D3: compute_msg_crc / cluster_msg_send / cluster_msg_recv /
+ * cluster_rpc_call deleted -- replaced by:
+ *   cluster_ic_envelope_compute_crc (cluster_ic_envelope.c)
+ *   cluster_ic_send_envelope (cluster_ic_router.c)
+ *   cluster_ic_dispatch_envelope (cluster_ic_router.c)
+ *   spec-2.13 GES request/reply (sync RPC; future spec)
+ *
+ * The deleted block sat at lines 555-727 of the spec-2.2 file.  Tests
+ * referencing these symbols (test_cluster_ic.c) updated alongside.
+ */
+#if 0  /* DELETED — preserved for git blame readability; spec-2.3 D3 */
 bool
 cluster_msg_send(int32 target_node_id, uint16 msg_type, const void *payload, uint32 payload_len)
 {
@@ -736,6 +723,7 @@ cluster_rpc_call(int32 target_node_id, uint16 msg_type, const void *req, uint32 
 
 	return false; /* timeout */
 }
+#endif /* DELETED — spec-2.3 D3 */
 
 
 /* ============================================================

@@ -283,6 +283,14 @@ cluster_ic_tier1_peer_get(int32 peer_id pg_attribute_unused())
 	return NULL;
 }
 
+/* spec-2.3 D5: cluster_lmon_shmem_init now registers HEARTBEAT msg_type
+ * with cluster_ic_router.  Stub the register API so this address-only
+ * link test passes without pulling in the whole router. */
+#include "cluster/cluster_ic_router.h"
+void
+cluster_ic_register_msg_type(const ClusterICMsgTypeInfo *info pg_attribute_unused())
+{}
+
 /* spec-2.2 D5 LMON drive references cluster_conf_lookup_node + cluster_node_id. */
 const struct ClusterNodeInfo *
 cluster_conf_lookup_node(int32 node_id pg_attribute_unused())

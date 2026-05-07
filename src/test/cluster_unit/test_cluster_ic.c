@@ -306,22 +306,14 @@ UT_DEFINE_GLOBALS();
  * Wire format invariants (compile-time anchors).
  * ============================================================ */
 
-UT_TEST(test_msg_header_size_24)
-{
-	UT_ASSERT_EQ(sizeof(ClusterMsgHeader), 24);
-	UT_ASSERT_EQ(PGRAC_IC_HEADER_BYTES, 24);
-}
-
-UT_TEST(test_msg_header_magic_constant)
-{
-	/* "ICRG" little-endian = 0x47435249 */
-	UT_ASSERT_EQ(PGRAC_IC_MAGIC, (uint32)0x47435249);
-}
-
-UT_TEST(test_msg_header_protocol_v1)
-{
-	UT_ASSERT_EQ(PGRAC_IC_PROTOCOL_VERSION_V1, 1);
-}
+/*
+ * spec-2.3 D3: ClusterMsgHeader / cluster_msg_send / cluster_msg_recv /
+ * cluster_rpc_call deleted from cluster_ic.{h,c}.  Wire format moved to
+ * 36-byte ClusterICEnvelope (see test_cluster_ic_envelope.c U1-U5+U9
+ * for ABI lock + verify path coverage; test_cluster_ic_router.c
+ * U6-U8 for register / dispatch_table / producer_mask coverage).
+ * The msg_header_* tests below were removed accordingly.
+ */
 
 
 /* ============================================================
@@ -337,21 +329,6 @@ UT_TEST(test_ic_send_bytes_linkable)
 UT_TEST(test_ic_recv_bytes_linkable)
 {
 	UT_ASSERT_NOT_NULL((void *)cluster_ic_recv_bytes);
-}
-
-UT_TEST(test_msg_send_linkable)
-{
-	UT_ASSERT_NOT_NULL((void *)cluster_msg_send);
-}
-
-UT_TEST(test_msg_recv_linkable)
-{
-	UT_ASSERT_NOT_NULL((void *)cluster_msg_recv);
-}
-
-UT_TEST(test_rpc_call_linkable)
-{
-	UT_ASSERT_NOT_NULL((void *)cluster_rpc_call);
 }
 
 UT_TEST(test_ic_init_linkable)
@@ -595,15 +572,9 @@ UT_TEST(test_hello_build_truncates_long_name)
 int
 main(void)
 {
-	UT_PLAN(24);
-	UT_RUN(test_msg_header_size_24);
-	UT_RUN(test_msg_header_magic_constant);
-	UT_RUN(test_msg_header_protocol_v1);
+	UT_PLAN(18); /* spec-2.3 D3: 6 ClusterMsgHeader/msg_send/recv tests deleted */
 	UT_RUN(test_ic_send_bytes_linkable);
 	UT_RUN(test_ic_recv_bytes_linkable);
-	UT_RUN(test_msg_send_linkable);
-	UT_RUN(test_msg_recv_linkable);
-	UT_RUN(test_rpc_call_linkable);
 	UT_RUN(test_ic_init_linkable);
 	UT_RUN(test_ic_shutdown_linkable);
 	UT_RUN(test_stub_vtable_tier_name);

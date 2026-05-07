@@ -58,6 +58,8 @@
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"
+#include "cluster/cluster_ic_envelope.h"
+#include "cluster/cluster_ic_router.h"
 #include "cluster/cluster_ic_tier1.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h" /* WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP (1.11 Sprint B) */
@@ -118,10 +120,37 @@ cluster_lmon_shmem_size(void)
 }
 
 
+/*
+ * spec-2.3 D5: HEARTBEAT msg_type handler.
+ *
+ *	Per spec-2.3 §3.5 hard constraints (Q6 + Q14 防御层 R3 修订):
+ *	  - nonblocking; no LWLock wait; no catalog SQL; no ereport ERROR
+ *	  - LMON main loop韧性 -- handler bug must not crash LMON
+ *
+ *	Heartbeat counter bumps + last_heartbeat_recv_at update already
+ *	happen in cluster_ic_tier1_recv_heartbeat_drain BEFORE dispatch
+ *	(legacy spec-2.2 path preserved for direct shmem write); this
+ *	handler is the abstract dispatch point for any FUTURE heartbeat-
+ *	related work that wants to plug into the registry mechanism.
+ *	Currently a no-op so dispatch_envelope can find a non-NULL
+ *	handler pointer and complete its 6-step validation cycle.
+ */
+static void
+heartbeat_handler(const ClusterICEnvelope *env pg_attribute_unused(),
+				  const void *payload pg_attribute_unused())
+{
+	/*
+	 * No-op for spec-2.3.  spec-2.10 SCN piggyback may add
+	 *   cluster_scn_observe(env->scn);
+	 * to perform Lamport receive-side advance.
+	 */
+}
+
 void
 cluster_lmon_shmem_init(void)
 {
 	bool found;
+	static bool heartbeat_registered = false;
 
 	cluster_lmon_state = (ClusterLmonSharedState *)ShmemInitStruct(
 		"pgrac cluster lmon", sizeof(ClusterLmonSharedState), &found);
@@ -130,6 +159,31 @@ cluster_lmon_shmem_init(void)
 		memset(cluster_lmon_state, 0, sizeof(*cluster_lmon_state));
 		LWLockInitialize(&cluster_lmon_state->lwlock, LWTRANCHE_CLUSTER_LMON);
 		cluster_lmon_state->status = CLUSTER_LMON_NOT_STARTED;
+	}
+
+	/*
+	 * spec-2.3 D5 + Q9 R1: register HEARTBEAT msg_type with the IC
+	 * router.  Init-layer guard (heartbeat_registered static) prevents
+	 * accidental re-entry; only the FIRST cluster_lmon_shmem_init call
+	 * registers, subsequent invocations no-op.  Direct duplicate
+	 * cluster_ic_register_msg_type() outside this guard would still
+	 * FATAL per spec-2.3 §1.4 invariant 4.
+	 *
+	 * spec-2.3 §3.4 + Q10: register at postmaster phase 1 (this is
+	 * cluster_init_shmem context).  spec-2.2 §3.9 LMON-only invariant
+	 * preserved by allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON.
+	 */
+	if (!heartbeat_registered) {
+		const ClusterICMsgTypeInfo heartbeat_info = {
+			.msg_type = PGRAC_IC_MSG_HEARTBEAT,
+			.name = "heartbeat",
+			.allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON,
+			.broadcast_ok = false,
+			.handler = heartbeat_handler,
+		};
+
+		cluster_ic_register_msg_type(&heartbeat_info);
+		heartbeat_registered = true;
 	}
 }
 

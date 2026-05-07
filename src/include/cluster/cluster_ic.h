@@ -72,72 +72,17 @@ typedef enum ClusterICTier {
 
 
 /*
- * On-the-wire magic.  Little-endian "ICRG" -- Inter-Connect for pgRac
- * Generic.  Chosen for grep-friendly hexdumps (49 52 43 47) and
- * non-collision with PG protocol headers (which use single-byte type
- * codes like 'R' / 'S' / 'E').  Stage 6+ may rev this only via
- * protocol_version, never the magic itself.
- */
-#define PGRAC_IC_MAGIC ((uint32)0x47435249)
-
-/*
- * Wire protocol version.  Bumped when ClusterMsgHeader changes shape.
- * Stage 0.18 starts at 1.
- */
-#define PGRAC_IC_PROTOCOL_VERSION_V1 ((uint8)1)
-
-
-/*
- * spec-2.2 §3.9 -- Tier1 scope guard message types.
- *
- * Tier1 transport in spec-2.2 carries ONLY LMON heartbeat traffic.
- * General-purpose backend cluster_msg_send is REJECTED in tier1 mode
- * (caller / msg_type check).  General message routing for cross-node
- * RPC / GES / Cache Fusion / sinval lands later:
- *   spec-2.3 envelope ABI ratify + transport-agnostic API
- *   spec-2.4 framing + epoch enforce
- *   spec-2.X general IC router (TBD)
- *
- * Future spec-2.4+ will add more msg_type values (REQUEST / RESPONSE /
- * INVAL / etc) and lift the scope guard.  Until then, any non-HEARTBEAT
- * msg_type sent through cluster_msg_send in tier1 mode is rejected
- * with ERR_FEATURE_NOT_SUPPORTED.
- *
- * spec-2.3 D3: PGRAC_IC_MSG_HEARTBEAT is now defined as an enum value
- * in cluster_ic_envelope.h (ClusterICMsgType).  cluster_ic.c picks up
- * the enum value via the include below; the spec-2.2 #define is
- * superseded.  Step 5 will delete cluster_msg_send entirely + the
- * scope guard at line 597 along with it.
+ * spec-2.3 D3: wire format unified into 36-byte ClusterICEnvelope
+ * (cluster_ic_envelope.h).  spec-2.2 ClusterMsgHeader (24 bytes,
+ * PGRAC_IC_MAGIC 0x47435249, PGRAC_IC_PROTOCOL_VERSION_V1) deleted;
+ * spec-2.2 §3.9 hard scope guard at the byte-stream layer
+ * (cluster_ic_send_bytes B_LMON check) deleted -- replaced by
+ * cluster_ic_router's producer_mask validation per msg_type
+ * registration.  Lower-level send_bytes/recv_bytes vtable surface
+ * preserved; only the higher-level cluster_msg_send/recv layer
+ * removed.
  */
 #include "cluster/cluster_ic_envelope.h"
-
-/*
- * Exact size of ClusterMsgHeader, anchored as a constant for unit
- * tests and for cross-checking against StaticAssertDecl in cluster_ic.c.
- */
-#define PGRAC_IC_HEADER_BYTES 24
-
-
-/*
- * ClusterMsgHeader -- fixed wire-format prefix prepended by the
- *	high-level cluster_msg_* API in front of every payload.
- *
- *	Field layout chosen so that the struct is exactly 24 bytes with
- *	natural alignment on every platform pgrac targets.  Reserved
- *	fields are zero-filled by the sender and ignored by the receiver
- *	at protocol_version 1.
- */
-typedef struct ClusterMsgHeader {
-	uint32 magic;			/* PGRAC_IC_MAGIC */
-	uint8 protocol_version; /* PGRAC_IC_PROTOCOL_VERSION_V1 */
-	uint8 reserved1;
-	uint16 msg_type; /* subsystem-defined, registered in Stage 2+ */
-	int16 sender_node_id;
-	int16 reserved2;
-	uint32 seq_no;		/* per-target monotonic; wraps */
-	uint32 payload_len; /* bytes in payload following the header */
-	pg_crc32c crc32;	/* CRC32C over (header excl crc) + payload */
-} ClusterMsgHeader;
 
 
 /*
@@ -406,31 +351,22 @@ extern bool cluster_ic_recv_bytes(int32 *out_sender_node_id, void *buf, size_t b
 
 
 /* ----------
- * High-level protocol API.
+ * High-level protocol API -- DELETED in spec-2.3 D3.
  *
- *	cluster_msg_send -- prepend a 24-byte header (with sender_id,
- *	    seq_no, CRC) and forward to cluster_ic_send_bytes.
+ *	spec-2.2 cluster_msg_send / cluster_msg_recv (24-byte
+ *	ClusterMsgHeader + CRC + per-target seq_no) replaced by
+ *	cluster_ic_send_envelope / cluster_ic_dispatch_envelope in
+ *	cluster_ic_router.h.  New layer adds:
+ *	  - 36-byte ClusterICEnvelope (spec-2.0 §4 frozen ABI)
+ *	  - msg_type registration table with allowed_producer_mask
+ *	    + handler dispatch (replaces spec-2.2 §3.9 LMON-only
+ *	    hard-coded scope guard)
+ *	  - PG_TRY/PG_CATCH wrap on dispatch (LMON main loop韧性)
  *
- *	cluster_msg_recv -- read next message via cluster_ic_recv_bytes,
- *	    validate magic / protocol_version / CRC, fill *out_hdr.
- *	    Returns false on no message or validation failure (logged
- *	    at WARNING).
- *
- *	cluster_rpc_call -- synchronous request-reply: cluster_msg_send
- *	    followed by cluster_msg_recv loop until matching seq_no or
- *	    timeout_ms expires.  At stage 0.18 stub mode this returns
- *	    false (timeout) for self-targeted RPC, since there is no
- *	    listener producing replies.
+ *	cluster_rpc_call (sync request-reply) deferred to spec-2.13
+ *	(GES); not in spec-2.3 scope.
  * ----------
  */
-extern bool cluster_msg_send(int32 target_node_id, uint16 msg_type, const void *payload,
-							 uint32 payload_len);
-
-extern bool cluster_msg_recv(ClusterMsgHeader *out_hdr, void *payload_buf, uint32 payload_buf_size);
-
-extern bool cluster_rpc_call(int32 target_node_id, uint16 msg_type, const void *req, uint32 req_len,
-							 void *resp_buf, uint32 resp_buf_size, uint32 *out_resp_len,
-							 int timeout_ms);
 
 #endif /* USE_PGRAC_CLUSTER */
 

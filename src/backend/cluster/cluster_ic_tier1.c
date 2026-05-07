@@ -74,6 +74,8 @@
 #include "cluster/cluster_elog.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"
+#include "cluster/cluster_ic_envelope.h"
+#include "cluster/cluster_ic_router.h"
 #include "cluster/cluster_ic_tier1.h"
 #include "cluster/cluster_shmem.h"
 
@@ -137,7 +139,15 @@ static bool tier1_peer_fds_initialised = false;
  * in any chunk size; the LMON loop reads what's available and parses
  * complete frames as they assemble.  Process-local (LMON only).
  */
-static uint8 tier1_recv_buf[CLUSTER_MAX_NODES][PGRAC_IC_HEADER_BYTES];
+/*
+ * spec-2.3 D6: per-peer recv buffer for accumulating partial 36-byte
+ * envelopes across multiple WL_SOCKET_READABLE wakeups.  Replaces
+ * spec-2.2's 24-byte ClusterMsgHeader buffer.  TCP can deliver bytes
+ * in any chunk size; LMON loop reads what's available and parses
+ * complete envelopes as they assemble.  v1.0.1 F1 partial-IO state
+ * machine pattern preserved (per-peer accumulator + len counter).
+ */
+static uint8 tier1_recv_buf[CLUSTER_MAX_NODES][PGRAC_IC_ENVELOPE_BYTES];
 static int tier1_recv_buf_len[CLUSTER_MAX_NODES];
 
 /*
@@ -171,7 +181,7 @@ static int tier1_hello_send_remaining[CLUSTER_MAX_NODES];
 static uint8 tier1_anon_hello_buf[CLUSTER_MAX_NODES][PGRAC_IC_HELLO_BYTES];
 static int tier1_anon_hello_len[CLUSTER_MAX_NODES];
 
-static uint8 tier1_outbound_buf[CLUSTER_MAX_NODES][PGRAC_IC_HEADER_BYTES];
+static uint8 tier1_outbound_buf[CLUSTER_MAX_NODES][PGRAC_IC_ENVELOPE_BYTES];
 static int tier1_outbound_remaining[CLUSTER_MAX_NODES];
 
 
@@ -1032,10 +1042,13 @@ bool
 cluster_ic_tier1_send_heartbeat(int32 peer_id)
 {
 	/*
-	 * spec-2.2 §2.4 wire format -- HEARTBEAT is a 24-byte ClusterMsgHeader
-	 * with msg_type = PGRAC_IC_MSG_HEARTBEAT and payload_len = 0.  The
-	 * frame is built and CRC'd by cluster_msg_send (the higher-level
-	 * entry point); we delegate so wire framing stays single-source.
+	 * spec-2.3 D5 wire format -- HEARTBEAT is a 36-byte ClusterICEnvelope
+	 * with msg_type = PGRAC_IC_MSG_HEARTBEAT and payload_len = 0.
+	 * cluster_ic_send_envelope (cluster_ic_router.c) does the producer-
+	 * mask check (LMON-only per §3.4 + spec-2.2 §3.9 升级), envelope
+	 * build + CRC, then delegates to cluster_ic_send_bytes (vtable) →
+	 * tier1_send_bytes which honors v1.0.1 F1 partial-IO buffer for
+	 * short-write recovery.
 	 *
 	 * Per §3.6 boundary invariant: heartbeat carries IC transport
 	 * liveness only -- it does NOT trigger fence / membership / quorum.
@@ -1047,7 +1060,7 @@ cluster_ic_tier1_send_heartbeat(int32 peer_id)
 	if (tier1_peer_fds[peer_id] < 0)
 		return false;
 
-	if (!cluster_msg_send(peer_id, PGRAC_IC_MSG_HEARTBEAT, NULL, 0))
+	if (!cluster_ic_send_envelope(PGRAC_IC_MSG_HEARTBEAT, peer_id, NULL, 0))
 		return false;
 
 	pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_send_count, 1);
@@ -1169,15 +1182,27 @@ cluster_ic_tier1_hello_send_remaining(int32 peer_id)
 }
 
 /*
- * Drain pending heartbeat frames from peer_fd.  Called by LMON when
- * the per-peer fd is WL_SOCKET_READABLE in CONNECTED state.  Reads
- * non-blocking until EAGAIN, accumulating bytes into tier1_recv_buf
- * for that peer; for each complete 24-byte ClusterMsgHeader emits
- * one heartbeat_recv_count tick + last_heartbeat_recv_at update.
+ * spec-2.3 D6: drain pending envelopes from peer_fd.
  *
- * Returns false on hard recv error / EOF / malformed frame -- caller
- * is expected to close_peer().  Returns true on EAGAIN (no more bytes
- * available right now) -- the loop will resume on next WL_SOCKET_READABLE.
+ *   Called by LMON when per-peer fd is WL_SOCKET_READABLE in CONNECTED
+ *   state.  Reads non-blocking until EAGAIN, accumulating bytes into
+ *   tier1_recv_buf[N][36] (per-peer 36-byte buffer).  For each complete
+ *   ClusterICEnvelope:
+ *     1. cluster_ic_envelope_verify (6-step validation: magic / version /
+ *        source / dest / payload_length / CRC)
+ *     2. cluster_ic_dispatch_envelope (lookup dispatch_table[msg_type] +
+ *        invoke registered handler via PG_TRY/CATCH wrap)
+ *
+ *   For HEARTBEAT specifically, spec-2.3 ships payload_length = 0, so
+ *   verify + dispatch consume the 36-byte envelope alone (no separate
+ *   payload bytes on the wire).  Future spec-2.4+ adds framing for
+ *   non-zero payload msgs; this function will gain a "read N more
+ *   bytes for payload" branch then.
+ *
+ *   Returns false on hard recv error / EOF / verify failure / unregistered
+ *   msg_type -- caller (LMON) is expected to close_peer per spec-2.3
+ *   §3.5b inbound rule (peer-level failure; NEVER ereport ERROR LMON).
+ *   Returns true on EAGAIN (drained for now).
  */
 bool
 cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
@@ -1190,7 +1215,7 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 	for (;;) {
 		ssize_t got;
 		int buf_len = tier1_recv_buf_len[peer_id];
-		int need = PGRAC_IC_HEADER_BYTES - buf_len;
+		int need = PGRAC_IC_ENVELOPE_BYTES - buf_len;
 
 		Assert(need > 0);
 
@@ -1203,11 +1228,11 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 			if (saved == EAGAIN || saved == EWOULDBLOCK)
 				return true; /* drained for now */
 
-			peer_record_error(peer_id, saved, "08006", "heartbeat recv: %s", strerror(saved));
+			peer_record_error(peer_id, saved, "08006", "envelope recv: %s", strerror(saved));
 			return false;
 		}
 		if (got == 0) {
-			peer_record_error(peer_id, 0, "08006", "peer closed connection (heartbeat drain)");
+			peer_record_error(peer_id, 0, "08006", "peer closed connection (envelope drain)");
 			return false;
 		}
 
@@ -1219,34 +1244,55 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 			Tier1Shmem->peers[peer_id].last_recv_at = GetCurrentTimestamp();
 		}
 
-		if (buf_len < PGRAC_IC_HEADER_BYTES)
-			continue; /* partial frame, keep reading */
+		if (buf_len < PGRAC_IC_ENVELOPE_BYTES)
+			continue; /* partial envelope, keep reading */
 
 		/*
-		 * One full header assembled.  Validate magic + msg_type; we don't
-		 * verify CRC here because spec-2.2 only carries HEARTBEAT and
-		 * cluster_msg_send already CRC'd it -- a corrupted frame on a
-		 * loopback TCP socket is a bug, not a runtime concern (real
-		 * CRC enforcement lands with general msg routing in spec-2.4).
+		 * One full 36-byte envelope assembled.  spec-2.3 §3.2 6-step
+		 * verify + dispatch via cluster_ic_router.  spec-2.3 ships only
+		 * HEARTBEAT (payload_length = 0); when spec-2.4 adds non-zero
+		 * payload msgs, this branch will need to read additional
+		 * payload_length bytes BEFORE dispatching.
 		 */
 		{
-			ClusterMsgHeader hdr;
+			ClusterICEnvelope env;
 
-			memcpy(&hdr, tier1_recv_buf[peer_id], PGRAC_IC_HEADER_BYTES);
+			memcpy(&env, tier1_recv_buf[peer_id], PGRAC_IC_ENVELOPE_BYTES);
 
-			if (hdr.magic != PGRAC_IC_MAGIC || hdr.msg_type != PGRAC_IC_MSG_HEARTBEAT
-				|| hdr.payload_len != 0) {
+			/* spec-2.3 §3.5b: verify failure = peer-level failure (close
+			 * peer; NEVER ereport ERROR LMON). */
+			if (!cluster_ic_envelope_verify(&env, NULL, (uint32)cluster_node_id)) {
 				peer_record_error(peer_id, 0, "08P01",
-								  "malformed heartbeat header (magic=0x%x type=%u plen=%u)",
-								  hdr.magic, hdr.msg_type, hdr.payload_len);
+								  "envelope verify failed (magic=0x%x version=%u msg_type=%u "
+								  "src=%u dst=%u plen=%u crc=0x%x)",
+								  env.magic, env.version, env.msg_type, env.source_node_id,
+								  env.dest_node_id, env.payload_length, env.payload_crc32c);
 				tier1_recv_buf_len[peer_id] = 0;
 				return false;
 			}
 
-			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_recv_count, 1);
-			Tier1Shmem->peers[peer_id].last_heartbeat_recv_at = GetCurrentTimestamp();
+			/* spec-2.3 D5: HEARTBEAT-specific bookkeeping.  Future spec-
+			 * 2.10 + handler will move counter bumps into the registered
+			 * handler's body (which sees env directly).  For spec-2.3
+			 * we keep direct shmem update here AND invoke dispatch so
+			 * the handler can do additional work if any. */
+			if (env.msg_type == PGRAC_IC_MSG_HEARTBEAT) {
+				pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_recv_count, 1);
+				Tier1Shmem->peers[peer_id].last_heartbeat_recv_at = GetCurrentTimestamp();
+			}
+
+			/* spec-2.3 §3.5b: dispatch returning false = unregistered
+			 * msg_type from peer = peer-level failure. */
+			if (!cluster_ic_dispatch_envelope(&env, NULL)) {
+				peer_record_error(peer_id, 0, "08P01",
+								  "envelope msg_type %u not registered (sender %u)", env.msg_type,
+								  env.source_node_id);
+				tier1_recv_buf_len[peer_id] = 0;
+				return false;
+			}
+
 			tier1_recv_buf_len[peer_id] = 0;
-			/* loop again; peer may have queued multiple frames */
+			/* loop again; peer may have queued multiple envelopes */
 		}
 	}
 }
