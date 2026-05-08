@@ -125,6 +125,13 @@ SHAREDFS_SUPP=(
   # cluster_ic_envelope.c (sizeof + 3 offsetof); cppcheck's syntax
   # confusion is purely a macro-expansion gap, not a code defect.
   --suppress=syntaxError:src/include/cluster/cluster_ic_envelope.h
+  # Reason: spec-2.5 D1 cluster_cssd.h uses pg_attribute_packed() macro on
+  # ClusterCssdHeartbeatPayload (12-byte wire format).  Without packed the
+  # struct grows to 16 bytes (uint64 forces 8-byte struct alignment).
+  # cppcheck 2.20 cannot expand pg_attribute_packed() and reports syntaxError
+  # on the trailing identifier `ClusterCssdHeartbeatPayload`.  Compile-time
+  # ABI lock = StaticAssertDecl(sizeof == 12) in cluster_cssd.c.
+  --suppress=syntaxError:src/include/cluster/cluster_cssd.h
 )
 
 echo "## cppcheck $(cppcheck --version)"

@@ -254,6 +254,8 @@ typedef enum BuiltinTrancheIds {
 	LWTRANCHE_CLUSTER_STATS,
 	/* PGRAC (stage 1.15): SCN encoding layer; cluster_scn_state lwlock. */
 	LWTRANCHE_CLUSTER_SCN,
+	/* PGRAC (stage 2.5): CSSD aux process lifecycle lwlock (spec-2.5 D7). */
+	LWTRANCHE_CLUSTER_CSSD,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

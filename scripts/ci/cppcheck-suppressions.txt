@@ -67,6 +67,15 @@ nullPointerRedundantCheck:src/backend/cluster/cluster_shmem.c
 # expansion gap, not a code defect.
 syntaxError:src/include/cluster/cluster_ic_envelope.h
 
+# Reason: spec-2.5 D1 cluster_cssd.h uses pg_attribute_packed() macro on
+# ClusterCssdHeartbeatPayload (12-byte wire format).  Without packed the
+# struct grows to 16 bytes (uint64 forces 8-byte struct alignment).
+# cppcheck 2.20 cannot expand pg_attribute_packed() macro and reports
+# syntaxError on the trailing identifier `ClusterCssdHeartbeatPayload`.
+# Compile-time ABI lock = StaticAssertDecl(sizeof == 12) in cluster_cssd.c.
+# Same pattern as cluster_ic_envelope.h precedent above (L67 in lessons SSOT).
+syntaxError:src/include/cluster/cluster_cssd.h
+
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a
 # "Reason:" line on the next line.  Currently:
