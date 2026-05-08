@@ -181,6 +181,8 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_CLUSTER_BGPROC_DIAG_MAIN_LOOP,
 	/* spec-1.14 D11: 4-process symmetric grep (enum/lookup/count/registry). */
 	WAIT_EVENT_CLUSTER_BGPROC_CLUSTER_STATS_MAIN_LOOP,
+	/* spec-2.5 D8: 5-process symmetric grep (enum/lookup/count/registry). */
+	WAIT_EVENT_CLUSTER_BGPROC_CSSD_MAIN_LOOP,
 };
 
 /* Compile-time assertion: array length must match the documented count. */

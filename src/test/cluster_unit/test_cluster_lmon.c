@@ -266,6 +266,13 @@ cluster_cssd_outbound_slots(void)
 	return NULL;
 }
 
+/* spec-2.5 D12 stub: CSSD heartbeat dispatch handler registered in
+ * postmaster phase 1.  Tests don't dispatch heartbeats here. */
+void
+cluster_cssd_dispatch_heartbeat(const ClusterICEnvelope *env pg_attribute_unused(),
+								const void *payload pg_attribute_unused())
+{}
+
 /* spec-2.5 D2.6 stubs: cluster_ic_envelope_build + cluster_ic_send_bytes
  * referenced by LmonMain CSSD drain branch.  drain noop above means body
  * is unreachable in tests, but link must resolve. */

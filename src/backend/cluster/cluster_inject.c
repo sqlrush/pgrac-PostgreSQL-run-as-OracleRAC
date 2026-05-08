@@ -184,6 +184,13 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	{ .name = "cluster-stats-main-loop-iter" },
 	{ .name = "cluster-stats-shutdown-pre" },
 	{ .name = "cluster-stats-shutdown-post" },
+	/* Stage 2.5 (spec-2.5 D11) — 6 CSSD lifecycle injects. */
+	{ .name = "cluster-cssd-pre-spawn" },
+	{ .name = "cluster-cssd-post-spawn" },
+	{ .name = "cluster-cssd-ready-publish" },
+	{ .name = "cluster-cssd-main-loop-pre-tick" },
+	{ .name = "cluster-cssd-shutdown-pre" },
+	{ .name = "cluster-cssd-shutdown-post" },
 	/* Stage 1.15 (spec-1.15 D11 inject) — 4 SCN encoding-layer injects. */
 	{ .name = "cluster-scn-advance-pre" },
 	{ .name = "cluster-scn-advance-post" },

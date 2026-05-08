@@ -187,6 +187,33 @@ cluster_lmon_shmem_init(void)
 		cluster_ic_register_msg_type(&heartbeat_info);
 		heartbeat_registered = true;
 	}
+
+	/*
+	 * spec-2.5 D12: register CSSD heartbeat msg_type=11 in postmaster
+	 * phase 1.  Per spec-2.5 v0.2 Q1 修订 (L61 process-resource-vs-shmem):
+	 * CSSD aux process does NOT hold tier1 TCP fd directly;LMON drains
+	 * CSSD outbound queue and is the actual sender.  Therefore
+	 * allowed_producer_mask = LMON only;CSSD process never invokes
+	 * cluster_ic_send_envelope directly.  broadcast_ok = true because
+	 * fanout layer (D2.5) demands send-side enforcement of the broadcast
+	 * contract per spec-2.3 v1.0.1 F4 + L71 metadata-symmetric-enforce.
+	 */
+	{
+		static bool cssd_heartbeat_registered = false;
+
+		if (!cssd_heartbeat_registered) {
+			const ClusterICMsgTypeInfo cssd_heartbeat_info = {
+				.msg_type = PGRAC_IC_MSG_CSSD_HEARTBEAT,
+				.name = "cssd_heartbeat",
+				.allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON,
+				.broadcast_ok = true,
+				.handler = cluster_cssd_dispatch_heartbeat,
+			};
+
+			cluster_ic_register_msg_type(&cssd_heartbeat_info);
+			cssd_heartbeat_registered = true;
+		}
+	}
 }
 
 

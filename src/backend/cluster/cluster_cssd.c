@@ -81,8 +81,9 @@
 #include "utils/wait_event.h"
 
 #include "cluster/cluster_cssd.h"
-#include "cluster/cluster_guc.h"   /* cluster_node_id */
-#include "cluster/cluster_shmem.h" /* cluster_shmem_register_region */
+#include "cluster/cluster_guc.h"	/* cluster_node_id + cssd_* GUCs */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (spec-2.5 D11) */
+#include "cluster/cluster_shmem.h"	/* cluster_shmem_register_region */
 
 extern pid_t cluster_postmaster_start_cssd(void);
 
@@ -529,8 +530,6 @@ cssd_advance_liveness_tick(void)
  *   Asserts IsUnderPostmaster (HC1 reverse defense).
  * ============================================================ */
 
-#define CSSD_MAIN_LOOP_INTERVAL_MS 1000 /* Step 5 D9 wires GUC */
-
 void
 CssdMain(void)
 {
@@ -559,16 +558,21 @@ CssdMain(void)
 
 	cssd_publish_status(CLUSTER_CSSD_STARTING);
 
-	/* Step 4 minimum: no Sprint-A startup work beyond shmem registration.
-	 * Move directly to READY.  Step 5 will hook inject point + Q6
-	 * first-tick grace period gate here. */
+	CLUSTER_INJECTION_POINT("cluster-cssd-ready-publish");
+
+	/* No Sprint-A startup work beyond shmem registration.  Move directly
+	 * to READY. */
 	cssd_publish_status(CLUSTER_CSSD_READY);
 
-	/* spec-2.5 Q6 first-tick grace period (Step 5 connects to GUC; Step
-	 * 4 hardcodes default 3 × 1000 ms). */
+	/* spec-2.5 Q6 first-tick grace period:
+	 *   grace_until_us = ready_at + (factor × heartbeat_interval × 1000)
+	 * (per §3.2.1).  During this window deadband-scan does not trigger
+	 * SUSPECTED/DEAD transitions, avoiding spawn-immediate-reconfig
+	 * storm before peer connections finish establishing. */
 	{
 		uint64 ready_us = (uint64)GetCurrentTimestamp();
-		uint64 grace = 3 * (uint64)CSSD_MAIN_LOOP_INTERVAL_MS * 1000ULL;
+		uint64 grace = (uint64)cluster_cssd_dead_deadband_factor
+					   * (uint64)cluster_cssd_heartbeat_interval_ms * 1000ULL;
 
 		LWLockAcquire(&CssdShmem->lwlock, LW_EXCLUSIVE);
 		CssdShmem->first_tick_grace_until_us = ready_us + grace;
@@ -590,17 +594,24 @@ CssdMain(void)
 
 		cssd_advance_liveness_tick();
 
-		/* Step 5 D11 wires inject point + heartbeat broadcast tick +
-		 * deadband-scan + state machine here. */
+		CLUSTER_INJECTION_POINT("cluster-cssd-main-loop-pre-tick");
+
+		/* Step 6 D11 wires heartbeat broadcast tick (write outbound queue
+		 * + deadband-scan + state machine) here. */
 
 		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   CSSD_MAIN_LOOP_INTERVAL_MS, WAIT_EVENT_PG_SLEEP);
+					   cluster_cssd_main_loop_interval_ms,
+					   WAIT_EVENT_CLUSTER_BGPROC_CSSD_MAIN_LOOP);
 		if (rc & WL_LATCH_SET)
 			ResetLatch(MyLatch);
 	}
 
+	CLUSTER_INJECTION_POINT("cluster-cssd-shutdown-pre");
+
 	cssd_publish_status(CLUSTER_CSSD_SHUTTING_DOWN);
 	cssd_publish_status(CLUSTER_CSSD_DOWN);
+
+	CLUSTER_INJECTION_POINT("cluster-cssd-shutdown-post");
 
 	/* proc_exit(0) -> reaper sees WIFEXITED + WEXITSTATUS=0 ->
 	 * normal-exit path -> NO crash recovery (HC5).  Abnormal exit hits
@@ -621,7 +632,12 @@ cluster_cssd_start(void)
 
 	Assert(!IsUnderPostmaster);
 
+	CLUSTER_INJECTION_POINT("cluster-cssd-pre-spawn");
+
 	pid = cluster_postmaster_start_cssd();
+
+	CLUSTER_INJECTION_POINT("cluster-cssd-post-spawn");
+
 	return (int)pid;
 }
 

@@ -700,7 +700,7 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 	 */
 	cssd_pid = cluster_cssd_start();
 	if (cssd_pid <= 0) {
-		fail_ctx->errcode = ERRCODE_CLUSTER_STATS_SPAWN_FAILED; /* Step 5 D10: 53R30 */
+		fail_ctx->errcode = ERRCODE_CLUSTER_CSSD_SPAWN_FAILED;
 		fail_ctx->errmsg = "cluster phase 4: failed to spawn CSSD aux process";
 		fail_ctx->errhint = "Check postmaster log for fork() error.  Confirm OS "
 							"process limits leave room for the CSSD aux process.";
@@ -709,7 +709,7 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 
 	cssd_remaining_ms = phase4_remaining_budget_ms(phase4_deadline, 5000);
 	if (!cluster_cssd_wait_for_ready(cssd_remaining_ms)) {
-		fail_ctx->errcode = ERRCODE_CLUSTER_STATS_NOT_READY; /* Step 5 D10: 53R31 */
+		fail_ctx->errcode = ERRCODE_CLUSTER_CSSD_NOT_READY;
 		fail_ctx->errmsg = "cluster phase 4: CSSD did not publish READY in time";
 		fail_ctx->errhint = "Check postmaster log for CSSD-side errors.  If CSSD is "
 							"slow on this hardware, raise cluster.phase4_timeout "

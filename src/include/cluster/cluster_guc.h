@@ -246,6 +246,18 @@ extern int cluster_diag_main_loop_interval;
 extern int cluster_cluster_stats_main_loop_interval;
 
 /*
+ * spec-2.5 D9 -- CSSD aux process tunables (PGC_POSTMASTER).
+ *   cssd_main_loop_interval_ms : MainLoop WaitLatch timeout.
+ *   cssd_heartbeat_interval_ms : per-tick broadcast period.
+ *   cssd_dead_deadband_factor  : DEAD threshold = factor × heartbeat
+ *                                interval (default 3 → 3s);SUSPECTED
+ *                                at max(2, factor-1) × interval.
+ */
+extern int cluster_cssd_main_loop_interval_ms;
+extern int cluster_cssd_heartbeat_interval_ms;
+extern int cluster_cssd_dead_deadband_factor;
+
+/*
  * spec-2.2 D7 -- Tier 1 TCP transport tuning (PGC_POSTMASTER).
  * Defaults / ranges per spec-2.2 §3.3 + §2.1.
  */

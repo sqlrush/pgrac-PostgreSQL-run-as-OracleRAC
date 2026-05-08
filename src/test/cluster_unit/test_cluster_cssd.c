@@ -240,6 +240,24 @@ void
 cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unused())
 {}
 
+/* spec-2.5 D9 GUC + D11 inject framework stubs.  Tests don't exercise
+ * CssdMain runtime so default values + no-op inject are sufficient. */
+int cluster_cssd_main_loop_interval_ms = 1000;
+int cluster_cssd_heartbeat_interval_ms = 1000;
+int cluster_cssd_dead_deadband_factor = 3;
+
+#include "cluster/cluster_inject.h"
+int cluster_injection_armed_count = 0;
+char *cluster_injection_points = NULL;
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
+bool
+cluster_injection_should_skip(const char *name pg_attribute_unused())
+{
+	return false;
+}
+
 
 /* ============================================================
  * Tests.

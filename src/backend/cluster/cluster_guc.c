@@ -90,6 +90,13 @@ int cluster_diag_main_loop_interval = 1000;
 /* spec-1.14 D8: cluster.cluster_stats_main_loop_interval (mirror). */
 int cluster_cluster_stats_main_loop_interval = 1000;
 
+/* spec-2.5 D9: CSSD main-loop tick interval (ms). */
+int cluster_cssd_main_loop_interval_ms = 1000;
+/* spec-2.5 D9: CSSD heartbeat broadcast interval (ms). */
+int cluster_cssd_heartbeat_interval_ms = 1000;
+/* spec-2.5 D9: CSSD dead deadband factor (multiplier of heartbeat interval). */
+int cluster_cssd_dead_deadband_factor = 3;
+
 /* spec-2.2 D7 -- Tier 1 TCP transport tuning (PGC_POSTMASTER per §3.3). */
 int cluster_interconnect_heartbeat_interval_ms = 1000;
 int cluster_interconnect_connect_timeout_ms = 5000;
@@ -582,6 +589,47 @@ cluster_init_guc(void)
 										 "functionally equivalent at this stage."),
 							&cluster_cluster_stats_main_loop_interval, 1000, 100, 60000, PGC_SIGHUP,
 							GUC_UNIT_MS, NULL, NULL, NULL);
+
+	/* spec-2.5 D9: 3 NEW CSSD GUCs (PGC_POSTMASTER per spec §2.3 — applied
+	 * at postmaster init;hot-reload via SIGHUP not supported because
+	 * heartbeat interval / deadband factor are baked into peer state
+	 * machine + first-tick grace period at CssdMain READY publish). */
+	DefineCustomIntVariable(
+		"cluster.cssd_main_loop_interval_ms",
+		gettext_noop("CSSD aux process main-loop tick interval in milliseconds."),
+		gettext_noop("Mirror of cluster.diag_main_loop_interval / "
+					 "cluster_stats_main_loop_interval;CSSD MainLoop "
+					 "WaitLatch timeout (spec-2.5 D9).  Independent of "
+					 "heartbeat broadcast interval -- the loop tick drives "
+					 "deadband-scan + outbound queue read + read result "
+					 "from previous LMON drain;the actual heartbeat send "
+					 "interval is governed by cssd_heartbeat_interval_ms."),
+		&cluster_cssd_main_loop_interval_ms, 1000, 100, 60000, PGC_POSTMASTER, GUC_UNIT_MS, NULL,
+		NULL, NULL);
+
+	DefineCustomIntVariable(
+		"cluster.cssd_heartbeat_interval_ms",
+		gettext_noop("CSSD heartbeat broadcast period in milliseconds."),
+		gettext_noop("Per-tick CSSD broadcast period (spec-2.5 D9).  Default "
+					 "1000ms = 1Hz heartbeat per peer.  Range [100, 10000] ms.  "
+					 "DEAD threshold is computed as factor × this interval "
+					 "(see cssd_dead_deadband_factor).  Tuning narrower (100-"
+					 "500ms) gives faster failover detection at the cost of "
+					 "extra cross-node traffic;wider (3-10s) reduces traffic "
+					 "but delays DEAD detection."),
+		&cluster_cssd_heartbeat_interval_ms, 1000, 100, 10000, PGC_POSTMASTER, GUC_UNIT_MS, NULL,
+		NULL, NULL);
+
+	DefineCustomIntVariable(
+		"cluster.cssd_dead_deadband_factor",
+		gettext_noop("CSSD dead-detection deadband as a multiple of heartbeat interval."),
+		gettext_noop("DEAD threshold = factor × cssd_heartbeat_interval_ms.  "
+					 "SUSPECTED threshold = max(2, factor-1) × interval (spec-"
+					 "2.5 Q5 ★ B 3-stage hysteresis).  Default 3 → SUSPECTED "
+					 "at 2s, DEAD at 3s (matches Oracle CSS / Pacemaker / etcd "
+					 "industry baseline).  Range [2, 10];admin can widen for "
+					 "long PG GC pause tolerance, narrow for tighter SLA."),
+		&cluster_cssd_dead_deadband_factor, 3, 2, 10, PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
 	/*
 	 * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).
