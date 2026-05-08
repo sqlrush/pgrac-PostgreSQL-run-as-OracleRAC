@@ -43,6 +43,7 @@ OBJS = \
 	cluster_debug.o \
 	cluster_diag.o \
 	cluster_elog.o \
+	cluster_epoch.o \
 	cluster_guc.o \
 	cluster_ic.o \
 	cluster_ic_envelope.o \

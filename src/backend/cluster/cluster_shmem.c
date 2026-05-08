@@ -61,6 +61,7 @@
 #include "cluster/cluster_diag.h"	  /* cluster_diag_shmem_register (1.13 Sprint A) */
 #include "cluster/cluster_inject.h"	  /* CLUSTER_INJECTION_POINT */
 #include "cluster/cluster_lck.h"	  /* cluster_lck_shmem_register (1.12 Sprint A) */
+#include "cluster/cluster_epoch.h"	  /* cluster_epoch_shmem_register (2.4) */
 #include "cluster/cluster_scn.h"	  /* cluster_scn_shmem_register (1.15) */
 #include "cluster/cluster_stats.h"	  /* cluster_stats_shmem_register (1.14 Sprint A) */
 #include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
@@ -370,6 +371,14 @@ cluster_init_shmem_module(void)
 	/* spec-1.15 D3: register cluster_scn shmem region (encoding layer). */
 	if (cluster_shmem_lookup_region("pgrac cluster scn") == NULL)
 		cluster_scn_shmem_register();
+
+	/*
+	 * spec-2.4 D2: register cluster_epoch shmem region.  64-byte cache-
+	 * line aligned (false sharing防 on hot envelope build/verify path);
+	 * 48 bytes reserved for spec-2.29 reconfig coordinator metadata.
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster epoch") == NULL)
+		cluster_epoch_shmem_register();
 }
 
 

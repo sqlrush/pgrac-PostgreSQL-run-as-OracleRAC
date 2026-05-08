@@ -359,6 +359,11 @@ void
 cluster_ic_tier1_shmem_register(void)
 {}
 
+/* spec-2.4 D2 stub: cluster_epoch shmem region. */
+void
+cluster_epoch_shmem_register(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 
