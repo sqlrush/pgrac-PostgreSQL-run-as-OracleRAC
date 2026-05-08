@@ -365,7 +365,7 @@ cluster_ic_tier1_shmem_register(void)
  * when cluster.interconnect_tier = tier1).
  * ============================================================ */
 
-static bool
+static ClusterICSendResult
 tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 {
 	int fd;
@@ -377,20 +377,26 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 		ereport(WARNING,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("cluster_ic tier1 send: target_node_id %d out of range", target_node_id)));
-		return false;
+		return CLUSTER_IC_SEND_HARD_ERROR;
 	}
 
 	fd = tier1_peer_fds[target_node_id];
 	if (fd < 0)
-		return false; /* not connected */
+		return CLUSTER_IC_SEND_HARD_ERROR; /* not connected */
 
 	/*
-	 * Hardening v1.0.1 F1: per-peer outbound buffer for partial writes.
-	 * If a previous send for this peer left bytes pending, drain them
-	 * first; only attempt the new caller-supplied buf when the buffer
-	 * is empty (otherwise we'd corrupt the byte stream by interleaving
-	 * frames).  Cluster-IC frames are message-aligned so partial-write
-	 * recovery must NOT interleave two payloads on the same socket.
+	 * Hardening v1.0.1 F1 (spec-2.2 v1.0.1 + spec-2.3 v1.0.1 L68):
+	 * per-peer outbound buffer for partial writes.  If a previous send
+	 * for this peer left bytes pending, drain them first; only attempt
+	 * the new caller-supplied buf when the buffer is empty (otherwise
+	 * we'd corrupt the byte stream by interleaving frames).
+	 *
+	 * Three-state return contract:
+	 *   DONE        -> full send;counter advance OK
+	 *   WOULD_BLOCK -> EAGAIN or partial;outbound buffer holds tail;
+	 *                  caller MUST register WL_SOCKET_WRITEABLE for fd
+	 *                  and re-enter on writability;NEVER close peer
+	 *   HARD_ERROR  -> socket dead;caller MUST close peer
 	 */
 	if (tier1_outbound_remaining[target_node_id] > 0) {
 		int rem = tier1_outbound_remaining[target_node_id];
@@ -404,26 +410,23 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 			int saved = errno;
 
 			if (saved == EAGAIN || saved == EWOULDBLOCK)
-				return false; /* still backpressured; caller skips */
+				return CLUSTER_IC_SEND_WOULD_BLOCK; /* still backpressured */
 			peer_record_error(target_node_id, saved, "08006", "send (drain): %s", strerror(saved));
-			cluster_ic_tier1_close_peer(target_node_id, "send error");
-			return false;
+			return CLUSTER_IC_SEND_HARD_ERROR; /* caller closes peer */
 		}
 		tier1_outbound_remaining[target_node_id] -= (int)drained;
-		if (tier1_outbound_remaining[target_node_id] > 0)
-			return false; /* still pending, defer new payload */
-
-		if (Tier1Shmem != NULL) {
+		if (Tier1Shmem != NULL && drained > 0) {
 			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[target_node_id].bytes_send, (uint64)drained);
 			Tier1Shmem->peers[target_node_id].last_send_at = GetCurrentTimestamp();
 		}
+		if (tier1_outbound_remaining[target_node_id] > 0)
+			return CLUSTER_IC_SEND_WOULD_BLOCK; /* still pending, defer new payload */
 	}
 
 	/*
-	 * Nonblocking write.  Short write is now buffered (F1) instead of
-	 * closing the peer: drain the remainder on next WL_SOCKET_WRITEABLE
-	 * via the path above.  HEARTBEAT (24B header) fits in the buffer;
-	 * spec-2.4 framing will generalize for larger payloads.
+	 * Nonblocking write of the new caller-supplied buf.  Short write
+	 * is buffered (F1) -- WOULD_BLOCK return tells caller to drain on
+	 * next WL_SOCKET_WRITEABLE via the path above.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
 	sent = send(fd, buf, len, 0);
@@ -432,30 +435,29 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 		int saved_errno = errno;
 
 		if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK)
-			return false; /* nonblocking; caller retries via WaitEventSet */
+			return CLUSTER_IC_SEND_WOULD_BLOCK;
 
-		/* Hard error -- mark peer down. */
+		/* Hard error -- caller closes peer. */
 		peer_record_error(target_node_id, saved_errno, "08006", "send: %s", strerror(saved_errno));
-		cluster_ic_tier1_close_peer(target_node_id, "send error");
-		return false;
+		return CLUSTER_IC_SEND_HARD_ERROR;
 	}
 
 	if ((size_t)sent != len) {
 		/*
-		 * Hardening v1.0.1 F1: partial write -- buffer the unsent tail
-		 * in tier1_outbound_buf so we can complete it on next WRITEABLE.
-		 * Frame is message-aligned; we MUST complete it before the next
-		 * heartbeat to avoid interleaving payloads on the wire.
+		 * Partial write -- buffer the unsent tail in tier1_outbound_buf
+		 * so we can complete it on next WRITEABLE.  Frame is message-
+		 * aligned; we MUST complete it before the next frame to avoid
+		 * interleaving payloads on the wire.
 		 */
 		size_t tail_len = len - (size_t)sent;
 
 		if (tail_len > sizeof(tier1_outbound_buf[0])) {
-			/* Larger than the buffer (24B) -- spec-2.2 only sends
-			 * 24B HEARTBEAT, so this is a programming error. */
+			/* Larger than the per-peer outbound buffer -- programming
+			 * error;spec-2.3 envelope is 36 B and outbound buf was
+			 * sized at envelope size. */
 			peer_record_error(target_node_id, 0, "08006", "partial send tail %zu > buffer %zu",
 							  tail_len, sizeof(tier1_outbound_buf[0]));
-			cluster_ic_tier1_close_peer(target_node_id, "send tail too large");
-			return false;
+			return CLUSTER_IC_SEND_HARD_ERROR;
 		}
 		memcpy(tier1_outbound_buf[target_node_id], (const char *)buf + sent, tail_len);
 		tier1_outbound_remaining[target_node_id] = (int)tail_len;
@@ -465,20 +467,32 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 			Tier1Shmem->peers[target_node_id].last_send_at = GetCurrentTimestamp();
 		}
 		/*
-		 * Return false so caller knows the send is not yet complete;
-		 * buffered tail will drain on next call via the top-of-function
-		 * drain path.  Heartbeat counter is NOT bumped here -- the
-		 * caller (cluster_ic_tier1_send_heartbeat) bumps only on full
-		 * completion.
+		 * WOULD_BLOCK lets caller (LMON) keep peer state intact + register
+		 * WL_SOCKET_WRITEABLE; tail will drain on next entry.  Heartbeat
+		 * counter is NOT bumped here -- the caller bumps only on DONE.
 		 */
-		return false;
+		return CLUSTER_IC_SEND_WOULD_BLOCK;
 	}
 
 	if (Tier1Shmem != NULL) {
 		pg_atomic_add_fetch_u64(&Tier1Shmem->peers[target_node_id].bytes_send, len);
 		Tier1Shmem->peers[target_node_id].last_send_at = GetCurrentTimestamp();
 	}
-	return true;
+	return CLUSTER_IC_SEND_DONE;
+}
+
+/*
+ * spec-2.3 hardening v1.0.1 F1: pending-outbound accessor for LMON.
+ * Returns true iff this peer has bytes queued in tier1_outbound_buf
+ * waiting for WL_SOCKET_WRITEABLE.  Used by LMON to decide whether
+ * to add WRITEABLE interest to the WaitEventSet for that fd.
+ */
+bool
+cluster_ic_tier1_pending_outbound(int32 peer_id)
+{
+	if (peer_id < 0 || peer_id >= CLUSTER_MAX_NODES)
+		return false;
+	return tier1_outbound_remaining[peer_id] > 0;
 }
 
 static bool
@@ -1038,9 +1052,11 @@ cluster_ic_tier1_recv_and_verify_hello(int32 peer_id, int peer_fd)
 	return true;
 }
 
-bool
+ClusterICSendResult
 cluster_ic_tier1_send_heartbeat(int32 peer_id)
 {
+	ClusterICSendResult rc;
+
 	/*
 	 * spec-2.3 D5 wire format -- HEARTBEAT is a 36-byte ClusterICEnvelope
 	 * with msg_type = PGRAC_IC_MSG_HEARTBEAT and payload_len = 0.
@@ -1052,20 +1068,26 @@ cluster_ic_tier1_send_heartbeat(int32 peer_id)
 	 *
 	 * Per §3.6 boundary invariant: heartbeat carries IC transport
 	 * liveness only -- it does NOT trigger fence / membership / quorum.
+	 *
+	 * spec-2.3 hardening v1.0.1 F1 (L68): three-state return.  Caller
+	 * (LMON main loop) MUST switch on result -- WOULD_BLOCK means the
+	 * outbound buffer holds the tail and LMON should register
+	 * WL_SOCKET_WRITEABLE for fd, NOT close peer.
 	 */
 	if (peer_id < 0 || peer_id >= CLUSTER_MAX_NODES || Tier1Shmem == NULL)
-		return false;
+		return CLUSTER_IC_SEND_HARD_ERROR;
 	if (Tier1Shmem->peers[peer_id].state != (int32)CLUSTER_IC_PEER_CONNECTED)
-		return false;
+		return CLUSTER_IC_SEND_HARD_ERROR;
 	if (tier1_peer_fds[peer_id] < 0)
-		return false;
+		return CLUSTER_IC_SEND_HARD_ERROR;
 
-	if (!cluster_ic_send_envelope(PGRAC_IC_MSG_HEARTBEAT, peer_id, NULL, 0))
-		return false;
+	rc = cluster_ic_send_envelope(PGRAC_IC_MSG_HEARTBEAT, peer_id, NULL, 0);
+	if (rc != CLUSTER_IC_SEND_DONE)
+		return rc; /* propagate WOULD_BLOCK / HARD_ERROR */
 
 	pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_send_count, 1);
 	Tier1Shmem->peers[peer_id].last_heartbeat_sent_at = GetCurrentTimestamp();
-	return true;
+	return CLUSTER_IC_SEND_DONE;
 }
 
 /*

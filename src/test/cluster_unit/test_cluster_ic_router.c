@@ -161,11 +161,11 @@ ErrorContextCallback *error_context_stack = NULL;
  * pre-send validation path. */
 const ClusterICOps *ClusterICOps_Active = NULL;
 
-bool
+ClusterICSendResult
 cluster_ic_send_bytes(int32 target_node_id pg_attribute_unused(),
 					  const void *buf pg_attribute_unused(), size_t len pg_attribute_unused())
 {
-	return true;
+	return CLUSTER_IC_SEND_DONE;
 }
 
 /* cluster_node_id global */

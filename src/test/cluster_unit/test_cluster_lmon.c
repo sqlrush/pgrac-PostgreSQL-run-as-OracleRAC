@@ -238,8 +238,13 @@ cluster_ic_tier1_recv_and_verify_hello(int32 peer_id pg_attribute_unused(),
 {
 	return false;
 }
-bool
+ClusterICSendResult
 cluster_ic_tier1_send_heartbeat(int32 peer_id pg_attribute_unused())
+{
+	return CLUSTER_IC_SEND_HARD_ERROR;
+}
+bool
+cluster_ic_tier1_pending_outbound(int32 peer_id pg_attribute_unused())
 {
 	return false;
 }

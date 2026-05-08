@@ -83,11 +83,11 @@ BackendType MyBackendType = B_INVALID;
 
 /* spec-2.2 D3 -- test-local ClusterICOps_Tier1 stub (same rationale as
  * test_cluster_ic.c). */
-static bool
+static ClusterICSendResult
 tier1_test_stub_send(int32 t pg_attribute_unused(), const void *b pg_attribute_unused(),
 					 size_t l pg_attribute_unused())
 {
-	return false;
+	return CLUSTER_IC_SEND_HARD_ERROR;
 }
 static bool
 tier1_test_stub_recv(int32 *s pg_attribute_unused(), void *b pg_attribute_unused(),

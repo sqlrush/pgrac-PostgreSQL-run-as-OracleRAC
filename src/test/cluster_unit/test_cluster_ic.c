@@ -111,11 +111,11 @@ BackendType MyBackendType = B_INVALID;
  * (test_tier1_vtable_extern_linkable).  Real behaviour is verified at
  * TAP layer (075 single-instance + 076 2-node A-lite, in Steps 10-11).
  */
-static bool
+static ClusterICSendResult
 tier1_test_stub_send(int32 t pg_attribute_unused(), const void *b pg_attribute_unused(),
 					 size_t l pg_attribute_unused())
 {
-	return false;
+	return CLUSTER_IC_SEND_HARD_ERROR;
 }
 static bool
 tier1_test_stub_recv(int32 *s pg_attribute_unused(), void *b pg_attribute_unused(),

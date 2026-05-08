@@ -144,12 +144,13 @@ cluster_ic_register_msg_type(const ClusterICMsgTypeInfo *info)
  * Send path.
  * ============================================================ */
 
-bool
+ClusterICSendResult
 cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload,
 						 uint32 payload_len)
 {
 	const ClusterICMsgTypeInfo *info;
 	ClusterICEnvelope env;
+	ClusterICSendResult rc;
 
 	if (msg_type == 0 || (int)msg_type >= CLUSTER_IC_MSG_TYPE_MAX)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -179,7 +180,7 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
 	 * (2) above so this branch only matters for HEARTBEAT-from-LMON
 	 * targeting self (test fixtures + future loopback diagnostics). */
 	if (dest_node_id == cluster_node_id)
-		return true;
+		return CLUSTER_IC_SEND_DONE;
 
 	/* (4) broadcast destination check */
 	if ((uint32)dest_node_id == PGRAC_IC_BROADCAST && !info->broadcast_ok)
@@ -201,16 +202,23 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("cluster_ic_envelope_build failed for msg_type %u", msg_type)));
 
-	/* Two sends per frame: header + (optional) payload.  Per spec-2.0
+	/*
+	 * Two sends per frame: header + (optional) payload.  Per spec-2.0
 	 * §4 wire format -- reader recvs envelope first, then payload of
 	 * env->payload_length bytes.  Hardening v1.0.1 F1 partial-IO
-	 * buffering at tier1_send_bytes preserves frame integrity. */
-	if (!cluster_ic_send_bytes(dest_node_id, &env, sizeof(env)))
-		return false;
+	 * buffering at tier1_send_bytes preserves frame integrity.
+	 *
+	 * spec-2.3 hardening v1.0.1 F1 (L68): three-state propagation.
+	 * Header-send WOULD_BLOCK / HARD_ERROR returns immediately;
+	 * payload (if any) is only attempted on header DONE.
+	 */
+	rc = cluster_ic_send_bytes(dest_node_id, &env, sizeof(env));
+	if (rc != CLUSTER_IC_SEND_DONE)
+		return rc;
 	if (payload_len > 0)
 		return cluster_ic_send_bytes(dest_node_id, payload, payload_len);
 
-	return true;
+	return CLUSTER_IC_SEND_DONE;
 }
 
 

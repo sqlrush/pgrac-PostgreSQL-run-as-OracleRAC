@@ -143,8 +143,24 @@ typedef enum ClusterICTier {
  *     Called by cluster_ic_init / cluster_ic_shutdown after vtable
  *     bound to ClusterICOps_Active.
  */
+/*
+ * spec-2.3 hardening v1.0.1 F1 (L68 backpressure-≠-peer-death):
+ * three-state send result.  Caller MUST distinguish backpressure
+ * (WOULD_BLOCK; outbound buffer holds the tail; the next call after
+ * WL_SOCKET_WRITEABLE will drain) from real socket death
+ * (HARD_ERROR; close peer + state=DOWN).  Mixing the two in a bool
+ * return value caused spec-2.2 v1.0.1 F1's per-peer outbound buffer
+ * to be silently bypassed -- LMON closed the peer on the very first
+ * EAGAIN, and the tail-drain path was never reached.
+ */
+typedef enum ClusterICSendResult {
+	CLUSTER_IC_SEND_DONE = 0,	 /* full frame sent;counter advance */
+	CLUSTER_IC_SEND_WOULD_BLOCK, /* EAGAIN or partial;outbound buffer holds tail */
+	CLUSTER_IC_SEND_HARD_ERROR,	 /* socket dead;caller MUST close peer */
+} ClusterICSendResult;
+
 typedef struct ClusterICOps {
-	bool (*send_bytes)(int32 target_node_id, const void *buf, size_t len);
+	ClusterICSendResult (*send_bytes)(int32 target_node_id, const void *buf, size_t len);
 	bool (*recv_bytes)(int32 *out_sender_node_id, void *buf, size_t bufsize,
 					   size_t *out_received_len);
 	bool (*peek_sender)(int32 *out_sender_node_id);
@@ -339,7 +355,12 @@ extern void cluster_ic_shutdown(void);
  *	use cluster_msg_send / cluster_msg_recv instead.
  * ----------
  */
-extern bool cluster_ic_send_bytes(int32 target_node_id, const void *buf, size_t len);
+/*
+ * spec-2.3 hardening v1.0.1 F1: send_bytes returns three-state.
+ * Caller MUST switch on the result; treating WOULD_BLOCK as failure
+ * silently bypasses the partial-IO outbound buffer.
+ */
+extern ClusterICSendResult cluster_ic_send_bytes(int32 target_node_id, const void *buf, size_t len);
 
 /*
  * spec-2.2 D2 / Q11=A / P2-1 -- recv_exact helper.  Loops over

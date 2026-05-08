@@ -176,8 +176,8 @@ extern void cluster_ic_register_msg_type(const ClusterICMsgTypeInfo *info);
  *   the producer_mask check at step 2 (validating that the spec-2.3
  *   scope is honored).
  */
-extern bool cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload,
-									 uint32 payload_len);
+extern ClusterICSendResult cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id,
+													const void *payload, uint32 payload_len);
 
 /*
  * cluster_ic_dispatch_envelope -- LMON-internal recv path.

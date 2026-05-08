@@ -159,13 +159,26 @@ extern bool cluster_ic_tier1_recv_and_verify_hello(int32 peer_id, int peer_fd);
 
 /*
  * Send a HEARTBEAT message to a CONNECTED peer (no-op for non-CONNECTED).
- * Updates heartbeat_send_count + last_heartbeat_sent_at.
+ * Updates heartbeat_send_count + last_heartbeat_sent_at on DONE.
  *
  * Per spec-2.2 §3.6 boundary invariant, heartbeats only signal IC
  * transport liveness -- DO NOT trigger fence / membership change /
  * quorum decision from heartbeat results.
+ *
+ * spec-2.3 hardening v1.0.1 F1 (L68): three-state return.  Caller
+ * (LMON main loop) MUST switch on result.  WOULD_BLOCK means the
+ * outbound buffer holds the tail; LMON should register
+ * WL_SOCKET_WRITEABLE for the fd, NOT close peer.
  */
-extern bool cluster_ic_tier1_send_heartbeat(int32 peer_id);
+extern ClusterICSendResult cluster_ic_tier1_send_heartbeat(int32 peer_id);
+
+/*
+ * spec-2.3 hardening v1.0.1 F1: pending-outbound accessor for LMON.
+ * Returns true iff this peer has bytes queued in tier1_outbound_buf
+ * waiting for WL_SOCKET_WRITEABLE.  LMON uses this to decide whether
+ * to register WRITEABLE interest in its WaitEventSet.
+ */
+extern bool cluster_ic_tier1_pending_outbound(int32 peer_id);
 
 /*
  * Hardening v1.0.1 F1: continue an in-progress HELLO send (active side).

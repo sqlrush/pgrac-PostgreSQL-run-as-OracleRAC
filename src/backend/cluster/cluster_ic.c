@@ -114,7 +114,7 @@ const ClusterICOps *ClusterICOps_Active = &ClusterICOps_Stub;
  * Stub vtable (Stage 0.18 default).
  * ============================================================ */
 
-static bool
+static ClusterICSendResult
 stub_send_bytes(int32 target_node_id, const void *buf pg_attribute_unused(),
 				size_t len pg_attribute_unused())
 {
@@ -125,7 +125,7 @@ stub_send_bytes(int32 target_node_id, const void *buf pg_attribute_unused(),
 		 * upper API without a listener; Stage 2+ TCP vtable will short-
 		 * circuit self-target via local memory copy.
 		 */
-		return true;
+		return CLUSTER_IC_SEND_DONE;
 	}
 
 	if (cluster_node_id == -1) {
@@ -139,7 +139,7 @@ stub_send_bytes(int32 target_node_id, const void *buf pg_attribute_unused(),
 					errhint("Set cluster.interconnect_tier to tier1 (Stage 2+) for "
 							"real cross-node IPC.")));
 
-	return false; /* unreachable */
+	return CLUSTER_IC_SEND_HARD_ERROR; /* unreachable */
 }
 
 static bool
@@ -271,7 +271,7 @@ cluster_ic_shutdown(void)
  * (not the stub instance directly) so Stage 2 swap takes effect.
  * ============================================================ */
 
-bool
+ClusterICSendResult
 cluster_ic_send_bytes(int32 target_node_id, const void *buf, size_t len)
 {
 	Assert(ClusterICOps_Active != NULL);
@@ -290,6 +290,10 @@ cluster_ic_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	 * dispatch); it deliberately does NOT enforce producer policy
 	 * because by the time bytes reach here, the higher layer has
 	 * validated.
+	 *
+	 * spec-2.3 hardening v1.0.1 F1: returns three-state.  Caller
+	 * MUST switch on result; treating WOULD_BLOCK as failure
+	 * silently bypasses partial-IO outbound buffering.
 	 */
 	return ClusterICOps_Active->send_bytes(target_node_id, buf, len);
 }
@@ -871,7 +875,7 @@ mock_require_mock_tier(const char *fname)
 
 /* vtable hooks ---------------------------------------------------- */
 
-static bool
+static ClusterICSendResult
 mock_send_bytes(int32 target_node_id, const void *buf, size_t len)
 {
 	CLUSTER_INJECTION_POINT("cluster-ic-mock-send-pre-enqueue");
@@ -884,7 +888,7 @@ mock_send_bytes(int32 target_node_id, const void *buf, size_t len)
 							   target_node_id, CLUSTER_MAX_NODES)));
 
 	mock_queue_push(mock_outbound_queues[target_node_id], cluster_node_id, buf, len);
-	return true;
+	return CLUSTER_IC_SEND_DONE;
 }
 
 static bool

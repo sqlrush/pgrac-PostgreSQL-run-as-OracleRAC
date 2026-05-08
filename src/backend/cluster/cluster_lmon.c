@@ -754,16 +754,39 @@ LmonMain(void)
 				}
 			}
 
-			/* Heartbeat send tick. */
+			/*
+			 * Heartbeat send tick.
+			 *
+			 * spec-2.3 hardening v1.0.1 F1 (L68):
+			 *   send_heartbeat returns three-state.  WOULD_BLOCK = the
+			 *   outbound buffer holds the (possibly partial) frame; we
+			 *   keep the peer CONNECTED, mark wes_dirty so the WaitEventSet
+			 *   rebuild adds WL_SOCKET_WRITEABLE for that fd, and let the
+			 *   next writability wakeup drain the tail.  Closing the peer
+			 *   on EAGAIN was the v1.0.0 bug -- it silently bypassed the
+			 *   per-peer outbound buffer designed exactly for this case.
+			 *   HARD_ERROR = real socket death; close peer + state DOWN.
+			 */
 			if (now >= next_heartbeat_at) {
 				for (pi = 0; pi < CLUSTER_MAX_NODES; pi++) {
+					ClusterICSendResult rc;
+
 					if (lmon_peer_track[pi].substate != LMON_SUB_CONNECTED)
 						continue;
-					if (!cluster_ic_tier1_send_heartbeat(pi)) {
-						cluster_ic_tier1_close_peer(pi, "heartbeat send failed");
+					rc = cluster_ic_tier1_send_heartbeat(pi);
+					switch (rc) {
+					case CLUSTER_IC_SEND_DONE:
+						break;
+					case CLUSTER_IC_SEND_WOULD_BLOCK:
+						/* Tail buffered; arrange WL_SOCKET_WRITEABLE drain. */
+						wes_dirty = true;
+						break;
+					case CLUSTER_IC_SEND_HARD_ERROR:
+						cluster_ic_tier1_close_peer(pi, "heartbeat send hard error");
 						lmon_peer_track[pi].fd = -1;
 						lmon_peer_track[pi].substate = LMON_SUB_DOWN;
 						wes_dirty = true;
+						break;
 					}
 				}
 				next_heartbeat_at = now + HEARTBEAT_INTERVAL_MS * INT64CONST(1000);
@@ -794,8 +817,22 @@ LmonMain(void)
 						events = WL_SOCKET_WRITEABLE;
 						break;
 					case LMON_SUB_HELLO_WAIT:
-					case LMON_SUB_CONNECTED:
 						events = WL_SOCKET_READABLE;
+						break;
+					case LMON_SUB_CONNECTED:
+						/*
+						 * spec-2.3 hardening v1.0.1 F1 (L68):
+						 *   Always wake on READABLE for inbound frames.
+						 *   Add WRITEABLE when an outbound frame is
+						 *   buffered (last send returned WOULD_BLOCK);
+						 *   the WRITEABLE wake re-enters
+						 *   cluster_ic_tier1_send_heartbeat which drains
+						 *   the tail via the top-of-function drain path
+						 *   in tier1_send_bytes.
+						 */
+						events = WL_SOCKET_READABLE;
+						if (cluster_ic_tier1_pending_outbound(pi))
+							events |= WL_SOCKET_WRITEABLE;
 						break;
 					default:
 						continue;
@@ -907,6 +944,34 @@ LmonMain(void)
 							lmon_peer_track[peer].fd = -1;
 							lmon_peer_track[peer].substate = LMON_SUB_DOWN;
 							wes_dirty = true;
+						}
+					}
+
+					/*
+					 * spec-2.3 hardening v1.0.1 F1 (L68): drain pending
+					 * outbound buffer on WL_SOCKET_WRITEABLE.  Re-enters
+					 * tier1_send_bytes via send_heartbeat; the top-of-
+					 * function drain path pushes the buffered tail.
+					 * Heartbeat counter is bumped only on DONE.
+					 */
+					if (lmon_peer_track[peer].substate == LMON_SUB_CONNECTED
+						&& (ev[i].events & WL_SOCKET_WRITEABLE)
+						&& cluster_ic_tier1_pending_outbound(peer)) {
+						ClusterICSendResult drc = cluster_ic_tier1_send_heartbeat(peer);
+
+						switch (drc) {
+						case CLUSTER_IC_SEND_DONE:
+						case CLUSTER_IC_SEND_WOULD_BLOCK:
+							/* Either drained fully or still buffered;
+							 * wes_dirty rebuild reflects pending state. */
+							wes_dirty = true;
+							break;
+						case CLUSTER_IC_SEND_HARD_ERROR:
+							cluster_ic_tier1_close_peer(peer, "outbound drain hard error");
+							lmon_peer_track[peer].fd = -1;
+							lmon_peer_track[peer].substate = LMON_SUB_DOWN;
+							wes_dirty = true;
+							break;
 						}
 					}
 				} else if (tag >= CLUSTER_MAX_NODES && tag < 2 * CLUSTER_MAX_NODES) {
