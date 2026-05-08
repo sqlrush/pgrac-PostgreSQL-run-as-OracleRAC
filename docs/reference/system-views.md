@@ -170,12 +170,48 @@ SELECT node_id, state, reconnect_count, connect_error_count,
        1 | connected | 10.0.0.2:6432     |                  342 |                  342
 ```
 
+## pg_cluster_ic_msg_types
+
+Catalog of every interconnect message type the running postmaster
+knows how to send or receive.  The list is fixed for the lifetime of
+the process: every message type is registered once during postmaster
+startup (phase 1, before the first backend forks) and never changes
+afterward.  Diagnostic / observability only.
+
+The view is non-empty even on single-node builds and even when
+`cluster.interconnect_tier` is not `tier1`, because registration is
+independent of the active transport.
+
+| Column | Type | Description |
+|---|---|---|
+| `msg_type` | `int4` | Stable wire-protocol identifier (1 byte on the wire, but exposed as `int4` for SQL ergonomics).  Currently registered: `1` = `heartbeat`. |
+| `name` | `text` | Symbolic short name. |
+| `allowed_producer_mask` | `int8` | Bitmask of backend types permitted to emit this message.  Treated as opaque diagnostic — non-zero means the message has at least one declared producer. |
+| `broadcast_ok` | `bool` | `t` if the message may be sent with `dest_node_id = -1` (broadcast).  Heartbeats are point-to-point so this is `f` for `heartbeat`. |
+| `handler_present` | `bool` | `t` if the receiving side has a registered handler (i.e. the message is dispatched to processing logic on receipt) — `f` for send-only message types. |
+
+Example:
+
+```
+SELECT * FROM pg_cluster_ic_msg_types ORDER BY msg_type;
+
+ msg_type |   name    | allowed_producer_mask | broadcast_ok | handler_present
+----------+-----------+-----------------------+--------------+-----------------
+        1 | heartbeat |               1048576 | f            | t
+```
+
+The wire format of every message is the 36-byte cluster
+interconnect envelope (4-byte aligned little-endian fixed header,
+followed by a per-message-type payload).  The envelope is the same
+for every message type and is independent of the active interconnect
+tier.
+
 ## --disable-cluster builds
 
 In binaries built with `--disable-cluster`:
 
-- All four views still exist in the catalog.
-- All four return zero rows.
+- All five views still exist in the catalog.
+- All five return zero rows.
 - The underlying `cluster_get_*` SRFs are present as no-op symbols.
 
 This means SQL written against these views works on both build

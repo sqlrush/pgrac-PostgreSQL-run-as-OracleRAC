@@ -159,6 +159,42 @@ like($controldata_out,
 	'L6 catversion >= 202605200 (spec-2.2 D10 bump for pg_cluster_ic_peers)');
 
 
+# ----------
+# L7: catversion bumped to >= 202605210 (spec-2.3 D7).
+# Spec-2.3 wire-protocol pivot from 24-byte ClusterMsgHeader to 36-byte
+# ClusterICEnvelope + new pg_cluster_ic_msg_types SRF/view.  Lower-bound
+# regex per L46 (later specs widen further).
+# ----------
+like($controldata_out,
+	 qr/Catalog version number:\s+(2026052[1-9]\d|20260[6-9]\d{3}|2026[1-9]\d{4}|202[7-9]\d{5})/,
+	'L7 catversion >= 202605210 (spec-2.3 D7 bump for envelope ABI + msg_types view)');
+
+
+# ----------
+# L8: pg_cluster_ic_msg_types view exists + returns at least 1 row.
+# Spec-2.3 D8 -- view is backed by cluster_get_ic_msg_types() SRF +
+# the dispatch_table is populated at postmaster phase 1 by
+# cluster_lmon_shmem_init (spec-2.3 D5 registers HEARTBEAT msg_type).
+# ----------
+my $msg_types_count = $node->safe_psql('postgres',
+	'SELECT count(*)::int FROM pg_cluster_ic_msg_types');
+cmp_ok($msg_types_count, '>=', 1,
+	'L8 pg_cluster_ic_msg_types view returns >= 1 row (spec-2.3 D8)');
+
+
+# ----------
+# L9: HEARTBEAT msg_type is registered (msg_type=1, name='heartbeat',
+# handler_present=true).  Spec-2.3 D5 -- LMON registers heartbeat
+# handler in cluster_lmon_shmem_init at postmaster phase 1.
+# ----------
+my $heartbeat_row = $node->safe_psql('postgres',
+	q{SELECT msg_type || '|' || name || '|' || handler_present
+	    FROM pg_cluster_ic_msg_types
+	   WHERE msg_type = 1});
+is( $heartbeat_row, '1|heartbeat|t',
+	'L9 HEARTBEAT (msg_type=1, name=heartbeat, handler_present=t) registered (spec-2.3 D5)');
+
+
 $node->stop;
 
 done_testing();

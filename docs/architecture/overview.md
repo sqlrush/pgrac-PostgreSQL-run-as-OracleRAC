@@ -96,6 +96,32 @@ Switching tiers is controlled via the `cluster.interconnect_tier`
 GUC.  See [Configuration](../user-guide/configuration.md) for
 runtime details.
 
+## Message envelope
+
+Every message that crosses the interconnect — regardless of which
+tier carries it — is framed by a fixed 36-byte little-endian header
+(the *cluster interconnect envelope*) followed by a
+per-message-type payload.  The envelope carries the wire-protocol
+version, message type identifier, sender / destination node IDs,
+payload length, and a CRC covering the whole frame.  All multi-byte
+fields are 4-byte aligned.
+
+Each message type is registered once at postmaster startup with a
+stable numeric identifier (`msg_type`), a name, and metadata
+describing which backend types are allowed to produce it and
+whether it may be broadcast.  The runtime catalogue is exposed via
+[`pg_cluster_ic_msg_types`](../reference/system-views.md#pg_cluster_ic_msg_types).
+The current release registers one type:
+
+| `msg_type` | Name | Producer | Notes |
+|---|---|---|---|
+| `1` | `heartbeat` | LMON aux process | Point-to-point liveness probe; no payload other than the envelope itself. |
+
+Adding a new interconnect message type therefore means: pick the
+next free `msg_type`, register it during postmaster startup with
+its allowed producer set + handler, and define the payload layout.
+The wire envelope itself stays unchanged.
+
 ## Topology
 
 The cluster topology — list of nodes plus their addresses — is
