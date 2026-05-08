@@ -46,7 +46,7 @@ SELECT count(*) AS peer_rows FROM pg_cluster_ic_peers;
 (1 row)
 
 -- ----------
--- 3. View has the spec-2.2 §2.6 frozen 19-column layout.
+-- 3. View has the spec-2.2 §2.6 + spec-2.4 D11 23-column layout.
 -- ----------
 SELECT count(*) AS column_count
   FROM information_schema.columns

@@ -9,7 +9,7 @@
 #   L1   tier1 startup OK + listener bind in log + LMON READY
 #   L2   pg_cluster_ic_peers view exists + returns rows for declared
 #        pgrac.conf peers (single-node => 1 row for self)
-#   L3   view returns the spec-2.2 §2.6 frozen column set (19 cols)
+#   L3   view returns the spec-2.2 §2.6 + spec-2.4 D11 column set (23 cols)
 #   L4   3 D7 PGC_POSTMASTER GUCs visible with default values
 #   L5   §3.9 scope guard rejects non-LMON tier1 sends with
 #        ERR_FEATURE_NOT_SUPPORTED
@@ -81,14 +81,18 @@ like($peer_state, qr/^(down|connecting|connected|rejected)$/,
 
 
 # ----------
-# L3: view column set matches spec-2.2 §2.6 frozen layout (19 cols).
+# L3: view column set matches spec-2.2 §2.6 + spec-2.4 D11 layout (23 cols).
+# spec-2.2 ship: 19 cols.  spec-2.4 ship adds 4 NEW (stale_epoch_drop_count,
+# chunk_reassembly_active, chunk_reassembly_timeout_count,
+# lamport_observe_advance_count) per the membership-epoch + chunked-payload
+# observability surface.  Catversion bumped 202605210 -> 202605220 per L46.
 # ----------
 my $view_cols = $node->safe_psql(
 	'postgres',
 	q{SELECT count(*) FROM information_schema.columns
 	   WHERE table_name = 'pg_cluster_ic_peers'});
-is($view_cols, '19',
-	'L3 pg_cluster_ic_peers has 19 columns (spec-2.2 §2.6 frozen)');
+is($view_cols, '23',
+	'L3 pg_cluster_ic_peers has 23 columns (spec-2.2 §2.6 19 + spec-2.4 D11 4)');
 
 # Spot-check a few specific columns are present.
 my $col_names = $node->safe_psql(

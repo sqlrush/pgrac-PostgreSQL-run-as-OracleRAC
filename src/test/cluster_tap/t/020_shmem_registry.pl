@@ -84,7 +84,7 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_cluster_shmem}),
-   'pgrac cluster conf,pgrac cluster control,pgrac cluster diag,pgrac cluster lck,pgrac cluster lmon,pgrac cluster pcm grd,pgrac cluster scn,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
+   'pgrac cluster conf,pgrac cluster control,pgrac cluster diag,pgrac cluster epoch,pgrac cluster lck,pgrac cluster lmon,pgrac cluster pcm grd,pgrac cluster scn,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
    'L3 pg_cluster_shmem rows are exactly the 11 foundational regions (10 prior + cluster_ic_tier1 since spec-2.2 + cluster_epoch at spec-2.4)');
 
 

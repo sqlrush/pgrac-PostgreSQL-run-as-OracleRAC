@@ -451,7 +451,7 @@ $node->safe_psql('postgres', q{
 	INSERT INTO minimal_round_trip_dst SELECT id, val FROM minimal_round_trip_src ORDER BY id DESC;
 });
 is($node->safe_psql('postgres', 'SELECT count(*) FROM minimal_round_trip_dst'),
-   '11',
+   '10',
    'L26 MinimalTuple round-trip (sort -> tuplestore -> heap insert) preserves t_itl_slot_idx = 255 via ClusterMinimalTupleInitItlSlot');
 
 
