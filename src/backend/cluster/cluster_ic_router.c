@@ -231,6 +231,7 @@ cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
 {
 	const ClusterICMsgTypeInfo *info;
 	MemoryContext old_ctx;
+	MemoryContext dispatch_ctx;
 
 	if (env == NULL)
 		return false;
@@ -247,12 +248,39 @@ cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
 	if (!slot_registered(info) || info->handler == NULL)
 		return false;
 
-	/* spec-2.3 §3.5 + Q14 + R3 防御层: PG_TRY/PG_CATCH wrap.  Catches
+	/*
+	 * spec-2.3 hardening v1.0.1 F4 (L71 metadata-symmetric-enforce):
+	 * inbound broadcast_ok check.  send path (cluster_ic_send_envelope
+	 * step 4 above) ereport-rejects BROADCAST when !info->broadcast_ok;
+	 * dispatch path mirrors that for peer-originated frames -- a peer
+	 * that forges a BROADCAST msg_type whose registered metadata says
+	 * point-to-point only is a contract violation.  Return false;
+	 * caller (LMON) closes peer (NOT ereport ERROR -- would crash LMON
+	 * main loop on hostile remote input).
+	 */
+	if (env->dest_node_id == PGRAC_IC_BROADCAST && !info->broadcast_ok)
+		return false;
+
+	/*
+	 * spec-2.3 §3.5 + Q14 + R3 防御层: PG_TRY/PG_CATCH wrap.  Catches
 	 * elevel == ERROR (handler violated §3.5 by raising ERROR) -- LOG
-	 * + drop frame + reset MemoryContext + LMON continue.  ereport
-	 * FATAL/PANIC are NOT caught (PG semantics terminates the process;
-	 * postmaster crash recovery restarts). */
+	 * + drop frame + LMON continue.  ereport FATAL/PANIC are NOT caught
+	 * (PG semantics terminates the process; postmaster crash recovery
+	 * restarts).
+	 *
+	 * spec-2.3 hardening v1.0.1 F5 (L72 dispatch-isolation-context):
+	 * handler runs in a fresh per-dispatch short-lived MemoryContext
+	 * parented at old_ctx.  On catch we delete the dispatch_ctx -- this
+	 * frees any palloc the handler did before raising ERROR but does
+	 * NOT touch the caller's (LMON main loop) working memory.  Pre-fix
+	 * code did MemoryContextReset(old_ctx) which nuked LMON in-flight
+	 * state; spec-2.3 happened to dodge that because HEARTBEAT handler
+	 * was a no-op stub, but spec-2.4 chunk reassembly + spec-2.13 GES
+	 * handler will allocate + can ereport ERROR for real.
+	 */
 	old_ctx = CurrentMemoryContext;
+	dispatch_ctx = AllocSetContextCreate(old_ctx, "cluster_ic dispatch", ALLOCSET_SMALL_SIZES);
+	MemoryContextSwitchTo(dispatch_ctx);
 	PG_TRY();
 	{
 		info->handler(env, payload);
@@ -261,6 +289,9 @@ cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
 	{
 		ErrorData *err;
 
+		/* Switch BACK to old_ctx before CopyErrorData so the copy lives
+		 * in caller (LMON) memory, not in dispatch_ctx (about to be
+		 * deleted). */
 		MemoryContextSwitchTo(old_ctx);
 		err = CopyErrorData();
 		ereport(LOG, (errmsg("cluster_ic dispatch handler for msg_type %u "
@@ -270,9 +301,10 @@ cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
 					  errdetail("%s", err->message)));
 		FreeErrorData(err);
 		FlushErrorState();
-		MemoryContextReset(old_ctx);
 	}
 	PG_END_TRY();
+	MemoryContextSwitchTo(old_ctx);
+	MemoryContextDelete(dispatch_ctx);
 
 	return true;
 }

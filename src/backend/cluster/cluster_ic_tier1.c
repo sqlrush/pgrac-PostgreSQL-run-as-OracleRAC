@@ -1281,14 +1281,27 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 
 			memcpy(&env, tier1_recv_buf[peer_id], PGRAC_IC_ENVELOPE_BYTES);
 
-			/* spec-2.3 §3.5b: verify failure = peer-level failure (close
-			 * peer; NEVER ereport ERROR LMON). */
-			if (!cluster_ic_envelope_verify(&env, NULL, (uint32)cluster_node_id)) {
+			/*
+			 * spec-2.3 §3.5b: verify failure = peer-level failure (close
+			 * peer;NEVER ereport ERROR LMON).
+			 *
+			 * spec-2.3 hardening v1.0.1:
+			 *   F2 (L69): pass peer_id so verify enforces
+			 *     env.source_node_id == peer_id (the HELLO-bound identity)
+			 *     + cluster_conf_lookup_node range scan.  No more peer
+			 *     spoofing source_node_id.
+			 *   F3 (L70): pass payload_len = 0;spec-2.3 only ships
+			 *     HEARTBEAT (payload_length must be 0).  spec-2.4 chunked
+			 *     framing will read payload bytes BEFORE verify and pass
+			 *     the actual length here.
+			 */
+			if (!cluster_ic_envelope_verify(&env, NULL, 0, (uint32)cluster_node_id, peer_id)) {
 				peer_record_error(peer_id, 0, "08P01",
 								  "envelope verify failed (magic=0x%x version=%u msg_type=%u "
-								  "src=%u dst=%u plen=%u crc=0x%x)",
+								  "src=%u dst=%u plen=%u crc=0x%x peer_id=%d)",
 								  env.magic, env.version, env.msg_type, env.source_node_id,
-								  env.dest_node_id, env.payload_length, env.payload_crc32c);
+								  env.dest_node_id, env.payload_length, env.payload_crc32c,
+								  peer_id);
 				tier1_recv_buf_len[peer_id] = 0;
 				return false;
 			}

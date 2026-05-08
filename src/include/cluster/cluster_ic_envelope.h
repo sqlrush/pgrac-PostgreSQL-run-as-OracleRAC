@@ -236,28 +236,42 @@ extern bool cluster_ic_envelope_build(ClusterICEnvelope *out_env, uint8 msg_type
 /*
  * cluster_ic_envelope_verify -- validate an inbound envelope.
  *
- *   6-step verification path per spec-2.3 §3.2:
+ *   spec-2.3 hardening v1.0.1:
+ *     - F2 (L69 inbound-identity-binding): caller passes peer_id (the
+ *       fd's HELLO-bound identity); when peer_id >= 0 we enforce
+ *       env->source_node_id == peer_id AND env->source_node_id is a
+ *       declared cluster member (cluster_conf_lookup_node).  Pass
+ *       peer_id = -1 from pre-handshake / unit-test contexts to skip
+ *       binding (range scan still applies).
+ *     - F3 (L70 contract-API-NULL-payload): caller passes payload_len
+ *       (the actual byte count of the receive buffer).  We reject
+ *       env->payload_length > 0 && payload == NULL AND
+ *       env->payload_length != payload_len.
+ *
+ *   8-step verification path:
  *     1. magic == PGRAC_IC_ENVELOPE_MAGIC
  *     2. version == PGRAC_IC_ENVELOPE_VERSION_V1
- *     3. source_node_id != PGRAC_IC_BROADCAST (sender must be concrete)
+ *     3. source_node_id != PGRAC_IC_BROADCAST (sender must be concrete);
+ *        F2 binding (== peer_id when known + declared member)
  *     4. dest_node_id == self_node_id OR == PGRAC_IC_BROADCAST
  *     5. payload_length <= PGRAC_IC_PAYLOAD_MAX
+ *        F3 contract: !(payload_length>0 && payload==NULL); payload_length == payload_len
  *     6. payload_crc32c matches recomputed CRC
- *
- *   epoch / scn fields read but NOT enforced in spec-2.3 (spec-2.4 /
- *   2.10 flip enforce flags).
+ *     7. (spec-2.4) epoch enforce -- field-but-no-enforce in spec-2.3
+ *     8. (spec-2.4) Lamport SCN observe -- field-but-no-observe in spec-2.3
  *
  *   self_node_id is passed as a parameter (rather than read from
  *   cluster_node_id global) to keep this function unit-testable in
  *   isolation and to avoid pulling cluster_guc.h dependencies into
  *   this small module.
  *
- *   Returns true if all 6 pass; false otherwise.  Caller is expected
- *   to handle false per spec-2.3 §3.5b inbound rule: peer-level failure
- *   (close peer + LOG/WARNING + metric); NEVER ereport ERROR LMON.
+ *   Returns true if all checks pass; false otherwise.  Caller is
+ *   expected to handle false per spec-2.3 §3.5b inbound rule:
+ *   peer-level failure (close peer + LOG/WARNING + metric);
+ *   NEVER ereport ERROR LMON.
  */
 extern bool cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload,
-									   uint32 self_node_id);
+									   uint32 payload_len, uint32 self_node_id, int32 peer_id);
 
 /*
  * cluster_ic_envelope_compute_crc -- compute CRC32C over envelope-

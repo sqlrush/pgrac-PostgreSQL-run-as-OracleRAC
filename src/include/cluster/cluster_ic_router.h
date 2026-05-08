@@ -64,6 +64,7 @@
 #ifndef CLUSTER_IC_ROUTER_H
 #define CLUSTER_IC_ROUTER_H
 
+#include "cluster/cluster_ic.h" /* ClusterICSendResult (F1 L68) */
 #include "cluster/cluster_ic_envelope.h"
 #include "miscadmin.h" /* BackendType */
 

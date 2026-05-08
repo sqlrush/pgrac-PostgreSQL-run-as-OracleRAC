@@ -45,6 +45,7 @@
 
 #include "port/pg_crc32c.h"
 
+#include "cluster/cluster_conf.h" /* cluster_conf_lookup_node (F2 L69) */
 #include "cluster/cluster_ic_envelope.h"
 
 
@@ -104,6 +105,16 @@ cluster_ic_envelope_build(ClusterICEnvelope *out_env, uint8 msg_type, uint32 sou
 	if (payload_length > PGRAC_IC_PAYLOAD_MAX)
 		return false; /* outbound caller ereport ERROR per §3.5b */
 
+	/*
+	 * spec-2.3 hardening v1.0.1 F3 (L70 contract-API-NULL-payload):
+	 * payload_length > 0 with a NULL payload buffer is a contract
+	 * violation -- the CRC would silently cover only the envelope
+	 * header, which lets a malicious peer forge a frame whose
+	 * CRC matches but whose body never existed.  Reject at build.
+	 */
+	if (payload_length > 0 && payload == NULL)
+		return false;
+
 	out_env->magic = PGRAC_IC_ENVELOPE_MAGIC;
 	out_env->version = PGRAC_IC_ENVELOPE_VERSION_V1;
 	out_env->msg_type = msg_type;
@@ -127,7 +138,8 @@ cluster_ic_envelope_build(ClusterICEnvelope *out_env, uint8 msg_type, uint32 sou
 }
 
 bool
-cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload, uint32 self_node_id)
+cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload, uint32 payload_len,
+						   uint32 self_node_id, int32 peer_id)
 {
 	if (env == NULL)
 		return false;
@@ -141,20 +153,40 @@ cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload, ui
 		return false;
 
 	/*
-	 * Step 3: source_node_id sanity.  Caller-side (cluster_conf membership
-	 * check) verifies the sender is a declared peer; here we only reject
-	 * the broadcast sentinel as source (broadcast can only appear in
-	 * dest_node_id).
+	 * Step 3: source_node_id sanity.
+	 *
+	 * Reject the broadcast sentinel (broadcast can only appear in
+	 * dest_node_id).  spec-2.3 hardening v1.0.1 F2 (L69
+	 * inbound-identity-binding) adds two further checks: when the
+	 * caller knows the peer fd's HELLO-bound identity (peer_id >= 0),
+	 * env->source_node_id must == peer_id (otherwise the peer is
+	 * faking sender identity);and source_node_id must be a declared
+	 * cluster member (cluster_conf_lookup_node).  Pre-handshake
+	 * contexts pass peer_id = -1 to skip the identity binding while
+	 * still range-scanning ClusterConf.
 	 */
 	if (env->source_node_id == PGRAC_IC_BROADCAST)
+		return false;
+	if (peer_id >= 0 && (int32)env->source_node_id != peer_id)
+		return false;
+	if (cluster_conf_lookup_node((int32)env->source_node_id) == NULL)
 		return false;
 
 	/* Step 4: dest = self OR broadcast */
 	if (env->dest_node_id != self_node_id && env->dest_node_id != PGRAC_IC_BROADCAST)
 		return false;
 
-	/* Step 5: payload_length sanity (per §3.5b inbound rule) */
+	/*
+	 * Step 5: payload_length sanity (per §3.5b inbound rule) +
+	 * spec-2.3 hardening v1.0.1 F3 (L70 contract-API-NULL-payload):
+	 * envelope claim must match caller-supplied buffer length, and
+	 * non-zero claim with NULL buffer is illegal.
+	 */
 	if (env->payload_length > PGRAC_IC_PAYLOAD_MAX)
+		return false;
+	if (env->payload_length != payload_len)
+		return false;
+	if (env->payload_length > 0 && payload == NULL)
 		return false;
 
 	/*

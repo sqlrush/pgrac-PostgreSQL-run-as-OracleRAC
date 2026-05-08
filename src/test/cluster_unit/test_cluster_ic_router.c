@@ -150,6 +150,29 @@ void
 MemoryContextReset(MemoryContext context pg_attribute_unused())
 {}
 
+/*
+ * spec-2.3 hardening v1.0.1 F5 (L72): dispatch_envelope now creates a
+ * per-dispatch short-lived MemoryContext.  Tests do not exercise the
+ * dispatch path with a real handler that allocates;just satisfy the
+ * link.  AllocSetContextCreate is a macro expanding to
+ * AllocSetContextCreateInternal -- stub it to return a sentinel; stub
+ * MemoryContextDelete as no-op.
+ */
+/* Sentinel address;dispatch tests don't allocate inside the context. */
+static char test_dispatch_ctx_storage[1];
+MemoryContext
+AllocSetContextCreateInternal(MemoryContext parent pg_attribute_unused(),
+							  const char *name pg_attribute_unused(),
+							  Size minContextSize pg_attribute_unused(),
+							  Size initBlockSize pg_attribute_unused(),
+							  Size maxBlockSize pg_attribute_unused())
+{
+	return (MemoryContext)test_dispatch_ctx_storage;
+}
+void
+MemoryContextDelete(MemoryContext context pg_attribute_unused())
+{}
+
 /* PG_TRY uses these globals (sigjmp_buf chain + error context list).
  * Tests never invoke dispatch_envelope, so empty stubs suffice. */
 struct sigjmp_buf;
@@ -170,6 +193,23 @@ cluster_ic_send_bytes(int32 target_node_id pg_attribute_unused(),
 
 /* cluster_node_id global */
 int cluster_node_id = 7;
+
+/*
+ * spec-2.3 hardening v1.0.1 F2 (L69): envelope_verify now calls
+ * cluster_conf_lookup_node.  Router tests don't actually invoke
+ * envelope_verify (dispatch path receives a pre-verified env), but
+ * cluster_ic_router.o's link surface pulls in the symbol via
+ * envelope.c -- stub returns non-NULL for in-range node_ids.
+ */
+#include "cluster/cluster_conf.h"
+static ClusterNodeInfo test_dummy_node_info;
+const ClusterNodeInfo *
+cluster_conf_lookup_node(int32 node_id)
+{
+	if (node_id < 0 || node_id >= CLUSTER_MAX_NODES)
+		return NULL;
+	return &test_dummy_node_info;
+}
 
 /* MyBackendType -- writable from tests to flip producer scope */
 extern BackendType MyBackendType;
@@ -348,12 +388,87 @@ UT_TEST(test_u8d_msg_type_out_of_range_returns_null)
 }
 
 
+/* ============================================================
+ * U22: spec-2.3 hardening v1.0.1 F4 (L71 metadata-symmetric-enforce).
+ *      dispatch_envelope inbound check rejects BROADCAST when the
+ *      msg_type metadata says broadcast_ok=false (mirrors the
+ *      outbound check at cluster_ic_send_envelope step 4).
+ *      Asserts return false + handler NOT invoked.
+ * ============================================================ */
+
+static int u22_handler_call_count;
+static void
+u22_no_op_handler(const ClusterICEnvelope *env pg_attribute_unused(),
+				  const void *payload pg_attribute_unused())
+{
+	u22_handler_call_count++;
+}
+
+UT_TEST(test_u22_dispatch_rejects_broadcast_when_not_allowed)
+{
+	const ClusterICMsgTypeInfo info = {
+		.msg_type = 42,
+		.name = "u22-point-to-point-only",
+		.allowed_producer_mask = (uint32)1u << B_INVALID, /* irrelevant for inbound */
+		.broadcast_ok = false,							  /* the property under test */
+		.handler = u22_no_op_handler,
+	};
+	ClusterICEnvelope env = {
+		.magic = PGRAC_IC_ENVELOPE_MAGIC,
+		.version = PGRAC_IC_ENVELOPE_VERSION_V1,
+		.msg_type = 42,
+		.source_node_id = 1,
+		.dest_node_id = PGRAC_IC_BROADCAST, /* peer-forged broadcast */
+		.payload_length = 0,
+	};
+	bool ok;
+
+	cluster_ic_register_msg_type(&info);
+	u22_handler_call_count = 0;
+
+	/* dispatch must return false (peer-level failure;caller close peer)
+	 * AND handler must NOT have been called. */
+	ok = cluster_ic_dispatch_envelope(&env, NULL);
+	UT_ASSERT(!ok);
+	UT_ASSERT_EQ(u22_handler_call_count, 0);
+}
+
+UT_TEST(test_u22_dispatch_accepts_broadcast_when_allowed)
+{
+	const ClusterICMsgTypeInfo info = {
+		.msg_type = 43,
+		.name = "u22-broadcast-allowed",
+		.allowed_producer_mask = (uint32)1u << B_INVALID,
+		.broadcast_ok = true,
+		.handler = u22_no_op_handler,
+	};
+	ClusterICEnvelope env = {
+		.magic = PGRAC_IC_ENVELOPE_MAGIC,
+		.version = PGRAC_IC_ENVELOPE_VERSION_V1,
+		.msg_type = 43,
+		.source_node_id = 1,
+		.dest_node_id = PGRAC_IC_BROADCAST,
+		.payload_length = 0,
+	};
+	bool ok;
+
+	cluster_ic_register_msg_type(&info);
+	u22_handler_call_count = 0;
+
+	/* broadcast_ok=true -> dispatch proceeds into handler.  Handler
+	 * runs in the test stub's dispatch_ctx but otherwise does nothing. */
+	ok = cluster_ic_dispatch_envelope(&env, NULL);
+	UT_ASSERT(ok);
+	UT_ASSERT_EQ(u22_handler_call_count, 1);
+}
+
+
 UT_DEFINE_GLOBALS();
 
 int
 main(void)
 {
-	UT_PLAN(8);
+	UT_PLAN(10);
 
 	/* U6 register HEARTBEAT + count */
 	UT_RUN(test_u6_register_heartbeat_lmon_only);
@@ -368,6 +483,10 @@ main(void)
 	UT_RUN(test_u8b_duplicate_register_static_grep_fatal_present);
 	UT_RUN(test_u8c_msg_type_0_sentinel_returns_null);
 	UT_RUN(test_u8d_msg_type_out_of_range_returns_null);
+
+	/* U22 spec-2.3 hardening v1.0.1 F4 inbound broadcast_ok */
+	UT_RUN(test_u22_dispatch_rejects_broadcast_when_not_allowed);
+	UT_RUN(test_u22_dispatch_accepts_broadcast_when_allowed);
 
 	/* unused variable warning suppression for stub instance */
 	(void)test_handler_dummy_calls;
