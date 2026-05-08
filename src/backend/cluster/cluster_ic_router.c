@@ -52,8 +52,9 @@
 #include "utils/elog.h"
 #include "utils/memutils.h"
 
-#include "cluster/cluster_guc.h" /* cluster_node_id */
-#include "cluster/cluster_ic.h"	 /* cluster_ic_send_bytes (vtable) */
+#include "cluster/cluster_guc.h"	  /* cluster_node_id */
+#include "cluster/cluster_ic.h"		  /* cluster_ic_send_bytes (vtable) */
+#include "cluster/cluster_ic_chunk.h" /* PGRAC_IC_CHUNK_MSG_TYPE + chunk_dispatch_frame (v1.0.1 F1) */
 #include "cluster/cluster_ic_envelope.h"
 #include "cluster/cluster_ic_router.h"
 
@@ -151,6 +152,7 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
 	const ClusterICMsgTypeInfo *info;
 	ClusterICEnvelope env;
 	ClusterICSendResult rc;
+	bool is_chunk_wrap = (msg_type == PGRAC_IC_CHUNK_MSG_TYPE);
 
 	if (msg_type == 0 || (int)msg_type >= CLUSTER_IC_MSG_TYPE_MAX)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -158,22 +160,38 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
 
 	info = &dispatch_table[msg_type];
 
-	/* (1) registered? */
-	if (!slot_registered(info))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("cluster_ic msg_type %u not registered", msg_type),
-						errhint("Each subsystem must call cluster_ic_register_msg_type "
-								"in postmaster phase 1 (cluster_init_shmem).")));
+	/*
+	 * spec-2.4 hardening v1.0.1 F1 (L76 register-vs-handler-signature-coupling):
+	 * msg_type == PGRAC_IC_CHUNK_MSG_TYPE (255) is a wire-level wrapper, NOT a
+	 * dispatch_table entry.  Caller is cluster_ic_send_envelope_chunked which
+	 * has already validated the inner_msg_type via its own contract.  Skip
+	 * registered + producer_mask + broadcast_ok checks for chunk wrap;
+	 * payload size ceiling still applies (16 MB envelope cap).
+	 *
+	 * Inner_msg_type validation lives in send_envelope_chunked (it rejects
+	 * inner=0 and inner=255 at entry); recv-side dispatch_envelope short-
+	 * circuits msg_type=255 to chunk_dispatch_frame BEFORE dispatch_table
+	 * lookup so the inner handler eventually fires through normal
+	 * dispatch_envelope after reassembly.
+	 */
+	if (!is_chunk_wrap) {
+		/* (1) registered? */
+		if (!slot_registered(info))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("cluster_ic msg_type %u not registered", msg_type),
+							errhint("Each subsystem must call cluster_ic_register_msg_type "
+									"in postmaster phase 1 (cluster_init_shmem).")));
 
-	/* (2) producer scope guard (spec-2.3 §3.4 + spec-2.2 §3.9 升级) */
-	if ((info->allowed_producer_mask & (1u << MyBackendType)) == 0)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("cluster_ic msg_type %u (\"%s\") not allowed from "
-							   "BackendType %d",
-							   msg_type, info->name, (int)MyBackendType),
-						errhint("msg_type %u allowed_producer_mask = 0x%x; "
-								"see pg_cluster_ic_msg_types view (spec-2.3 D8).",
-								msg_type, info->allowed_producer_mask)));
+		/* (2) producer scope guard (spec-2.3 §3.4 + spec-2.2 §3.9 升级) */
+		if ((info->allowed_producer_mask & (1u << MyBackendType)) == 0)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("cluster_ic msg_type %u (\"%s\") not allowed from "
+								   "BackendType %d",
+								   msg_type, info->name, (int)MyBackendType),
+							errhint("msg_type %u allowed_producer_mask = 0x%x; "
+									"see pg_cluster_ic_msg_types view (spec-2.3 D8).",
+									msg_type, info->allowed_producer_mask)));
+	}
 
 	/* (3) dest = self -- short-circuit no-op success.  spec-2.2 stub
 	 * tier preserves this; non-LMON callers in spec-2.3 are gated by
@@ -182,8 +200,10 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
 	if (dest_node_id == cluster_node_id)
 		return CLUSTER_IC_SEND_DONE;
 
-	/* (4) broadcast destination check */
-	if ((uint32)dest_node_id == PGRAC_IC_BROADCAST && !info->broadcast_ok)
+	/* (4) broadcast destination check (chunk wrap inherits broadcast_ok=true
+	 * implicit -- chunked send is always unicast or broadcast at caller level).
+	 */
+	if (!is_chunk_wrap && (uint32)dest_node_id == PGRAC_IC_BROADCAST && !info->broadcast_ok)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("cluster_ic msg_type %u (\"%s\") does not allow "
 							   "BROADCAST destination",
@@ -227,7 +247,7 @@ cluster_ic_send_envelope(uint8 msg_type, int32 dest_node_id, const void *payload
  * ============================================================ */
 
 bool
-cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
+cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload, int32 peer_id)
 {
 	const ClusterICMsgTypeInfo *info;
 	MemoryContext old_ctx;
@@ -238,6 +258,18 @@ cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload)
 
 	if (env->msg_type == 0 || (int)env->msg_type >= CLUSTER_IC_MSG_TYPE_MAX)
 		return false; /* peer sent malformed msg_type; caller close peer */
+
+	/*
+	 * spec-2.4 hardening v1.0.1 F1 (L76 register-vs-handler-signature-coupling):
+	 * msg_type=255 (PGRAC_IC_CHUNK_MSG_TYPE) is a wire-level wrapper, NOT a
+	 * dispatch_table entry.  Short-circuit to chunk_dispatch_frame BEFORE
+	 * dispatch_table lookup.  chunk_dispatch_frame does its own state-machine
+	 * validation + on completion synthesizes inner envelope and re-enters
+	 * cluster_ic_dispatch_envelope (so inner_msg_type's handler eventually
+	 * fires through the standard dispatch_table + PG_TRY isolation path).
+	 */
+	if (env->msg_type == PGRAC_IC_CHUNK_MSG_TYPE)
+		return cluster_ic_chunk_dispatch_frame(env, payload, peer_id);
 
 	info = &dispatch_table[env->msg_type];
 

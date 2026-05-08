@@ -204,7 +204,19 @@ extern ClusterICSendResult cluster_ic_send_envelope(uint8 msg_type, int32 dest_n
  *   Returns true if handler was invoked (with or without ERROR
  *   caught); false if msg_type unregistered.
  */
-extern bool cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload);
+/*
+ * spec-2.4 hardening v1.0.1 F1 (L76 register-vs-handler-signature-coupling):
+ * peer_id parameter NEW.  Required because:
+ *   1. msg_type == PGRAC_IC_CHUNK_MSG_TYPE (255) short-circuits to
+ *      cluster_ic_chunk_dispatch_frame which needs caller's peer_id
+ *      for per-peer reassembly state machine.
+ *   2. Future spec-2.X handlers may want peer-aware metadata.
+ *
+ * peer_id == -1 is allowed for pre-handshake / unit-test paths
+ * (chunk fast path will reject in that case).
+ */
+extern bool cluster_ic_dispatch_envelope(const ClusterICEnvelope *env, const void *payload,
+										 int32 peer_id);
 
 
 /* ============================================================

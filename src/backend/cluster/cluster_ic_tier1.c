@@ -183,8 +183,30 @@ static int tier1_hello_send_remaining[CLUSTER_MAX_NODES];
 static uint8 tier1_anon_hello_buf[CLUSTER_MAX_NODES][PGRAC_IC_HELLO_BYTES];
 static int tier1_anon_hello_len[CLUSTER_MAX_NODES];
 
-static uint8 tier1_outbound_buf[CLUSTER_MAX_NODES][PGRAC_IC_ENVELOPE_BYTES];
+/*
+ * spec-2.4 hardening v1.0.1 F2: outbound tail buffer is now dynamic
+ * per-peer.  Lazy-palloc on first partial-write up to PGRAC_IC_PAYLOAD_MAX
+ * (16 MB).  pfree on peer close (close_peer F5 fix).  Replaces spec-2.2
+ * v1.0.1 static 36-byte buffer that capped chunk frames at HARD_ERROR.
+ */
+static uint8 *tier1_outbound_buf_dyn[CLUSTER_MAX_NODES];
+static int tier1_outbound_buf_dyn_size[CLUSTER_MAX_NODES];
 static int tier1_outbound_remaining[CLUSTER_MAX_NODES];
+
+/*
+ * spec-2.4 hardening v1.0.1 F1: variable-length payload recv state.
+ *   tier1_recv_phase[peer]: 0 = filling tier1_recv_buf[peer] (36 B envelope)
+ *                           1 = envelope assembled, filling tier1_recv_payload_buf_dyn
+ *   tier1_recv_payload_buf_dyn[peer]: lazy palloc'd up to PGRAC_IC_PAYLOAD_MAX
+ *   tier1_recv_payload_total[peer]:    expected payload byte count from envelope
+ *   tier1_recv_payload_filled[peer]:   bytes read into payload buf so far
+ *
+ * After dispatch (or peer close) all four reset.
+ */
+static int tier1_recv_phase[CLUSTER_MAX_NODES];
+static uint8 *tier1_recv_payload_buf_dyn[CLUSTER_MAX_NODES];
+static int tier1_recv_payload_total[CLUSTER_MAX_NODES];
+static int tier1_recv_payload_filled[CLUSTER_MAX_NODES];
 
 
 /* ============================================================
@@ -457,11 +479,13 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	 */
 	if (tier1_outbound_remaining[target_node_id] > 0) {
 		int rem = tier1_outbound_remaining[target_node_id];
-		int off = (int)sizeof(tier1_outbound_buf[0]) - rem;
+		int off = tier1_outbound_buf_dyn_size[target_node_id] - rem;
 		ssize_t drained;
 
+		Assert(tier1_outbound_buf_dyn[target_node_id] != NULL);
+
 		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
-		drained = send(fd, &tier1_outbound_buf[target_node_id][off], (size_t)rem, 0);
+		drained = send(fd, &tier1_outbound_buf_dyn[target_node_id][off], (size_t)rem, 0);
 		pgstat_report_wait_end();
 		if (drained < 0) {
 			int saved = errno;
@@ -482,8 +506,8 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 
 	/*
 	 * Nonblocking write of the new caller-supplied buf.  Short write
-	 * is buffered (F1) -- WOULD_BLOCK return tells caller to drain on
-	 * next WL_SOCKET_WRITEABLE via the path above.
+	 * is buffered (F2 dynamic) -- WOULD_BLOCK return tells caller to
+	 * drain on next WL_SOCKET_WRITEABLE via the path above.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_SEND);
 	sent = send(fd, buf, len, 0);
@@ -501,22 +525,35 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 
 	if ((size_t)sent != len) {
 		/*
-		 * Partial write -- buffer the unsent tail in tier1_outbound_buf
-		 * so we can complete it on next WRITEABLE.  Frame is message-
-		 * aligned; we MUST complete it before the next frame to avoid
-		 * interleaving payloads on the wire.
+		 * Partial write -- buffer the unsent tail in tier1_outbound_buf_dyn
+		 * (per-peer dynamic palloc) so we can complete it on next WRITEABLE.
+		 * Frame is message-aligned; we MUST complete it before the next
+		 * frame to avoid interleaving payloads on the wire.
+		 *
+		 * spec-2.4 hardening v1.0.1 F2: dynamic buffer grows lazily up to
+		 * PGRAC_IC_PAYLOAD_MAX (16 MB).  Replaces spec-2.2 v1.0.1 static
+		 * 36-byte buffer that capped chunk frames at HARD_ERROR.
 		 */
 		size_t tail_len = len - (size_t)sent;
 
-		if (tail_len > sizeof(tier1_outbound_buf[0])) {
-			/* Larger than the per-peer outbound buffer -- programming
-			 * error;spec-2.3 envelope is 36 B and outbound buf was
-			 * sized at envelope size. */
-			peer_record_error(target_node_id, 0, "08006", "partial send tail %zu > buffer %zu",
-							  tail_len, sizeof(tier1_outbound_buf[0]));
+		if (tail_len > PGRAC_IC_PAYLOAD_MAX) {
+			peer_record_error(target_node_id, 0, "08006", "partial send tail %zu > 16 MB hard cap",
+							  tail_len);
 			return CLUSTER_IC_SEND_HARD_ERROR;
 		}
-		memcpy(tier1_outbound_buf[target_node_id], (const char *)buf + sent, tail_len);
+
+		/* Lazy grow per-peer buffer. */
+		if (tier1_outbound_buf_dyn[target_node_id] == NULL
+			|| tier1_outbound_buf_dyn_size[target_node_id] < (int)tail_len) {
+			MemoryContext oldctx = MemoryContextSwitchTo(TopMemoryContext);
+
+			if (tier1_outbound_buf_dyn[target_node_id] != NULL)
+				pfree(tier1_outbound_buf_dyn[target_node_id]);
+			tier1_outbound_buf_dyn[target_node_id] = palloc((Size)tail_len);
+			tier1_outbound_buf_dyn_size[target_node_id] = (int)tail_len;
+			MemoryContextSwitchTo(oldctx);
+		}
+		memcpy(tier1_outbound_buf_dyn[target_node_id], (const char *)buf + sent, tail_len);
 		tier1_outbound_remaining[target_node_id] = (int)tail_len;
 
 		if (Tier1Shmem != NULL && sent > 0) {
@@ -1341,107 +1378,193 @@ cluster_ic_tier1_recv_heartbeat_drain(int32 peer_id, int peer_fd)
 
 	for (;;) {
 		ssize_t got;
-		int buf_len = tier1_recv_buf_len[peer_id];
-		int need = PGRAC_IC_ENVELOPE_BYTES - buf_len;
-
-		Assert(need > 0);
-
-		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
-		got = recv(peer_fd, &tier1_recv_buf[peer_id][buf_len], (size_t)need, 0);
-		pgstat_report_wait_end();
-		if (got < 0) {
-			int saved = errno;
-
-			if (saved == EAGAIN || saved == EWOULDBLOCK)
-				return true; /* drained for now */
-
-			peer_record_error(peer_id, saved, "08006", "envelope recv: %s", strerror(saved));
-			return false;
-		}
-		if (got == 0) {
-			peer_record_error(peer_id, 0, "08006", "peer closed connection (envelope drain)");
-			return false;
-		}
-
-		buf_len += (int)got;
-		tier1_recv_buf_len[peer_id] = buf_len;
-
-		if (Tier1Shmem != NULL) {
-			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].bytes_recv, (uint64)got);
-			Tier1Shmem->peers[peer_id].last_recv_at = GetCurrentTimestamp();
-		}
-
-		if (buf_len < PGRAC_IC_ENVELOPE_BYTES)
-			continue; /* partial envelope, keep reading */
 
 		/*
-		 * One full 36-byte envelope assembled.  spec-2.3 §3.2 6-step
-		 * verify + dispatch via cluster_ic_router.  spec-2.3 ships only
-		 * HEARTBEAT (payload_length = 0); when spec-2.4 adds non-zero
-		 * payload msgs, this branch will need to read additional
-		 * payload_length bytes BEFORE dispatching.
+		 * spec-2.4 hardening v1.0.1 F1 (L76 register-vs-handler-signature-coupling):
+		 * Two-phase recv state machine.
+		 *   phase 0: read PGRAC_IC_ENVELOPE_BYTES (36 B) into tier1_recv_buf
+		 *   phase 1: peek envelope.payload_length;if > 0, lazy palloc
+		 *            tier1_recv_payload_buf_dyn[peer] (in TopMemoryContext;
+		 *            up to PGRAC_IC_PAYLOAD_MAX); read remaining payload
+		 *            bytes; then verify+dispatch with payload + payload_len.
+		 *
+		 * EAGAIN at any read returns true with state preserved -- LMON
+		 * re-enters on next WL_SOCKET_READABLE.
 		 */
-		{
-			ClusterICEnvelope env;
 
-			memcpy(&env, tier1_recv_buf[peer_id], PGRAC_IC_ENVELOPE_BYTES);
+		if (tier1_recv_phase[peer_id] == 0) {
+			/* Phase 0: filling envelope buffer. */
+			int buf_len = tier1_recv_buf_len[peer_id];
+			int need = PGRAC_IC_ENVELOPE_BYTES - buf_len;
 
-			/*
-			 * spec-2.3 §3.5b: verify failure = peer-level failure (close
-			 * peer;NEVER ereport ERROR LMON).
-			 *
-			 * spec-2.3 hardening v1.0.1:
-			 *   F2 (L69): pass peer_id so verify enforces
-			 *     env.source_node_id == peer_id (the HELLO-bound identity)
-			 *     + cluster_conf_lookup_node range scan.  No more peer
-			 *     spoofing source_node_id.
-			 *   F3 (L70): pass payload_len = 0;spec-2.3 only ships
-			 *     HEARTBEAT (payload_length must be 0).  spec-2.4 chunked
-			 *     framing will read payload bytes BEFORE verify and pass
-			 *     the actual length here.
-			 */
-			/*
-			 * spec-2.4 D4 + Q2 修订: accept_and_observe wrapper
-			 * does verify -> (on pass) observe_scn -- forged / stale
-			 * frames cannot spoof local SCN advance.  spec-2.3 used
-			 * bare verify();spec-2.4 swaps to wrapper for production
-			 * recv path.
-			 */
-			if (!cluster_ic_envelope_accept_and_observe(&env, NULL, 0, (uint32)cluster_node_id,
-														peer_id)) {
-				peer_record_error(peer_id, 0, "08P01",
-								  "envelope verify failed (magic=0x%x version=%u msg_type=%u "
-								  "src=%u dst=%u plen=%u crc=0x%x peer_id=%d)",
-								  env.magic, env.version, env.msg_type, env.source_node_id,
-								  env.dest_node_id, env.payload_length, env.payload_crc32c,
-								  peer_id);
-				tier1_recv_buf_len[peer_id] = 0;
+			Assert(need > 0);
+
+			pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
+			got = recv(peer_fd, &tier1_recv_buf[peer_id][buf_len], (size_t)need, 0);
+			pgstat_report_wait_end();
+			if (got < 0) {
+				int saved = errno;
+
+				if (saved == EAGAIN || saved == EWOULDBLOCK)
+					return true; /* drained for now */
+				peer_record_error(peer_id, saved, "08006", "envelope recv: %s", strerror(saved));
+				return false;
+			}
+			if (got == 0) {
+				peer_record_error(peer_id, 0, "08006", "peer closed connection (envelope drain)");
 				return false;
 			}
 
-			/* spec-2.3 D5: HEARTBEAT-specific bookkeeping.  Future spec-
-			 * 2.10 + handler will move counter bumps into the registered
-			 * handler's body (which sees env directly).  For spec-2.3
-			 * we keep direct shmem update here AND invoke dispatch so
-			 * the handler can do additional work if any. */
-			if (env.msg_type == PGRAC_IC_MSG_HEARTBEAT) {
-				pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_recv_count, 1);
-				Tier1Shmem->peers[peer_id].last_heartbeat_recv_at = GetCurrentTimestamp();
+			buf_len += (int)got;
+			tier1_recv_buf_len[peer_id] = buf_len;
+
+			if (Tier1Shmem != NULL) {
+				pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].bytes_recv, (uint64)got);
+				Tier1Shmem->peers[peer_id].last_recv_at = GetCurrentTimestamp();
 			}
 
-			/* spec-2.3 §3.5b: dispatch returning false = unregistered
-			 * msg_type from peer = peer-level failure. */
-			if (!cluster_ic_dispatch_envelope(&env, NULL)) {
-				peer_record_error(peer_id, 0, "08P01",
-								  "envelope msg_type %u not registered (sender %u)", env.msg_type,
-								  env.source_node_id);
-				tier1_recv_buf_len[peer_id] = 0;
+			if (buf_len < PGRAC_IC_ENVELOPE_BYTES)
+				continue; /* partial envelope, keep reading */
+
+			/*
+			 * One full 36-byte envelope assembled.  Peek payload_length
+			 * and decide whether to enter phase 1.
+			 */
+			{
+				ClusterICEnvelope env_peek;
+				uint32 plen;
+
+				memcpy(&env_peek, tier1_recv_buf[peer_id], PGRAC_IC_ENVELOPE_BYTES);
+				plen = env_peek.payload_length;
+
+				if (plen > PGRAC_IC_PAYLOAD_MAX) {
+					peer_record_error(peer_id, 0, "08P01",
+									  "envelope payload_length %u exceeds 16 MB cap "
+									  "(msg_type=%u sender=%u)",
+									  plen, env_peek.msg_type, env_peek.source_node_id);
+					tier1_recv_buf_len[peer_id] = 0;
+					return false;
+				}
+
+				if (plen == 0) {
+					/* No payload -- proceed directly to verify+dispatch
+					 * with NULL payload + payload_len=0 (HEARTBEAT path). */
+					goto verify_and_dispatch;
+				}
+
+				/* Enter phase 1: lazy palloc payload buf in TopMemoryContext. */
+				if (tier1_recv_payload_buf_dyn[peer_id] == NULL) {
+					MemoryContext oldctx = MemoryContextSwitchTo(TopMemoryContext);
+
+					tier1_recv_payload_buf_dyn[peer_id] = palloc((Size)plen);
+					MemoryContextSwitchTo(oldctx);
+				}
+				tier1_recv_payload_total[peer_id] = (int)plen;
+				tier1_recv_payload_filled[peer_id] = 0;
+				tier1_recv_phase[peer_id] = 1;
+				/* fall through to phase 1 read in next loop iteration */
+				continue;
+			}
+		} else {
+			/* Phase 1: filling payload buffer. */
+			int filled = tier1_recv_payload_filled[peer_id];
+			int total = tier1_recv_payload_total[peer_id];
+			int need = total - filled;
+
+			Assert(need > 0);
+			Assert(tier1_recv_payload_buf_dyn[peer_id] != NULL);
+
+			pgstat_report_wait_start(WAIT_EVENT_CLUSTER_IC_TCP_RECV);
+			got = recv(peer_fd, tier1_recv_payload_buf_dyn[peer_id] + filled, (size_t)need, 0);
+			pgstat_report_wait_end();
+			if (got < 0) {
+				int saved = errno;
+
+				if (saved == EAGAIN || saved == EWOULDBLOCK)
+					return true;
+				peer_record_error(peer_id, saved, "08006", "payload recv: %s", strerror(saved));
+				return false;
+			}
+			if (got == 0) {
+				peer_record_error(peer_id, 0, "08006", "peer closed connection (payload drain)");
 				return false;
 			}
 
-			tier1_recv_buf_len[peer_id] = 0;
-			/* loop again; peer may have queued multiple envelopes */
+			filled += (int)got;
+			tier1_recv_payload_filled[peer_id] = filled;
+
+			if (Tier1Shmem != NULL) {
+				pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].bytes_recv, (uint64)got);
+				Tier1Shmem->peers[peer_id].last_recv_at = GetCurrentTimestamp();
+			}
+
+			if (filled < total)
+				continue; /* partial payload, keep reading */
+
+			/* Full envelope + payload assembled.  Verify + dispatch. */
+			goto verify_and_dispatch;
 		}
+
+	verify_and_dispatch: {
+		ClusterICEnvelope env;
+		const void *payload = NULL;
+		uint32 payload_len = 0;
+
+		memcpy(&env, tier1_recv_buf[peer_id], PGRAC_IC_ENVELOPE_BYTES);
+
+		if (tier1_recv_phase[peer_id] == 1) {
+			payload = tier1_recv_payload_buf_dyn[peer_id];
+			payload_len = (uint32)tier1_recv_payload_total[peer_id];
+		}
+
+		/*
+			 * spec-2.4 hardening v1.0.1 F1 + F4: accept_and_observe
+			 * passes payload + payload_len (was NULL,0).  F4 will
+			 * upgrade verify return to 三态 enum;step 1 keeps bool.
+			 */
+		if (!cluster_ic_envelope_accept_and_observe(&env, payload, payload_len,
+													(uint32)cluster_node_id, peer_id)) {
+			peer_record_error(peer_id, 0, "08P01",
+							  "envelope verify failed (magic=0x%x version=%u msg_type=%u "
+							  "src=%u dst=%u plen=%u crc=0x%x peer_id=%d)",
+							  env.magic, env.version, env.msg_type, env.source_node_id,
+							  env.dest_node_id, env.payload_length, env.payload_crc32c, peer_id);
+			tier1_recv_buf_len[peer_id] = 0;
+			tier1_recv_phase[peer_id] = 0;
+			tier1_recv_payload_filled[peer_id] = 0;
+			tier1_recv_payload_total[peer_id] = 0;
+			return false;
+		}
+
+		/* HEARTBEAT-specific bookkeeping. */
+		if (env.msg_type == PGRAC_IC_MSG_HEARTBEAT) {
+			pg_atomic_add_fetch_u64(&Tier1Shmem->peers[peer_id].heartbeat_recv_count, 1);
+			Tier1Shmem->peers[peer_id].last_heartbeat_recv_at = GetCurrentTimestamp();
+		}
+
+		/*
+			 * spec-2.4 hardening v1.0.1 F1: dispatch_envelope now takes
+			 * peer_id (signature change) so msg_type=255 chunk fast path
+			 * can route to chunk_dispatch_frame with caller's known peer.
+			 */
+		if (!cluster_ic_dispatch_envelope(&env, payload, peer_id)) {
+			peer_record_error(peer_id, 0, "08P01",
+							  "envelope msg_type %u not registered (sender %u)", env.msg_type,
+							  env.source_node_id);
+			tier1_recv_buf_len[peer_id] = 0;
+			tier1_recv_phase[peer_id] = 0;
+			tier1_recv_payload_filled[peer_id] = 0;
+			tier1_recv_payload_total[peer_id] = 0;
+			return false;
+		}
+
+		/* Reset phase state for next frame. */
+		tier1_recv_buf_len[peer_id] = 0;
+		tier1_recv_phase[peer_id] = 0;
+		tier1_recv_payload_filled[peer_id] = 0;
+		tier1_recv_payload_total[peer_id] = 0;
+		/* loop again; peer may have queued multiple frames */
+	}
 	}
 }
 
@@ -1473,6 +1596,33 @@ cluster_ic_tier1_close_peer(int32 peer_id, const char *reason)
 	 * is a property of the design, not of distributed pfree discipline).
 	 */
 	cluster_ic_chunk_reset_peer(peer_id);
+
+	/*
+	 * spec-2.4 hardening v1.0.1 F5 (L73 close-peer-must-clean-all-per-peer
+	 * -process-local):reset ALL per-peer process-local state machines.
+	 * Without this, reconnect after close inherits stale half-frame state
+	 * -> frame stream corruption guaranteed.
+	 */
+	tier1_recv_buf_len[peer_id] = 0;
+	tier1_outbound_remaining[peer_id] = 0;
+	tier1_hello_send_remaining[peer_id] = 0;
+	tier1_anon_hello_len[peer_id] = 0;
+
+	/* spec-2.4 hardening v1.0.1 F1: variable-length payload phase state. */
+	tier1_recv_phase[peer_id] = 0;
+	tier1_recv_payload_total[peer_id] = 0;
+	tier1_recv_payload_filled[peer_id] = 0;
+	if (tier1_recv_payload_buf_dyn[peer_id] != NULL) {
+		pfree(tier1_recv_payload_buf_dyn[peer_id]);
+		tier1_recv_payload_buf_dyn[peer_id] = NULL;
+	}
+
+	/* spec-2.4 hardening v1.0.1 F2: dynamic outbound buf. */
+	if (tier1_outbound_buf_dyn[peer_id] != NULL) {
+		pfree(tier1_outbound_buf_dyn[peer_id]);
+		tier1_outbound_buf_dyn[peer_id] = NULL;
+		tier1_outbound_buf_dyn_size[peer_id] = 0;
+	}
 
 	if (reason != NULL)
 		ereport(LOG, (errmsg("cluster_ic tier1 peer %d closed: %s", peer_id, reason)));

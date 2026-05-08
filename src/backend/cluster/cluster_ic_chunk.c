@@ -299,7 +299,7 @@ cluster_ic_chunk_dispatch_frame(const ClusterICEnvelope *env, const void *payloa
 			cluster_ic_chunk_reset_peer(peer_id);
 			return false;
 		}
-		dispatched = cluster_ic_dispatch_envelope(&inner, st->buf);
+		dispatched = cluster_ic_dispatch_envelope(&inner, st->buf, -1);
 		cluster_ic_chunk_reset_peer(peer_id);
 		return dispatched;
 	}

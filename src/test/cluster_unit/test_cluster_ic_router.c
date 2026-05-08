@@ -184,6 +184,19 @@ ErrorContextCallback *error_context_stack = NULL;
  * pre-send validation path. */
 const ClusterICOps *ClusterICOps_Active = NULL;
 
+/*
+ * spec-2.4 hardening v1.0.1 F1: cluster_ic_chunk_dispatch_frame is
+ * called from cluster_ic_router.c msg_type=255 fast path.  Router
+ * unit tests don't invoke chunked frames, but link must resolve.
+ */
+bool
+cluster_ic_chunk_dispatch_frame(const ClusterICEnvelope *env pg_attribute_unused(),
+								const void *payload pg_attribute_unused(),
+								int32 peer_id pg_attribute_unused())
+{
+	return false;
+}
+
 ClusterICSendResult
 cluster_ic_send_bytes(int32 target_node_id pg_attribute_unused(),
 					  const void *buf pg_attribute_unused(), size_t len pg_attribute_unused())
@@ -455,7 +468,7 @@ UT_TEST(test_u22_dispatch_rejects_broadcast_when_not_allowed)
 
 	/* dispatch must return false (peer-level failure;caller close peer)
 	 * AND handler must NOT have been called. */
-	ok = cluster_ic_dispatch_envelope(&env, NULL);
+	ok = cluster_ic_dispatch_envelope(&env, NULL, -1);
 	UT_ASSERT(!ok);
 	UT_ASSERT_EQ(u22_handler_call_count, 0);
 }
@@ -484,7 +497,7 @@ UT_TEST(test_u22_dispatch_accepts_broadcast_when_allowed)
 
 	/* broadcast_ok=true -> dispatch proceeds into handler.  Handler
 	 * runs in the test stub's dispatch_ctx but otherwise does nothing. */
-	ok = cluster_ic_dispatch_envelope(&env, NULL);
+	ok = cluster_ic_dispatch_envelope(&env, NULL, -1);
 	UT_ASSERT(ok);
 	UT_ASSERT_EQ(u22_handler_call_count, 1);
 }
