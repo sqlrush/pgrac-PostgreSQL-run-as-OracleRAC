@@ -187,12 +187,14 @@ cmp_ok($msg_types_count, '>=', 1,
 # handler_present=true).  Spec-2.3 D5 -- LMON registers heartbeat
 # handler in cluster_lmon_shmem_init at postmaster phase 1.
 # ----------
+# bool || text yields 'true' / 'false' (Postgres bool::text), not the
+# 't' / 'f' rendered by raw row output.
 my $heartbeat_row = $node->safe_psql('postgres',
 	q{SELECT msg_type || '|' || name || '|' || handler_present
 	    FROM pg_cluster_ic_msg_types
 	   WHERE msg_type = 1});
-is( $heartbeat_row, '1|heartbeat|t',
-	'L9 HEARTBEAT (msg_type=1, name=heartbeat, handler_present=t) registered (spec-2.3 D5)');
+is( $heartbeat_row, '1|heartbeat|true',
+	'L9 HEARTBEAT (msg_type=1, name=heartbeat, handler_present=true) registered (spec-2.3 D5)');
 
 
 $node->stop;
