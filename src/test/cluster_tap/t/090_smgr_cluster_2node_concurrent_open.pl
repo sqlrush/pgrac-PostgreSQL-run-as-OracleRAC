@@ -5,7 +5,8 @@
 # invalidation hooks fire correctly across CRUD / truncate / unlink.
 # Uses the spec-2.2 D15 ClusterPair helper.
 #
-# Test matrix (10 L#) -- per spec-2.7 v0.2 §1.2 D8 frozen 2026-05-09:
+# Test matrix (10 L# + L9b/L9c added by Hardening v1.0.1) — per
+# spec-2.7 v0.2 §1.2 D8 frozen 2026-05-09 + Hardening v1.0.1 F3 / L94:
 #
 #   L1 ClusterPair start_pair OK -- both postmasters live with
 #      cluster.smgr_user_relations = on
@@ -176,6 +177,68 @@ sub active_relation_count
 	my $log0_after = PostgreSQL::Test::Utils::slurp_file($pair->node0->logfile);
 	like($log0_after, qr/cluster_smgr.*invalidate_unlink_pending closed handle/,
 		'L9 node0 invalidate_unlink_pending DEBUG3 close-handle log present');
+
+	# ----------------------------------------------------------------
+	# L9b / L9c — Hardening v1.0.1 F3 / L94 NEW (2026-05-09):
+	#
+	# spec-2.7 T-inv-3 contract: invalidate_unlink_pending must not
+	# only bump the counter, it must also drop the bypass HTAB entry +
+	# close any lingering ClusterSharedFsHandle for the rlocator
+	# (the LOCAL REAL action per Q1 v0.2).
+	#
+	# The unit test (test_cluster_smgr.c T-inv-3) verifies only the
+	# NULL-HTAB safe path because its hash_search stub returns NULL
+	# (active_relation_count assertion goes 0 -> 0, trivially true).
+	# To verify real HTAB delta we need a SAME-session sequence of
+	# CREATE TABLE / first read / DROP TABLE that goes through the
+	# real backend path so the bypass HTAB really populates and then
+	# really empties again.
+	#
+	# Use background_psql so all queries hit the same backend (each
+	# safe_psql() forks a new psql/new backend whose HTAB starts empty
+	# and isn't comparable across calls).
+	# ----------------------------------------------------------------
+	{
+		my $sess = $pair->node0->background_psql('postgres', on_error_die => 1);
+
+		# Snapshot the active_relation_count BEFORE creating the
+		# verification relation — there may be background-running rels
+		# from earlier L1-L9 traffic.  Use HTAB delta, not absolute count.
+		my $before = $sess->query_safe(
+			q{SELECT value FROM cluster_dump_state()
+			   WHERE category='shared_fs' AND key='smgr_active_relations'});
+		chomp $before;
+
+		# Create + touch a relation to force a cluster_smgr_open path,
+		# populating one HTAB entry in this backend.
+		$sess->query_safe('CREATE TABLE t_hardening_l9 (a int)');
+		$sess->query_safe('INSERT INTO t_hardening_l9 VALUES (1)');
+		$sess->query_safe('SELECT count(*) FROM t_hardening_l9');
+
+		my $during = $sess->query_safe(
+			q{SELECT value FROM cluster_dump_state()
+			   WHERE category='shared_fs' AND key='smgr_active_relations'});
+		chomp $during;
+		cmp_ok( $during, '>', $before,
+			'L9b same-backend HTAB grew after cluster_smgr-routed CREATE+SELECT'
+		);
+
+		# DROP triggers smgrdounlinkall -> cluster_smgr_invalidate_unlink_pending
+		# -> close_handle_for_rlocator -> hash_search HASH_REMOVE.  Real path
+		# this time (not the NULL-HTAB stub).
+		$sess->query_safe('DROP TABLE t_hardening_l9');
+		# Defensive: nudge any deferred cleanup.
+		$sess->query_safe('SELECT 1');
+
+		my $after = $sess->query_safe(
+			q{SELECT value FROM cluster_dump_state()
+			   WHERE category='shared_fs' AND key='smgr_active_relations'});
+		chomp $after;
+		cmp_ok($after, '<', $during,
+			'L9c same-backend HTAB shrank after DROP — invalidate_unlink_pending real removal verified');
+
+		$sess->quit;
+	}
 
 	$pair->stop_pair;
 }

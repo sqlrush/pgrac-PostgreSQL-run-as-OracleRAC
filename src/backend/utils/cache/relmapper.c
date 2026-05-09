@@ -45,11 +45,21 @@
  * Modified by: SqlRush <sqlrush@gmail.com>
  *
  * What changed:
- *   - Added a single hook call inside RelationMapInvalidate() to
- *     mirror sinval-driven relation-map invalidations across cluster
- *     instances.  The hook body itself is a stub at Stage 2.7 (only
- *     bumps the cross-instance broadcast STUB counter); spec-2.27
- *     SI Broadcaster will turn it into a real wire send.
+ *   - Added a single hook call inside write_relmap_file() (the
+ *     SOURCE side, alongside CacheInvalidateRelmap()) to mirror
+ *     relation-map updates across cluster instances.  The hook body
+ *     itself is a stub at Stage 2.7 (only bumps the cross-instance
+ *     broadcast STUB counter); spec-2.27 SI Broadcaster will turn
+ *     it into a real wire send.
+ *
+ *   - History note: Hardening v1.0.0 (2026-05-09 pre-ship F3) moved
+ *     the hook from RelationMapInvalidate() (the sinval RECEIVE
+ *     callback) to write_relmap_file() source side to avoid
+ *     cross-instance re-broadcast amplification when peers receive
+ *     a relmap inval and run the local reload callback.  Hardening
+ *     v1.0.1 (2026-05-09 post-ship F4) refreshed this header text
+ *     after v1.0.0 amend — earlier copy still said
+ *     "inside RelationMapInvalidate()" by mistake.
  *
  * Why:
  *   - PG sinval is process-local on its own.  When two cluster
@@ -60,8 +70,24 @@
  *     without touching this PG-original file again (per AD-001
  *     Option C "wire boundaries early, activate late" pattern).
  *
+ * IMPORTANT — critical section forward-contract (Hardening v1.0.1 F2 / L93):
+ *   write_relmap_file() enters START_CRIT_SECTION() at line ~1012;
+ *   the hook call sits inside that critical section (line ~1048,
+ *   right after CacheInvalidateRelmap()).  The current stub body
+ *   is nofail (atomic counter add only) — safe inside crit section.
+ *   spec-2.27 ACTIVATION CONSTRAINT: hook body must remain
+ *   nofail/nonblocking inside START_CRIT_SECTION;the actual SI
+ *   Broadcaster send + peer ack MUST happen outside the critical
+ *   section (post-commit callback / aux process drain shmem queue).
+ *   ANY ereport(ERROR) / palloc-failure / wait inside crit section
+ *   is upgraded to PANIC by PG core (CLAUDE.md rule 16).  spec-2.27
+ *   drafter MUST design queue+drain pattern, not "just change hook
+ *   body to call SI Broadcaster directly".
+ *
  * Spec: spec-2.7-smgr-cluster-2node-concurrent-open.md (v0.2 frozen
- *       2026-05-09; Q2 v0.2 confirms `bool shared` signature reuse).
+ *       2026-05-09;Q2 v0.2 `bool shared` sig + Hardening v1.0.0 F3
+ *       source-side relocation + Hardening v1.0.1 F4 stale text fix
+ *       + L93 critical-section-hook-must-nofail-enqueue forward-contract).
  * ============================================================
  */
 #include "postgres.h"
@@ -1049,7 +1075,9 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 	{
 		CacheInvalidateRelmap(dbid);
 
-		/* PGRAC MODIFICATIONS by SqlRush (hardening F3 2026-05-09):
+		/* PGRAC MODIFICATIONS by SqlRush (hardening F3 2026-05-09 +
+		 * F2/L93 2026-05-09 critical section forward-contract):
+		 *
 		 * cluster_smgr_invalidate_relmap fires HERE -- the source
 		 * side of the relmap inval -- not in RelationMapInvalidate
 		 * (the receive side).  Sourcing here gives spec-2.27 SI
@@ -1060,7 +1088,25 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 		 * Q4 v0.2 also requires `cluster.smgr_user_relations` gate
 		 * because relmap has no smgr_which routing -- when the GUC
 		 * is off the default md.c path covers all permanent rels and
-		 * cross-instance map sync isn't part of the contract. */
+		 * cross-instance map sync isn't part of the contract.
+		 *
+		 * ⚠ CRITICAL SECTION CONSTRAINT (Hardening v1.0.1 F2 / L93):
+		 * write_relmap_file() entered START_CRIT_SECTION() ~1012;
+		 * this hook executes INSIDE the critical section.  The current
+		 * stub (atomic counter add only via cluster_smgr_remote_invalidation_inc)
+		 * is nofail and therefore safe.  spec-2.27 ACTIVATION
+		 * CONSTRAINT:  the hook body must remain nofail/nonblocking
+		 * inside the critical section (e.g. atomic add, shmem queue
+		 * enqueue, flag set).  ACTUAL SI Broadcaster send + peer ack
+		 * MUST occur OUTSIDE this critical section -- e.g. via a
+		 * post-commit callback, or by spec-2.18 SI Broadcaster aux
+		 * process draining the shmem queue from its own loop.
+		 * ANY ereport(ERROR) / palloc / wait inside this critical
+		 * section will be upgraded to PANIC by PG core (CLAUDE.md
+		 * rule 16) and crash the entire postmaster -- catastrophic.
+		 * spec-2.27 drafter MUST NOT replace this hook body with a
+		 * direct synchronous wire-send;design the queue+drain pattern
+		 * first. */
 #ifdef USE_PGRAC_CLUSTER
 		if (cluster_enabled && cluster_smgr_user_relations)
 			cluster_smgr_invalidate_relmap(dbid == InvalidOid);
