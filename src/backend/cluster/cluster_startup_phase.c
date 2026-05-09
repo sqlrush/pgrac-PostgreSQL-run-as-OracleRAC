@@ -722,37 +722,27 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 
 	/* ----------
 	 * spec-2.6 Sprint A Step 3 D8 — QVOTEC spawn + sync wait ready.
-	 *
-	 *	**TEMPORARILY DEFERRED — needs follow-up hardening round.**
-	 *
-	 *	The PG aux process integration (InitAuxiliaryProcess slot
-	 *	allocation interaction with shmem inheritance after fork)
-	 *	for QvotecProcess turned out to need additional work beyond
-	 *	what Sprint A Step 3 budgets.  Investigation showed the
-	 *	QVOTEC child enters AuxiliaryProcessMain and reaches
-	 *	init_ps_display, but stalls inside InitAuxiliaryProcess(); a
-	 *	dedicated debug round will pin down whether NUM_AUXILIARY_PROCS
-	 *	bookkeeping or the new ProcSignal slot allocation needs further
-	 *	adjustment.
-	 *
-	 *	Step 3's other deliverables are in place and correct:
-	 *	  D5 procsignal multiplexer freeze/thaw flags
-	 *	  D6 xact.c CommitTransaction commit-boundary check (gated
-	 *	     on cluster_qvotec_get_pid() > 0 so it's a no-op while
-	 *	     QVOTEC is not spawned — cluster runs as if Step 3 D7+D8
-	 *	     hadn't shipped, which is the correct fail-safe default)
-	 *	  D7 postmaster QvotecPID variable + reaper + SIGHUP/SIGTERM
-	 *	     forwarding + LIFO shutdown
-	 *	  D9 cluster_shmem region register
-	 *
-	 *	The qvotec_pid local variable is intentionally kept so the
-	 *	subsequent hardening round can re-enable spawn here without
-	 *	new struct surgery.
+	 * Same Q3 single deadline pattern shared with DIAG + Stats + CSSD.
 	 * ----------
 	 */
-	qvotec_pid = 0;			   /* spawn deferred — see comment block above */
-	(void)qvotec_remaining_ms; /* silence unused-variable warning */
-	(void)qvotec_pid;
+	qvotec_pid = cluster_qvotec_start();
+	if (qvotec_pid <= 0) {
+		fail_ctx->errcode = ERRCODE_CLUSTER_QVOTEC_SPAWN_FAILED;
+		fail_ctx->errmsg = "cluster phase 4: failed to spawn QVOTEC aux process";
+		fail_ctx->errhint = "Check postmaster log for fork() error.  Confirm OS "
+							"process limits leave room for the QVOTEC aux process.";
+		return PHASE_RUN_FATAL;
+	}
+
+	qvotec_remaining_ms = phase4_remaining_budget_ms(phase4_deadline, 5000);
+	if (!cluster_qvotec_wait_for_ready(qvotec_remaining_ms)) {
+		fail_ctx->errcode = ERRCODE_CLUSTER_QVOTEC_NOT_READY;
+		fail_ctx->errmsg = "cluster phase 4: QVOTEC did not publish READY in time";
+		fail_ctx->errhint = "Check postmaster log for QVOTEC-side errors.  If QVOTEC "
+							"is slow on this hardware, raise cluster.phase4_timeout "
+							"(PGC_SIGHUP).";
+		return PHASE_RUN_FATAL;
+	}
 
 	elog(DEBUG1,
 		 "cluster phase 4: DIAG ready (pid %d) + Cluster Stats ready (pid %d) + "

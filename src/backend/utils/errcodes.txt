@@ -476,6 +476,8 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 53R41    E    ERRCODE_CLUSTER_QUORUM_UNCERTAIN                               cluster_quorum_uncertain
 53R42    E    ERRCODE_CLUSTER_VOTING_DISK_IO_FAILURE                         cluster_voting_disk_io_failure
 53R43    E    ERRCODE_CLUSTER_NODE_ID_COLLISION                              cluster_node_id_collision
+53R44    E    ERRCODE_CLUSTER_QVOTEC_SPAWN_FAILED                            cluster_qvotec_spawn_failed
+53R45    E    ERRCODE_CLUSTER_QVOTEC_NOT_READY                               cluster_qvotec_not_ready
 
 Section: Class 54 - Program Limit Exceeded
 

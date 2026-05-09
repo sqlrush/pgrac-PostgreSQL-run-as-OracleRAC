@@ -227,6 +227,9 @@ init_ps_display(const char *fixed_part pg_attribute_unused())
 void
 procsignal_sigusr1_handler(int sig pg_attribute_unused())
 {}
+void
+ProcessConfigFile(int context pg_attribute_unused())
+{}
 
 /* spec-2.6 Sprint A Step 3 D7 stub: postmaster spawn wrapper.
  * Real impl in postmaster.c (file-static StartChildProcess);unit

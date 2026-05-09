@@ -453,9 +453,22 @@ ClusterQvotecMain(void)
 
 		CHECK_FOR_INTERRUPTS();
 
-		/* SHUTTING_DOWN external transition (postmaster shutdown
-		 * signal handler, wired Step 3 D7) breaks the loop. */
-		if (pg_atomic_read_u32(&QvotecShmem->state) == CLUSTER_QVOTEC_SHUTTING_DOWN)
+		if (ConfigReloadPending) {
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/*
+		 * Two shutdown paths: SIGTERM-driven (postmaster fast/smart
+		 * shutdown sets ShutdownRequestPending via SignalHandlerFor
+		 * ShutdownRequest) AND shmem-driven (cluster_qvotec_request_
+		 * shutdown writes SHUTTING_DOWN — used by 095 TAP / inject
+		 * tests).  Mirrors CssdMain dual-gate pattern.  Without the
+		 * SIGTERM gate, postmaster fast-shutdown blocks waiting for
+		 * QVOTEC to exit and pg_ctl times out (D8 hardening F1).
+		 */
+		if (ShutdownRequestPending
+			|| pg_atomic_read_u32(&QvotecShmem->state) == CLUSTER_QVOTEC_SHUTTING_DOWN)
 			break;
 
 		/*

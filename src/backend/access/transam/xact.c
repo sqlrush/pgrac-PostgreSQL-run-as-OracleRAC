@@ -2343,27 +2343,38 @@ CommitTransaction(void)
 	 */
 #ifdef USE_PGRAC_CLUSTER
 	/*
-	 * Multi-layer guard:
+	 * Multi-layer guard (P1.2 fix — gate on shmem-visible state, not
+	 * on the qvotec process-local pid):
 	 *   - cluster_enabled = on (GUC)
 	 *   - writable transaction (top xid assigned;skip read-only)
 	 *   - NOT bootstrap / single-user mode (initdb + emergency PG paths
 	 *     run before qvotec exists;forcing them through fail-closed
-	 *     would brick initdb itself — verified via run hitting PANIC
-	 *     during initdb bootstrap script execution)
-	 *   - qvotec actually spawned (cluster_qvotec_get_pid() > 0;
-	 *     before phase 4 driver runs, no qvotec exists and the check
-	 *     is meaningless)
+	 *     would brick initdb itself)
+	 *   - cluster.voting_disks GUC is NON-EMPTY (single-node mode runs
+	 *     with empty voting_disks per Q7 v0.2 + cluster.allow_single_
+	 *     node = on;qvotec is not spawned in that path so fail-closed
+	 *     should not fire either)
 	 *
 	 * Once those gates pass, cluster_qvotec_in_quorum() returns false
-	 * iff (quorum_state != OK) OR (lease expired) OR (cluster_writes_
-	 * frozen flag set by ProcSignal D5).  Any of those triggers
+	 * iff QvotecShmem == NULL OR cluster_writes_frozen flag set OR
+	 * quorum_state != OK OR lease expired.  Any of those triggers
 	 * ereport(ERROR, ERRCODE_CLUSTER_QUORUM_LOST) to abort the commit.
+	 *
+	 * Why NOT cluster_qvotec_get_pid() > 0 (the original Step 3
+	 * guard):  cluster_qvotec_get_pid() reads a process-local static
+	 * QvotecPid that is ONLY set inside ClusterQvotecMain.  Every
+	 * normal SQL backend reads 0 there forever, so gating on that pid
+	 * silently disables the entire fail-closed contract in every
+	 * backend that is NOT qvotec itself.  Replaced with a configura-
+	 * tion gate (voting_disks set => qvotec is supposed to be running,
+	 * so enforce the check; voting_disks empty => single-node, skip).
 	 */
 	if (cluster_enabled
 		&& !IsBootstrapProcessingMode()
 		&& !IsBinaryUpgrade
 		&& TransactionIdIsValid(GetTopTransactionIdIfAny())
-		&& cluster_qvotec_get_pid() > 0)
+		&& cluster_voting_disks != NULL
+		&& cluster_voting_disks[0] != '\0')
 	{
 		if (!cluster_qvotec_in_quorum())
 			ereport(ERROR,
