@@ -746,11 +746,10 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 
 	elog(DEBUG1,
 		 "cluster phase 4: DIAG ready (pid %d) + Cluster Stats ready (pid %d) + "
-		 "CSSD ready (pid %d) + QVOTEC spawn DEFERRED (Sprint A Step 3 partial — "
-		 "see cluster_startup_phase.c phase_4_handler comment).  PG-native "
+		 "CSSD ready (pid %d) + QVOTEC ready (pid %d).  PG-native "
 		 "walwriter / bgwriter / checkpointer / autovacuum spawn unchanged.  "
 		 "Sinval Broadcaster / Recovery Coordinator deferred to Stage 2+.",
-		 diag_pid, stats_pid, cssd_pid);
+		 diag_pid, stats_pid, cssd_pid, qvotec_pid);
 
 	return PHASE_RUN_OK;
 }

@@ -188,4 +188,106 @@ is($in_quorum_disabled, 'f',
 
 $node->stop;
 
+
+# ============================================================
+# Runtime augmentation (Hardening v0.3 — qvotec real poll cycle).
+#
+# L1-L11 above are catalog/skeleton checks; with P1.3 + Q7 landed,
+# qvotec actually polls voting disks on shared storage and publishes
+# real quorum decisions.  L12-L17 verify the runtime path end-to-end:
+# pre-allocate 3 voting disk files, restart with cluster.enabled=on +
+# cluster.voting_disks set, and confirm the views / counters move from
+# the "fail-closed default" baseline to a real quorum.
+# ============================================================
+
+my $disk_dir = PostgreSQL::Test::Utils::tempdir();
+for my $i (0 .. 2) {
+	# 64KB zero-filled (qvotec writes self slot on first poll;
+	# never-written slots stay generation==0 so decide_quorum_view
+	# skips them).
+	open(my $fh, '>', "$disk_dir/disk$i") or die $!;
+	binmode $fh;
+	print $fh ("\0" x (128 * 512));
+	close $fh;
+}
+
+# Re-enable cluster + add voting_disks + set node_id (FIRST write so use
+# append_to_file per L59 lesson — adjust_conf only modifies existing
+# lines).  cluster.node_id is required for qvotec to author its own
+# slot; default -1 makes qvotec skip the poll defensively.
+$node->adjust_conf('postgresql.conf', 'cluster.enabled', 'on');
+PostgreSQL::Test::Utils::append_to_file(
+	$node->data_dir . '/postgresql.conf',
+	"cluster.voting_disks = '$disk_dir/disk0,$disk_dir/disk1,$disk_dir/disk2'\n"
+		. "cluster.node_id = 0\n");
+$node->start;
+
+# Give qvotec at least 2 poll cycles (default 2000ms each, so sleep 5s
+# to be safe — first cycle writes self slot, second cycle reads it
+# back + publishes quorum_state=OK).
+sleep 5;
+
+
+# ----------
+# L12: in_quorum=true after qvotec's first successful poll cycle.
+# ----------
+my $in_quorum_runtime = $node->safe_psql('postgres',
+	q{SELECT in_quorum FROM pg_cluster_quorum_state});
+is($in_quorum_runtime, 't',
+   'L12 in_quorum=true after qvotec runtime poll (P1.3 real body active)');
+
+
+# ----------
+# L13: disks_ok = 3 (all three voting disks reachable).
+# ----------
+my $disks_ok = $node->safe_psql('postgres',
+	q{SELECT disks_ok FROM pg_cluster_quorum_state});
+is($disks_ok, '3',
+   'L13 disks_ok=3 (all configured voting disks reachable + slot read)');
+
+
+# ----------
+# L14: disks_total = 3 (matches GUC).
+# ----------
+my $disks_total = $node->safe_psql('postgres',
+	q{SELECT disks_total FROM pg_cluster_quorum_state});
+is($disks_total, '3', 'L14 disks_total=3 (matches cluster.voting_disks GUC)');
+
+
+# ----------
+# L15: pg_cluster_voting_disks lists 3 paths matching the configured CSV.
+# ----------
+$vd_count = $node->safe_psql('postgres',
+	q{SELECT count(*) FROM pg_cluster_voting_disks});
+is($vd_count, '3', 'L15 pg_cluster_voting_disks lists 3 rows');
+
+my $vd_paths = $node->safe_psql('postgres',
+	q{SELECT string_agg(path, ',' ORDER BY path) FROM pg_cluster_voting_disks});
+is($vd_paths, "$disk_dir/disk0,$disk_dir/disk1,$disk_dir/disk2",
+   'L15b pg_cluster_voting_disks rows match the configured paths');
+
+
+# ----------
+# L16: collision_state stays "none" in single-node-with-disks runtime
+#      (no incarnation collision possible with one writer).
+# ----------
+my $collision_runtime = $node->safe_psql('postgres',
+	q{SELECT collision_state FROM pg_cluster_quorum_state});
+is($collision_runtime, 'none',
+   'L16 collision_state=none after poll cycle (single-instance writer)');
+
+
+# ----------
+# Note on cluster.qvotec.* counter assertions: the cluster_pgstat
+# framework keeps per-process atomic registries, so a backend SELECT
+# against pg_stat_cluster_counters reads the BACKEND'S local counters,
+# not qvotec's.  Cross-process visibility needs the framework's mirror
+# pass + an accessor (Hardening v0.3 follow-up).  Until that lands,
+# the runtime poll is proven by in_quorum=true + disks_ok=3 above —
+# both fields live in the shmem-shared ClusterQvotecShmem.
+# ----------
+
+
+$node->stop;
+
 done_testing();

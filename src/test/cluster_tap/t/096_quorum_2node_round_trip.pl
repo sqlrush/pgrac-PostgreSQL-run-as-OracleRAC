@@ -45,10 +45,13 @@ use warnings;
 use Test::More;
 
 plan skip_all =>
-	'spec-2.6 D8 (postmaster phase 4 QVOTEC spawn integration) is deferred '
-  . 'to a follow-up hardening round — InitAuxiliaryProcess interaction with '
-  . 'shmem inheritance after fork needs dedicated debug.  L1-L8 2-node '
-  . 'round-trip tests require a live qvotec process, so the full TAP body '
-  . 'lands once D8 ships.  D5/D6/D7/D9 fail-closed primitives are in place '
-  . 'as defensive defaults (see qvotec_spawn_enabled gate); skeleton '
-  . 'surface verification is covered by 095_qvotec_skeleton.pl.';
+	'spec-2.6 96 — 2-node ClusterPair runtime round-trip TAP.  qvotec '
+  . 'real poll body (P1.3) + D8 phase 4 spawn integration are landed; '
+  . 'single-node runtime is verified by 095_qvotec_skeleton.pl L12-L16. '
+  . 'L1-L8 2-node scenarios (start_pair / both register / quorum_view '
+  . '2 alive / SIGSTOP partition / collision FATAL via Q6 newer-self / '
+  . 'boot epoch recovery / all-disk-fail fail-closed) require a 2-node '
+  . 'ClusterPair test harness that does not yet exist in this tree '
+  . '(spec-2.5 cssd_heartbeat_round_trip 2-node pattern is the closest '
+  . 'precedent).  Lands in a follow-up hardening round once the '
+  . 'ClusterPair harness is generalized for voting-disk scenarios.';
