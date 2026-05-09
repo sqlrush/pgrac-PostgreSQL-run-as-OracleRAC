@@ -76,9 +76,9 @@
 #include "storage/shmem.h"
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_elog.h"		/* CLUSTER_LOG (best-effort logging) */
-#include "cluster/cluster_guc.h"		/* cluster_enabled */
-#include "cluster/cluster_shmem.h"		/* cluster_shmem_register_region */
+#include "cluster/cluster_elog.h"  /* CLUSTER_LOG (best-effort logging) */
+#include "cluster/cluster_guc.h"   /* cluster_enabled */
+#include "cluster/cluster_shmem.h" /* cluster_shmem_register_region */
 
 
 /* ============================================================
@@ -105,21 +105,20 @@
  *	  60..63  uint32 _pad
  *	  64..127 uint8[64] _reserved          (future expansion)
  * ============================================================ */
-typedef struct ClusterQvotecShmem
-{
-	pg_atomic_uint32 state;					/* ClusterQvotecStatus */
-	pg_atomic_uint32 quorum_state;			/* ClusterQvotecQuorumState */
+typedef struct ClusterQvotecShmem {
+	pg_atomic_uint32 state;		   /* ClusterQvotecStatus */
+	pg_atomic_uint32 quorum_state; /* ClusterQvotecQuorumState */
 	pg_atomic_uint32 disks_ok_count;
 	pg_atomic_uint32 disks_total_count;
 	pg_atomic_uint64 current_epoch_at_boot;
 	pg_atomic_uint64 last_poll_ts_us;
 	pg_atomic_uint64 lease_expire_at_us;
 	pg_atomic_uint64 last_quorum_loss_ts_us;
-	pg_atomic_uint32 collision_state;		/* ClusterCollisionDetectionState */
+	pg_atomic_uint32 collision_state; /* ClusterCollisionDetectionState */
 	pg_atomic_uint32 poll_cycle_count;
 	pg_atomic_uint32 torn_write_detect_count;
 	pg_atomic_uint32 _pad;
-	uint8			 _reserved[64];
+	uint8 _reserved[64];
 } ClusterQvotecShmem;
 
 StaticAssertDecl(sizeof(ClusterQvotecShmem) == 128,
@@ -176,22 +175,19 @@ cluster_qvotec_shmem_init(void)
 {
 	bool found;
 
-	QvotecShmem = (ClusterQvotecShmem *) ShmemInitStruct(
-		"pgrac cluster qvotec", cluster_qvotec_shmem_size(), &found);
+	QvotecShmem = (ClusterQvotecShmem *)ShmemInitStruct("pgrac cluster qvotec",
+														cluster_qvotec_shmem_size(), &found);
 
-	if (!found)
-	{
+	if (!found) {
 		pg_atomic_init_u32(&QvotecShmem->state, CLUSTER_QVOTEC_STARTING);
-		pg_atomic_init_u32(&QvotecShmem->quorum_state,
-						   CLUSTER_QVOTEC_QUORUM_INITIALIZING);
+		pg_atomic_init_u32(&QvotecShmem->quorum_state, CLUSTER_QVOTEC_QUORUM_INITIALIZING);
 		pg_atomic_init_u32(&QvotecShmem->disks_ok_count, 0);
 		pg_atomic_init_u32(&QvotecShmem->disks_total_count, 0);
 		pg_atomic_init_u64(&QvotecShmem->current_epoch_at_boot, 0);
 		pg_atomic_init_u64(&QvotecShmem->last_poll_ts_us, 0);
 		pg_atomic_init_u64(&QvotecShmem->lease_expire_at_us, 0);
 		pg_atomic_init_u64(&QvotecShmem->last_quorum_loss_ts_us, 0);
-		pg_atomic_init_u32(&QvotecShmem->collision_state,
-						   CLUSTER_COLLISION_NONE);
+		pg_atomic_init_u32(&QvotecShmem->collision_state, CLUSTER_COLLISION_NONE);
 		pg_atomic_init_u32(&QvotecShmem->poll_cycle_count, 0);
 		pg_atomic_init_u32(&QvotecShmem->torn_write_detect_count, 0);
 		pg_atomic_init_u32(&QvotecShmem->_pad, 0);
@@ -237,20 +233,19 @@ cluster_qvotec_get_status_name(void)
 		return "(uninitialised)";
 
 	s = pg_atomic_read_u32(&QvotecShmem->state);
-	switch (s)
-	{
-		case CLUSTER_QVOTEC_STARTING:
-			return "starting";
-		case CLUSTER_QVOTEC_READY:
-			return "ready";
-		case CLUSTER_QVOTEC_SHUTTING_DOWN:
-			return "shutting_down";
-		case CLUSTER_QVOTEC_DOWN:
-			return "down";
-		case CLUSTER_QVOTEC_FAILED:
-			return "failed";
-		default:
-			return "unknown";
+	switch (s) {
+	case CLUSTER_QVOTEC_STARTING:
+		return "starting";
+	case CLUSTER_QVOTEC_READY:
+		return "ready";
+	case CLUSTER_QVOTEC_SHUTTING_DOWN:
+		return "shutting_down";
+	case CLUSTER_QVOTEC_DOWN:
+		return "down";
+	case CLUSTER_QVOTEC_FAILED:
+		return "failed";
+	default:
+		return "unknown";
 	}
 }
 
@@ -263,18 +258,17 @@ cluster_qvotec_get_quorum_state_name(void)
 		return "(uninitialised)";
 
 	q = pg_atomic_read_u32(&QvotecShmem->quorum_state);
-	switch (q)
-	{
-		case CLUSTER_QVOTEC_QUORUM_INITIALIZING:
-			return "initializing";
-		case CLUSTER_QVOTEC_QUORUM_OK:
-			return "ok";
-		case CLUSTER_QVOTEC_QUORUM_UNCERTAIN:
-			return "uncertain";
-		case CLUSTER_QVOTEC_QUORUM_LOST:
-			return "lost";
-		default:
-			return "unknown";
+	switch (q) {
+	case CLUSTER_QVOTEC_QUORUM_INITIALIZING:
+		return "initializing";
+	case CLUSTER_QVOTEC_QUORUM_OK:
+		return "ok";
+	case CLUSTER_QVOTEC_QUORUM_UNCERTAIN:
+		return "uncertain";
+	case CLUSTER_QVOTEC_QUORUM_LOST:
+		return "lost";
+	default:
+		return "unknown";
 	}
 }
 
@@ -283,7 +277,7 @@ cluster_qvotec_get_disks_ok_count(void)
 {
 	if (QvotecShmem == NULL)
 		return 0;
-	return (int) pg_atomic_read_u32(&QvotecShmem->disks_ok_count);
+	return (int)pg_atomic_read_u32(&QvotecShmem->disks_ok_count);
 }
 
 int
@@ -291,7 +285,7 @@ cluster_qvotec_get_disks_total_count(void)
 {
 	if (QvotecShmem == NULL)
 		return 0;
-	return (int) pg_atomic_read_u32(&QvotecShmem->disks_total_count);
+	return (int)pg_atomic_read_u32(&QvotecShmem->disks_total_count);
 }
 
 uint64
@@ -311,16 +305,15 @@ cluster_qvotec_get_collision_state_name(void)
 		return "(uninitialised)";
 
 	c = pg_atomic_read_u32(&QvotecShmem->collision_state);
-	switch (c)
-	{
-		case CLUSTER_COLLISION_NONE:
-			return "none";
-		case CLUSTER_COLLISION_OBSERVED_OLDER:
-			return "observed_older_slot";
-		case CLUSTER_COLLISION_FATAL_NEWER_SELF:
-			return "fatal_newer_self";
-		default:
-			return "unknown";
+	switch (c) {
+	case CLUSTER_COLLISION_NONE:
+		return "none";
+	case CLUSTER_COLLISION_OBSERVED_OLDER:
+		return "observed_older_slot";
+	case CLUSTER_COLLISION_FATAL_NEWER_SELF:
+		return "fatal_newer_self";
+	default:
+		return "unknown";
 	}
 }
 
@@ -363,7 +356,7 @@ cluster_qvotec_in_quorum(void)
 		return false;
 
 	lease_expire = pg_atomic_read_u64(&QvotecShmem->lease_expire_at_us);
-	now_us = (uint64) GetCurrentTimestamp();
+	now_us = (uint64)GetCurrentTimestamp();
 	if (now_us >= lease_expire)
 		return false;
 
@@ -430,8 +423,7 @@ ClusterQvotecMain(void)
 
 	pg_atomic_write_u32(&QvotecShmem->state, CLUSTER_QVOTEC_READY);
 
-	for (;;)
-	{
+	for (;;) {
 		uint64 now_us;
 		uint64 next_lease_expire;
 		int rc;
@@ -440,8 +432,7 @@ ClusterQvotecMain(void)
 
 		/* SHUTTING_DOWN external transition (postmaster shutdown
 		 * signal handler, wired Step 3 D7) breaks the loop. */
-		if (pg_atomic_read_u32(&QvotecShmem->state)
-			== CLUSTER_QVOTEC_SHUTTING_DOWN)
+		if (pg_atomic_read_u32(&QvotecShmem->state) == CLUSTER_QVOTEC_SHUTTING_DOWN)
 			break;
 
 		/*
@@ -456,18 +447,15 @@ ClusterQvotecMain(void)
 		 *   4. quorum_state stays INITIALIZING (Step 2 sets OK only
 		 *      after a real successful poll cycle)
 		 */
-		(void) pg_atomic_fetch_add_u32(&QvotecShmem->poll_cycle_count, 1);
+		(void)pg_atomic_fetch_add_u32(&QvotecShmem->poll_cycle_count, 1);
 
-		now_us = (uint64) GetCurrentTimestamp();
-		next_lease_expire = now_us + (uint64) (timeout_ms * 2 * 1000);
+		now_us = (uint64)GetCurrentTimestamp();
+		next_lease_expire = now_us + (uint64)(timeout_ms * 2 * 1000);
 
 		pg_atomic_write_u64(&QvotecShmem->last_poll_ts_us, now_us);
-		pg_atomic_write_u64(&QvotecShmem->lease_expire_at_us,
-							next_lease_expire);
+		pg_atomic_write_u64(&QvotecShmem->lease_expire_at_us, next_lease_expire);
 
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   timeout_ms,
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, timeout_ms,
 					   /* wait_event_info wired Step 4 D11 */ 0);
 
 		if (rc & WL_LATCH_SET)
@@ -494,10 +482,9 @@ cluster_qvotec_wait_for_ready(int timeout_ms)
 	if (QvotecShmem == NULL)
 		return false;
 
-	deadline = GetCurrentTimestamp() + (TimestampTz) timeout_ms * 1000;
+	deadline = GetCurrentTimestamp() + (TimestampTz)timeout_ms * 1000;
 
-	for (;;)
-	{
+	for (;;) {
 		uint32 s = pg_atomic_read_u32(&QvotecShmem->state);
 
 		if (s == CLUSTER_QVOTEC_READY)

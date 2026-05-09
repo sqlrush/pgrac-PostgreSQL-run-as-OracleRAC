@@ -157,7 +157,7 @@ ShmemInitStruct(const char *name pg_attribute_unused(), Size size, bool *foundPt
 	if (size > sizeof(shmem_storage))
 		return NULL;
 	shmem_init_done = true;
-	return (void *) shmem_storage;
+	return (void *)shmem_storage;
 }
 
 #include "datatype/timestamp.h"
@@ -186,10 +186,8 @@ void
 ResetLatch(struct Latch *latch pg_attribute_unused())
 {}
 int
-WaitLatch(struct Latch *latch pg_attribute_unused(),
-		  int wakeEvents pg_attribute_unused(),
-		  long timeout pg_attribute_unused(),
-		  uint32 wait_event_info pg_attribute_unused())
+WaitLatch(struct Latch *latch pg_attribute_unused(), int wakeEvents pg_attribute_unused(),
+		  long timeout pg_attribute_unused(), uint32 wait_event_info pg_attribute_unused())
 {
 	return 0;
 }
@@ -262,15 +260,12 @@ UT_TEST(test_qvotec_shmem_size_128)
 UT_TEST(test_qvotec_accessors_null_safe_pre_init)
 {
 	UT_ASSERT_EQ(cluster_qvotec_get_pid(), 0);
-	UT_ASSERT_STR_EQ(cluster_qvotec_get_status_name(),
-					 "(uninitialised)");
-	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(),
-					 "(uninitialised)");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_status_name(), "(uninitialised)");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(), "(uninitialised)");
 	UT_ASSERT_EQ(cluster_qvotec_get_disks_ok_count(), 0);
 	UT_ASSERT_EQ(cluster_qvotec_get_disks_total_count(), 0);
 	UT_ASSERT_EQ(cluster_qvotec_get_current_epoch_at_boot(), 0);
-	UT_ASSERT_STR_EQ(cluster_qvotec_get_collision_state_name(),
-					 "(uninitialised)");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_collision_state_name(), "(uninitialised)");
 }
 
 UT_TEST(test_qvotec_accessors_post_init)
@@ -279,8 +274,7 @@ UT_TEST(test_qvotec_accessors_post_init)
 
 	UT_ASSERT_EQ(cluster_qvotec_get_pid(), 0); /* Main not entered */
 	UT_ASSERT_STR_EQ(cluster_qvotec_get_status_name(), "starting");
-	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(),
-					 "initializing");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(), "initializing");
 	UT_ASSERT_EQ(cluster_qvotec_get_disks_ok_count(), 0);
 	UT_ASSERT_EQ(cluster_qvotec_get_disks_total_count(), 0);
 	UT_ASSERT_EQ(cluster_qvotec_get_current_epoch_at_boot(), 0);
@@ -352,7 +346,7 @@ UT_TEST(test_freeze_thaw_round_trip)
 UT_TEST(test_qvotec_main_symbol_link_resolves)
 {
 	void (*p_main)(void) = ClusterQvotecMain;
-	UT_ASSERT_NOT_NULL((void *) p_main);
+	UT_ASSERT_NOT_NULL((void *)p_main);
 }
 
 

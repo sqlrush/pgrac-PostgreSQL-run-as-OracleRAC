@@ -111,12 +111,12 @@
  * byte 0..3.  Used by readers to reject random-data sectors / wrong-
  * file reads / pre-init slots.
  */
-#define CLUSTER_VOTING_SLOT_MAGIC   0x51564f54  /* 'QVOT' */
+#define CLUSTER_VOTING_SLOT_MAGIC 0x51564f54 /* 'QVOT' */
 #define CLUSTER_VOTING_SLOT_VERSION 1
 
 /* slot.flags bit definitions */
-#define CLUSTER_VOTING_SLOT_FLAG_ALIVE         (1ULL << 0)
-#define CLUSTER_VOTING_SLOT_FLAG_WRITE_FROZEN  (1ULL << 1)
+#define CLUSTER_VOTING_SLOT_FLAG_ALIVE (1ULL << 0)
+#define CLUSTER_VOTING_SLOT_FLAG_WRITE_FROZEN (1ULL << 1)
 
 /*
  * CLUSTER_VOTING_DISKS_MAX — compile-time upper bound on cluster.
@@ -134,8 +134,7 @@
  *	spec-1.11 HC2).  Numeric values are observable via SQL views
  *	(Step 4+);preserve the 0..4 mapping when amending.
  * ---------- */
-typedef enum ClusterQvotecStatus
-{
+typedef enum ClusterQvotecStatus {
 	CLUSTER_QVOTEC_STARTING = 0,	  /* postmaster spawned;main not yet active */
 	CLUSTER_QVOTEC_READY = 1,		  /* main loop active;phase 4 driver may advance */
 	CLUSTER_QVOTEC_SHUTTING_DOWN = 2, /* shutdown_requested set;qvotec exiting */
@@ -151,8 +150,7 @@ typedef enum ClusterQvotecStatus
  *	OK + not-expired-lease.  The other states all represent fail-
  *	closed conditions from the backend's POV.
  * ---------- */
-typedef enum ClusterQvotecQuorumState
-{
+typedef enum ClusterQvotecQuorumState {
 	CLUSTER_QVOTEC_QUORUM_INITIALIZING = 0, /* qvotec just spawned, no poll yet */
 	CLUSTER_QVOTEC_QUORUM_OK = 1,			/* majority reached, in_quorum + lease live */
 	CLUSTER_QVOTEC_QUORUM_UNCERTAIN = 2,	/* < majority disks ok, OR poll inflight */
@@ -163,20 +161,18 @@ typedef enum ClusterQvotecQuorumState
 /* ----------
  * VotingDiskIoState — per-disk health in shmem.
  * ---------- */
-typedef enum ClusterVotingDiskIoState
-{
+typedef enum ClusterVotingDiskIoState {
 	CLUSTER_VOTING_DISK_IO_OK = 0,
-	CLUSTER_VOTING_DISK_IO_TORN = 1,	   /* CRC mismatch detected this cycle */
-	CLUSTER_VOTING_DISK_IO_FAILED = 2,	   /* persistent EIO / EOF */
-	CLUSTER_VOTING_DISK_IO_NOT_TRIED = 3   /* qvotec hasn't polled yet */
+	CLUSTER_VOTING_DISK_IO_TORN = 1,	 /* CRC mismatch detected this cycle */
+	CLUSTER_VOTING_DISK_IO_FAILED = 2,	 /* persistent EIO / EOF */
+	CLUSTER_VOTING_DISK_IO_NOT_TRIED = 3 /* qvotec hasn't polled yet */
 } ClusterVotingDiskIoState;
 
 
 /* ----------
  * CollisionDetectionState — qvotec's view of node_id collision.
  * ---------- */
-typedef enum ClusterCollisionDetectionState
-{
+typedef enum ClusterCollisionDetectionState {
 	CLUSTER_COLLISION_NONE = 0,			   /* default */
 	CLUSTER_COLLISION_OBSERVED_OLDER = 1,  /* slot has lower incarnation;self continues */
 	CLUSTER_COLLISION_FATAL_NEWER_SELF = 2 /* about to FATAL self;Q6 v0.2 */
@@ -217,8 +213,7 @@ typedef enum ClusterCollisionDetectionState
  *	but we do NOT rely on that property — generation + CRC + retry is
  *	the correctness mechanism.
  * ---------- */
-typedef struct ClusterVotingSlot
-{
+typedef struct ClusterVotingSlot {
 	uint32 magic;
 	uint32 version;
 	uint32 node_id;
@@ -230,15 +225,14 @@ typedef struct ClusterVotingSlot
 	uint32 disk_index;
 	uint32 _pad1;
 	uint64 generation;
-	uint8  _alive_bitmap[64];
-	uint8  _reserved1[368];
-	uint8  _reserved2[12];
+	uint8 _alive_bitmap[64];
+	uint8 _reserved1[368];
+	uint8 _reserved2[12];
 	uint32 crc32c;
 } ClusterVotingSlot;
 
 #ifdef USE_PGRAC_CLUSTER
-StaticAssertDecl(sizeof(ClusterVotingSlot) == 512,
-				 "ClusterVotingSlot must be exactly 512 bytes");
+StaticAssertDecl(sizeof(ClusterVotingSlot) == 512, "ClusterVotingSlot must be exactly 512 bytes");
 StaticAssertDecl(offsetof(ClusterVotingSlot, magic) == 0,
 				 "ClusterVotingSlot.magic must be at offset 0");
 StaticAssertDecl(offsetof(ClusterVotingSlot, node_id) == 8,
