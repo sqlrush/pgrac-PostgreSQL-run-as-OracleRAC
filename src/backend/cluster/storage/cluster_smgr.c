@@ -661,8 +661,7 @@ cluster_smgr_close_handle_for_rlocator(RelFileLocator rlocator)
 	key.locator = rlocator;
 	key.backend = InvalidBackendId;
 
-	state = (ClusterSmgrRelationState *)hash_search(cluster_smgr_relations, &key, HASH_FIND,
-													NULL);
+	state = (ClusterSmgrRelationState *)hash_search(cluster_smgr_relations, &key, HASH_FIND, NULL);
 	if (state == NULL)
 		return;
 

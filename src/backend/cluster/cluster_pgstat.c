@@ -53,7 +53,7 @@ PG_FUNCTION_INFO_V1(cluster_get_pgstat_counters);
 
 #ifdef USE_PGRAC_CLUSTER
 
-#include "cluster/cluster_inject.h" /* cluster_injection_armed_count */
+#include "cluster/cluster_inject.h"		  /* cluster_injection_armed_count */
 #include "cluster/storage/cluster_smgr.h" /* spec-2.7 remote invalidation stub counter */
 
 
