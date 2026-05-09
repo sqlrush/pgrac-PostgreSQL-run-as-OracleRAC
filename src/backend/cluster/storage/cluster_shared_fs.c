@@ -250,14 +250,12 @@ cluster_shared_fs_init(void)
 	 */
 	if (cluster_smgr_user_relations && !IsUnderPostmaster)
 		ereport(WARNING,
-				(errmsg("cluster.smgr_user_relations is experimental in Stage 1.X"),
-				 errdetail("cluster_smgr is single-file passthrough; full md.c-equivalent "
-						   "fsync registration / unlink lifecycle is not yet implemented."),
-				 errhint("Crash recovery durability is not guaranteed.  Stage 2 共享存储 "
-						 "spec implements full fsync semantics with shared-storage backend "
-						 "protocol.  See docs/cluster-smgr-design.md and "
-						 "spec-1.7.2-cluster-smgr-warning-create-lifecycle.md for current "
-						 "limitations.")));
+				(errmsg("cluster.smgr_user_relations is experimental"),
+				 errdetail("Two-instance concurrent open of the same relation is supported, "
+						   "but cross-instance cache invalidation across the cluster and "
+						   "md.c-equivalent fsync registration are not yet activated."),
+				 errhint("Do not enable in production: stale cache across cluster peers and "
+						 "crash-recovery durability are not guaranteed at this stage.")));
 
 	cluster_shared_fs_init_in_progress = false;
 

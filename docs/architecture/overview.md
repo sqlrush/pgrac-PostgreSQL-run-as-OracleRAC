@@ -48,6 +48,8 @@ cluster code and stock PostgreSQL.
 | `cluster_signal` | `src/backend/cluster/cluster_signal.c` | Cluster ProcSignal handlers (extends PG SIGUSR1 multiplexer) |
 | `cluster_views` | `src/backend/cluster/cluster_views.c` | Set-returning functions backing the three cluster system views |
 | `cluster_elog` | `src/backend/cluster/cluster_elog.c` | `CLUSTER_LOG()` macro and the `cluster_phase` lifecycle marker |
+| `cluster_smgr` | `src/backend/cluster/storage/cluster_smgr.c` | Cluster-aware storage manager.  Becomes a second `smgrsw[]` entry when `cluster.smgr_user_relations = on`;permanent user relations route through this path so two cluster instances can each open the same relation concurrently. |
+| `cluster_shared_fs` | `src/backend/cluster/storage/cluster_shared_fs.c` | Per-cluster shared filesystem backend pluggable behind `cluster_smgr` (currently `local` only). |
 
 ## Postmaster startup flow
 
@@ -95,6 +97,36 @@ populated in the current release.
 Switching tiers is controlled via the `cluster.interconnect_tier`
 GUC.  See [Configuration](../user-guide/configuration.md) for
 runtime details.
+
+## Storage manager dispatch
+
+linkdb extends PostgreSQL's `smgrsw[]` array from one to two
+entries when built with `--enable-cluster`.  The first entry is
+PostgreSQL's stock `md.c`;the second is `cluster_smgr`, a
+cluster-aware storage manager that bridges into the
+`cluster_shared_fs` vtable.
+
+| smgr_which | Owner | Used when |
+|---|---|---|
+| `0` | `md.c` (stock PG) | Temporary relations always; permanent relations whenever `cluster.smgr_user_relations = off` (the default) or `cluster.shared_storage_backend = stub`. |
+| `1` | `cluster_smgr` | Permanent relations only, and only when both `cluster.shared_storage_backend != stub` AND `cluster.smgr_user_relations = on`.  Two cluster instances may have a backend each open the same relation concurrently;each instance keeps process-local SMgrRelation state and process-local file handles. |
+
+Cache invalidation across cluster instances is wired through three
+hook points (relation, relation map, and unlink-pending) that
+fire from the corresponding PostgreSQL invalidation paths.  The
+hook bodies bump a single counter — visible via
+`pg_stat_cluster_counters` under
+`cluster.smgr.remote_invalidation_stub_call_count` — and the
+unlink-pending hook additionally closes the per-process file
+handle for the unlinked relation.  Cross-instance signal
+propagation is not yet activated;peer instances may briefly
+observe stale cached state until invalidation completes
+through PostgreSQL's regular sinval queue.
+
+The `cluster.smgr_user_relations` GUC is **experimental**;
+enabling it raises a postmaster startup `WARNING` and is
+unsuitable for production workloads.  See
+[Configuration](../user-guide/configuration.md#clustersmgr_user_relations).
 
 ## Message envelope
 

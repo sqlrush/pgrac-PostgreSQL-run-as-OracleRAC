@@ -162,6 +162,83 @@ Interval between successive kernel keepalive probes once probing has begun (`TCP
 
 Number of unacked keepalive probes before the kernel declares the connection dead (`TCP_KEEPCNT`).  With the defaults the kernel-level worst-case half-open detection is `60 + 6 × 10 = 120 s`, well within the application-level path.
 
+### `cluster.shared_storage_backend`
+
+| | |
+|---|---|
+| Type | enum |
+| Allowed values | `stub` (default), `local` |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` |
+
+Selects the backend that the cluster-aware storage manager
+(`cluster_smgr`) dispatches into when `cluster.smgr_user_relations`
+is enabled.
+
+| Value | Behavior |
+|---|---|
+| `stub` (default) | The cluster_smgr vtable is wired but no I/O paths route through it.  Setting `cluster.smgr_user_relations = on` while this is `stub` causes the postmaster to refuse to start. |
+| `local` | Routes cluster-aware relation I/O through the local filesystem under PGDATA.  Useful for single-host smoke testing and for the two-instance concurrent-open path that exercises every relation through the cluster_smgr stack. |
+
+```text
+# postgresql.conf
+cluster.shared_storage_backend = local
+```
+
+### `cluster.smgr_user_relations`
+
+| | |
+|---|---|
+| Type | bool |
+| Default | `off` |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` |
+
+When `on`, permanent (non-temporary) user relations are routed
+through `cluster_smgr` instead of PostgreSQL's stock `md.c`
+storage manager.  Two cluster instances may have a backend each
+open the same relation at the same time; per-instance
+`SMgrRelation` state and per-instance file handles are tracked
+independently.
+
+This GUC is **experimental**.  Two-instance concurrent open is
+supported, but cross-instance cache invalidation across the
+cluster and `md.c`-equivalent fsync registration are not yet
+activated.  Enabling it triggers a postmaster startup `WARNING`
+and is unsuitable for production workloads — stale-cache behavior
+across cluster peers and crash-recovery durability are not
+guaranteed.
+
+```text
+# postgresql.conf
+cluster.shared_storage_backend = local
+cluster.smgr_user_relations = on
+```
+
+Verify the GUC and the live SMgrRelation count via
+`pg_cluster_state`:
+
+```sql
+SHOW "cluster.smgr_user_relations";
+SELECT key, value
+  FROM cluster_dump_state()
+ WHERE category = 'shared_fs'
+   AND key IN ('smgr_user_relations', 'smgr_active_relations');
+```
+
+The cross-instance invalidation hook firing rate is observable
+through `pg_stat_cluster_counters`:
+
+```sql
+SELECT name, value
+  FROM pg_stat_cluster_counters
+ WHERE name = 'cluster.smgr.remote_invalidation_stub_call_count';
+```
+
+The counter advances on every relation extend, truncate, or
+unlink while `cluster.enabled = on` and the GUC is `on`; it stays
+at zero in `cluster.enabled = off` mode regardless of GUC.
+
 ### `cluster.config_file`
 
 | | |
