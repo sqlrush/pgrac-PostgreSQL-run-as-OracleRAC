@@ -233,8 +233,7 @@ before_shmem_exit(pg_on_exit_callback function pg_attribute_unused(),
 #define CLUSTER_SMGR_UT_SHMEM_BUFSZ 1024
 static char cluster_smgr_ut_shmem_buffer[CLUSTER_SMGR_UT_SHMEM_BUFSZ];
 void *
-ShmemInitStruct(const char *n pg_attribute_unused(), Size s pg_attribute_unused(),
-				bool *foundPtr)
+ShmemInitStruct(const char *n pg_attribute_unused(), Size s pg_attribute_unused(), bool *foundPtr)
 {
 	if (foundPtr != NULL)
 		*foundPtr = false;

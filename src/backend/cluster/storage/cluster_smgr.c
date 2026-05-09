@@ -798,9 +798,8 @@ cluster_smgr_shmem_init(void)
 {
 	bool found;
 
-	cluster_smgr_state
-		= (ClusterSmgrShmem *)ShmemInitStruct("pgrac cluster smgr",
-											  cluster_smgr_shmem_size(), &found);
+	cluster_smgr_state = (ClusterSmgrShmem *)ShmemInitStruct("pgrac cluster smgr",
+															 cluster_smgr_shmem_size(), &found);
 	if (!found)
 		pg_atomic_init_u64(&cluster_smgr_state->remote_invalidation_stub_call_count, 0);
 }

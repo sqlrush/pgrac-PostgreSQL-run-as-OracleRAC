@@ -67,7 +67,10 @@
 #include "cluster/cluster_stats.h"	  /* cluster_stats_shmem_register (1.14 Sprint A) */
 #include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
-#include "cluster/storage/cluster_smgr.h" /* cluster_smgr_shmem_register (spec-2.7 hardening F1) */
+/* spec-2.7 hardening F1: cluster_smgr_shmem_register;intentionally no
+ * trailing line-end comment so the longer storage/ path doesn't force
+ * clang-format to realign every neighbour include above. */
+#include "cluster/storage/cluster_smgr.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_startup_phase.h" /* cluster_phase_shmem_register (1.10.1) */
 #include "cluster/cluster_version_macros.h"
