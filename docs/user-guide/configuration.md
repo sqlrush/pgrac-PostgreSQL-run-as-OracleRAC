@@ -257,6 +257,81 @@ deployments.
 cluster.config_file = '/srv/shared/pgrac.conf'
 ```
 
+### `cluster.voting_disks`
+
+> **EXPERIMENTAL.** The voting-disk + quorum-lite feature is not
+> production-ready in this release.  The catalog surface (GUCs / views /
+> wait events / counters / SQLSTATEs) is wired and visible, but the
+> background coordinator process is not yet driven by postmaster
+> startup; views report the fail-closed default state.  Use only for
+> evaluation against the documented surface.
+
+| | |
+|---|---|
+| Type | string (comma-separated path list) |
+| Default | empty (disabled) |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` |
+
+Comma-separated list of voting-disk file paths.  Each disk is a
+pre-allocated file on shared storage that holds one slot per cluster
+instance; the cluster coordinator polls all disks every
+`cluster.quorum_poll_interval_ms` and computes a majority view.
+
+Empty disables the voting-disk path entirely.  In multi-node mode,
+combining empty with `cluster.allow_single_node = off` triggers a
+postmaster startup error to prevent silent fail-open.
+
+```text
+# postgresql.conf
+cluster.voting_disks = '/srv/voting/disk1,/srv/voting/disk2,/srv/voting/disk3'
+```
+
+Three disks across distinct failure domains is the recommended
+production configuration; one, five, and seven are also valid odd-only
+sizes.  A startup heuristic emits a warning when the configured paths
+share a common parent directory (likely co-located on one volume).
+
+### `cluster.quorum_poll_interval_ms`
+
+| | |
+|---|---|
+| Type | integer (milliseconds) |
+| Default | `2000` (2 s) |
+| Range | `500` – `30000` |
+| Context | postmaster |
+
+Coordinator main-loop tick interval.  The lease window backends use to
+gate writes is `2 ×` this value: a coordinator stalled for more than
+two ticks is treated as failed and the cluster fails closed without
+waiting for an explicit signal.
+
+### `cluster.voting_disk_io_timeout_ms`
+
+| | |
+|---|---|
+| Type | integer (milliseconds) |
+| Default | `5000` (5 s) |
+| Range | `500` – `60000` |
+| Context | postmaster |
+
+Per-I/O deadline for voting-disk read / write / fsync.  An I/O that
+exceeds this deadline counts as a disk failure and decrements the
+healthy-disk count surfaced by `pg_cluster_quorum_state.disks_ok`.
+
+### `cluster.voting_disk_size_bytes`
+
+| | |
+|---|---|
+| Type | integer (bytes; multiple of 512) |
+| Default | `65536` |
+| Range | `4096` – `1048576` |
+| Context | postmaster |
+
+Size of each pre-allocated voting-disk file.  Each cluster instance
+owns one 512-byte slot at offset `node_id × 512`; the default holds
+slots for 128 instances.
+
 ## pgrac.conf format
 
 INI-style: section headers in `[brackets]` and `key = value`

@@ -10,3 +10,4 @@ test: ic_tcp_smoke
 test: ic_envelope_smoke
 test: cssd_smoke
 test: smgr_cluster_2node_smoke
+test: quorum_voting_smoke

@@ -50,6 +50,38 @@ cluster code and stock PostgreSQL.
 | `cluster_elog` | `src/backend/cluster/cluster_elog.c` | `CLUSTER_LOG()` macro and the `cluster_phase` lifecycle marker |
 | `cluster_smgr` | `src/backend/cluster/storage/cluster_smgr.c` | Cluster-aware storage manager.  Becomes a second `smgrsw[]` entry when `cluster.smgr_user_relations = on`;permanent user relations route through this path so two cluster instances can each open the same relation concurrently. |
 | `cluster_shared_fs` | `src/backend/cluster/storage/cluster_shared_fs.c` | Per-cluster shared filesystem backend pluggable behind `cluster_smgr` (currently `local` only). |
+| `cluster_qvotec` | `src/backend/cluster/cluster_qvotec.c` | Quorum voting coordinator background process.  Polls voting disks, computes the cluster majority view, and signals backends to fail closed when quorum is lost.  Catalog surface (GUCs / views / wait events) currently active; the runtime spawn integration is held in a follow-up release. |
+| `cluster_voting_disk_io` | `src/backend/cluster/cluster_voting_disk_io.c` | Voting-disk slot read / write primitives: `O_DIRECT` best-effort with `O_SYNC` fallback, generation-and-CRC32C torn-write detection.  Used by the coordinator. |
+| `cluster_quorum_decision` | `src/backend/cluster/cluster_quorum_decision.c` | Pure-function majority math + cross-instance node-id collision detection over the slot matrix observed by `cluster_qvotec`. |
+
+## Quorum coordination
+
+The cluster operates in fail-closed mode: writes are permitted only
+while a healthy majority of voting disks confirm membership.  The
+voting disks are pre-allocated files on shared storage configured via
+`cluster.voting_disks`; each instance owns a 512-byte slot indexed by
+its `node_id`.
+
+Every `cluster.quorum_poll_interval_ms`, the coordinator (a) writes its
+own slot with current heartbeat / epoch / incarnation, then (b) reads
+every disk and combines the slot matrix into a `ClusterQuorumView`
+(alive bitmap, max observed epoch, collision report).  Backends use a
+lease window of `2 ×` the poll interval to gate write transactions:
+on `COMMIT`, a backend that finds the lease expired or the view marked
+not-OK aborts with `SQLSTATE 53R40` (`ERRCODE_CLUSTER_QUORUM_LOST`).
+
+If a stale instance restarts with the same `node_id` as a peer that is
+already serving, the newer instance fails fatal at first poll
+(SQLSTATE `53R43`) so the older serving instance keeps the slot.
+
+The `pg_cluster_quorum_state` and `pg_cluster_voting_disks` views
+expose the current state.  See [system-views.md](../reference/system-views.md)
+for column reference.
+
+> **Status.** The catalog surface ships in this release; the
+> coordinator's postmaster spawn integration is held in a follow-up
+> release.  Until then, `pg_cluster_quorum_state.in_quorum` reports the
+> fail-closed default.
 
 ## Postmaster startup flow
 

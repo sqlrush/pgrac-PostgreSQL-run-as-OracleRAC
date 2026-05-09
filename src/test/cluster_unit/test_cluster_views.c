@@ -169,16 +169,16 @@ cluster_shmem_iter_regions(int *idx pg_attribute_unused(),
 UT_DEFINE_GLOBALS();
 
 
-UT_TEST(test_cluster_wait_events_count_is_61)
+UT_TEST(test_cluster_wait_events_count_is_64)
 {
 	/*
-	 * Cumulative registration roster: 60 prior + 1 added by spec-2.5 D8
-	 * (ClusterBgProcCssdMainLoop).  If a future subsystem spec adds new
-	 * cluster wait events, both the enum in wait_event.h and
-	 * CLUSTER_WAIT_EVENTS_COUNT must move together, and this test number
-	 * must be bumped in lockstep.
+	 * Cumulative registration roster: 61 prior + 3 added by spec-2.6 D11
+	 * (ClusterBgProcQvotecMainLoop + ClusterVotingDiskRead/Write).  If a
+	 * future subsystem spec adds new cluster wait events, both the enum
+	 * in wait_event.h and CLUSTER_WAIT_EVENTS_COUNT must move together,
+	 * and this test number must be bumped in lockstep.
 	 */
-	UT_ASSERT_EQ(CLUSTER_WAIT_EVENTS_COUNT, 61);
+	UT_ASSERT_EQ(CLUSTER_WAIT_EVENTS_COUNT, 64);
 }
 
 
@@ -201,11 +201,14 @@ UT_TEST(test_first_event_is_ges_enqueue_acquire)
 }
 
 
-UT_TEST(test_last_event_is_adg_scn_sync_wait)
+UT_TEST(test_adg_scn_sync_wait_in_adg_class)
 {
 	/*
-	 * Symmetric anchor for the tail of the array: WAIT_EVENT_ADG_SCN_SYNC_WAIT
-	 * is the last enum value, sitting in the ADG class.
+	 * Class-membership anchor: WAIT_EVENT_ADG_SCN_SYNC_WAIT must sit in
+	 * the ADG class regardless of where the enum tail moves over time.
+	 * (spec-2.5 D8 appended ClusterBgProcCssdMainLoop and spec-2.6 D11
+	 * appended 3 more entries past it, so this is no longer the last
+	 * enum value — it is still a stable anchor for the ADG class.)
 	 */
 	UT_ASSERT_EQ(((uint32)WAIT_EVENT_ADG_SCN_SYNC_WAIT) & 0xFF000000U, PG_WAIT_CLUSTER_ADG);
 }
@@ -215,10 +218,10 @@ int
 main(void)
 {
 	UT_PLAN(4);
-	UT_RUN(test_cluster_wait_events_count_is_61);
+	UT_RUN(test_cluster_wait_events_count_is_64);
 	UT_RUN(test_srf_symbol_linkable);
 	UT_RUN(test_first_event_is_ges_enqueue_acquire);
-	UT_RUN(test_last_event_is_adg_scn_sync_wait);
+	UT_RUN(test_adg_scn_sync_wait_in_adg_class);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

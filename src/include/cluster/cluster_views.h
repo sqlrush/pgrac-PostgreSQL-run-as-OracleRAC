@@ -50,7 +50,8 @@
  *	Anchored as a compile-time constant so unit tests can verify the
  *	internal table in cluster_views.c stays in sync with the enum.
  */
-#define CLUSTER_WAIT_EVENTS_COUNT 61 /* spec-2.5 D8: +1 ClusterBgProcCssdMainLoop */
+#define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
+	64 /* spec-2.6 D11: +3 ClusterBgProcQvotecMainLoop + ClusterVotingDiskRead/Write */
 
 
 /*

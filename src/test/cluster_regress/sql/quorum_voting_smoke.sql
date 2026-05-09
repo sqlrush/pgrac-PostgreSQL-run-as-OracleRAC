@@ -1,0 +1,67 @@
+-- spec-2.6 D21: Voting disk + quorum-lite smoke test (cluster_regress).
+--
+--   Verifies the catalog surface added by spec-2.6 Step 4:
+--     - 4 NEW PGC_POSTMASTER GUCs (cluster.voting_disks +
+--       cluster.quorum_poll_interval_ms +
+--       cluster.voting_disk_io_timeout_ms +
+--       cluster.voting_disk_size_bytes)
+--     - pg_cluster_quorum_state view (7 columns)
+--     - pg_cluster_voting_disks view (7 columns)
+--     - 3 NEW wait events (ClusterBgProcQvotecMainLoop +
+--       ClusterVotingDiskRead + ClusterVotingDiskWrite)
+--     - 4 NEW pgstat counters (cluster.qvotec.*)
+--
+-- All assertions are catalog-level (no qvotec runtime exercise);
+-- runtime poll cycle / quorum decision / collision detect are TAP-
+-- tested in t/095_qvotec_skeleton.pl (Step 5).  D8 phase 4 driver
+-- spawn integration is deferred per Step 3 hardening — qvotec does
+-- not actually run, so pg_cluster_quorum_state.in_quorum returns
+-- false (Q4 v0.2 fail-closed default).
+--
+-- ----------
+-- Block 1: 4 NEW GUCs registered.
+-- ----------
+SELECT name, vartype, context
+  FROM pg_settings
+ WHERE name IN ('cluster.voting_disks',
+                'cluster.quorum_poll_interval_ms',
+                'cluster.voting_disk_io_timeout_ms',
+                'cluster.voting_disk_size_bytes')
+ ORDER BY name;
+
+-- ----------
+-- Block 2: pg_cluster_quorum_state view exists with 7 columns.
+-- ----------
+SELECT count(*) AS column_count
+  FROM information_schema.columns
+ WHERE table_name = 'pg_cluster_quorum_state';
+
+-- ----------
+-- Block 3: pg_cluster_voting_disks view exists with 7 columns.
+-- ----------
+SELECT count(*) AS column_count
+  FROM information_schema.columns
+ WHERE table_name = 'pg_cluster_voting_disks';
+
+-- ----------
+-- Block 4: pg_cluster_quorum_state SRF returns single row;
+-- in_quorum=false because qvotec is not running (D8 deferred).
+-- ----------
+SELECT in_quorum
+  FROM pg_cluster_quorum_state;
+
+-- ----------
+-- Block 5: 3 NEW wait events visible.
+-- ----------
+SELECT count(*)
+  FROM pg_stat_cluster_wait_events
+ WHERE name IN ('ClusterBgProcQvotecMainLoop',
+                'ClusterVotingDiskRead',
+                'ClusterVotingDiskWrite');
+
+-- ----------
+-- Block 6: 4 NEW pgstat counters visible.
+-- ----------
+SELECT count(*)
+  FROM pg_stat_cluster_counters
+ WHERE name LIKE 'cluster.qvotec.%';

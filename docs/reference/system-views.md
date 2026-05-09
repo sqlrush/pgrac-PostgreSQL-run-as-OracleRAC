@@ -210,6 +210,62 @@ followed by a per-message-type payload).  The envelope is the same
 for every message type and is independent of the active interconnect
 tier.
 
+## pg_cluster_quorum_state
+
+> **EXPERIMENTAL.** The voting-disk + quorum-lite feature is not
+> production-ready in this release.  The view is queryable and the
+> catalog surface is stable, but the background coordinator is not yet
+> driven by postmaster startup.  `in_quorum` reports the fail-closed
+> default until the coordinator integration ships.
+
+Single-row view exposing the cluster's current quorum decision.  Backed
+by `cluster_get_quorum_state()`.
+
+| Column | Type | Description |
+|---|---|---|
+| `in_quorum` | `bool` | `t` only when the coordinator's quorum view is `OK` and the lease window has not expired (the lease window is `2 × cluster.quorum_poll_interval_ms`).  Backends gate `COMMIT` of writable transactions on this column. |
+| `quorum_size` | `int4` | Majority threshold for the configured disk count: `(disks_total / 2) + 1`. |
+| `disks_ok` | `int4` | Voting disks that responded successfully on the last poll. |
+| `disks_total` | `int4` | Total voting disks configured in `cluster.voting_disks`. |
+| `current_epoch_at_boot` | `int8` | Cluster epoch observed at coordinator startup (`max + 1` of any prior surviving epoch). |
+| `last_quorum_loss_at` | `timestamptz` | Wall-clock timestamp of the most recent quorum-loss transition; `NULL` if no loss has occurred since the coordinator started. |
+| `collision_state` | `text` | `none` / `detected_other` / `fatal_newer_self` per the cross-instance node-id collision detector.  `(uninitialised)` is returned before the coordinator's first poll. |
+
+Example:
+
+```sql
+SELECT * FROM pg_cluster_quorum_state;
+ in_quorum | quorum_size | disks_ok | disks_total | current_epoch_at_boot | last_quorum_loss_at | collision_state
+-----------+-------------+----------+-------------+-----------------------+---------------------+-----------------
+ f         |             |          |             |                     0 |                     | (uninitialised)
+```
+
+## pg_cluster_voting_disks
+
+One row per voting disk configured in `cluster.voting_disks`.  Backed
+by `cluster_get_voting_disks()`.
+
+| Column | Type | Description |
+|---|---|---|
+| `path` | `text` | Filesystem path of the voting disk (verbatim from `cluster.voting_disks`, trimmed). |
+| `state` | `text` | Per-disk health: `ok` / `degraded` / `unreachable`.  `unknown` is reported until the coordinator has completed at least one poll. |
+| `last_read_at` | `timestamptz` | Wall-clock timestamp of the most recent successful read from this disk; `NULL` until the first read completes. |
+| `last_write_at` | `timestamptz` | Wall-clock timestamp of the most recent successful write to this disk; `NULL` until the first write completes. |
+| `read_count` | `int8` | Total successful reads since coordinator startup. |
+| `write_count` | `int8` | Total successful writes since coordinator startup. |
+| `io_error_count` | `int8` | Total I/O failures (timeout / EIO / CRC mismatch / partial read). |
+
+Example:
+
+```sql
+SELECT path, state, read_count, io_error_count FROM pg_cluster_voting_disks;
+        path        |  state  | read_count | io_error_count
+--------------------+---------+------------+----------------
+ /srv/voting/disk1  | unknown |          0 |              0
+ /srv/voting/disk2  | unknown |          0 |              0
+ /srv/voting/disk3  | unknown |          0 |              0
+```
+
 ## --disable-cluster builds
 
 In binaries built with `--disable-cluster`:
