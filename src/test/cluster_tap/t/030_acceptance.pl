@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'61', 'E1 pg_stat_cluster_wait_events returns 61 rows (60 prior + cluster_cssd spec-2.5)');
+	'64', 'E1 pg_stat_cluster_wait_events returns 64 rows (61 prior + 3 qvotec spec-2.6 D11)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'61', 'E4 pg_stat_gcluster_wait_events returns 61 rows (single-node)');
+	'64', 'E4 pg_stat_gcluster_wait_events returns 64 rows (single-node, +3 qvotec spec-2.6 D11)');
 
 
 # ============================================================
@@ -302,7 +302,7 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'89', 'M1 89 injection points (1.19 adds 1 cluster-wal-page-init-thread-id mixed-context)');
+	'94', 'M1 94 injection points (89 prior + 5 qvotec spec-2.6 D14: poll-pre/post + voting-disk-write-fail + quorum-loss-broadcast + collision-detect)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '178',
-	'M5 inject category has 83×2 = 178 sub-keys (.fault_type + .hits) after spec-2.5');
+	) eq '188',
+	'M5 inject category has 94×2 = 188 sub-keys (.fault_type + .hits) after spec-2.6 D14');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
