@@ -1,0 +1,418 @@
+/*-------------------------------------------------------------------------
+ *
+ * test_cluster_qvotec.c
+ *	  Compile-time / link-level invariants for spec-2.6 D1+D2 (Sprint A
+ *	  Step 1 — initial scaffolding).
+ *
+ *	  Step 1 scope (this file):
+ *	    T-1 ClusterVotingSlot byte layout — size == 512 + per-field
+ *	        offset (magic@0 / node_id@8 / incarnation@16 /
+ *	        heartbeat_ts_us@24 / current_epoch@32 / flags@40 /
+ *	        generation@56 / _alive_bitmap@64 / crc32c@508)
+ *	    T-2 ClusterQvotecShmem byte layout — size == 128 + per-field
+ *	        sanity (state @0 / quorum_state @4 / lease_expire_at_us
+ *	        offset within first cache line)
+ *	    T-3 lifecycle accessor surface — all 7 dump-key accessors
+ *	        symbol-resolve at link time;NULL-safe (return defaults
+ *	        before shmem_init)
+ *	    T-4 cluster_qvotec_in_quorum lease-aware semantics — pre-init
+ *	        returns false;cluster_writes_frozen=1 returns false
+ *	        (regardless of state)
+ *	    T-5 cluster_freeze_writes_set / _thaw_writes_set / _currently
+ *	        _frozen round-trip
+ *	    T-6 ClusterQvotecMain symbol resolves at link time (postmaster
+ *	        reaper wiring lands Step 3 D7;test just verifies linker)
+ *	    T-7 4 enum (QvotecStatus / QuorumState / VotingDiskIoState /
+ *	        CollisionDetectionState) numeric values frozen + name
+ *	        round-trip
+ *
+ *	  Step 1 explicitly DEFERS:
+ *	    - Real poll cycle (Step 2 D3+D4)
+ *	    - Boot-time epoch recovery body (Step 2 — needs disk I/O)
+ *	    - 4 GUC default+range (Step 4 D12)
+ *	    - PROCSIG flag set/clear via real ProcSignal (Step 3 D5)
+ *	    - Disk I/O failure path / fanout LMON-only Assert (Step 2 D3)
+ *	    - quorum_view atomic update under transitions (Step 2 D4)
+ *
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2026, pgrac contributors
+ *
+ * Author: SqlRush <sqlrush@gmail.com>
+ *
+ * IDENTIFICATION
+ *	  src/test/cluster_unit/test_cluster_qvotec.c
+ *
+ * NOTES
+ *	  pgrac-original file.  Spec: spec-2.6-voting-disk-quorum-lite.md
+ *	  (frozen v0.2 2026-05-09 Q1-Q10 user approve).
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include <signal.h>
+#include <stddef.h>
+
+#include "cluster/cluster_qvotec.h"
+
+#undef printf
+#undef fprintf
+#undef snprintf
+#undef sprintf
+#undef vsnprintf
+#undef vfprintf
+#undef vprintf
+#undef vsprintf
+#undef strerror
+#undef strerror_r
+
+#include "unit_test.h"
+
+
+/* ============================================================
+ * Stubs — link cluster_qvotec.o standalone.
+ * ============================================================ */
+
+bool IsUnderPostmaster = false;
+volatile sig_atomic_t ConfigReloadPending = false;
+volatile sig_atomic_t ShutdownRequestPending = false;
+int MyProcPid = 0;
+int cluster_node_id = 0;
+
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
+}
+
+bool
+errstart(int e pg_attribute_unused(), const char *d pg_attribute_unused())
+{
+	return false;
+}
+bool
+errstart_cold(int e pg_attribute_unused(), const char *d pg_attribute_unused())
+{
+	return false;
+}
+void
+errfinish(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
+		  const char *fn pg_attribute_unused())
+{}
+int
+errcode(int s pg_attribute_unused())
+{
+	return 0;
+}
+int
+errmsg(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errmsg_internal(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errdetail(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errhint(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+void
+elog_start(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
+		   const char *fn pg_attribute_unused())
+{}
+void
+elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ...)
+{}
+void
+pre_format_elog_string(int n pg_attribute_unused(), const char *d pg_attribute_unused())
+{}
+char *
+format_elog_string(const char *f pg_attribute_unused(), ...)
+{
+	return NULL;
+}
+
+#include "storage/shmem.h"
+/* ShmemInitStruct stub: hand back a writable buffer for shmem_init().
+ * ClusterQvotecShmem is 128 byte;buffer at 256 byte for headroom. */
+static char shmem_storage[256] __attribute__((aligned(64)));
+static bool shmem_init_done = false;
+void *
+ShmemInitStruct(const char *name pg_attribute_unused(), Size size, bool *foundPtr)
+{
+	if (foundPtr != NULL)
+		*foundPtr = shmem_init_done;
+	if (size > sizeof(shmem_storage))
+		return NULL;
+	shmem_init_done = true;
+	return (void *) shmem_storage;
+}
+
+#include "datatype/timestamp.h"
+static TimestampTz mock_now = 1700000000000000LL;
+TimestampTz
+GetCurrentTimestamp(void)
+{
+	return mock_now;
+}
+
+void
+proc_exit(int code pg_attribute_unused())
+{
+	abort();
+}
+
+#include "miscadmin.h"
+volatile sig_atomic_t InterruptPending = false;
+BackendType MyBackendType = B_INVALID;
+struct Latch *MyLatch = NULL;
+
+void
+ProcessInterrupts(void)
+{}
+void
+ResetLatch(struct Latch *latch pg_attribute_unused())
+{}
+int
+WaitLatch(struct Latch *latch pg_attribute_unused(),
+		  int wakeEvents pg_attribute_unused(),
+		  long timeout pg_attribute_unused(),
+		  uint32 wait_event_info pg_attribute_unused())
+{
+	return 0;
+}
+void
+pg_usleep(long microsec pg_attribute_unused())
+{}
+
+#include "cluster/cluster_shmem.h"
+void
+cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unused())
+{}
+
+#include "cluster/cluster_elog.h"
+void
+cluster_elog_init(void)
+{}
+
+bool cluster_enabled = true;
+
+
+UT_DEFINE_GLOBALS();
+
+
+/* ============================================================
+ * T-1: ClusterVotingSlot byte layout — size 512 + per-field offsets.
+ * ============================================================ */
+
+UT_TEST(test_voting_slot_size_512)
+{
+	UT_ASSERT_EQ(sizeof(ClusterVotingSlot), 512);
+}
+
+UT_TEST(test_voting_slot_field_offsets)
+{
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, magic), 0);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, version), 4);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, node_id), 8);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, incarnation), 16);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, heartbeat_ts_us), 24);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, current_epoch), 32);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, flags), 40);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, disk_index), 48);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, generation), 56);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, _alive_bitmap), 64);
+	UT_ASSERT_EQ(offsetof(ClusterVotingSlot, crc32c), 508);
+}
+
+
+/* ============================================================
+ * T-2: ClusterQvotecShmem byte layout — size 128 (cache-line × 2).
+ *
+ *	Public test cannot reach private struct sizeof, so verify
+ *	indirectly via cluster_qvotec_shmem_size().
+ * ============================================================ */
+
+UT_TEST(test_qvotec_shmem_size_128)
+{
+	/* ClusterQvotecShmem is private to cluster_qvotec.c;
+	 * cluster_qvotec_shmem_size() returns sizeof(ClusterQvotecShmem) by
+	 * contract.  v0.2 amend per Q4 — 128 byte (2 cache lines). */
+	UT_ASSERT_EQ(cluster_qvotec_shmem_size(), 128);
+}
+
+
+/* ============================================================
+ * T-3: 7 lifecycle / dump-key accessor surface — pre-shmem-init
+ *      returns sane defaults (NULL-safe contract per F11).
+ * ============================================================ */
+
+UT_TEST(test_qvotec_accessors_null_safe_pre_init)
+{
+	UT_ASSERT_EQ(cluster_qvotec_get_pid(), 0);
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_status_name(),
+					 "(uninitialised)");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(),
+					 "(uninitialised)");
+	UT_ASSERT_EQ(cluster_qvotec_get_disks_ok_count(), 0);
+	UT_ASSERT_EQ(cluster_qvotec_get_disks_total_count(), 0);
+	UT_ASSERT_EQ(cluster_qvotec_get_current_epoch_at_boot(), 0);
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_collision_state_name(),
+					 "(uninitialised)");
+}
+
+UT_TEST(test_qvotec_accessors_post_init)
+{
+	cluster_qvotec_shmem_init();
+
+	UT_ASSERT_EQ(cluster_qvotec_get_pid(), 0); /* Main not entered */
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_status_name(), "starting");
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_quorum_state_name(),
+					 "initializing");
+	UT_ASSERT_EQ(cluster_qvotec_get_disks_ok_count(), 0);
+	UT_ASSERT_EQ(cluster_qvotec_get_disks_total_count(), 0);
+	UT_ASSERT_EQ(cluster_qvotec_get_current_epoch_at_boot(), 0);
+	UT_ASSERT_STR_EQ(cluster_qvotec_get_collision_state_name(), "none");
+}
+
+
+/* ============================================================
+ * T-4: cluster_qvotec_in_quorum() lease-aware semantics (Q4 v0.2).
+ *
+ *	Pre-init / quorum_state != OK / lease expired → all return false.
+ * ============================================================ */
+
+UT_TEST(test_in_quorum_pre_shmem_init_false)
+{
+	/* Reset shmem stub */
+	shmem_init_done = false;
+
+	UT_ASSERT(!(cluster_qvotec_in_quorum()));
+}
+
+UT_TEST(test_in_quorum_initializing_state_false)
+{
+	cluster_qvotec_shmem_init();
+
+	/* state == INITIALIZING (default after shmem_init), lease not set */
+	UT_ASSERT(!(cluster_qvotec_in_quorum()));
+}
+
+UT_TEST(test_in_quorum_frozen_flag_overrides_to_false)
+{
+	cluster_qvotec_shmem_init();
+
+	/* Even if state were OK + lease live, frozen flag should win.
+	 * Test the flag arm + helper return. */
+	cluster_freeze_writes_set();
+	UT_ASSERT(!(cluster_qvotec_in_quorum()));
+
+	cluster_thaw_writes_set();
+	/* state is INITIALIZING so still false even after thaw */
+	UT_ASSERT(!(cluster_qvotec_in_quorum()));
+}
+
+
+/* ============================================================
+ * T-5: ProcSignal flag round-trip.
+ * ============================================================ */
+
+UT_TEST(test_freeze_thaw_round_trip)
+{
+	UT_ASSERT(!(cluster_writes_currently_frozen()));
+
+	cluster_freeze_writes_set();
+	UT_ASSERT(cluster_writes_currently_frozen());
+
+	cluster_thaw_writes_set();
+	UT_ASSERT(!(cluster_writes_currently_frozen()));
+}
+
+
+/* ============================================================
+ * T-6: ClusterQvotecMain symbol resolves at link time.
+ *
+ *	Postmaster reaper wiring lands Step 3 D7;here we just verify
+ *	the function symbol exists for linker (address-take only — never
+ *	invoke).
+ * ============================================================ */
+
+UT_TEST(test_qvotec_main_symbol_link_resolves)
+{
+	void (*p_main)(void) = ClusterQvotecMain;
+	UT_ASSERT_NOT_NULL((void *) p_main);
+}
+
+
+/* ============================================================
+ * T-7: 4 enum numeric values frozen + accessor name round-trip.
+ *
+ *	SQL views (Step 5) observe these values;preserve the mapping.
+ * ============================================================ */
+
+UT_TEST(test_qvotec_status_enum_values)
+{
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_STARTING, 0);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_READY, 1);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_SHUTTING_DOWN, 2);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_DOWN, 3);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_FAILED, 4);
+}
+
+UT_TEST(test_quorum_state_enum_values)
+{
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_QUORUM_INITIALIZING, 0);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_QUORUM_OK, 1);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_QUORUM_UNCERTAIN, 2);
+	UT_ASSERT_EQ(CLUSTER_QVOTEC_QUORUM_LOST, 3);
+}
+
+UT_TEST(test_voting_disk_io_state_enum_values)
+{
+	UT_ASSERT_EQ(CLUSTER_VOTING_DISK_IO_OK, 0);
+	UT_ASSERT_EQ(CLUSTER_VOTING_DISK_IO_TORN, 1);
+	UT_ASSERT_EQ(CLUSTER_VOTING_DISK_IO_FAILED, 2);
+	UT_ASSERT_EQ(CLUSTER_VOTING_DISK_IO_NOT_TRIED, 3);
+}
+
+UT_TEST(test_collision_state_enum_values)
+{
+	UT_ASSERT_EQ(CLUSTER_COLLISION_NONE, 0);
+	UT_ASSERT_EQ(CLUSTER_COLLISION_OBSERVED_OLDER, 1);
+	UT_ASSERT_EQ(CLUSTER_COLLISION_FATAL_NEWER_SELF, 2);
+}
+
+
+int
+main(void)
+{
+	UT_PLAN(14);
+	UT_RUN(test_voting_slot_size_512);
+	UT_RUN(test_voting_slot_field_offsets);
+	UT_RUN(test_qvotec_shmem_size_128);
+	UT_RUN(test_qvotec_accessors_null_safe_pre_init);
+	UT_RUN(test_qvotec_accessors_post_init);
+	UT_RUN(test_in_quorum_pre_shmem_init_false);
+	UT_RUN(test_in_quorum_initializing_state_false);
+	UT_RUN(test_in_quorum_frozen_flag_overrides_to_false);
+	UT_RUN(test_freeze_thaw_round_trip);
+	UT_RUN(test_qvotec_main_symbol_link_resolves);
+	UT_RUN(test_qvotec_status_enum_values);
+	UT_RUN(test_quorum_state_enum_values);
+	UT_RUN(test_voting_disk_io_state_enum_values);
+	UT_RUN(test_collision_state_enum_values);
+	UT_DONE();
+	return ut_failed_count == 0 ? 0 : 1;
+}

@@ -67,6 +67,7 @@
 #include "cluster/cluster_stats.h"	  /* cluster_stats_shmem_register (1.14 Sprint A) */
 #include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
+#include "cluster/cluster_qvotec.h"	  /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
 /* spec-2.7 hardening F1: cluster_smgr_shmem_register;intentionally no
  * trailing line-end comment so the longer storage/ path doesn't force
  * clang-format to realign every neighbour include above. */
@@ -399,6 +400,17 @@ cluster_init_shmem_module(void)
 	 */
 	if (cluster_shmem_lookup_region("pgrac cluster smgr") == NULL)
 		cluster_smgr_shmem_register();
+
+	/*
+	 * spec-2.6 Sprint A Step 1 D9: register cluster_qvotec shmem
+	 * region.  128-byte (2 cache lines) struct holding lease-based
+	 * quorum_state per Q4 v0.2 — backend helper cluster_qvotec_in_
+	 * quorum() reads quorum_state + lease_expire_at_us atomic to
+	 * decide fail-closed.  Postmaster reaper / phase 4 driver
+	 * wiring lands in Step 3 (D7+D8).
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster qvotec") == NULL)
+		cluster_qvotec_shmem_register();
 }
 
 

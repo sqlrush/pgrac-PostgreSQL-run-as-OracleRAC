@@ -57,6 +57,7 @@ OBJS = \
 	cluster_lmon.o \
 	cluster_pcm_lock.o \
 	cluster_pgstat.o \
+	cluster_qvotec.o \
 	cluster_scn.o \
 	cluster_shmem.o \
 	cluster_signal.o \

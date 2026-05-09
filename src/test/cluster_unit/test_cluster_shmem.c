@@ -374,6 +374,11 @@ void
 cluster_smgr_shmem_register(void)
 {}
 
+/* spec-2.6 Sprint A Step 1 stub: cluster_qvotec shmem region. */
+void
+cluster_qvotec_shmem_register(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 
