@@ -64,8 +64,20 @@ sub new_pair
 		$node->append_conf('postgresql.conf', "cluster.enabled = on\n");
 		$node->append_conf('postgresql.conf',
 			"cluster.interconnect_tier = tier1\n");
+
+		# spec-2.6 — default to single-node compatibility mode for
+		# the harness.  ClusterPair is used by 8 TAPs (075/076/079/
+		# 080/081/085/090/096) that test interconnect / cssd / smgr
+		# / quorum mechanics, NOT spec-2.1 strict-mode semantics.
+		# Strict mode (allow_single_node=off + cluster.voting_disks
+		# CSV) triggers Q7 validator FATAL + spawns qvotec polling
+		# every 2s; the polling adds background catalog activity
+		# that destabilises sensitive observability assertions
+		# (e.g. 090 L9c HTAB shrink check).  Tests that genuinely
+		# require strict mode set those GUCs explicitly via
+		# extra_conf (097 does this); ClusterPair stays neutral.
 		$node->append_conf('postgresql.conf',
-			"cluster.allow_single_node = off\n");
+			"cluster.allow_single_node = on\n");
 
 		# Keep shared_buffers small so 2 postmasters fit in CI runners
 		# (R8 mitigation).
