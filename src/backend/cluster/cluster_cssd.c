@@ -325,6 +325,17 @@ cluster_cssd_get_alive_peer_count(void)
 	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++) {
 		if (peer == cluster_node_id)
 			continue;
+		/*
+		 * spec-2.5 hardening v1.0.2 F4 (L86 declared-peer-filter-
+		 * everywhere): filter un-declared peers.  shmem init defaults
+		 * all CLUSTER_MAX_NODES (128) peer state to ALIVE;without this
+		 * filter a 2-node cluster returns ~127 alive — blocks spec-2.6
+		 * quorum-lite which depends on this count for majority
+		 * threshold check.  Mirrors deadband_scan + cluster_get_cssd_peers
+		 * SRF's existing un-declared filter pattern.
+		 */
+		if (cluster_conf_lookup_node(peer) == NULL)
+			continue;
 		if (pg_atomic_read_u32(&CssdShmem->peers[peer].state) == CLUSTER_CSSD_PEER_ALIVE)
 			alive++;
 	}
@@ -785,35 +796,64 @@ CssdMain(void)
 		LWLockRelease(&CssdShmem->lwlock);
 	}
 
-	for (;;) {
-		int rc;
+	/*
+	 * spec-2.5 hardening v1.0.2 F2 (L84 GUC-implementation-must-match-
+	 * name-semantics): explicit per-process state tracks when the next
+	 * heartbeat broadcast is due.  Without this, broadcast frequency
+	 * silently equals main_loop_interval_ms instead of
+	 * heartbeat_interval_ms.  WaitLatch timeout = min(main_loop_due,
+	 * heartbeat_due) so deadband-scan + heartbeat fire on their own
+	 * cadences.
+	 */
+	{
+		uint64 next_heartbeat_at = 0;
 
-		CHECK_FOR_INTERRUPTS();
+		for (;;) {
+			int rc;
+			int timeout_ms;
+			uint64 now_us;
+			int64 heartbeat_due_ms;
 
-		if (ConfigReloadPending) {
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+			CHECK_FOR_INTERRUPTS();
+
+			if (ConfigReloadPending) {
+				ConfigReloadPending = false;
+				ProcessConfigFile(PGC_SIGHUP);
+			}
+
+			if (ShutdownRequestPending || cssd_shutdown_requested())
+				break;
+
+			cssd_advance_liveness_tick();
+
+			CLUSTER_INJECTION_POINT("cluster-cssd-main-loop-pre-tick");
+
+			/* spec-2.5 §3.2 + v1.0.2 F2: heartbeat broadcast — only fire
+			 * when next_heartbeat_at reached.  next_heartbeat_at == 0
+			 * forces first-tick fire immediately after READY publish. */
+			now_us = (uint64)GetCurrentTimestamp();
+			if (now_us >= next_heartbeat_at) {
+				cssd_heartbeat_broadcast_tick();
+				next_heartbeat_at = now_us + (uint64)cluster_cssd_heartbeat_interval_ms * 1000ULL;
+			}
+
+			/* spec-2.5 §3.4: deadband-scan runs every main loop tick
+			 * (deadband transitions are bounded by elapsed since last
+			 * recv, not coupled to heartbeat send cadence). */
+			cssd_deadband_scan_tick();
+
+			/* WaitLatch timeout = min(main_loop_interval, heartbeat_due).
+			 * Floor at 1 ms to avoid 0-timeout busy spin. */
+			heartbeat_due_ms = (int64)(next_heartbeat_at - now_us) / 1000;
+			if (heartbeat_due_ms < 1)
+				heartbeat_due_ms = 1;
+			timeout_ms = (int)Min(cluster_cssd_main_loop_interval_ms, heartbeat_due_ms);
+
+			rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, timeout_ms,
+						   WAIT_EVENT_CLUSTER_BGPROC_CSSD_MAIN_LOOP);
+			if (rc & WL_LATCH_SET)
+				ResetLatch(MyLatch);
 		}
-
-		if (ShutdownRequestPending || cssd_shutdown_requested())
-			break;
-
-		cssd_advance_liveness_tick();
-
-		CLUSTER_INJECTION_POINT("cluster-cssd-main-loop-pre-tick");
-
-		/* spec-2.5 §3.2: heartbeat broadcast body — write to outbound
-		 * queue;LMON tick will drain. */
-		cssd_heartbeat_broadcast_tick();
-
-		/* spec-2.5 §3.4: deadband-scan body — transition peer state. */
-		cssd_deadband_scan_tick();
-
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   cluster_cssd_main_loop_interval_ms,
-					   WAIT_EVENT_CLUSTER_BGPROC_CSSD_MAIN_LOOP);
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
 	}
 
 	CLUSTER_INJECTION_POINT("cluster-cssd-shutdown-pre");

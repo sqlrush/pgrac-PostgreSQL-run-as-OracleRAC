@@ -256,8 +256,26 @@ cluster_ic_chunk_dispatch_frame(const ClusterICEnvelope *env, const void *payloa
 		return false; /* invalid inner type */
 	if (hdr.total_payload_len > (uint32)cluster_interconnect_payload_max_bytes)
 		return false; /* exceeds GUC */
+	if (hdr.total_payload_len == 0)
+		return false; /* zero-length chunked send is malformed */
 	if (hdr.chunk_seq >= hdr.chunk_total)
 		return false;
+
+	/*
+	 * spec-2.5 hardening v1.0.2 F1 (L83 chunk-reassembly-bounds-validation):
+	 * verify chunk_total is consistent with total_payload_len.  Without
+	 * this, a hostile peer can declare a small total_payload_len + huge
+	 * chunk_total → palloc small buffer + per-chunk memcpy at offset
+	 * (chunk_seq * PGRAC_IC_CHUNK_BYTES) writes way past buffer end →
+	 * LMON heap memory corruption.
+	 */
+	{
+		uint32 expected_chunk_total
+			= (hdr.total_payload_len + PGRAC_IC_CHUNK_BYTES - 1) / PGRAC_IC_CHUNK_BYTES;
+
+		if (hdr.chunk_total != expected_chunk_total)
+			return false;
+	}
 
 	st = &cluster_chunk_reassembly_state[peer_id];
 
@@ -301,11 +319,27 @@ cluster_ic_chunk_dispatch_frame(const ClusterICEnvelope *env, const void *payloa
 
 	{
 		size_t off = (size_t)hdr.chunk_seq * PGRAC_IC_CHUNK_BYTES;
-		size_t expected_chunk_bytes = (hdr.chunk_seq + 1 == hdr.chunk_total)
-										  ? (st->total_payload_len - off)
-										  : PGRAC_IC_CHUNK_BYTES;
+		size_t expected_chunk_bytes;
+
+		/* spec-2.5 hardening v1.0.2 F1 (L83) defense-in-depth:
+		 * validate offset is within buffer + body_len doesn't exceed
+		 * remaining bytes.  Even with consistency check above,
+		 * defense-in-depth bound checks here protect against any
+		 * future logic bug introducing inconsistency. */
+		if (off >= st->total_payload_len) {
+			cluster_ic_chunk_reset_peer(peer_id);
+			return false;
+		}
+
+		expected_chunk_bytes = (hdr.chunk_seq + 1 == hdr.chunk_total)
+								   ? (st->total_payload_len - off)
+								   : PGRAC_IC_CHUNK_BYTES;
 
 		if ((uint32)body_len != (uint32)expected_chunk_bytes) {
+			cluster_ic_chunk_reset_peer(peer_id);
+			return false;
+		}
+		if (body_len > st->total_payload_len - off) {
 			cluster_ic_chunk_reset_peer(peer_id);
 			return false;
 		}

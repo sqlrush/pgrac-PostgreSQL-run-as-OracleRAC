@@ -523,8 +523,41 @@ tier1_send_bytes(int32 target_node_id, const void *buf, size_t len)
 	if (sent < 0) {
 		int saved_errno = errno;
 
-		if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK)
+		if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
+			/*
+			 * spec-2.5 hardening v1.0.2 F3 (L85 initial-EAGAIN-must-
+			 * queue-full-frame): initial 0-byte EAGAIN must queue the
+			 * full frame to outbound_buf_dyn so partial-IO drain path
+			 * (lines 488-513 above) re-attempts on next WRITEABLE.
+			 * Pre-fix code returned WOULD_BLOCK without queueing →
+			 * frame silently lost.  CSSD heartbeat happened to be
+			 * idempotent (next tick re-sends), but spec-2.13 GES
+			 * request / spec-2.18 SI invalidate / spec-2.27 sinval
+			 * ack are non-idempotent → frame loss = operation lost.
+			 *
+			 * Reuse the partial-write tail queue path (treat sent=0
+			 * as "tail_len = len" partial write).
+			 */
+			if (len > PGRAC_IC_PAYLOAD_MAX) {
+				peer_record_error(target_node_id, 0, "08006",
+								  "initial EAGAIN frame %zu > 16 MB hard cap", len);
+				return CLUSTER_IC_SEND_HARD_ERROR;
+			}
+			if (tier1_outbound_buf_dyn[target_node_id] == NULL
+				|| tier1_outbound_buf_dyn_size[target_node_id] < (int)len) {
+				MemoryContext oldctx = MemoryContextSwitchTo(TopMemoryContext);
+
+				if (tier1_outbound_buf_dyn[target_node_id] != NULL)
+					pfree(tier1_outbound_buf_dyn[target_node_id]);
+				tier1_outbound_buf_dyn[target_node_id] = palloc((Size)len);
+				tier1_outbound_buf_dyn_size[target_node_id] = (int)len;
+				MemoryContextSwitchTo(oldctx);
+			}
+			memcpy(tier1_outbound_buf_dyn[target_node_id], buf, len);
+			tier1_outbound_remaining[target_node_id] = (int)len;
+
 			return CLUSTER_IC_SEND_WOULD_BLOCK;
+		}
 
 		/* Hard error -- caller closes peer. */
 		peer_record_error(target_node_id, saved_errno, "08006", "send: %s", strerror(saved_errno));
