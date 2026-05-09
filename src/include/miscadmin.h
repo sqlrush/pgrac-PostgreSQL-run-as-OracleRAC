@@ -376,6 +376,7 @@ typedef enum BackendType {
 	B_LMON,
 	B_LMS_WORKER,
 	B_MRP,
+	B_QVOTEC,
 	B_RECOVERY_COORD,
 	B_RECOVERY_WORKER,
 	B_SINVAL_BCAST,
@@ -536,6 +537,19 @@ typedef enum {
 	 * cluster_cssd.h.
 	 */
 	CssdProcess,
+	/*
+	 * QVOTEC (Quorum Voting Coordinator) is the 6th cluster background
+	 * process — spec-2.6 Sprint A Step 3 D7.  Appended after CssdProcess
+	 * to preserve numeric values.  Polls voting disks on shared storage
+	 * to derive cluster-wide quorum view;broadcasts cluster_freeze_writes
+	 * / cluster_thaw_writes via PG ProcSignal multiplexer when
+	 * quorum_state transitions.  Implements spec-2.0 §3 Invariant 1
+	 * (no-quorum no dual-write fail-closed) + Invariant 3 (uncertainty
+	 * → fail-closed).  Lease-based in_quorum semantics (Q4 v0.2)
+	 * defends against qvotec hung > 2 × poll interval.  See
+	 * cluster_qvotec.h.
+	 */
+	QvotecProcess,
 #endif
 
 	NUM_AUXPROCTYPES /* Must be last! */
@@ -555,6 +569,7 @@ extern PGDLLIMPORT AuxProcType MyAuxProcType;
 #define AmDiagProcess() (MyAuxProcType == DiagProcess)
 #define AmClusterStatsProcess() (MyAuxProcType == ClusterStatsProcess)
 #define AmCssdProcess() (MyAuxProcType == CssdProcess)
+#define AmQvotecProcess() (MyAuxProcType == QvotecProcess)
 #endif
 
 

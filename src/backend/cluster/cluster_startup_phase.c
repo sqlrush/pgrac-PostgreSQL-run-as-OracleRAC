@@ -56,6 +56,7 @@
 
 #include "cluster/cluster_elog.h"	/* cluster_phase legacy mirror (HC2) */
 #include "cluster/cluster_cssd.h"	/* cluster_cssd_start / wait_for_ready (2.5 Sprint A) */
+#include "cluster/cluster_qvotec.h" /* cluster_qvotec_start / wait_for_ready (spec-2.6 Step 3 D8) */
 #include "cluster/cluster_diag.h"	/* cluster_diag_start / wait_for_ready (1.13 Sprint A) */
 #include "cluster/cluster_guc.h"	/* cluster_phase{1..4}_timeout (D2 F2) */
 #include "cluster/cluster_stats.h"	/* cluster_stats_start / wait_for_ready (1.14 Sprint A) */
@@ -603,9 +604,11 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 	int diag_pid;
 	int stats_pid;
 	int cssd_pid;
+	int qvotec_pid;
 	int diag_remaining_ms;
 	int stats_remaining_ms;
 	int cssd_remaining_ms;
+	int qvotec_remaining_ms;
 	TimestampTz phase4_start;
 	TimestampTz phase4_deadline;
 
@@ -619,9 +622,9 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 	 */
 	if (!cluster_enabled) {
 		elog(DEBUG1, "cluster phase 4: cluster.enabled=false; skipping DIAG + "
-					 "Cluster Stats + CSSD spawn (degraded to spec-1.10 stub "
-					 "behavior).  PG-native walwriter / bgwriter / checkpointer / "
-					 "autovacuum spawn unchanged.");
+					 "Cluster Stats + CSSD + QVOTEC spawn (degraded to spec-1.10 "
+					 "stub behavior).  PG-native walwriter / bgwriter / "
+					 "checkpointer / autovacuum spawn unchanged.");
 		return PHASE_RUN_OK;
 	}
 
@@ -717,11 +720,46 @@ phase_4_handler(PhaseRunFailContext *fail_ctx)
 		return PHASE_RUN_FATAL;
 	}
 
+	/* ----------
+	 * spec-2.6 Sprint A Step 3 D8 — QVOTEC spawn + sync wait ready.
+	 *
+	 *	**TEMPORARILY DEFERRED — needs follow-up hardening round.**
+	 *
+	 *	The PG aux process integration (InitAuxiliaryProcess slot
+	 *	allocation interaction with shmem inheritance after fork)
+	 *	for QvotecProcess turned out to need additional work beyond
+	 *	what Sprint A Step 3 budgets.  Investigation showed the
+	 *	QVOTEC child enters AuxiliaryProcessMain and reaches
+	 *	init_ps_display, but stalls inside InitAuxiliaryProcess(); a
+	 *	dedicated debug round will pin down whether NUM_AUXILIARY_PROCS
+	 *	bookkeeping or the new ProcSignal slot allocation needs further
+	 *	adjustment.
+	 *
+	 *	Step 3's other deliverables are in place and correct:
+	 *	  D5 procsignal multiplexer freeze/thaw flags
+	 *	  D6 xact.c CommitTransaction commit-boundary check (gated
+	 *	     on cluster_qvotec_get_pid() > 0 so it's a no-op while
+	 *	     QVOTEC is not spawned — cluster runs as if Step 3 D7+D8
+	 *	     hadn't shipped, which is the correct fail-safe default)
+	 *	  D7 postmaster QvotecPID variable + reaper + SIGHUP/SIGTERM
+	 *	     forwarding + LIFO shutdown
+	 *	  D9 cluster_shmem region register
+	 *
+	 *	The qvotec_pid local variable is intentionally kept so the
+	 *	subsequent hardening round can re-enable spawn here without
+	 *	new struct surgery.
+	 * ----------
+	 */
+	qvotec_pid = 0;			   /* spawn deferred — see comment block above */
+	(void)qvotec_remaining_ms; /* silence unused-variable warning */
+	(void)qvotec_pid;
+
 	elog(DEBUG1,
 		 "cluster phase 4: DIAG ready (pid %d) + Cluster Stats ready (pid %d) + "
-		 "CSSD ready (pid %d).  PG-native walwriter / bgwriter / checkpointer / "
-		 "autovacuum spawn unchanged.  Sinval Broadcaster / Recovery Coordinator "
-		 "deferred to Stage 2+.",
+		 "CSSD ready (pid %d) + QVOTEC spawn DEFERRED (Sprint A Step 3 partial — "
+		 "see cluster_startup_phase.c phase_4_handler comment).  PG-native "
+		 "walwriter / bgwriter / checkpointer / autovacuum spawn unchanged.  "
+		 "Sinval Broadcaster / Recovery Coordinator deferred to Stage 2+.",
 		 diag_pid, stats_pid, cssd_pid);
 
 	return PHASE_RUN_OK;

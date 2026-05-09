@@ -53,7 +53,8 @@
 #include "storage/proc.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_signal.h"		/* PGRAC: cluster handlers */
+#include "cluster/cluster_qvotec.h"	  /* PGRAC: spec-2.6 freeze/thaw flag setters */
+#include "cluster/cluster_signal.h"	  /* PGRAC: cluster handlers */
 #endif
 #include "storage/shmem.h"
 #include "storage/smgr.h"
@@ -712,12 +713,23 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 #ifdef USE_PGRAC_CLUSTER
 	/*
 	 * PGRAC: cluster signal dispatch.  Each cluster ProcSignalReason
-	 * lands in a handler under src/backend/cluster/cluster_signal.c.
-	 * See docs/cluster-signal-design.md for the registration roster
-	 * and async-signal-safety rules each handler must obey.
+	 * lands in a handler — stage-0.15+ reasons in cluster_signal.c,
+	 * stage-2.6 fail-closed reasons inline (cluster_qvotec.c
+	 * sig_atomic_t flag setters).
+	 *
+	 * spec-2.6 D5 (Sprint A Step 3): the freeze/thaw handlers MUST
+	 * stay async-signal-safe — they only mutate a sig_atomic_t flag
+	 * via cluster_freeze_writes_set / cluster_thaw_writes_set;the
+	 * actual ereport(ERROR) happens later at write-intent or commit
+	 * boundary in tcop/postgres.c (Step 3 D6 — read the flag from
+	 * cluster_writes_currently_frozen + cluster_qvotec_in_quorum).
 	 */
 	if (CheckProcSignal(PROCSIG_CLUSTER_RECONFIG_START))
 		cluster_handle_reconfig_start_interrupt();
+	if (CheckProcSignal(PROCSIG_CLUSTER_FREEZE_WRITES))
+		cluster_freeze_writes_set();
+	if (CheckProcSignal(PROCSIG_CLUSTER_THAW_WRITES))
+		cluster_thaw_writes_set();
 #endif
 
 	SetLatch(MyLatch);

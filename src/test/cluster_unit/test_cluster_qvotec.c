@@ -205,6 +205,38 @@ void
 cluster_elog_init(void)
 {}
 
+/* Step 3 D7 stubs: signal/ps_display/procsignal symbols not linked
+ * here (cluster_qvotec.c references them for ClusterQvotecMain;
+ * unit test never invokes Main, just address-takes for T-6). */
+sigset_t UnBlockSig;
+typedef void (*pqsigfunc)(int);
+pqsigfunc
+pqsignal(int signum pg_attribute_unused(), pqsigfunc handler pg_attribute_unused())
+{
+	return handler;
+}
+void
+SignalHandlerForConfigReload(int sig pg_attribute_unused())
+{}
+void
+SignalHandlerForShutdownRequest(int sig pg_attribute_unused())
+{}
+void
+init_ps_display(const char *fixed_part pg_attribute_unused())
+{}
+void
+procsignal_sigusr1_handler(int sig pg_attribute_unused())
+{}
+
+/* spec-2.6 Sprint A Step 3 D7 stub: postmaster spawn wrapper.
+ * Real impl in postmaster.c (file-static StartChildProcess);unit
+ * test never spawns so stub returns 0 (failure). */
+pid_t
+cluster_postmaster_start_qvotec(void)
+{
+	return 0;
+}
+
 bool cluster_enabled = true;
 
 

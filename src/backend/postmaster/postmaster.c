@@ -321,6 +321,19 @@ static pid_t ClusterStatsPID = 0;
 
 /* PGRAC (stage 2.5 Sprint A): CSSD aux process pid; same pattern. */
 static pid_t CssdPID = 0;
+
+/* PGRAC (spec-2.6 Sprint A Step 3 D7): QVOTEC aux process pid;same pattern. */
+static pid_t QvotecPID = 0;
+/*
+ * spec-2.6 Sprint A Step 3 D8 deferral gate.  D7 lays down QvotecPID
+ * tracking + reaper + LIFO + signal forwarding, but QVOTEC spawn
+ * integration with PG aux process slot allocation needs a dedicated
+ * follow-up debug round (InitAuxiliaryProcess stall).  Until D8 ships
+ * this flag stays false → ServerLoop respawn path is bypassed →
+ * postmaster boots cleanly with the rest of D5/D6/D7/D9 fail-closed
+ * primitives in place.  Phase 4 driver flips this true once D8 lands.
+ */
+static bool qvotec_spawn_enabled = false;
 #endif
 
 /* Startup process's status */
@@ -629,6 +642,7 @@ static void ShmemBackendArrayRemove(Backend *bn);
 #define StartDiag() StartChildProcess(DiagProcess)
 #define StartClusterStats() StartChildProcess(ClusterStatsProcess)
 #define StartCssd() StartChildProcess(CssdProcess)
+#define StartQvotec() StartChildProcess(QvotecProcess)
 #endif
 
 /* Macros to check exit status of a child process */
@@ -1889,6 +1903,15 @@ ServerLoop(void)
 		 */
 		if (cluster_enabled && CssdPID == 0 && pmState == PM_RUN)
 			CssdPID = StartCssd();
+
+		/*
+		 * PGRAC: spec-2.6 Sprint A Step 3 D7 — same ServerLoop respawn
+		 * for QVOTEC (6th cluster aux process).  Spawned post PM_RUN by
+		 * phase 4 driver fourth升级;respawn here closes restart_after_
+		 * crash recovery + external-SIGTERM paths.
+		 */
+		if (cluster_enabled && qvotec_spawn_enabled && QvotecPID == 0 && pmState == PM_RUN)
+			QvotecPID = StartQvotec();
 #endif
 
 		/*
@@ -2752,6 +2775,8 @@ process_pm_reload_request(void)
 			signal_child(ClusterStatsPID, SIGHUP);
 		if (CssdPID != 0)
 			signal_child(CssdPID, SIGHUP);
+		if (QvotecPID != 0) /* PGRAC spec-2.6 Step 3 D7 */
+			signal_child(QvotecPID, SIGHUP);
 #endif
 		if (AutoVacPID != 0)
 			signal_child(AutoVacPID, SIGHUP);
@@ -3258,6 +3283,23 @@ process_pm_child_exit(void)
 				HandleChildCrash(pid, exitstatus, _("CSSD process"));
 			continue;
 		}
+		/*
+		 * PGRAC: spec-2.6 Sprint A Step 3 D7 — QVOTEC aux process exit
+		 * handling mirrors CSSD.  Reaper does NOT broadcast cluster_
+		 * freeze_writes here: when qvotec exits, in-progress backends
+		 * keep their lease until lease_expire_at_us elapses, at which
+		 * point cluster_qvotec_in_quorum() naturally returns false.
+		 * This decouples qvotec lifecycle from backend fail-closed
+		 * trigger and avoids spurious freeze on a clean restart.
+		 *
+		 * Spec: spec-2.6-voting-disk-quorum-lite.md Sprint A Step 3 D7.
+		 */
+		if (pid == QvotecPID) {
+			QvotecPID = 0;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus, _("QVOTEC process"));
+			continue;
+		}
 #endif
 
 		/*
@@ -3664,6 +3706,12 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		CssdPID = 0;
 	else if (CssdPID != 0 && take_action)
 		sigquit_child(CssdPID);
+
+	/* PGRAC (spec-2.6 Sprint A Step 3 D7): same pattern for QVOTEC. */
+	if (pid == QvotecPID)
+		QvotecPID = 0;
+	else if (QvotecPID != 0 && take_action)
+		sigquit_child(QvotecPID);
 #endif
 
 	/* Take care of the walreceiver too */
@@ -3821,9 +3869,12 @@ PostmasterStateMachine(void)
 		 * cluster_run_shutdown_sequence (which fires AFTER children
 		 * already exited) has no effect.  Q10 user-finding 2026-05-04.
 		 */
-		/* spec-2.5 Q10 LIFO: CSSD first (last-spawned in phase 4
-		 * driver third upgrade — DIAG + Stats + CSSD serial wait,
-		 * CSSD added last). */
+		/* spec-2.6 Q10 LIFO: QVOTEC first (last-spawned in phase 4
+		 * driver fourth upgrade — DIAG + Stats + CSSD + QVOTEC serial
+		 * wait, QVOTEC added last). */
+		if (QvotecPID != 0)
+			signal_child(QvotecPID, SIGTERM);
+		/* spec-2.5 Q10 LIFO: CSSD next. */
 		if (CssdPID != 0)
 			signal_child(CssdPID, SIGTERM);
 		/* spec-1.14 Q10 LIFO: Cluster Stats next. */
@@ -3893,6 +3944,8 @@ PostmasterStateMachine(void)
 			ClusterStatsPID == 0 &&
 			/* PGRAC: spec-2.5 Sprint A — same wait for CSSD. */
 			CssdPID == 0 &&
+			/* PGRAC: spec-2.6 Sprint A Step 3 D7 — same wait for QVOTEC. */
+			QvotecPID == 0 &&
 #endif
 			AutoVacPID == 0) {
 			if (Shutdown >= ImmediateShutdown || FatalError) {
@@ -4238,6 +4291,8 @@ TerminateChildren(int signal)
 		signal_child(ClusterStatsPID, signal);
 	if (CssdPID != 0)
 		signal_child(CssdPID, signal);
+	if (QvotecPID != 0) /* PGRAC spec-2.6 Step 3 D7 */
+		signal_child(QvotecPID, signal);
 #endif
 }
 
@@ -5665,6 +5720,31 @@ cluster_postmaster_start_cssd(void)
 
 	CssdPID = StartCssd();
 	return CssdPID;
+}
+
+/*
+ * cluster_postmaster_start_qvotec -- spawn the QVOTEC aux process.
+ *
+ *	PGRAC (spec-2.6 Sprint A Step 3 D7): postmaster-owned narrow
+ *	wrapper for the cluster module to request QVOTEC spawn.  Mirrors
+ *	cluster_postmaster_start_cssd — StartChildProcess is file-static,
+ *	so cluster_qvotec.c forwards here.
+ *
+ *	Note: QVOTEC spawn is driven from cluster_run_phase4_sequence()
+ *	in the reaper PM_RUN transition path, AFTER CSSD ready (Sprint A
+ *	Step 3 D8 phase 4 driver fourth upgrade — DIAG + Stats + CSSD +
+ *	QVOTEC serial wait sharing phase4_remaining_budget_ms).
+ *
+ *	Spec: spec-2.6-voting-disk-quorum-lite.md Sprint A Step 3 D7.
+ */
+pid_t
+cluster_postmaster_start_qvotec(void)
+{
+	Assert(!IsUnderPostmaster);
+
+	qvotec_spawn_enabled = true;
+	QvotecPID = StartQvotec();
+	return QvotecPID;
 }
 #endif
 

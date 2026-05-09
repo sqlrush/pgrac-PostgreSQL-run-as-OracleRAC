@@ -325,6 +325,11 @@ extern void ClusterQvotecMain(void) pg_attribute_noreturn();
 extern bool cluster_qvotec_wait_for_ready(int timeout_ms);
 extern void cluster_qvotec_request_shutdown(void);
 
+/* Postmaster spawn wrapper (defined in postmaster/postmaster.c — Step 3 D7).
+ * cluster_qvotec_start() (defined in cluster_qvotec.c) forwards here. */
+extern pid_t cluster_qvotec_start(void);
+extern pid_t cluster_postmaster_start_qvotec(void);
+
 #endif /* USE_PGRAC_CLUSTER */
 
 

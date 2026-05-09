@@ -365,6 +365,9 @@ GetBackendTypeDesc(BackendType backendType)
 	case B_MRP:
 		backendDesc = "managed recovery process";
 		break;
+	case B_QVOTEC:
+		backendDesc = "qvotec";
+		break;
 	case B_RECOVERY_COORD:
 		backendDesc = "recovery coordinator";
 		break;

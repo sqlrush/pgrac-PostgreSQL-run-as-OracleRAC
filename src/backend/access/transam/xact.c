@@ -14,7 +14,7 @@
  *
  *-------------------------------------------------------------------------
  *
- * PGRAC MODIFICATIONS (spec-1.16 v0.2 + spec-1.18 v0.2)
+ * PGRAC MODIFICATIONS (spec-1.16 v0.2 + spec-1.18 v0.2 + spec-2.6 v0.2 D6)
  *
  *	Modified by: SqlRush <sqlrush@gmail.com>
  *	Spec: spec-1.16-local-scn-maintenance.md (commit/abort SCN advance)
@@ -30,6 +30,26 @@
  *	    Subxact aborts (called via xact.c CommitSubTransaction error
  *	    path) deliberately skipped -- only top-level abort decisions
  *	    advance SCN per Q4.
+ *
+ *	What changed (spec-2.6 v0.2 D6 — Sprint A Step 3):
+ *	  - CommitTransaction(): added cluster fail-closed commit-boundary
+ *	    check after PreCommit_Portals loop, before CallXactCallbacks
+ *	    (XACT_EVENT_PRE_COMMIT).  If cluster_enabled && writable txn
+ *	    (top xid assigned) && !cluster_qvotec_in_quorum() →
+ *	    ereport(ERROR, ERRCODE_CLUSTER_QUORUM_LOST 53R40).
+ *	    Read-only txns exempt per spec-2.0 §3.1.  Q5 v0.2 SQLSTATE
+ *	    is independent (NOT alias to 40001 SerializationFailure) —
+ *	    client retry pattern is fundamentally different.
+ *	  - cluster_qvotec_in_quorum() is lease-aware (Q4 v0.2): returns
+ *	    false if quorum_state != OK OR lease_expire_at_us has passed
+ *	    (qvotec hung > 2 × poll interval defends against silent stale-
+ *	    OK).  Process-local cluster_writes_frozen flag (set by
+ *	    PROCSIG_CLUSTER_FREEZE_WRITES handler in procsignal.c D5)
+ *	    also wins regardless of lease — defensive double-gate.
+ *	  - Step 3 D6 lands the safety-net commit-boundary check only;
+ *	    write-intent early-reject (INSERT/UPDATE/DELETE/DDL entry
+ *	    per Q5 v0.2 first layer) is deferred to Step 4 to keep
+ *	    Sprint A Step 3 scope limited.
  *
  *	What changed (spec-1.18 v0.2):
  *	  - XactLogCommitRecord(): new trailing SCN parameter; emits 8-byte
@@ -119,6 +139,8 @@
 #ifdef USE_PGRAC_CLUSTER
 /* PGRAC: spec-1.16 commit/abort SCN hooks; spec-1.18 WAL emit + replay. */
 #include "cluster/cluster_inject.h"
+#include "cluster/cluster_guc.h"		/* PGRAC: spec-2.6 cluster_enabled gate */
+#include "cluster/cluster_qvotec.h" /* PGRAC: spec-2.6 in_quorum lease check */
 #include "cluster/cluster_scn.h"
 #endif
 
@@ -2296,6 +2318,62 @@ CommitTransaction(void)
 		if (!PreCommit_Portals(false))
 			break;
 	}
+
+	/*
+	 * PGRAC: spec-2.6 D6 (Sprint A Step 3) — cluster fail-closed
+	 * commit-boundary check.  Q5 v0.2:  if cluster quorum has been
+	 * lost (qvotec broadcast PROCSIG_CLUSTER_FREEZE_WRITES, OR the
+	 * lease has expired without a quorum_state == OK update), reject
+	 * the commit BEFORE we write the commit record.  Read-only
+	 * transactions (no top xid assigned) are exempt per spec-2.0
+	 * §3.1 (read-only stays OK during quorum loss for diagnostics
+	 * and retries).
+	 *
+	 * The error is ERRCODE_CLUSTER_QUORUM_LOST (53R40, NEW class —
+	 * NOT aliased to ERRCODE_T_R_SERIALIZATION_FAILURE 40001 per
+	 * Q5 v0.2;client retry pattern is fundamentally different —
+	 * 40001 retries the same transaction, 53R40 expects fallback
+	 * to read-only or alarm).
+	 *
+	 * Step 3 D6 lands the safety-net commit-boundary check only;
+	 * the write-intent early-reject hook (INSERT/UPDATE/DELETE/DDL
+	 * entry, per Q5 v0.2 first layer) is deferred to Step 4 so
+	 * Sprint A Step 3 keeps its scope limited to "wire one PG-
+	 * original hook for the fail-closed contract".
+	 */
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * Multi-layer guard:
+	 *   - cluster_enabled = on (GUC)
+	 *   - writable transaction (top xid assigned;skip read-only)
+	 *   - NOT bootstrap / single-user mode (initdb + emergency PG paths
+	 *     run before qvotec exists;forcing them through fail-closed
+	 *     would brick initdb itself — verified via run hitting PANIC
+	 *     during initdb bootstrap script execution)
+	 *   - qvotec actually spawned (cluster_qvotec_get_pid() > 0;
+	 *     before phase 4 driver runs, no qvotec exists and the check
+	 *     is meaningless)
+	 *
+	 * Once those gates pass, cluster_qvotec_in_quorum() returns false
+	 * iff (quorum_state != OK) OR (lease expired) OR (cluster_writes_
+	 * frozen flag set by ProcSignal D5).  Any of those triggers
+	 * ereport(ERROR, ERRCODE_CLUSTER_QUORUM_LOST) to abort the commit.
+	 */
+	if (cluster_enabled
+		&& !IsBootstrapProcessingMode()
+		&& !IsBinaryUpgrade
+		&& TransactionIdIsValid(GetTopTransactionIdIfAny())
+		&& cluster_qvotec_get_pid() > 0)
+	{
+		if (!cluster_qvotec_in_quorum())
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_QUORUM_LOST),
+					 errmsg("cluster quorum lost or uncertain;"
+							" rejecting commit to prevent split-brain"),
+					 errhint("check pg_cluster_quorum_state.in_quorum and"
+							 " pg_cluster_voting_disks for disk health")));
+	}
+#endif
 
 	/*
 	 * The remaining actions cannot call any user-defined code, so it's safe

@@ -37,7 +37,8 @@
 #include "cluster/cluster_diag.h"  /* DiagMain (stage 1.13 Sprint A) */
 #include "cluster/cluster_lck.h"   /* LckMain (stage 1.12 Sprint A) */
 #include "cluster/cluster_lmon.h"  /* LmonMain (stage 1.11 Sprint A) */
-#include "cluster/cluster_cssd.h"  /* CssdMain (stage 2.5 Sprint A) */
+#include "cluster/cluster_cssd.h"	/* CssdMain (stage 2.5 Sprint A) */
+#include "cluster/cluster_qvotec.h" /* ClusterQvotecMain (spec-2.6 Sprint A Step 3 D7) */
 #include "cluster/cluster_stats.h" /* ClusterStatsMain (stage 1.14 Sprint A) */
 #endif
 
@@ -107,6 +108,10 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	/* PGRAC (stage 2.5 Sprint A): CSSD aux process. */
 	case CssdProcess:
 		MyBackendType = B_CSSD;
+		break;
+	/* PGRAC (stage 2.6 Sprint A Step 3 D7): QVOTEC aux process. */
+	case QvotecProcess:
+		MyBackendType = B_QVOTEC;
 		break;
 #endif
 	default:
@@ -216,6 +221,15 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	/* PGRAC (stage 2.5 Sprint A): CSSD aux process dispatch. */
 	case CssdProcess:
 		CssdMain();
+		proc_exit(1);
+	/* PGRAC (stage 2.6 Sprint A Step 3 D7): QVOTEC aux process dispatch.
+	 * ClusterQvotecMain is pg_attribute_noreturn() (proc_exit on shutdown);
+	 * the proc_exit(1) below is a defensive bailout in case the
+	 * compiler does not honor the attribute.
+	 *
+	 * Spec: spec-2.6-voting-disk-quorum-lite.md Sprint A Step 3 D7. */
+	case QvotecProcess:
+		ClusterQvotecMain();
 		proc_exit(1);
 #endif
 

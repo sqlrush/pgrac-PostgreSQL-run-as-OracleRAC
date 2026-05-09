@@ -13,19 +13,31 @@
  *
  * PGRAC MODIFICATIONS
  *	  Modified by: SqlRush <sqlrush@gmail.com>
- *	  Stage:        0.15
+ *	  Stage:        0.15 + 2.6
  *
- *	  Extended ProcSignalReason with cluster-specific reasons (currently
- *	  PROCSIG_CLUSTER_RECONFIG_START).  Cluster reasons are appended at
- *	  the end of the enum, guarded by #ifdef USE_PGRAC_CLUSTER, so PG's
- *	  original 13 numeric positions are preserved and --disable-cluster
- *	  builds remain byte-for-byte identical to upstream PG.
+ *	  Stage 0.15 (initial):
+ *	    Extended ProcSignalReason with PROCSIG_CLUSTER_RECONFIG_START.
+ *	    Cluster reasons are appended at the end of the enum, guarded
+ *	    by #ifdef USE_PGRAC_CLUSTER, so PG's original 13 numeric
+ *	    positions are preserved and --disable-cluster builds remain
+ *	    byte-for-byte identical to upstream PG.
+ *
+ *	  Stage 2.6 (Sprint A Step 3 D5 — voting disk fail-closed):
+ *	    Added PROCSIG_CLUSTER_FREEZE_WRITES + PROCSIG_CLUSTER_THAW_
+ *	    WRITES.  cluster_qvotec broadcasts these on quorum_state
+ *	    transition;backend ProcSignal handler sets a process-local
+ *	    sig_atomic_t flag (cluster_writes_frozen);CHECK_FOR_INTERRUPTS
+ *	    + commit-boundary check (Step 3 D6 in tcop/postgres.c) read
+ *	    the flag and ereport(ERROR, ERRCODE_CLUSTER_QUORUM_LOST) at
+ *	    the next write-intent or commit boundary.
  *
  *	  Each cluster reason is dispatched in
  *	  src/backend/storage/ipc/procsignal.c::procsignal_sigusr1_handler
- *	  to a handler in src/backend/cluster/cluster_signal.c.  See
- *	  docs/cluster-signal-design.md and
- *	  specs/spec-0.15-signal-framework.md.
+ *	  to a handler — for stages 0.15+ in cluster_signal.c, for
+ *	  stage 2.6 inline (calls cluster_freeze_writes_set / _thaw_set
+ *	  in cluster_qvotec.c).  See docs/cluster-signal-design.md and
+ *	  specs/spec-0.15-signal-framework.md / specs/spec-2.6-voting-
+ *	  disk-quorum-lite.md §3.2.
  *
  *-------------------------------------------------------------------------
  */
@@ -74,6 +86,8 @@ typedef enum
 	 * roster and reservation policy.
 	 */
 	PROCSIG_CLUSTER_RECONFIG_START,	/* LMON: cluster reconfig starting */
+	PROCSIG_CLUSTER_FREEZE_WRITES,	/* spec-2.6: qvotec quorum loss → fail-closed */
+	PROCSIG_CLUSTER_THAW_WRITES,	/* spec-2.6: qvotec quorum recover → resume */
 #endif
 
 	NUM_PROCSIGNALS				/* Must be last! */

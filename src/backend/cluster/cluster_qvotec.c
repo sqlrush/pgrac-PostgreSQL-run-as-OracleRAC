@@ -68,12 +68,17 @@
 
 #ifdef USE_PGRAC_CLUSTER
 
+#include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
+#include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/procsignal.h"
 #include "storage/shmem.h"
+#include "tcop/tcopprot.h" /* init_ps_display */
+#include "utils/ps_status.h"
 #include "utils/timestamp.h"
 
 #include "cluster/cluster_elog.h"  /* CLUSTER_LOG (best-effort logging) */
@@ -413,13 +418,31 @@ ClusterQvotecMain(void)
 {
 	long timeout_ms = CLUSTER_QVOTEC_DEFAULT_POLL_INTERVAL_MS;
 
-	QvotecPid = MyProcPid;
+	Assert(IsUnderPostmaster);
 
-	/* shmem_init may run lazily here when the postmaster is started
-	 * with --enable-cluster but the registration entry hasn't fired
-	 * yet (e.g. startup ordering bug).  Idempotent. */
+	QvotecPid = MyProcPid;
+	MyBackendType = B_QVOTEC;
+	init_ps_display(NULL);
+
+	/* Signal handler setup (mirrors CssdMain).  SIGQUIT is installed by
+	 * InitPostmasterChild;the others must be set explicitly so SIGHUP
+	 * triggers config reload + SIGTERM triggers graceful shutdown. */
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGINT, SignalHandlerForShutdownRequest);
+	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+	pqsignal(SIGALRM, SIG_IGN);
+	pqsignal(SIGPIPE, SIG_IGN);
+	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR2, SIG_IGN);
+	pqsignal(SIGCHLD, SIG_DFL);
+
+	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+
 	if (QvotecShmem == NULL)
-		cluster_qvotec_shmem_init();
+		ereport(FATAL, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("cluster_qvotec shmem region not attached"),
+						errhint("cluster_qvotec_shmem_init() must run during "
+								"CreateSharedMemoryAndSemaphores().")));
 
 	pg_atomic_write_u32(&QvotecShmem->state, CLUSTER_QVOTEC_READY);
 
@@ -506,6 +529,22 @@ cluster_qvotec_request_shutdown(void)
 		return;
 
 	pg_atomic_write_u32(&QvotecShmem->state, CLUSTER_QVOTEC_SHUTTING_DOWN);
+}
+
+
+/*
+ * cluster_qvotec_start — forward to postmaster spawn wrapper.
+ *
+ *	Called from cluster_run_phase4_sequence (Sprint A Step 3 D8) after
+ *	CSSD has reached READY.  StartChildProcess is file-static in
+ *	postmaster.c, so we use cluster_postmaster_start_qvotec as the
+ *	narrow wrapper.
+ */
+pid_t
+cluster_qvotec_start(void)
+{
+	Assert(!IsUnderPostmaster);
+	return cluster_postmaster_start_qvotec();
 }
 
 

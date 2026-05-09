@@ -650,6 +650,18 @@ cluster_cssd_wait_for_ready(int timeout_ms pg_attribute_unused())
 {
 	return false;
 }
+
+/* spec-2.6 Sprint A Step 3 D7 stubs: same for QVOTEC. */
+pid_t
+cluster_qvotec_start(void)
+{
+	return 0;
+}
+bool
+cluster_qvotec_wait_for_ready(int timeout_ms pg_attribute_unused())
+{
+	return false;
+}
 int
 cluster_stats_status(void)
 {
