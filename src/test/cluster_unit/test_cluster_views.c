@@ -173,12 +173,13 @@ UT_TEST(test_cluster_wait_events_count_is_64)
 {
 	/*
 	 * Cumulative registration roster: 61 prior + 3 added by spec-2.6 D11
-	 * (ClusterBgProcQvotecMainLoop + ClusterVotingDiskRead/Write).  If a
+	 * (ClusterBgProcQvotecMainLoop + ClusterVotingDiskRead/Write) + 1
+	 * added by spec-2.28 D9 (ClusterFenceBackendInterruptCheck).  If a
 	 * future subsystem spec adds new cluster wait events, both the enum
 	 * in wait_event.h and CLUSTER_WAIT_EVENTS_COUNT must move together,
 	 * and this test number must be bumped in lockstep.
 	 */
-	UT_ASSERT_EQ(CLUSTER_WAIT_EVENTS_COUNT, 64);
+	UT_ASSERT_EQ(CLUSTER_WAIT_EVENTS_COUNT, 65);
 }
 
 

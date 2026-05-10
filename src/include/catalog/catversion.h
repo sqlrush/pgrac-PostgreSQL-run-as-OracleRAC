@@ -218,6 +218,16 @@
  * inject points + 4 NEW pgstat counters.  Per L46 lower-bound regex
  * convention.
  */
-#define CATALOG_VERSION_NO 202605240
+/*
+ * 202605250: spec-2.28 Sprint A Step 4 (fence-lite catalog surface) —
+ * 1 NEW SQLSTATE 53R50 ERRCODE_CLUSTER_QUORUM_LOST_BACKEND, 1 NEW wait
+ * event WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK (60→61 → 64
+ * spec-2.6 → 65 spec-2.28), 1 NEW SRF cluster_get_fence_state (oid
+ * 8919) + matching pg_cluster_fence_state view, 4 NEW pgstat counters
+ * (cluster.fence.{freeze_broadcast/thaw_broadcast/self_fence_initiated/
+ * freeze_signal_received}_count), 3 NEW inject points (cluster-fence-
+ * pre-freeze-broadcast / -pre-self-fence-shutdown / -post-thaw-broadcast).
+ */
+#define CATALOG_VERSION_NO 202605250
 
 #endif

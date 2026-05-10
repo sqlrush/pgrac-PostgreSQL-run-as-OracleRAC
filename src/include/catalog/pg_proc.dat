@@ -12317,4 +12317,16 @@
   proargnames => '{path,state,last_read_at,last_write_at,read_count,write_count,io_error_count}',
   prosrc => 'cluster_get_voting_disks' },
 
+# spec-2.28 D10 (2026-05-10) -- pg_cluster_fence_state SRF (oid 8919).
+# Single-row fence-lite observability:  freeze/thaw timestamps,
+# self_fence_pending + grace remaining, 4 lifetime counters.
+{ oid => '8919', descr => 'show fence-lite state (spec-2.28)',
+  proname => 'cluster_get_fence_state', prorows => '1',
+  proretset => 't', provolatile => 'v', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{timestamptz,timestamptz,bool,int4,int8,int8,int8,int8}',
+  proargmodes => '{o,o,o,o,o,o,o,o}',
+  proargnames => '{last_freeze_at,last_thaw_at,self_fence_pending,self_fence_grace_remaining_ms,freeze_broadcast_count,thaw_broadcast_count,self_fence_initiated_count,freeze_signal_received_count}',
+  prosrc => 'cluster_get_fence_state' },
+
 ]

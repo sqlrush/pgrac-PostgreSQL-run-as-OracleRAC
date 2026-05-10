@@ -402,6 +402,14 @@ typedef enum {
 	WAIT_EVENT_CLUSTER_BGPROC_QVOTEC_MAIN_LOOP,		   /* spec-2.6 D11 */
 	WAIT_EVENT_CLUSTER_VOTING_DISK_READ,			   /* spec-2.6 D11 */
 	WAIT_EVENT_CLUSTER_VOTING_DISK_WRITE,			   /* spec-2.6 D11 */
+	/* spec-2.28 Sprint A Step 4 D9:  fence-lite backend interrupt check
+	 * wait event.  Backend ProcessInterrupts hook (postgres.c D4) sets
+	 * this wait event briefly while reading + clearing ClusterFenceFreeze
+	 * Pending + ereport(ERROR, 53R50).  Sub-microsecond duration in the
+	 * fast path (flag==0 early return);longer when ereport unwinds the
+	 * transaction.  Lets pg_stat_activity expose freeze-induced abort
+	 * source distinct from generic ClientRead / WAL classes. */
+	WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK,
 } WaitEventCluster;
 
 

@@ -88,6 +88,23 @@ static ClusterPgstatCounter cluster_pgstat_counters[] = {
 	{ .name = "cluster.qvotec.quorum_loss_event_count" },
 	{ .name = "cluster.qvotec.collision_detect_event_count" },
 	{ .name = "cluster.qvotec.disk_io_failure_count" },
+	/*
+	 * spec-2.28 Sprint A Step 4 D11:  4 fence-lite counters.  All four
+	 * are written directly to the registry atomic — no mirror sync
+	 * needed (avoids spec-2.6 backlog #4 limitation per spec-2.28
+	 * §2.2 design note).
+	 *
+	 *   freeze_broadcast_count          : LMON cluster_fence_broadcast_freeze
+	 *   thaw_broadcast_count            : LMON cluster_fence_broadcast_thaw
+	 *   self_fence_initiated_count      : postmaster cluster_fence_postmaster_check
+	 *                                     after grace_ms elapsed (kill SIGINT)
+	 *   freeze_signal_received_count    : every backend's cluster_fence_check_
+	 *                                     interrupts ereport(ERROR, 53R50)
+	 */
+	{ .name = "cluster.fence.freeze_broadcast_count" },
+	{ .name = "cluster.fence.thaw_broadcast_count" },
+	{ .name = "cluster.fence.self_fence_initiated_count" },
+	{ .name = "cluster.fence.freeze_signal_received_count" },
 };
 
 #define CLUSTER_PGSTAT_COUNT lengthof(cluster_pgstat_counters)

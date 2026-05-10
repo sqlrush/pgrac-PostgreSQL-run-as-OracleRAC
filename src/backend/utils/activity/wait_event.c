@@ -1258,6 +1258,9 @@ pgstat_get_wait_cluster_bgproc(WaitEventCluster w)
 	case WAIT_EVENT_CLUSTER_VOTING_DISK_WRITE:
 		event_name = "ClusterVotingDiskWrite";
 		break;
+	case WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK:
+		event_name = "ClusterFenceBackendInterruptCheck";
+		break;
 	default:
 		break;
 	}

@@ -86,8 +86,41 @@
 #include "funcapi.h"
 
 #include "cluster/cluster_guc.h"	/* cluster_enabled */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT (Step 4 D12) */
+#include "cluster/cluster_pgstat.h" /* cluster_pgstat_lookup/_inc (Step 4 D11) */
 #include "cluster/cluster_qvotec.h" /* cluster_qvotec_get_quorum_state (Step 3 D5) */
 #include "cluster/cluster_shmem.h"	/* cluster_shmem_register_region */
+#include "funcapi.h"				/* SRF for cluster_get_fence_state (Step 4 D10) */
+#include "pgstat.h"					/* pgstat_report_wait_start/_end (Step 4 D9) */
+#include "utils/builtins.h"			/* TimestampTzGetDatum */
+
+
+/* ============================================================
+ * Step 4 D11 — pgstat counter handles (lazy-init).
+ *
+ *	cluster_pgstat_lookup is O(N_counters) per call;cache the pointers
+ *	on first use so hot paths (broadcast / check_interrupts) avoid
+ *	repeated string lookups.  All four are appended to cluster_pgstat
+ *	_counters[] in cluster_pgstat.c (registry order: freeze_broadcast /
+ *	thaw_broadcast / self_fence_initiated / freeze_signal_received).
+ * ============================================================ */
+static ClusterPgstatCounter *fence_counter_freeze_broadcast = NULL;
+static ClusterPgstatCounter *fence_counter_thaw_broadcast = NULL;
+static ClusterPgstatCounter *fence_counter_self_fence_initiated = NULL;
+static ClusterPgstatCounter *fence_counter_freeze_signal_received = NULL;
+
+static void
+fence_counters_lookup_lazy(void)
+{
+	if (fence_counter_freeze_broadcast != NULL)
+		return; /* cached */
+	fence_counter_freeze_broadcast = cluster_pgstat_lookup("cluster.fence.freeze_broadcast_count");
+	fence_counter_thaw_broadcast = cluster_pgstat_lookup("cluster.fence.thaw_broadcast_count");
+	fence_counter_self_fence_initiated
+		= cluster_pgstat_lookup("cluster.fence.self_fence_initiated_count");
+	fence_counter_freeze_signal_received
+		= cluster_pgstat_lookup("cluster.fence.freeze_signal_received_count");
+}
 
 
 /* ============================================================
@@ -214,13 +247,21 @@ cluster_fence_broadcast_freeze(const char *reason, uint64 scn)
 	if (ClusterFenceShmem == NULL)
 		return; /* shmem not yet initialised — pre-RUNNING */
 
-	(void)scn; /* TODO Step 4 — record scn in audit log / counter */
+	(void)scn; /* recorded in audit LOG below — counter aggregates events */
+
+	fence_counters_lookup_lazy();
+
+	/* Step 4 D12 inject point — pre-broadcast pause for 098 TAP. */
+	CLUSTER_INJECTION_POINT("cluster-fence-pre-freeze-broadcast");
 
 	/* Update shmem timestamp + counter under lock. */
 	LWLockAcquire(&ClusterFenceShmem->lock, LW_EXCLUSIVE);
 	ClusterFenceShmem->last_freeze_at_us = GetCurrentTimestamp();
 	ClusterFenceShmem->freeze_event_count++;
 	LWLockRelease(&ClusterFenceShmem->lock);
+
+	/* Step 4 D11 cross-process visible counter (pgstat). */
+	cluster_pgstat_inc(fence_counter_freeze_broadcast);
 
 	/*
 	 * Loop ProcArray (PG-native via BackendIdGetProc) and SendProcSignal
@@ -274,6 +315,8 @@ cluster_fence_broadcast_thaw(const char *reason, uint64 scn)
 
 	(void)scn;
 
+	fence_counters_lookup_lazy();
+
 	/* Update shmem + cancel pending self-fence under lock. */
 	LWLockAcquire(&ClusterFenceShmem->lock, LW_EXCLUSIVE);
 	ClusterFenceShmem->last_thaw_at_us = GetCurrentTimestamp();
@@ -308,6 +351,11 @@ cluster_fence_broadcast_thaw(const char *reason, uint64 scn)
 			signaled++;
 		}
 	}
+
+	cluster_pgstat_inc(fence_counter_thaw_broadcast);
+
+	/* Step 4 D12 inject point — post-thaw synchronisation. */
+	CLUSTER_INJECTION_POINT("cluster-fence-post-thaw-broadcast");
 
 	if (cluster_fence_audit_log >= CLUSTER_FENCE_AUDIT_LOG_LOG)
 		ereport(LOG, (errmsg("cluster fence: broadcasting THAW_WRITES to %d backend(s),"
@@ -428,11 +476,31 @@ cluster_fence_check_interrupts(void)
 
 	ClusterFenceFreezePending = 0;
 
-	if (!cluster_freeze_writes_enabled)
-		return; /* dev/debug GUC absorb */
+	/*
+	 * Step 4 D9:  emit wait event around the body so pg_stat_activity
+	 * can attribute freeze-induced abort to its dedicated wait class.
+	 * Wrapping read-clear inside the wait event window is fine — the
+	 * read-clear is microsecond scale and ereport() unwinds tx in the
+	 * outer error path.
+	 */
+	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK);
 
-	if (!IsTransactionState())
+	/* Step 4 D11:  per-backend received counter — across all backends
+	 * sums to total freeze events × N_backends_alive_at_broadcast. */
+	fence_counters_lookup_lazy();
+	cluster_pgstat_inc(fence_counter_freeze_signal_received);
+
+	if (!cluster_freeze_writes_enabled) {
+		pgstat_report_wait_end();
+		return; /* dev/debug GUC absorb */
+	}
+
+	if (!IsTransactionState()) {
+		pgstat_report_wait_end();
 		return; /* idle backend absorb — commit gate handles next BEGIN */
+	}
+
+	pgstat_report_wait_end();
 
 	ereport(ERROR, (errcode(ERRCODE_CLUSTER_QUORUM_LOST_BACKEND),
 					errmsg("transaction aborted: cluster quorum lost in flight"),
@@ -477,6 +545,13 @@ cluster_fence_postmaster_check(void)
 	if (!should_initiate)
 		return;
 
+	/* Step 4 D11 cross-process counter (postmaster writer only). */
+	fence_counters_lookup_lazy();
+	cluster_pgstat_inc(fence_counter_self_fence_initiated);
+
+	/* Step 4 D12 inject point — pre-shutdown for 098 TAP cancel test. */
+	CLUSTER_INJECTION_POINT("cluster-fence-pre-self-fence-shutdown");
+
 	ereport(LOG, (errmsg("postmaster shutting down: self-fence on persistent quorum loss"),
 				  errdetail("cluster.self_fence_grace_ms (%d ms) elapsed since LMON detected"
 							" quorum loss",
@@ -515,11 +590,97 @@ cluster_fence_postmaster_check(void)
 Datum
 cluster_get_fence_state(PG_FUNCTION_ARGS)
 {
-	(void)fcinfo;
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("pg_cluster_fence_state not yet implemented "
-						   "(spec-2.28 Sprint A Step 4 D10)")));
-	PG_RETURN_NULL();
+	ReturnSetInfo *rsinfo;
+	Datum values[8];
+	bool nulls[8];
+	int col = 0;
+	TimestampTz last_freeze;
+	TimestampTz last_thaw;
+	TimestampTz self_fence_requested;
+	uint64 freeze_count;
+	uint64 thaw_count;
+	uint64 self_fence_initiated_count;
+	uint64 freeze_signal_received;
+
+	InitMaterializedSRF(fcinfo, 0);
+	rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+
+	if (ClusterFenceShmem == NULL) {
+		/* Pre-RUNNING / cluster.enabled=off — emit one row, all-NULL +
+		 * zero counters per spec §2.4 NULL semantics. */
+		Datum n_values[8] = { 0 };
+		bool n_nulls[8] = { true, true, false, false, false, false, false, false };
+
+		n_values[2] = BoolGetDatum(false);	   /* self_fence_pending */
+		n_values[3] = Int32GetDatum(-1);	   /* self_fence_grace_remaining_ms */
+		n_values[4] = Int64GetDatum((int64)0); /* freeze_broadcast_count */
+		n_values[5] = Int64GetDatum((int64)0); /* thaw_broadcast_count */
+		n_values[6] = Int64GetDatum((int64)0); /* self_fence_initiated_count */
+		n_values[7] = Int64GetDatum((int64)0); /* freeze_signal_received_count */
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, n_values, n_nulls);
+		return (Datum)0;
+	}
+
+	memset(nulls, false, sizeof(nulls));
+
+	/* Snapshot under lock — keep counters atomic across columns. */
+	LWLockAcquire(&ClusterFenceShmem->lock, LW_SHARED);
+	last_freeze = ClusterFenceShmem->last_freeze_at_us;
+	last_thaw = ClusterFenceShmem->last_thaw_at_us;
+	self_fence_requested = ClusterFenceShmem->self_fence_requested_at_us;
+	freeze_count = ClusterFenceShmem->freeze_event_count;
+	thaw_count = ClusterFenceShmem->thaw_event_count;
+	self_fence_initiated_count = ClusterFenceShmem->self_fence_initiated_count;
+	LWLockRelease(&ClusterFenceShmem->lock);
+
+	/* col 0:  last_freeze_at (NULL = never broadcast) */
+	if (last_freeze == 0)
+		nulls[col] = true;
+	else
+		values[col] = TimestampTzGetDatum(last_freeze);
+	col++;
+
+	/* col 1:  last_thaw_at (NULL = never broadcast) */
+	if (last_thaw == 0)
+		nulls[col] = true;
+	else
+		values[col] = TimestampTzGetDatum(last_thaw);
+	col++;
+
+	/* col 2:  self_fence_pending (true if requested_at_us > 0) */
+	values[col++] = BoolGetDatum(self_fence_requested > 0);
+
+	/* col 3:  self_fence_grace_remaining_ms (-1 if not pending) */
+	if (self_fence_requested == 0)
+		values[col++] = Int32GetDatum(-1);
+	else {
+		TimestampTz now = GetCurrentTimestamp();
+		int64 elapsed_ms = (now - self_fence_requested) / 1000;
+		int32 remaining_ms = cluster_self_fence_grace_ms - (int32)elapsed_ms;
+		if (remaining_ms < 0)
+			remaining_ms = 0; /* postmaster_check will fire next tick */
+		values[col++] = Int32GetDatum(remaining_ms);
+	}
+
+	/* col 4-6:  lifetime counters from shmem (NOT pgstat — shmem is
+	 * authoritative; pgstat is the cross-process visible mirror). */
+	values[col++] = Int64GetDatum((int64)freeze_count);
+	values[col++] = Int64GetDatum((int64)thaw_count);
+	values[col++] = Int64GetDatum((int64)self_fence_initiated_count);
+
+	/* col 7:  freeze_signal_received_count (per-backend cluster_pgstat
+	 * counter — sums across backends to total received events). */
+	{
+		ClusterPgstatCounter *c
+			= cluster_pgstat_lookup("cluster.fence.freeze_signal_received_count");
+		freeze_signal_received = (c == NULL) ? 0 : pg_atomic_read_u64(&c->value);
+	}
+	values[col++] = Int64GetDatum((int64)freeze_signal_received);
+
+	Assert(col == 8);
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+
+	return (Datum)0;
 }
 
 #endif /* USE_PGRAC_CLUSTER */

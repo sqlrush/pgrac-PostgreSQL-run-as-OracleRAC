@@ -225,6 +225,46 @@ cluster_qvotec_get_quorum_state(void)
 	return 0; /* CLUSTER_QVOTEC_QUORUM_INITIALIZING — no transitions */
 }
 
+/* spec-2.28 Step 4 stubs:  cluster_fence.o now references cluster_pgstat
+ * counters + pgstat_report_wait + tuplestore SRF infrastructure + inject
+ * point gate.  Empty stubs let unit tests exercise shmem state + GUC
+ * paths without pulling cluster_pgstat / wait_event / SRF / inject
+ * subsystems.  Real catalog surface verified by cluster_regress
+ * fence_smoke (Step 5 D16) + 098 TAP. */
+#include "cluster/cluster_pgstat.h"
+ClusterPgstatCounter *
+cluster_pgstat_lookup(const char *name pg_attribute_unused())
+{
+	return NULL; /* no counter — _inc handles NULL gracefully */
+}
+void
+cluster_pgstat_inc(ClusterPgstatCounter *c pg_attribute_unused())
+{}
+
+#include "cluster/cluster_inject.h"
+int cluster_injection_armed_count = 0;
+void
+cluster_injection_run(const char *name pg_attribute_unused())
+{}
+
+#include "pgstat.h"
+static uint32 ut_wait_event_info_storage = 0;
+uint32 *my_wait_event_info = &ut_wait_event_info_storage;
+
+/* SRF body cluster_get_fence_state is unreachable in unit tests
+ * (no fcinfo plumbing).  Stubs for InitMaterializedSRF +
+ * tuplestore_putvalues let it link if any test ever calls it.  */
+#include "funcapi.h"
+void
+InitMaterializedSRF(FunctionCallInfo fcinfo pg_attribute_unused(),
+					bits32 flags pg_attribute_unused())
+{}
+void
+tuplestore_putvalues(Tuplestorestate *state pg_attribute_unused(),
+					 TupleDesc tdesc pg_attribute_unused(), Datum *values pg_attribute_unused(),
+					 bool *isnull pg_attribute_unused())
+{}
+
 
 /* ============================================================
  * T-fence-1a:  GUC default values match spec §2.3.

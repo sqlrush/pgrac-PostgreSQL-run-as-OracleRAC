@@ -197,6 +197,20 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	{ .name = "cluster-voting-disk-write-fail" },
 	{ .name = "cluster-quorum-loss-broadcast" },
 	{ .name = "cluster-collision-detect" },
+	/*
+	 * spec-2.28 Sprint A Step 4 D12:  3 fence-lite injects.
+	 *   pre-freeze-broadcast        : LMON before SendProcSignal loop;
+	 *                                 098 TAP can pause/skip to test
+	 *                                 commit-gate-only path
+	 *   pre-self-fence-shutdown     : postmaster_check before kill(SIGINT);
+	 *                                 098 TAP injects pause to verify
+	 *                                 grace_ms timing then cancel
+	 *   post-thaw-broadcast         : after thaw SendProcSignal loop;
+	 *                                 098 TAP synchronisation point
+	 */
+	{ .name = "cluster-fence-pre-freeze-broadcast" },
+	{ .name = "cluster-fence-pre-self-fence-shutdown" },
+	{ .name = "cluster-fence-post-thaw-broadcast" },
 	/* Stage 1.15 (spec-1.15 D11 inject) — 4 SCN encoding-layer injects. */
 	{ .name = "cluster-scn-advance-pre" },
 	{ .name = "cluster-scn-advance-post" },

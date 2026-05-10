@@ -1558,6 +1558,26 @@ CREATE VIEW pg_cluster_voting_disks AS
 REVOKE ALL ON pg_cluster_voting_disks FROM PUBLIC;
 GRANT SELECT ON pg_cluster_voting_disks TO PUBLIC;
 
+-- PGRAC: pg_cluster_fence_state (spec-2.28 D10; 2026-05-10).
+--   Single-row view exposing fence-lite state:  last freeze/thaw
+--   timestamps, self_fence_pending + grace_ms remaining, 4 lifetime
+--   counters (freeze_broadcast / thaw_broadcast / self_fence_initiated
+--   / freeze_signal_received).  Backed by cluster_get_fence_state
+--   (OID 8919).
+CREATE VIEW pg_cluster_fence_state AS
+    SELECT last_freeze_at,
+           last_thaw_at,
+           self_fence_pending,
+           self_fence_grace_remaining_ms,
+           freeze_broadcast_count,
+           thaw_broadcast_count,
+           self_fence_initiated_count,
+           freeze_signal_received_count
+      FROM cluster_get_fence_state();
+
+REVOKE ALL ON pg_cluster_fence_state FROM PUBLIC;
+GRANT SELECT ON pg_cluster_fence_state TO PUBLIC;
+
 -- PGRAC: pg_cluster_ic_msg_types (spec-2.3 D8; 2026-05-08).
 --   Lists every IC message type registered in the process-local
 --   dispatch_table[] under cluster_ic_router.c.  Diagnostic /
