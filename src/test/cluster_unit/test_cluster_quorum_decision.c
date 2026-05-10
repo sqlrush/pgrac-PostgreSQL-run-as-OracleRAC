@@ -18,6 +18,7 @@
  *	  T-d-8  collision Q6: self.inc == slot.inc → NONE
  *	  T-d-9  generation == 0 (never written) skip both alive + collision
  *	  T-d-10 NULL inputs / 0 disks → LOST defensive
+ *	  T-d-14 fresh non-ALIVE self slot skips collision (clean tombstone)
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -273,6 +274,32 @@ UT_TEST(test_d_9_generation_zero_skips_alive_and_collision)
 }
 
 
+UT_TEST(test_d_14_non_alive_self_slot_skips_collision)
+{
+	ClusterVotingSlot slots[N_DISKS * N_NODES];
+	ClusterVotingDiskIoState io_states[N_DISKS]
+		= { CLUSTER_VOTING_DISK_IO_OK, CLUSTER_VOTING_DISK_IO_OK, CLUSTER_VOTING_DISK_IO_OK };
+	ClusterQuorumDecision out;
+
+	memset(slots, 0, sizeof(slots));
+	/*
+	 * Clean shutdown writes a fresh tombstone with flags=0 before qvotec
+	 * closes voting disks.  A fast restart must not treat that prior
+	 * incarnation as a live same-node peer collision.
+	 */
+	make_slot(&slots[0 * N_NODES + 0], 0, 0, /*inc*/ 500,
+			  /*generation*/ 5, 99, /*flags*/ 0);
+
+	decide_quorum_view(slots, io_states, N_DISKS, N_NODES,
+					   /*self*/ 0, /*self_inc*/ 1000, TEST_NOW_US, TEST_HEARTBEAT_TIMEOUT_US, &out);
+
+	UT_ASSERT_EQ(out.collision_state, CLUSTER_COLLISION_NONE);
+	UT_ASSERT_EQ(out.alive_bitmap[0], 0x00);
+	/* Tombstones still carry epoch input for future boot-epoch recovery. */
+	UT_ASSERT_EQ(out.epoch_max, 99);
+}
+
+
 UT_TEST(test_d_11_stale_alive_slot_excluded_from_bitmap)
 {
 	ClusterVotingSlot slots[N_DISKS * N_NODES];
@@ -369,7 +396,7 @@ UT_TEST(test_d_10_null_inputs_lost_defensive)
 int
 main(void)
 {
-	UT_PLAN(13);
+	UT_PLAN(14);
 	UT_RUN(test_d_1_three_disks_all_ok_majority);
 	UT_RUN(test_d_2_two_of_three_disks_ok_still_majority);
 	UT_RUN(test_d_3_one_of_three_disks_ok_uncertain);
@@ -379,6 +406,7 @@ main(void)
 	UT_RUN(test_d_7_collision_q6_observed_older_when_self_smaller);
 	UT_RUN(test_d_8_collision_same_incarnation_no_collision);
 	UT_RUN(test_d_9_generation_zero_skips_alive_and_collision);
+	UT_RUN(test_d_14_non_alive_self_slot_skips_collision);
 	UT_RUN(test_d_11_stale_alive_slot_excluded_from_bitmap);
 	UT_RUN(test_d_12_stale_collision_ignored);
 	UT_RUN(test_d_13_epoch_recovery_includes_stale_slots);

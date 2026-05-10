@@ -137,14 +137,15 @@ decide_quorum_view(const ClusterVotingSlot *slots, const ClusterVotingDiskIoStat
 			}
 
 			/*
-			 * Q6 v0.2 collision detection.  Only meaningful for slots
-			 * where node_id == self_node_id;in that case the slot
-			 * was written by the OTHER instance using the same
-			 * node_id (since we have not yet written ours this
-			 * cycle, OR even if we have, our own incarnation matches).
-			 * Stale collision ignored above (the other side has died).
+			 * Q6 v0.2 collision detection.  Only meaningful for fresh
+			 * ALIVE slots where node_id == self_node_id;in that case
+			 * the slot was written by the OTHER serving instance using
+			 * the same node_id.  Stale slots are ignored above, and
+			 * non-ALIVE slots are clean-shutdown tombstones that must
+			 * not trip fast-restart false collision.
 			 */
-			if (s->node_id == self_node_id && s->incarnation != self_incarnation) {
+			if ((s->flags & CLUSTER_VOTING_SLOT_FLAG_ALIVE)
+				&& s->node_id == self_node_id && s->incarnation != self_incarnation) {
 				if (self_incarnation > s->incarnation) {
 					/*
 					 * Q6 v0.2:  newer-self-FATAL.  Self is the newer

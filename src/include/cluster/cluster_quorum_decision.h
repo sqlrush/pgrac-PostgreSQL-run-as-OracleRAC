@@ -120,9 +120,10 @@ typedef struct ClusterQuorumDecision {
  *	    a FRESH (heartbeat_ts_us within timeout window) slot with
  *	    generation > 0 + flags.alive set.  Stale slots NOT counted —
  *	    a crashed peer's leftover ALIVE slot does not pollute the view.
- *	  - collision_state per Q6 v0.2 — scan FRESH OK-disk slots only
- *	    for slot.node_id == self_node_id with different incarnation;
- *	    stale collisions ignored (the other side has died).
+ *	  - collision_state per Q6 v0.2 — scan FRESH ALIVE OK-disk slots
+ *	    only for slot.node_id == self_node_id with different incarnation;
+ *	    stale collisions ignored (the other side has died);non-ALIVE
+ *	    slots are clean-shutdown tombstones and do not collide.
  */
 extern ClusterQvotecQuorumState
 decide_quorum_view(const ClusterVotingSlot *slots, const ClusterVotingDiskIoState *io_states,
