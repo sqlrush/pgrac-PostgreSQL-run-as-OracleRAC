@@ -8,9 +8,15 @@
 #
 #    L1   ClusterPair quorum_voting_disks=>3 strict-mode start_pair —
 #         both postmasters alive, share the same 3 voting-disk files.
-#    L2   Both nodes register self in voting disks within first poll
-#         cycle (pg_cluster_voting_disks shows 3 rows on each side;
-#         pg_cluster_quorum_state self_slot.last_seen_ms is fresh).
+#    L2   Both nodes parsed cluster.voting_disks GUC symmetrically —
+#         pg_cluster_voting_disks reports 3 rows on each side.  This
+#         only proves the GUC string was parsed identically by both
+#         postmasters; it does NOT prove either node successfully wrote
+#         its self-slot to a given disk (per-disk health surfacing
+#         requires D15 SRF state="unknown" placeholder to be replaced —
+#         spec-2.6 Hardening v0.5+ backlog #3).  The implicit proof of
+#         symmetric write success comes from L3 (in_quorum=t requires
+#         disks_ok >= ceil(N/2)+1 from each side's read view).
 #    L3   Quorum view converges on both nodes — in_quorum=t,
 #         disks_ok=3, disks_total=3 from each postmaster's view.
 #
@@ -71,18 +77,22 @@ sleep 5;
 
 
 # ============================================================
-# L2: both nodes registered in voting disks
+# L2: both nodes parsed cluster.voting_disks GUC symmetrically
 # ============================================================
 # Each side queries pg_cluster_voting_disks (its own GUC parse) and
-# reports 3 disk rows.  This proves the GUC propagated symmetrically
-# via ClusterPair postgresql.conf rewrite.
+# reports 3 disk rows.  This only proves ClusterPair wrote the same
+# CSV into both postgresql.conf and both postmasters parsed it; it
+# does NOT prove either node successfully wrote its self-slot to a
+# given disk.  Per-disk health (D15) is a Hardening v0.5+ backlog
+# item — until then, slot-write proof is implicit via L3 quorum
+# convergence.
 my $disks0 = $pair->node0->safe_psql(
 	'postgres', 'SELECT count(*) FROM pg_cluster_voting_disks');
-is($disks0, '3', 'L2 node0 sees 3 voting-disk rows');
+is($disks0, '3', 'L2 node0 parsed 3 voting-disk paths from GUC');
 
 my $disks1 = $pair->node1->safe_psql(
 	'postgres', 'SELECT count(*) FROM pg_cluster_voting_disks');
-is($disks1, '3', 'L2 node1 sees 3 voting-disk rows');
+is($disks1, '3', 'L2 node1 parsed 3 voting-disk paths from GUC');
 
 
 # ============================================================

@@ -5,9 +5,12 @@
  *
  *	  6th cluster aux process (LMON / LCK / DIAG / Stats / CSSD / QVOTEC).
  *	  Polls voting disks on shared storage (Step 2 D3 module), decides
- *	  cluster-wide quorum (Step 2 D4 module), broadcasts cluster_freeze_
- *	  writes / cluster_thaw_writes via PG ProcSignal multiplexer (Step 3
- *	  D5 PG-original mod) on quorum_state transition.
+ *	  cluster-wide quorum (Step 2 D4 module), publishes ClusterQvotec
+ *	  Shmem.quorum_state + Q4 v0.2 lease so xact.c CommitTransaction
+ *	  can fail-closed on every backend.  ProcSignal cluster_freeze_
+ *	  writes / cluster_thaw_writes broadcast (early-abort of in-flight
+ *	  long-running queries) is landed by spec-2.28 Fence-lite — until
+ *	  that ships, lease + commit-gate is the sole correctness path.
  *
  *	  Step 1 scope (this commit):
  *	    - ClusterQvotecShmem private 128-byte region (Q4 v0.2 lease-based)
@@ -168,12 +171,11 @@ static volatile sig_atomic_t cluster_writes_frozen = 0;
  *	but does no I/O (single-node compat — backend fail-closed gate
  *	is also skipped per P1.2 xact.c logic).
  *
- *	CLUSTER_MAX_VOTING_DISKS — practical odd-majority bounds: 1, 3,
- *	5, 7 cover all realistic deployments per Q10 v0.2.  Cap at 9 so
- *	a misconfigured 11+ disk list errors at qvotec startup rather
- *	than runs at degraded performance.
+ *	CLUSTER_MAX_VOTING_DISKS lives in cluster_qvotec.h (was a
+ *	divergent local define = 9 in v0.14.0–v0.14.1; Hardening v0.6
+ *	F5 unified to header value = 7 matching documented 1/3/5/7
+ *	odd-majority recommendation).
  * ============================================================ */
-#define CLUSTER_MAX_VOTING_DISKS 9
 
 static int qvotec_fds[CLUSTER_MAX_VOTING_DISKS];
 static int qvotec_n_disks = 0;
@@ -497,6 +499,42 @@ qvotec_close_disks_atexit(int code pg_attribute_unused(), Datum arg pg_attribute
 	qvotec_close_disks();
 }
 
+/*
+ * Hardening v0.6 F2 (companion to startup ghost-detect):
+ * Clean-shutdown self-slot ALIVE-flag clear.  Writes one final slot to
+ * every disk with flags = 0 (no ALIVE) before close.  Best-effort —
+ * write failures are swallowed (we are exiting anyway and the startup
+ * ghost-detect path will handle next-restart races).  This is NOT
+ * called from the on_shmem_exit crash path (proc_exit on FATAL):
+ * crash means we cannot trust postmaster_data_dir / fds; the startup
+ * ghost-detect path is the fallback for crash-restart races.
+ */
+static void
+qvotec_clear_self_alive_on_clean_shutdown(void)
+{
+	ClusterVotingSlot blanked;
+	int i;
+
+	if (qvotec_n_disks == 0 || cluster_node_id < 0 || (uint32)cluster_node_id >= CLUSTER_MAX_NODES)
+		return;
+
+	memset(&blanked, 0, sizeof(blanked));
+	blanked.magic = CLUSTER_VOTING_SLOT_MAGIC;
+	blanked.version = CLUSTER_VOTING_SLOT_VERSION;
+	blanked.node_id = (uint32)cluster_node_id;
+	blanked.incarnation = qvotec_self_incarnation;
+	blanked.heartbeat_ts_us = (uint64)GetCurrentTimestamp();
+	blanked.current_epoch = pg_atomic_read_u64(&QvotecShmem->current_epoch_at_boot);
+	blanked.flags = 0; /* ALIVE bit cleared — that's the whole point */
+
+	for (i = 0; i < qvotec_n_disks; i++) {
+		qvotec_slot_generation++;
+		blanked.generation = qvotec_slot_generation;
+		blanked.disk_index = (uint32)i;
+		(void)cluster_voting_disk_write_slot(qvotec_fds[i], &blanked);
+	}
+}
+
 
 /* ============================================================
  * qvotec_poll_once — single poll cycle (P1.3 step 2).
@@ -676,16 +714,39 @@ qvotec_poll_once(void)
 		}
 	}
 
-	/* Recompute disks_ok from possibly-downgraded io_states for the
-	 * shmem-published view (decide()'s output is authoritative for
-	 * quorum_state, but the count reflects post-write reality). */
+	/*
+	 * Hardening v0.6 F1:  recompute BOTH disks_ok_count AND quorum_state
+	 * from possibly-downgraded io_states.  The earlier comment
+	 * ("decide()'s output is authoritative for quorum_state, but the
+	 * count reflects post-write reality") was wrong — if N=3 disks were
+	 * all readable at decide() time but 2 then failed at write step,
+	 * decide()'s quorum_state=OK is stale: this node only landed its
+	 * heartbeat on 1/3 disks, peers reading the failed disks see an
+	 * aging slot, and the cross-cluster majority guarantee breaks.
+	 *
+	 * Post-write quorum_size is the simple majority of disks that
+	 * accepted the write; we mirror decide()'s formula so the two
+	 * paths stay in lockstep.  collision_state and alive_bitmap
+	 * remain decide()'s output (they reflect the read view, which is
+	 * unchanged by write failure).
+	 */
 	{
 		uint32 disks_ok_post_write = 0;
+		uint32 quorum_size_post_write;
+
 		for (i = 0; i < qvotec_n_disks; i++) {
 			if (io_states[i] == CLUSTER_VOTING_DISK_IO_OK)
 				disks_ok_post_write++;
 		}
 		decision.disks_ok_count = disks_ok_post_write;
+
+		quorum_size_post_write = ((uint32)qvotec_n_disks / 2u) + 1u;
+		if (disks_ok_post_write >= quorum_size_post_write)
+			decision.quorum_state = CLUSTER_QVOTEC_QUORUM_OK;
+		else if (disks_ok_post_write == 0)
+			decision.quorum_state = CLUSTER_QVOTEC_QUORUM_LOST;
+		else
+			decision.quorum_state = CLUSTER_QVOTEC_QUORUM_UNCERTAIN;
 	}
 
 	/* ---- 4. publish shmem ---- */
@@ -866,6 +927,65 @@ ClusterQvotecMain(void)
 		TopMemoryContext, sizeof(ClusterVotingSlot) * CLUSTER_MAX_VOTING_DISKS * CLUSTER_MAX_NODES);
 	qvotec_pgstat_lookup_all();
 
+	/*
+	 * Hardening v0.6 F2:  prior-incarnation self-slot detection.  If a
+	 * previous postmaster of THIS node (same node_id) crashed or was
+	 * stopped immediate-mode without zeroing its slot, and we are
+	 * restarting within the heartbeat freshness window
+	 * (2 × poll_interval_ms = 4s default), the first poll cycle would
+	 * read our own ghost slot, see node_id == self_node_id with a
+	 * lower (older) incarnation, and trigger Q6 newer-self-FATAL —
+	 * killing a healthy restart.
+	 *
+	 * Mitigation:  scan all open disks once at startup; if any slot at
+	 * offset self_node_id has flags & ALIVE and a heartbeat within the
+	 * timeout window, ereport(LOG) + sleep one heartbeat_timeout so
+	 * the ghost ages out before we enter the main poll loop.  Restart
+	 * gap > heartbeat_timeout pays zero cost (the ghost is already
+	 * stale; freshness gate would skip it).  Restart gap < timeout
+	 * pays heartbeat_timeout_us extra startup latency, which is the
+	 * minimum safe wait.
+	 *
+	 * This mitigation is read-only — we do not zero the ghost slot
+	 * here; the next poll cycle will overwrite it with our fresh
+	 * incarnation naturally.
+	 */
+	if (qvotec_n_disks > 0 && cluster_node_id >= 0 && (uint32)cluster_node_id < CLUSTER_MAX_NODES) {
+		uint64 heartbeat_timeout_us = (uint64)cluster_quorum_poll_interval_ms * 2 * 1000ULL;
+		uint64 now_us = (uint64)GetCurrentTimestamp();
+		bool ghost_fresh = false;
+		int d;
+
+		for (d = 0; d < qvotec_n_disks && !ghost_fresh; d++) {
+			ClusterVotingSlot probe;
+			ClusterVotingDiskIoState rrc;
+
+			rrc = cluster_voting_disk_read_slot(qvotec_fds[d], d, (uint32)cluster_node_id, &probe);
+			if (rrc != CLUSTER_VOTING_DISK_IO_OK)
+				continue;
+			if (probe.generation == 0)
+				continue; /* never written */
+			if (!(probe.flags & CLUSTER_VOTING_SLOT_FLAG_ALIVE))
+				continue; /* prior shutdown cleared ALIVE — ok */
+			if (probe.incarnation == qvotec_self_incarnation)
+				continue; /* same incarnation — impossible but defensive */
+			if (probe.heartbeat_ts_us == 0)
+				continue;
+			if (now_us > probe.heartbeat_ts_us
+				&& (now_us - probe.heartbeat_ts_us) > heartbeat_timeout_us)
+				continue; /* already stale */
+			ghost_fresh = true;
+		}
+
+		if (ghost_fresh) {
+			ereport(LOG, (errmsg("qvotec: prior-incarnation self-slot still fresh, "
+								 "waiting %lu ms for it to age out before first "
+								 "poll (avoids fast-restart Q6 newer-self FATAL)",
+								 (unsigned long)(heartbeat_timeout_us / 1000ULL))));
+			pg_usleep((long)(heartbeat_timeout_us / 1000ULL) * 1000L);
+		}
+	}
+
 	pg_atomic_write_u32(&QvotecShmem->state, CLUSTER_QVOTEC_READY);
 
 	for (;;) {
@@ -908,6 +1028,14 @@ ClusterQvotecMain(void)
 			ResetLatch(MyLatch);
 	}
 
+	/*
+	 * Hardening v0.6 F2:  best-effort clear ALIVE flag on self-slot
+	 * BEFORE closing disks, so a fast-restart sees our prior slot as
+	 * "shutdown clean" rather than "ghost peer alive".  Failure here
+	 * is non-fatal — startup ghost-detect path covers the residual
+	 * crash / immediate-shutdown gap.
+	 */
+	qvotec_clear_self_alive_on_clean_shutdown();
 	qvotec_close_disks();
 	pg_atomic_write_u32(&QvotecShmem->state, CLUSTER_QVOTEC_DOWN);
 

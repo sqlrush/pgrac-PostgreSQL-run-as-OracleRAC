@@ -5,11 +5,16 @@
  *
  *	  QVOTEC is the 6th cluster aux process (continuing LMON/LCK/DIAG/
  *	  Stats/CSSD).  Polls voting disks on shared storage to derive a
- *	  cluster-wide quorum view;broadcasts cluster_freeze_writes /
- *	  cluster_thaw_writes via PG ProcSignal multiplexer when the
- *	  quorum_state transitions.  Implements spec-2.0 §3 Invariant 1
- *	  (no-quorum no dual-write fail-closed) + Invariant 3 (uncertainty
- *	  → fail-closed).
+ *	  cluster-wide quorum view; publishes ClusterQvotecShmem.quorum_
+ *	  state + Q4 v0.2 lease so the xact.c commit-boundary fail-closed
+ *	  gate can enforce on every backend without a per-cycle broadcast.
+ *	  ProcSignal cluster_freeze_writes / cluster_thaw_writes multiplexer
+ *	  hooks (procsignal.h enums are pre-reserved at Stage 0.15+) are
+ *	  landed by spec-2.28 Fence-lite — until that ships, in-flight
+ *	  transaction abort relies on the next CommitTransaction hitting
+ *	  the lease+gate (no early-cancel of long-running queries).
+ *	  Implements spec-2.0 §3 Invariant 1 (no-quorum no dual-write
+ *	  fail-closed) + Invariant 3 (uncertainty → fail-closed).
  *
  *	  spec-2.6 v0.2 architecture (key Q decisions):
  *
@@ -123,12 +128,19 @@
 #define CLUSTER_VOTING_SLOT_FLAG_WRITE_FROZEN (1ULL << 1)
 
 /*
- * CLUSTER_VOTING_DISKS_MAX — compile-time upper bound on cluster.
- * voting_disks count.  Stage 2.6 supports 1..5 (Oracle-aligned
- * default 3, max 5).  Larger values raise quorum_size linearly with
- * no proven HA benefit at this stage and are deferred.
+ * CLUSTER_MAX_VOTING_DISKS — compile-time upper bound on cluster.
+ * voting_disks count.  Stage 2.6 supports 1..7 (Oracle-aligned
+ * default 3; recommended odd-majority cardinalities are 1 / 3 / 5 / 7
+ * — see qvotec_open_disks errhint and cluster_startup_phase Q10
+ * validator wording).  Larger values raise quorum_size linearly with
+ * no proven HA benefit at this stage and are bounded by this define.
+ *
+ * Hardening v0.6 F5:  prior versions had two divergent constants
+ * (CLUSTER_VOTING_DISKS_MAX = 5 in this header, CLUSTER_MAX_VOTING_
+ * DISKS = 9 in cluster_qvotec.c).  Unified to one name + one value
+ * matching the documented 1/3/5/7 recommendation.
  */
-#define CLUSTER_VOTING_DISKS_MAX 5
+#define CLUSTER_MAX_VOTING_DISKS 7
 
 
 /* ----------
