@@ -256,6 +256,12 @@ typedef enum BuiltinTrancheIds {
 	LWTRANCHE_CLUSTER_SCN,
 	/* PGRAC (stage 2.5): CSSD aux process lifecycle lwlock (spec-2.5 D7). */
 	LWTRANCHE_CLUSTER_CSSD,
+	/* PGRAC (spec-2.28 Sprint A Step 1): ClusterFenceShmem lwlock guards
+	 * last_freeze_at_us / last_thaw_at_us / self_fence_requested_at_us +
+	 * 3 lifetime counters.  Single-tranche per region (Q3 LMON-mediated
+	 * broadcast — only LMON acquires for write, postmaster_check + view
+	 * SRF are read-only paths). */
+	LWTRANCHE_CLUSTER_FENCE,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

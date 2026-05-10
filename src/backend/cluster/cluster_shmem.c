@@ -68,6 +68,7 @@
 #include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
 #include "cluster/cluster_qvotec.h"	  /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
+#include "cluster/cluster_fence.h"	  /* cluster_fence_shmem_register (spec-2.28 Sprint A Step 1) */
 /* spec-2.7 hardening F1: cluster_smgr_shmem_register;intentionally no
  * trailing line-end comment so the longer storage/ path doesn't force
  * clang-format to realign every neighbour include above. */
@@ -411,6 +412,18 @@ cluster_init_shmem_module(void)
 	 */
 	if (cluster_shmem_lookup_region("pgrac cluster qvotec") == NULL)
 		cluster_qvotec_shmem_register();
+
+	/*
+	 * spec-2.28 Sprint A Step 1 D2: register cluster_fence shmem
+	 * region.  Single-tranche LWLock + 6 lifetime counters for
+	 * Fence-lite (freeze / thaw timestamps, self-fence pending +
+	 * initiated counter).  Per Invariant I3, prerequisite is
+	 * v0.14.2-stage2.6 nightly run 25618433189 ✓.  Step 2 D3 wires
+	 * ProcSignal handler bodies, Step 3 D5 wires LMON broadcast,
+	 * Step 3 D6 wires postmaster kill(SIGINT) trigger.
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster fence") == NULL)
+		cluster_fence_shmem_register();
 }
 
 

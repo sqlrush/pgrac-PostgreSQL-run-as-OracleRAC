@@ -103,6 +103,12 @@ int cluster_quorum_poll_interval_ms = 2000;
 int cluster_voting_disk_io_timeout_ms = 5000;
 int cluster_voting_disk_size_bytes = 65536;
 
+/* spec-2.28 Sprint A Step 1 D7: 4 fence-lite GUCs (Q8 user approve). */
+bool cluster_self_fence_enabled = true;	   /* default fail-safe */
+int cluster_self_fence_grace_ms = 30000;   /* 30s = 7.5x lease */
+bool cluster_freeze_writes_enabled = true; /* default fail-safe */
+int cluster_fence_audit_log = 1;		   /* CLUSTER_FENCE_AUDIT_LOG_LOG */
+
 /* spec-2.2 D7 -- Tier 1 TCP transport tuning (PGC_POSTMASTER per §3.3). */
 int cluster_interconnect_heartbeat_interval_ms = 1000;
 int cluster_interconnect_connect_timeout_ms = 5000;
@@ -697,6 +703,96 @@ cluster_init_guc(void)
 										 "[4096, 1048576] bytes; must be a multiple of 512."),
 							&cluster_voting_disk_size_bytes, 65536, 4096, 1048576, PGC_POSTMASTER,
 							GUC_UNIT_BYTE, NULL, NULL, NULL);
+
+	/* spec-2.28 Sprint A Step 1 D7: 4 fence-lite GUCs (Q8 user approve). */
+
+	/*
+	 * cluster.self_fence_enabled (spec-2.28 D7).  Default fail-safe:
+	 * postmaster auto-shutdown when ClusterFenceShmem.self_fence_
+	 * requested_at_us has been set for >= cluster.self_fence_grace_ms.
+	 * Off → ops handles shutdown manually (pg_ctl stop) on persistent
+	 * quorum loss.  Per Invariant I1 / §3.6.1, dev/test default escape
+	 * is `cluster.allow_single_node = on` which keeps quorum_state at
+	 * INITIALIZING so the request is never made — this GUC is not the
+	 * dev kill switch.
+	 */
+	DefineCustomBoolVariable(
+		"cluster.self_fence_enabled",
+		gettext_noop("Enable postmaster self-shutdown on persistent quorum loss."),
+		gettext_noop("When on (default), postmaster initiates fast shutdown "
+					 "(SIGINT-driven) cluster.self_fence_grace_ms milliseconds "
+					 "after a quorum loss broadcast.  When off, in-flight "
+					 "transactions are still aborted via PROCSIG_CLUSTER_"
+					 "FREEZE_WRITES (controlled by cluster.freeze_writes_"
+					 "enabled), but postmaster stays up — operator must "
+					 "stop manually.  Dev/test escape is cluster.allow_"
+					 "single_node = on (qvotec stays in INITIALIZING; this "
+					 "GUC is irrelevant in that mode)."),
+		&cluster_self_fence_enabled, true, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+
+	/*
+	 * cluster.self_fence_grace_ms (spec-2.28 D7).  Delay between
+	 * quorum loss broadcast and postmaster pmdie.  Per Invariant I1
+	 * this only delays SELF-SHUTDOWN — the in-flight tx freeze
+	 * broadcast is immediate.  Default 30000ms = 7.5x Q4 v0.2 lease
+	 * window (4s) to absorb 4-10s transient flap; range allows
+	 * 1-300 seconds.
+	 */
+	DefineCustomIntVariable(
+		"cluster.self_fence_grace_ms",
+		gettext_noop("Delay before postmaster self-shutdown on persistent quorum loss (ms)."),
+		gettext_noop("Time between LMON's quorum-loss broadcast and the "
+					 "postmaster's SIGINT-driven fast shutdown.  ONLY delays "
+					 "self-shutdown; the in-flight transaction abort path "
+					 "(PROCSIG_CLUSTER_FREEZE_WRITES) is immediate per "
+					 "Invariant I1.  Default 30000 ms = 7.5× Q4 v0.2 lease "
+					 "window — absorbs transient quorum flaps before self-"
+					 "fence triggers.  Range [1000, 300000] ms."),
+		&cluster_self_fence_grace_ms, 30000, 1000, 300000, PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL,
+		NULL);
+
+	/*
+	 * cluster.freeze_writes_enabled (spec-2.28 D7).  Master switch for
+	 * the in-flight tx freeze path.  Off → cluster_fence_check_inter
+	 * rupts returns silently and the freeze flag is harmlessly absorbed;
+	 * commit gate (spec-2.6 v0.14.1) still fail-closes via lease.  Off
+	 * is for dev/debug only — production should keep on.
+	 */
+	DefineCustomBoolVariable(
+		"cluster.freeze_writes_enabled",
+		gettext_noop("Enable PROCSIG_CLUSTER_FREEZE_WRITES in-flight transaction abort."),
+		gettext_noop("When on (default), backends receiving the freeze signal "
+					 "ereport(ERROR) on next CHECK_FOR_INTERRUPTS, rolling back "
+					 "in-flight transactions.  When off, the signal is absorbed "
+					 "silently and only the commit-boundary fail-closed gate "
+					 "(spec-2.6) prevents writes — useful for diagnosing "
+					 "fence-induced abort behaviour without losing in-flight "
+					 "work.  Per Invariant I2, this does NOT bypass the commit "
+					 "gate either way."),
+		&cluster_freeze_writes_enabled, true, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+
+	/*
+	 * cluster.fence_audit_log (spec-2.28 D7).  Verbosity of fence-
+	 * related events in the postmaster log.
+	 */
+	{
+		static const struct config_enum_entry cluster_fence_audit_log_options[] = {
+			{ "off", 0, false },
+			{ "log", 1, false },
+			{ "debug", 2, false },
+			{ NULL, 0, false },
+		};
+
+		DefineCustomEnumVariable(
+			"cluster.fence_audit_log", gettext_noop("Verbosity of fence-related log events."),
+			gettext_noop("'off' suppresses all fence log lines (silent operation; "
+						 "rely on counters and views).  'log' (default) emits one "
+						 "LOG line per broadcast (freeze / thaw / self-fence "
+						 "initiated).  'debug' adds DEBUG2 entries for per-backend "
+						 "freeze signal receipt — verbose, dev/test only."),
+			&cluster_fence_audit_log, 1, /* default = log */
+			cluster_fence_audit_log_options, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+	}
 
 	/*
 	 * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).

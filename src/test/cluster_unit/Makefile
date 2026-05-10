@@ -37,7 +37,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_buffer_desc test_cluster_pcm_lock \
         test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision \
         test_cluster_xlog test_cluster_tt_slot test_cluster_undo_segment \
-        test_cluster_epoch
+        test_cluster_epoch test_cluster_fence
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -78,6 +78,7 @@ CLUSTER_DIAG_O = $(top_builddir)/src/backend/cluster/cluster_diag.o
 CLUSTER_STATS_O = $(top_builddir)/src/backend/cluster/cluster_stats.o
 CLUSTER_CSSD_O = $(top_builddir)/src/backend/cluster/cluster_cssd.o
 CLUSTER_QVOTEC_O = $(top_builddir)/src/backend/cluster/cluster_qvotec.o
+CLUSTER_FENCE_O = $(top_builddir)/src/backend/cluster/cluster_fence.o
 CLUSTER_VOTING_DISK_IO_O = $(top_builddir)/src/backend/cluster/cluster_voting_disk_io.o
 CLUSTER_QUORUM_DECISION_O = $(top_builddir)/src/backend/cluster/cluster_quorum_decision.o
 CLUSTER_SCN_O = $(top_builddir)/src/backend/cluster/cluster_scn.o
@@ -88,7 +89,7 @@ CLUSTER_SCN_O = $(top_builddir)/src/backend/cluster/cluster_scn.o
 # separate rules because they also link additional cluster_*.o
 # objects (the test files stub the PG backend symbols those
 # objects reference).
-SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat test_cluster_debug test_cluster_shared_fs test_cluster_smgr test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision test_cluster_scn test_cluster_epoch,$(TESTS))
+SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat test_cluster_debug test_cluster_shared_fs test_cluster_smgr test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision test_cluster_scn test_cluster_epoch test_cluster_fence,$(TESTS))
 
 # spec-2.4 D16: test_cluster_epoch links cluster_epoch.o standalone.
 # cluster_epoch.c references ShmemInitStruct + cluster_shmem_register_region
@@ -368,6 +369,16 @@ test_cluster_qvotec: test_cluster_qvotec.c unit_test.h \
 		$(CLUSTER_VERSION_O) $(CLUSTER_QVOTEC_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_QVOTEC_O) -o $@
+
+# spec-2.28 Sprint A Step 1 — cluster_fence.o standalone link.  Stubs all
+# PG runtime deps (shmem / lwlock / timestamp / errlog).  T-fence-1 verifies
+# GUC default + shmem layout init + flag default + 6 API survival.  Real
+# ProcSignal handler / postgres.c hook / LMON broadcast / postmaster
+# trigger land Steps 2-3.
+test_cluster_fence: test_cluster_fence.c unit_test.h \
+		$(CLUSTER_VERSION_O) $(CLUSTER_FENCE_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_FENCE_O) -o $@
 
 # spec-2.6 Sprint A Step 2 D3: cluster_voting_disk_io.o standalone test.
 # Real syscalls (open / pread / pwrite / fdatasync) on a temp file —
