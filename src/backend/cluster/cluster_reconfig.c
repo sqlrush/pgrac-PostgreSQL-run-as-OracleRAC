@@ -651,7 +651,6 @@ reconfig_dead_bitmap_to_hex_text(const uint8 *bmp)
 }
 
 
-PG_FUNCTION_INFO_V1(cluster_get_reconfig_state);
 Datum
 cluster_get_reconfig_state(PG_FUNCTION_ARGS)
 {
