@@ -605,6 +605,32 @@ dump_cluster_cssd(ReturnSetInfo *rsinfo)
 
 	iters = cluster_cssd_get_main_loop_iters();
 	emit_row(rsinfo, "cluster_cssd", "cluster_cssd_main_loop_iters", fmt_int64((int64)iters));
+
+	/*
+	 * spec-2.5 Hardening v1.0.3:  declared-alive aggregate observability
+	 * substrate.  Pure observability — these keys MUST NOT be consumed
+	 * for any decision path (quorum_state / reconfig / fence broadcast).
+	 * Provided as SQL surface for future fence/reconfig/SCN consumers
+	 * to verify substrate health from operator perspective.
+	 */
+	{
+		int alive_count = cluster_cssd_get_declared_alive_count();
+		uint8 alive_bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES];
+		char hex_buf[2 + CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES * 2 + 1];
+		int i;
+
+		emit_row(rsinfo, "cluster_cssd", "cssd.declared_alive_count",
+				 fmt_int32((int32) alive_count));
+
+		cluster_cssd_get_declared_alive_bitmap(alive_bitmap);
+		hex_buf[0] = '0';
+		hex_buf[1] = 'x';
+		for (i = 0; i < CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES; i++)
+			snprintf(hex_buf + 2 + (i * 2), 3, "%02x", alive_bitmap[i]);
+		hex_buf[2 + CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES * 2] = '\0';
+		emit_row(rsinfo, "cluster_cssd", "cssd.declared_alive_bitmap",
+				 pstrdup(hex_buf));
+	}
 }
 
 

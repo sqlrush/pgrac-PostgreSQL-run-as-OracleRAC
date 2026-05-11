@@ -324,6 +324,44 @@ extern int cluster_cssd_get_alive_peer_count(void);
  */
 extern uint64 cluster_cssd_get_dead_generation(void);
 
+/*
+ * spec-2.5 Hardening v1.0.3:  cluster_cssd_get_declared_alive_bitmap +
+ * cluster_cssd_get_declared_alive_count
+ *
+ *	  Observability substrate for future fence / reconfig / SCN consumers
+ *	  that need to know "which declared peers are CSSD-ALIVE right now"
+ *	  without having to loop CLUSTER_MAX_NODES (128) themselves and filter
+ *	  un-declared slots.
+ *
+ *	  declared = passes cluster_conf_lookup_node(peer_id) != NULL filter
+ *	  (L86 lesson family).  Without this filter the default-ALIVE
+ *	  shmem state of all 128 slots would be treated as 128 alive peers
+ *	  in a 2-node cluster.
+ *
+ *	  Self is EXCLUDED from both APIs (callers typically already know
+ *	  their own state via cluster_qvotec_in_quorum + cluster_node_id).
+ *
+ *	  *_count:   returns int 0..CLUSTER_MAX_NODES-1
+ *	  *_bitmap:  fills uint8 out[CLUSTER_MAX_NODES/8 = 16] with bit i
+ *	             set iff declared peer i is ALIVE.  Byte order matches
+ *	             the spec-2.29 ReconfigEvent.dead_bitmap convention
+ *	             (uint8[16] little-endian bit positions per peer).
+ *
+ *	  Per spec-2.5 Hardening v1.0.3 §0 invariant:  this is PURE
+ *	  observability — does NOT participate in any decision (quorum_state,
+ *	  reconfig coordinator, fence broadcast).  Future consumers that
+ *	  need peer-alive as a trigger condition (e.g. spec-2.30 peer-fence)
+ *	  must layer their own decision logic above these accessors.
+ *
+ *	  shmem-NULL-safe:  returns 0 / all-zero bitmap if CssdShmem == NULL
+ *	  (pre-postmaster / cluster.enabled=off).
+ */
+extern int cluster_cssd_get_declared_alive_count(void);
+
+#define CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES 16
+extern void cluster_cssd_get_declared_alive_bitmap(
+	uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES]);
+
 
 /*
  * Per-peer state accessors (used by SRF + diagnostic;

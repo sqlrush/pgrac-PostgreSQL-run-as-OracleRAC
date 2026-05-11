@@ -247,10 +247,17 @@ cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unus
 #include "fmgr.h"
 #include "funcapi.h"
 #include "utils/tuplestore.h"
+/* spec-2.5 Hardening v1.0.3 T-cssd-11 mock:  per-peer declared bitmap
+ * controlled by test;default all-false so existing T1-T10 see NULL lookup
+ * (matches previous stub behavior). */
+static bool ut_declared_set[CLUSTER_MAX_NODES];
+static ClusterNodeInfo ut_dummy_node;
 const ClusterNodeInfo *
-cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
+cluster_conf_lookup_node(int32 node_id)
 {
-	return NULL;
+	if (node_id < 0 || node_id >= CLUSTER_MAX_NODES)
+		return NULL;
+	return ut_declared_set[node_id] ? &ut_dummy_node : NULL;
 }
 void
 InitMaterializedSRF(FunctionCallInfo fcinfo pg_attribute_unused(),
@@ -497,12 +504,65 @@ UT_TEST(test_t10_grace_period_field_exists_static_grep)
 }
 
 
+/* spec-2.5 Hardening v1.0.3 T-cssd-11:  declared-alive aggregate accessor
+ * applies L86 declared-peer-filter — un-declared CSSD slots (default state
+ * ALIVE in shmem init) MUST be excluded from declared_alive_count /
+ * declared_alive_bitmap.  Without filter, a 2-node cluster would report
+ * ~127 alive peers (CLUSTER_MAX_NODES default-init).
+ *
+ * Test layout:
+ *   declared_set:  node 0 (self) + node 1 + node 5 declared
+ *   un-declared:   node 2, 3, 4, 6..127 NOT declared
+ *   self = node 0
+ *
+ *   After shmem_init all peers default state = ALIVE.  Expected:
+ *     - declared_alive_count = 2 (node 1 + node 5 — excludes self + un-declared)
+ *     - declared_alive_bitmap bit 1 + bit 5 set; bit 0 clear (self); others clear
+ */
+UT_TEST(test_t11_declared_alive_filter_L86)
+{
+	int alive_count;
+	uint8 bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES];
+	int i;
+
+	/* Reset declared set to test scope. */
+	for (i = 0; i < CLUSTER_MAX_NODES; i++)
+		ut_declared_set[i] = false;
+	ut_declared_set[0] = true;	/* self */
+	ut_declared_set[1] = true;
+	ut_declared_set[5] = true;
+
+	/* Initialize CssdShmem (default state = ALIVE for all 128 slots). */
+	shmem_init_done = false;
+	cluster_cssd_shmem_init();
+
+	/* cluster_node_id is already 0 (self) per test globals. */
+
+	alive_count = cluster_cssd_get_declared_alive_count();
+	UT_ASSERT_EQ(alive_count, 2);
+
+	cluster_cssd_get_declared_alive_bitmap(bitmap);
+
+	/* Self (node 0) excluded — byte[0] bit 0 must be clear. */
+	UT_ASSERT_EQ((int) (bitmap[0] & 0x01), 0);
+	/* node 1 declared + ALIVE — byte[0] bit 1 must be set. */
+	UT_ASSERT_EQ((int) ((bitmap[0] >> 1) & 0x01), 1);
+	/* node 2/3/4 un-declared — byte[0] bits 2/3/4 must be clear. */
+	UT_ASSERT_EQ((int) ((bitmap[0] >> 2) & 0x07), 0);
+	/* node 5 declared + ALIVE — byte[0] bit 5 must be set. */
+	UT_ASSERT_EQ((int) ((bitmap[0] >> 5) & 0x01), 1);
+	/* nodes 8..127 un-declared — all subsequent bytes must be zero. */
+	for (i = 1; i < CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES; i++)
+		UT_ASSERT_EQ((int) bitmap[i], 0);
+}
+
+
 UT_DEFINE_GLOBALS();
 
 int
 main(void)
 {
-	UT_PLAN(10);
+	UT_PLAN(11);
 
 	UT_RUN(test_t1_status_to_string_round_trip);
 	UT_RUN(test_t2_peer_state_to_string_round_trip);
@@ -514,6 +574,7 @@ main(void)
 	UT_RUN(test_t8_deadband_factor_default_invariant);
 	UT_RUN(test_t9_outbound_slot_pending_state_transitions_static_grep);
 	UT_RUN(test_t10_grace_period_field_exists_static_grep);
+	UT_RUN(test_t11_declared_alive_filter_L86);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

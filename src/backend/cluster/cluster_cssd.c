@@ -375,6 +375,62 @@ cluster_cssd_get_dead_generation(void)
 	return pg_atomic_read_u64(&CssdShmem->dead_generation);
 }
 
+/*
+ * spec-2.5 Hardening v1.0.3:  declared-alive aggregate observability.
+ *
+ *	  Loops CLUSTER_MAX_NODES (128) with the same L86 declared-peer
+ *	  filter pattern that cluster_cssd_get_alive_peer_count uses
+ *	  (cluster_cssd.c:318);counts/builds bitmap only for peers where
+ *	  cluster_conf_lookup_node returns non-NULL AND peer != self.
+ *
+ *	  Pure observability — does NOT participate in decision paths
+ *	  (quorum_state / reconfig coordinator / fence broadcast).  Future
+ *	  consumers that need peer-alive as a trigger must layer their own
+ *	  decision logic above these accessors.
+ */
+int
+cluster_cssd_get_declared_alive_count(void)
+{
+	int alive = 0;
+	int peer;
+
+	if (CssdShmem == NULL)
+		return 0;
+
+	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++)
+	{
+		if (peer == cluster_node_id)
+			continue;
+		if (cluster_conf_lookup_node(peer) == NULL)
+			continue;
+		if (pg_atomic_read_u32(&CssdShmem->peers[peer].state) == CLUSTER_CSSD_PEER_ALIVE)
+			alive++;
+	}
+	return alive;
+}
+
+void
+cluster_cssd_get_declared_alive_bitmap(uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES])
+{
+	int peer;
+
+	Assert(out_bitmap != NULL);
+	memset(out_bitmap, 0, CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES);
+
+	if (CssdShmem == NULL)
+		return;
+
+	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++)
+	{
+		if (peer == cluster_node_id)
+			continue;
+		if (cluster_conf_lookup_node(peer) == NULL)
+			continue;
+		if (pg_atomic_read_u32(&CssdShmem->peers[peer].state) == CLUSTER_CSSD_PEER_ALIVE)
+			out_bitmap[peer / 8] |= (uint8) (1u << (peer % 8));
+	}
+}
+
 TimestampTz
 cluster_cssd_get_peer_last_recv_at(int32 peer_id)
 {
