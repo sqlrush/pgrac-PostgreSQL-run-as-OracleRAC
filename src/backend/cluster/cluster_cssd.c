@@ -425,7 +425,7 @@ cluster_cssd_get_declared_alive_bitmap(uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_
 		if (cluster_conf_lookup_node(peer) == NULL)
 			continue;
 		if (pg_atomic_read_u32(&CssdShmem->peers[peer].state) == CLUSTER_CSSD_PEER_ALIVE)
-			out_bitmap[peer / 8] |= (uint8) (1u << (peer % 8));
+			out_bitmap[peer / 8] |= (uint8)(1u << (peer % 8));
 	}
 }
 
