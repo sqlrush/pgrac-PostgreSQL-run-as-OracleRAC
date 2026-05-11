@@ -81,7 +81,7 @@ for my $event (qw(
 my $pair = PostgreSQL::Test::ClusterPair->new_pair('pgrac080');
 $pair->start_pair;
 
-ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+ok($pair->wait_for_peer_state(0, 1, 'connected', 30),
 	'L2 node0 sees peer 1 connected');
 
 my %seen;

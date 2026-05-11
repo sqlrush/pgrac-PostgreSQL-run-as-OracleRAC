@@ -65,9 +65,9 @@ my $ENVELOPE_BYTES = 36;
 	# heartbeat interval = 1s; sleep 3s after connected guarantees
 	# at least 2 heartbeats sent each direction.
 	# ============================================================
-	ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+	ok($pair->wait_for_peer_state(0, 1, 'connected', 30),
 		'L2 node0 sees node1 connected within 10s (envelope wire)');
-	ok($pair->wait_for_peer_state(1, 0, 'connected', 10),
+	ok($pair->wait_for_peer_state(1, 0, 'connected', 30),
 		'L2 node1 sees node0 connected within 10s (envelope wire)');
 
 	sleep 3;

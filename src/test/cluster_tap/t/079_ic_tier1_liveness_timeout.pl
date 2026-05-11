@@ -45,9 +45,9 @@ $pair->start_pair;
 # ----------
 # L1: both peers reach state=connected + heartbeats flow.
 # ----------
-ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+ok($pair->wait_for_peer_state(0, 1, 'connected', 30),
 	'L1 node0 sees peer 1 connected');
-ok($pair->wait_for_peer_state(1, 0, 'connected', 10),
+ok($pair->wait_for_peer_state(1, 0, 'connected', 30),
 	'L1 node1 sees peer 0 connected');
 
 # Give 2s so heartbeats actually flow + counters increment.

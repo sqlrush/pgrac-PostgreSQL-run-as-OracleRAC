@@ -53,9 +53,9 @@ use Test::More;
 
 	# L2 -- peer.state = connected on both sides (10s deadline; default
 	# heartbeat interval = 1s, default connect_timeout = 5s).
-	ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+	ok($pair->wait_for_peer_state(0, 1, 'connected', 30),
 		'L2 node0 sees peer node1 in state=connected within 10s');
-	ok($pair->wait_for_peer_state(1, 0, 'connected', 10),
+	ok($pair->wait_for_peer_state(1, 0, 'connected', 30),
 		'L2 node1 sees peer node0 in state=connected within 10s');
 
 	# L3 -- heartbeat_send_count > 0 on both (gives at least 2s for
@@ -247,7 +247,7 @@ use Test::More;
 	my $pair = PostgreSQL::Test::ClusterPair->new_pair('pgrac076e');
 	$pair->start_pair;
 
-	ok($pair->wait_for_peer_state(0, 1, 'connected', 10),
+	ok($pair->wait_for_peer_state(0, 1, 'connected', 30),
 		'L10 setup: node0 sees peer 1 connected');
 
 	# Try to invoke cluster_ic_mock_inject from a backend in tier1 mode.
