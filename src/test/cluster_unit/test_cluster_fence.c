@@ -1,10 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * test_cluster_fence.c
- *	  spec-2.28 Sprint A Step 1 — D1+D2 cluster_fence.h+.c skeleton
- *	  link / shmem layout / API surface smoke.
+ *	  spec-2.28 Sprint A — cluster_fence unit coverage.
  *
- *	  Step 1 scope (this file — T-fence-1 only):
+ *	  T-fence-1:
  *	    T-fence-1a  GUC default values match spec §2.3 (4 GUCs)
  *	    T-fence-1b  cluster_fence_shmem_size > 0 + shmem_init succeeds +
  *	                idempotent (init twice safe via found-flag)
@@ -15,13 +14,11 @@
  *	                cleanly + early-return safely on disabled / null
  *	                shmem paths
  *
- *	  Step 1 explicitly DEFERS:
- *	    - Real ProcSignal flag set/clear (Step 2 D3)
- *	    - postgres.c ProcessInterrupts hook ereport (Step 2 D4)
- *	    - LMON broadcast loop ProcArray (Step 3 D5)
- *	    - postmaster kill SIGINT (Step 3 D6)
- *	    - Catalog SRF / inject / view (Step 4)
- *	    - 098 TAP fence_freeze_writes_2node (Step 5)
+ *	  Later T-fence cases cover ProcessInterrupts freeze abort semantics,
+ *	  GUC gates, thaw non-clearing semantics, and postmaster self-fence
+ *	  request/clear behavior.  Runtime multi-postmaster E2E coverage lives in
+ *	  098 TAP; L3-L8 remain deferred until a producer-side quorum-loss trigger
+ *	  exists for that harness.
  *
  *	  Per Invariant I3:  Sprint A Step 1 prerequisite is linkdb tag
  *	  v0.14.2-stage2.6 nightly run 25618433189 ✓ (Hardening v0.6 F1+F2

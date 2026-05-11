@@ -22,14 +22,12 @@
  *	    positions are preserved and --disable-cluster builds remain
  *	    byte-for-byte identical to upstream PG.
  *
- *	  Stage 2.6 (Sprint A Step 3 D5 — voting disk fail-closed):
+ *	  Stage 2.6 + 2.28 (voting disk fail-closed + fence-lite):
  *	    Added PROCSIG_CLUSTER_FREEZE_WRITES + PROCSIG_CLUSTER_THAW_
- *	    WRITES.  cluster_qvotec broadcasts these on quorum_state
- *	    transition;backend ProcSignal handler sets a process-local
- *	    sig_atomic_t flag (cluster_writes_frozen);CHECK_FOR_INTERRUPTS
- *	    + commit-boundary check (Step 3 D6 in tcop/postgres.c) read
- *	    the flag and ereport(ERROR, ERRCODE_CLUSTER_QUORUM_LOST) at
- *	    the next write-intent or commit boundary.
+ *	    WRITES.  LMON broadcasts these after observing QVOTEC quorum_state
+ *	    transitions; backend handlers set process-local sig_atomic_t flags for
+ *	    the spec-2.6 commit gate and the spec-2.28 ProcessInterrupts in-flight
+ *	    abort path.
  *
  *	  Each cluster reason is dispatched in
  *	  src/backend/storage/ipc/procsignal.c::procsignal_sigusr1_handler

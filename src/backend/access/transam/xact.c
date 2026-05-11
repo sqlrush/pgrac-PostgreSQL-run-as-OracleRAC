@@ -2325,8 +2325,9 @@ CommitTransaction(void)
 	/*
 	 * PGRAC: spec-2.6 D6 (Sprint A Step 3) — cluster fail-closed
 	 * commit-boundary check.  Q5 v0.2:  if cluster quorum has been
-	 * lost (qvotec broadcast PROCSIG_CLUSTER_FREEZE_WRITES, OR the
-	 * lease has expired without a quorum_state == OK update), reject
+		 * lost (LMON broadcast PROCSIG_CLUSTER_FREEZE_WRITES after a
+		 * QVOTEC quorum_state transition, OR the lease has expired without
+		 * a quorum_state == OK update), reject
 	 * the commit BEFORE we write the commit record.  Read-only
 	 * transactions (no top xid assigned) are exempt per spec-2.0
 	 * §3.1 (read-only stays OK during quorum loss for diagnostics

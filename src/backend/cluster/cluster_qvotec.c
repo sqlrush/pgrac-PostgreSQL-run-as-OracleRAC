@@ -7,10 +7,10 @@
  *	  Polls voting disks on shared storage (Step 2 D3 module), decides
  *	  cluster-wide quorum (Step 2 D4 module), publishes ClusterQvotec
  *	  Shmem.quorum_state + Q4 v0.2 lease so xact.c CommitTransaction
- *	  can fail-closed on every backend.  ProcSignal cluster_freeze_
- *	  writes / cluster_thaw_writes broadcast (early-abort of in-flight
- *	  long-running queries) is landed by spec-2.28 Fence-lite — until
- *	  that ships, lease + commit-gate is the sole correctness path.
+ *	  can fail-closed on every backend.  spec-2.28 Fence-lite consumes
+ *	  QVOTEC quorum_state from LMON and broadcasts ProcSignal freeze/thaw
+ *	  for early-abort of in-flight long-running queries; the QVOTEC lease +
+ *	  commit gate remain the authoritative durable-write predicate.
  *
  *	  Step 1 scope (this commit):
  *	    - ClusterQvotecShmem private 128-byte region (Q4 v0.2 lease-based)

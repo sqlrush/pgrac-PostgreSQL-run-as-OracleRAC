@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * cluster_fence.h
- *	  pgrac Fence-lite — spec-2.28 Sprint A Step 1.
+ *	  pgrac Fence-lite — spec-2.28 Sprint A.
  *
  *	  Internal-only fence-lite: ProcSignal-driven freeze/thaw broadcast
  *	  for in-flight transaction abort + postmaster orderly self-shutdown
@@ -32,7 +32,7 @@
  *	       layer).  Without those fixes, freeze broadcast can fire
  *	       on stale quorum_state and abort healthy in-flight tx.
  *
- *	  Step 1 scope (this commit):
+ *	  Sprint A shipped scope:
  *	    - Public API decl (init / broadcast_freeze / broadcast_thaw /
  *	      self_request / check_interrupts / postmaster_check)
  *	    - 4 PGC_POSTMASTER GUC extern declarations
@@ -44,21 +44,13 @@
  *	      guard needed inside hook body)
  *	    - SRF callback decl for pg_cluster_fence_state view
  *	    - shmem_size / shmem_init / shmem_register
+ *	    - ProcSignal handler bodies, ProcessInterrupts hook, LMON transition
+ *	      actor, postmaster SIGINT self-fence, 53R50, wait event, counters,
+ *	      injects, and catalog view wiring.
  *
- *	  Step 1 explicitly DEFERS:
- *	    - Real ProcSignal handler bodies (cluster_signal.c — Step 2 D3)
- *	    - Backend ProcessInterrupts hook (postgres.c — Step 2 D4)
- *	    - LMON quorum_state poll + broadcast (cluster_lmon.c — Step 3 D5)
- *	    - Postmaster orderly shutdown trigger via kill(MyProcPid,
- *	      SIGINT) (postmaster.c — Step 3 D6, v0.3 F4 amend per
- *	      "no `pmdie()` callable")
- *	    - 1 SQLSTATE + 1 wait event + view + counters + inject (Step 4)
- *	    - 098 TAP fence_freeze_writes_2node + 096 L4-L5 unblock (Step 5)
- *
- *	  Until Step 2-3 land, broadcast_freeze / broadcast_thaw / self_
- *	  request are stubs that update ClusterFenceShmem fields but do NOT
- *	  iterate ProcArray / send signals.  This lets cluster_unit T-fence-1
- *	  verify GUC default registration without pulling in PG runtime.
+ *	  098 L3-L8 / 096 L4-L5 remain deferred.  The shipped runtime trigger is
+ *	  quorum_state transition from spec-2.6 QVOTEC; SIGSTOP peer-alive loss is
+ *	  not a quorum_state trigger under the current disk-quorum model.
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group

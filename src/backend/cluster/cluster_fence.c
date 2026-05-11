@@ -1,42 +1,26 @@
 /*-------------------------------------------------------------------------
  *
  * cluster_fence.c
- *	  pgrac Fence-lite — spec-2.28 Sprint A Step 1.
+ *	  pgrac Fence-lite — spec-2.28 Sprint A.
  *
  *	  Internal-only fence-lite skeleton.  ProcSignal-driven freeze/thaw
  *	  broadcast for in-flight transaction abort + postmaster orderly
  *	  self-shutdown on persistent quorum loss.  Consumes ClusterQvotec
  *	  Shmem.quorum_state (spec-2.6) via LMON tick.
  *
- *	  Step 1 scope (this commit):
- *	    - ClusterFenceShmem private 128-byte (2 cache-line) region with
- *	      LWLock for multi-writer coordination
- *	    - ClusterFenceFreezePending volatile sig_atomic_t per-backend
- *	      flag (defined here, set by cluster_signal.c handler in Step 2)
- *	    - shmem_size / shmem_init / shmem_register
- *	    - broadcast_freeze / broadcast_thaw / self_request stubs that
- *	      update ClusterFenceShmem fields but do NOT iterate ProcArray /
- *	      send signals (Step 3 D5 wires real broadcast)
- *	    - cluster_fence_check_interrupts no-op stub (Step 2 D4 wires
- *	      ereport ERRCODE_CLUSTER_QUORUM_LOST_BACKEND in postgres.c)
- *	    - cluster_fence_postmaster_check no-op stub (Step 3 D6 wires
- *	      kill(MyProcPid, SIGINT) per v0.3 F4 amend)
- *	    - cluster_get_fence_state SRF callback skeleton (Step 4 D10
- *	      wires into pg_proc.dat;Step 1 returns ERRCODE_FEATURE_NOT
- *	      _SUPPORTED)
+ *	  Sprint A shipped scope:
+ *	    - ClusterFenceShmem region with LWLock-protected freeze/thaw/self-
+ *	      fence observability state
+ *	    - ClusterFenceFreezePending volatile sig_atomic_t per-backend flag
+ *	    - ProcSignal freeze/thaw handlers and ProcessInterrupts abort hook
+ *	    - LMON-mediated quorum-state transition actor
+ *	    - postmaster SIGINT self-fence after cluster.self_fence_grace_ms
+ *	    - pg_cluster_fence_state, 53R50, wait event, counters, and injects
  *
- *	  Step 1 explicitly DEFERS:
- *	    - Real ProcSignal handler bodies in cluster_signal.c — Step 2 D3
- *	    - postgres.c ProcessInterrupts hook wiring — Step 2 D4
- *	    - cluster_lmon.c quorum_state poll + broadcast helper — Step 3 D5
- *	    - postmaster.c kill self SIGINT trigger — Step 3 D6
- *	    - 1 SQLSTATE 53R50 / 1 wait event / view / 4 atomic counters /
- *	      3 inject points — Step 4
- *	    - 098 TAP fence_freeze_writes_2node + 096 L4-L5 unblock — Step 5
- *
- *	  Three user-imposed invariants (spec §3.0) are enforced by
- *	  later steps;Step 1 is just shmem region + API surface.  See
- *	  cluster_fence.h banner for full context.
+ *	  098 L3-L8 and 096 L4-L5 remain deferred because spec-2.6 quorum_state is
+ *	  disk-quorum driven; SIGSTOP peer-alive loss does not by itself transition
+ *	  quorum_state to LOST.  See the spec-2.28 ship appendix for the exact
+ *	  v0.15.0 contract and backlog.
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -149,11 +133,11 @@ volatile sig_atomic_t ClusterFenceFreezePending = 0;
  *	 104..111 uint64 self_fence_initiated_count
  *	 112..127 uint8[16] _reserved
  *
- *	Note:  freeze_signal_received_count is NOT in this region —
- *	per spec D11, that counter is per-backend pg_atomic in the
- *	cluster_pgstat shmem region (cluster.fence.freeze_signal_received_
- *	count) so cross-process aggregation works via the existing mirror
- *	sync framework.  This avoids spec-2.6 backlog #4 limitation.
+ *	Note:  freeze_signal_received_count is NOT in this region.  It is
+ *	kept in the process-local cluster_pgstat registry for the backend that
+ *	receives the freeze signal.  pg_cluster_fence_state reports that local
+ *	value for the caller; freeze/thaw/self-fence counts in this shmem region
+ *	are the cross-process authoritative observability path in v0.15.0.
  *
  *	The LWLock is sized via PG's standard LWLockPadded mechanism;
  *	this struct uses a direct LWLock member (one tranche slot) and
@@ -226,13 +210,8 @@ cluster_fence_shmem_register(void)
 
 
 /* ============================================================
- * Step 1 stubs — broadcast / self_request / check_interrupts /
- * postmaster_check.  Real bodies land Step 2-3 per spec §1.2.
- *
- *	The shmem fields ARE updated by these stubs so cluster_unit
- *	T-fence-1 can verify the API surface compiles + links cleanly.
- *	Real ProcArray loop / SendProcSignal / kill(SIGINT) wiring is
- *	in cluster_lmon.c (Step 3 D5) and postmaster.c (Step 3 D6).
+ * Runtime API — broadcast / self_request / check_interrupts /
+ * postmaster_check.
  * ============================================================ */
 
 void
@@ -260,7 +239,7 @@ cluster_fence_broadcast_freeze(const char *reason, uint64 scn)
 	ClusterFenceShmem->freeze_event_count++;
 	LWLockRelease(&ClusterFenceShmem->lock);
 
-	/* Step 4 D11 cross-process visible counter (pgstat). */
+	/* Step 4 D11 process-local pgstat counter; shmem view is authoritative. */
 	cluster_pgstat_inc(fence_counter_freeze_broadcast);
 
 	/*
@@ -488,8 +467,9 @@ cluster_fence_check_interrupts(void)
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK);
 
-	/* Step 4 D11:  per-backend received counter — across all backends
-	 * sums to total freeze events × N_backends_alive_at_broadcast. */
+		/* Step 4 D11:  per-backend received counter.  This is visible to
+		 * the current backend through pg_stat_cluster_counters; there is no
+		 * cross-process aggregate in v0.15.0. */
 	fence_counters_lookup_lazy();
 	cluster_pgstat_inc(fence_counter_freeze_signal_received);
 

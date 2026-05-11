@@ -8,11 +8,10 @@
  *	  cluster-wide quorum view; publishes ClusterQvotecShmem.quorum_
  *	  state + Q4 v0.2 lease so the xact.c commit-boundary fail-closed
  *	  gate can enforce on every backend without a per-cycle broadcast.
- *	  ProcSignal cluster_freeze_writes / cluster_thaw_writes multiplexer
- *	  hooks (procsignal.h enums are pre-reserved at Stage 0.15+) are
- *	  landed by spec-2.28 Fence-lite — until that ships, in-flight
- *	  transaction abort relies on the next CommitTransaction hitting
- *	  the lease+gate (no early-cancel of long-running queries).
+ *	  spec-2.28 Fence-lite uses those quorum_state transitions from LMON to
+ *	  broadcast ProcSignal freeze/thaw for early in-flight transaction aborts.
+ *	  The QVOTEC lease + commit gate remain the authoritative durable-write
+ *	  predicate.
  *	  Implements spec-2.0 §3 Invariant 1 (no-quorum no dual-write
  *	  fail-closed) + Invariant 3 (uncertainty → fail-closed).
  *
@@ -338,11 +337,10 @@ extern bool cluster_qvotec_in_quorum(void);
  *	procsignal.c (D5 wired);read by cluster_qvotec_in_quorum() and
  *	cluster_writes_currently_frozen().
  *
- *	Sender side (qvotec broadcasting on quorum state transition) is
- *	NOT wired in v0.14.0 — see Hardening v0.3 backlog #1.  The flag
- *	stays defensive infrastructure;Q4 v0.2 lease + commit-boundary
- *	check provide the actual fail-closed contract until the
- *	broadcast lands.
+ *	Sender side is LMON-mediated as of spec-2.28: LMON observes QVOTEC
+ *	quorum_state transitions and broadcasts PROCSIG_CLUSTER_FREEZE_WRITES /
+ *	_THAW_WRITES.  The Q4 v0.2 lease + commit-boundary check remain the
+ *	authoritative durable-write predicate.
  * ---------- */
 extern void cluster_freeze_writes_set(void);
 extern void cluster_thaw_writes_set(void);
