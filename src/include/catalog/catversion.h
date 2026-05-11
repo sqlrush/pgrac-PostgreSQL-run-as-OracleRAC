@@ -228,6 +228,26 @@
  * freeze_signal_received}_count), 3 NEW inject points (cluster-fence-
  * pre-freeze-broadcast / -pre-self-fence-shutdown / -post-thaw-broadcast).
  */
-#define CATALOG_VERSION_NO 202605250
+/*
+ * spec-2.29 Sprint A Step 1 (2026-05-11): bump for catalog surface
+ * delta introduced by reconfig coordinator (internal-only A scope).
+ *
+ * Surface added across Sprint A:
+ *   +1 SQLSTATE 53R60 ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS (Step 3 D8)
+ *   +1 wait event BgProcLmonReconfigTick (Step 3 D9)
+ *   +1 shmem region "pgrac cluster reconfig" (Step 1 D2)
+ *   +1 SRF pg_cluster_reconfig_state (oid 8920, 9 cols, Step 3 D5b/D6)
+ *   +5 inject points (cluster-reconfig-*: tick-entry / decide-coord /
+ *     epoch-bump-pre / broadcast-procsig-pre + cluster-cssd-mark-peer-
+ *     dead for unit/inject tests) (Step 3 D10)
+ *   +0 GUC (cssd_heartbeat_interval_ms from spec-2.5 reused)
+ *
+ * Step 1 bumps catversion as part of shmem region addition so that
+ * any catalog-aware tooling using CATALOG_VERSION_NO sees the spec-
+ * 2.29 surface from Sprint A inception;Steps 3-4 populate SRF /
+ * errcode / wait event / inject point catalog rows behind this
+ * already-bumped catversion.
+ */
+#define CATALOG_VERSION_NO 202605260
 
 #endif

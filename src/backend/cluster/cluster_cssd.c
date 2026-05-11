@@ -179,6 +179,8 @@ cluster_cssd_shmem_init(void)
 
 		pg_atomic_init_u64(&CssdShmem->total_heartbeat_send_count, 0);
 		pg_atomic_init_u64(&CssdShmem->total_heartbeat_recv_count, 0);
+		/* spec-2.29 D19: dead_generation monotonic counter init = 0. */
+		pg_atomic_init_u64(&CssdShmem->dead_generation, 0);
 
 		for (peer = 0; peer < CLUSTER_MAX_NODES; peer++) {
 			pg_atomic_init_u32(&CssdShmem->peers[peer].state, CLUSTER_CSSD_PEER_ALIVE);
@@ -350,6 +352,27 @@ cluster_cssd_get_peer_state(int32 peer_id)
 	if (peer_id < 0 || peer_id >= CLUSTER_MAX_NODES)
 		return CLUSTER_CSSD_PEER_ALIVE;
 	return (ClusterCssdPeerState)pg_atomic_read_u32(&CssdShmem->peers[peer_id].state);
+}
+
+/*
+ * spec-2.29 D19: cluster_cssd_get_dead_generation accessor.
+ *
+ *	  Monotonic per-instance counter — increments on every peer state
+ *	  transition (ALIVE↔SUSPECTED↔DEAD) inside cssd_deadband_scan_tick.
+ *	  Used by cluster_reconfig event_id hash dedup (spec-2.29 §3.2
+ *	  P1.2 fix) to disambiguate identical dead_bitmap across rejoin-
+ *	  then-redeath.
+ *
+ *	  Returns 0 if shmem not yet initialized (defensive — callers on
+ *	  cluster_reconfig_lmon_tick path should never hit this branch
+ *	  because postmaster phase 1 shmem init runs before LMON spawn).
+ */
+uint64
+cluster_cssd_get_dead_generation(void)
+{
+	if (CssdShmem == NULL)
+		return 0;
+	return pg_atomic_read_u64(&CssdShmem->dead_generation);
 }
 
 TimestampTz
@@ -702,6 +725,13 @@ cssd_deadband_scan_tick(void)
 
 		if (old_state != new_state) {
 			pg_atomic_write_u32(&CssdShmem->peers[peer].state, (uint32)new_state);
+
+			/* spec-2.29 D19: bump dead_generation on every peer state
+			 * transition (ALIVE↔SUSPECTED↔DEAD).  Used by
+			 * cluster_reconfig event_id hash dedup (P1.2 fix) so that
+			 * a rejoin-then-redeath produces a different event_id than
+			 * the original death even when dead_bitmap is identical. */
+			pg_atomic_add_fetch_u64(&CssdShmem->dead_generation, 1);
 
 			switch (new_state) {
 			case CLUSTER_CSSD_PEER_SUSPECTED:

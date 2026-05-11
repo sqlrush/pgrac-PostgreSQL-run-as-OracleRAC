@@ -69,6 +69,7 @@
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
 #include "cluster/cluster_qvotec.h"	  /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
 #include "cluster/cluster_fence.h"	  /* cluster_fence_shmem_register (spec-2.28 Sprint A Step 1) */
+#include "cluster/cluster_reconfig.h" /* cluster_reconfig_shmem_register (spec-2.29 Sprint A Step 1) */
 /* spec-2.7 hardening F1: cluster_smgr_shmem_register;intentionally no
  * trailing line-end comment so the longer storage/ path doesn't force
  * clang-format to realign every neighbour include above. */
@@ -424,6 +425,18 @@ cluster_init_shmem_module(void)
 	 */
 	if (cluster_shmem_lookup_region("pgrac cluster fence") == NULL)
 		cluster_fence_shmem_register();
+
+	/*
+	 * spec-2.29 Sprint A Step 1 D2: register cluster_reconfig shmem
+	 * region.  Single-tranche LWLock guards last_applied ReconfigEvent
+	 * publish path + 3 lifetime atomic counters (apply / dedup_skip /
+	 * procsig_broadcast).  Step 2 wires LMON tick body + ProcessInterrupts
+	 * D4 integration;Step 3 wires envelope verify path observe (D20) +
+	 * pg_cluster_reconfig_state SRF.  ReconfigEvent dead_bitmap is uint8[16]
+	 * (128 nodes per P2.8 fix).
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster reconfig") == NULL)
+		cluster_reconfig_shmem_register();
 }
 
 

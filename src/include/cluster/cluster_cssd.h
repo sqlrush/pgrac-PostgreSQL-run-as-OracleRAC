@@ -260,6 +260,12 @@ typedef struct ClusterCssdShmem {
 	pg_atomic_uint64 total_heartbeat_send_count;
 	pg_atomic_uint64 total_heartbeat_recv_count;
 
+	/* spec-2.29 D19: per-instance monotonic dead_generation counter,
+	 * bumped on every ALIVE↔SUSPECTED↔DEAD peer transition.  Used by
+	 * cluster_reconfig event_id hash dedup (P1.2 fix) to disambiguate
+	 * same-bitmap re-deaths after rejoin. */
+	pg_atomic_uint64 dead_generation;
+
 	/* Per-peer state (CLUSTER_MAX_NODES = 128). */
 	ClusterCssdPeerStateShmem peers[CLUSTER_MAX_NODES];
 
@@ -297,6 +303,26 @@ extern ClusterCssdStatus cluster_cssd_get_status(void);
 extern uint64 cluster_cssd_get_total_heartbeat_send_count(void);
 extern uint64 cluster_cssd_get_total_heartbeat_recv_count(void);
 extern int cluster_cssd_get_alive_peer_count(void);
+
+/*
+ * spec-2.29 D19: cluster_cssd_get_dead_generation
+ *
+ *	  Monotonic counter incremented on every peer state transition
+ *	  (ALIVE↔SUSPECTED↔DEAD) detected by deadband_scan_tick.  Used
+ *	  by cluster_reconfig event_id hash dedup (per spec-2.29 §3.2
+ *	  + I3 event-loss-tolerant + P1.2 fix) to distinguish:
+ *
+ *	    - same dead_bitmap within one continuous DEAD episode →
+ *	      same dead_generation → same event_id → dedup skip
+ *	    - same dead_bitmap across rejoin-then-redeath →
+ *	      different dead_generation → different event_id → re-fire
+ *
+ *	  Counter is per-instance (shmem-local;each instance's CSSD
+ *	  observer maintains its own view).  Cross-instance convergence
+ *	  is by Lamport piggyback of (event_id, dead_bitmap) — not by
+ *	  cross-instance shared dead_generation.
+ */
+extern uint64 cluster_cssd_get_dead_generation(void);
 
 
 /*

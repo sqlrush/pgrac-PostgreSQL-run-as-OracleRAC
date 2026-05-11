@@ -144,14 +144,15 @@ UT_TEST(test_t4_repeated_init_idempotent)
 UT_TEST(test_t5_no_setter_api_exported)
 {
 	/*
-	 * spec-2.4 期 cluster_epoch_get_current is the only public API.
-	 * setter (advance / set / ++) lands in spec-2.29 reconfig.  This
-	 * test is a STATIC source-grep self-check -- if spec-2.4 ship
-	 * accidentally exports cluster_epoch_advance or cluster_epoch_set
-	 * the build / link will surface a symbol that should not exist
-	 * yet.  We just assert the get accessor is callable; the
-	 * "no setter" property is enforced by NOT declaring one in
-	 * cluster_epoch.h.
+	 * spec-2.4 期 cluster_epoch_get_current was the only public API.
+	 * spec-2.29 Sprint A Step 1 added the setter quartet:
+	 *	  - cluster_epoch_advance_for_reconfig (D18 coordinator path)
+	 *	  - cluster_epoch_set_changed_at_lsn   (D18 coordinator path)
+	 *	  - cluster_epoch_observe_remote        (D18b envelope receive)
+	 *	  - cluster_epoch_get_changed_at_lsn    (accessor)
+	 * Those are exercised by test_cluster_reconfig.  This test now
+	 * only asserts the spec-2.4 boot-time invariant: get_current
+	 * returns CLUSTER_EPOCH_INITIAL=0 before any advance call.
 	 */
 	UT_ASSERT_EQ((int)cluster_epoch_get_current(), (int)CLUSTER_EPOCH_INITIAL);
 }

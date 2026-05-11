@@ -105,6 +105,112 @@ cluster_epoch_get_current(void)
 	return pg_atomic_read_u64(&cluster_epoch_state->current_epoch);
 }
 
+uint64
+cluster_epoch_get_changed_at_lsn(void)
+{
+	if (cluster_epoch_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_epoch_state->epoch_changed_at_lsn);
+}
+
+/*
+ * spec-2.29 D18: cluster_epoch_advance_for_reconfig
+ *
+ *	  Coordinator-only path.  Atomic CAS-loop increment by 1.
+ *	  CAS-loop (not pg_atomic_fetch_add_u64) so that we can return
+ *	  the pre-CAS old value cleanly back to caller for publish;
+ *	  fetch_add doesn't expose pre value with same atomicity
+ *	  guarantee in PG's port/atomics interface.
+ *
+ *	  Defensive CAS-loop also handles the unlikely case of two LMON
+ *	  ticks racing during a deterministic-coordinator switch
+ *	  mid-tick — both compute self==coordinator, both call this
+ *	  function;CAS ensures epoch advances exactly once per call
+ *	  attempt, never lost-update.
+ */
+void
+cluster_epoch_advance_for_reconfig(uint64 *old_out, uint64 *new_out)
+{
+	uint64 old_val;
+
+	Assert(old_out != NULL && new_out != NULL);
+
+	if (cluster_epoch_state == NULL)
+	{
+		/* Caller invoked before postmaster shmem init — should
+		 * never happen on the LMON tick path, but defensive. */
+		*old_out = CLUSTER_EPOCH_INITIAL;
+		*new_out = CLUSTER_EPOCH_INITIAL;
+		return;
+	}
+
+	for (;;)
+	{
+		old_val = pg_atomic_read_u64(&cluster_epoch_state->current_epoch);
+		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch,
+										   &old_val,
+										   old_val + 1))
+			break;
+		/* CAS lost — re-read and retry */
+	}
+
+	*old_out = old_val;
+	*new_out = old_val + 1;
+}
+
+void
+cluster_epoch_set_changed_at_lsn(uint64 lsn)
+{
+	if (cluster_epoch_state == NULL)
+		return;
+	pg_atomic_write_u64(&cluster_epoch_state->epoch_changed_at_lsn, lsn);
+}
+
+/*
+ * spec-2.29 D18b: cluster_epoch_observe_remote
+ *
+ *	  CAS-loop max-merge.  Single-shot advance: caller (envelope
+ *	  verify body) supplies remote_epoch from a verified inbound
+ *	  envelope;we CAS local current_epoch up to remote_epoch if
+ *	  and only if local < remote, otherwise no-op.
+ *
+ *	  Returns true iff CAS succeeded (local advanced).  False iff
+ *	  local >= remote already (stale or equal observe — no-op).
+ *
+ *	  CAS-loop guards against concurrent observe_remote from
+ *	  multiple envelope-receiving paths (cluster_ic_tier1 + future
+ *	  RDMA tier) racing — at most one observe_remote succeeds for
+ *	  any given remote_epoch, but other peers' newer observes can
+ *	  still progress.
+ *
+ *	  Caller MUST gate on remote_epoch - my_epoch <=
+ *	  CLUSTER_EPOCH_OBSERVE_MAX_JUMP (per spec-2.29 D20 envelope
+ *	  verify path) BEFORE calling this function — hostile-spoof
+ *	  defense lives at envelope receive site so the frame can be
+ *	  DROP_NO_CLOSE'd cleanly with stats bump rather than silently
+ *	  capped here.
+ */
+bool
+cluster_epoch_observe_remote(uint64 remote_epoch)
+{
+	uint64 cur_val;
+
+	if (cluster_epoch_state == NULL)
+		return false;
+
+	for (;;)
+	{
+		cur_val = pg_atomic_read_u64(&cluster_epoch_state->current_epoch);
+		if (cur_val >= remote_epoch)
+			return false;	/* monotonic — never retreat */
+		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch,
+										   &cur_val,
+										   remote_epoch))
+			return true;
+		/* CAS lost — re-read and retry */
+	}
+}
+
 static const ClusterShmemRegion cluster_epoch_region = {
 	.name = "pgrac cluster epoch",
 	.size_fn = cluster_epoch_shmem_size,
@@ -131,6 +237,33 @@ uint64
 cluster_epoch_get_current(void)
 {
 	return CLUSTER_EPOCH_INITIAL;
+}
+
+uint64
+cluster_epoch_get_changed_at_lsn(void)
+{
+	return 0;
+}
+
+void
+cluster_epoch_advance_for_reconfig(uint64 *old_out, uint64 *new_out)
+{
+	if (old_out != NULL)
+		*old_out = CLUSTER_EPOCH_INITIAL;
+	if (new_out != NULL)
+		*new_out = CLUSTER_EPOCH_INITIAL;
+}
+
+void
+cluster_epoch_set_changed_at_lsn(uint64 lsn pg_attribute_unused())
+{
+	/* no-op stub */
+}
+
+bool
+cluster_epoch_observe_remote(uint64 remote_epoch pg_attribute_unused())
+{
+	return false;
 }
 
 #endif /* USE_PGRAC_CLUSTER */

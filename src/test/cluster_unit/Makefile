@@ -37,7 +37,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_buffer_desc test_cluster_pcm_lock \
         test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision \
         test_cluster_xlog test_cluster_tt_slot test_cluster_undo_segment \
-        test_cluster_epoch test_cluster_fence
+        test_cluster_epoch test_cluster_fence test_cluster_reconfig
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -79,6 +79,7 @@ CLUSTER_STATS_O = $(top_builddir)/src/backend/cluster/cluster_stats.o
 CLUSTER_CSSD_O = $(top_builddir)/src/backend/cluster/cluster_cssd.o
 CLUSTER_QVOTEC_O = $(top_builddir)/src/backend/cluster/cluster_qvotec.o
 CLUSTER_FENCE_O = $(top_builddir)/src/backend/cluster/cluster_fence.o
+CLUSTER_RECONFIG_O = $(top_builddir)/src/backend/cluster/cluster_reconfig.o
 CLUSTER_VOTING_DISK_IO_O = $(top_builddir)/src/backend/cluster/cluster_voting_disk_io.o
 CLUSTER_QUORUM_DECISION_O = $(top_builddir)/src/backend/cluster/cluster_quorum_decision.o
 CLUSTER_SCN_O = $(top_builddir)/src/backend/cluster/cluster_scn.o
@@ -89,7 +90,7 @@ CLUSTER_SCN_O = $(top_builddir)/src/backend/cluster/cluster_scn.o
 # separate rules because they also link additional cluster_*.o
 # objects (the test files stub the PG backend symbols those
 # objects reference).
-SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat test_cluster_debug test_cluster_shared_fs test_cluster_smgr test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision test_cluster_scn test_cluster_epoch test_cluster_fence,$(TESTS))
+SIMPLE_TESTS = $(filter-out test_cluster_guc test_cluster_shmem test_cluster_signal test_cluster_views test_cluster_gviews test_cluster_ic test_cluster_conf test_cluster_ic_mock test_cluster_inject test_cluster_pgstat test_cluster_debug test_cluster_shared_fs test_cluster_smgr test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision test_cluster_scn test_cluster_epoch test_cluster_fence test_cluster_reconfig,$(TESTS))
 
 # spec-2.4 D16: test_cluster_epoch links cluster_epoch.o standalone.
 # cluster_epoch.c references ShmemInitStruct + cluster_shmem_register_region
@@ -379,6 +380,16 @@ test_cluster_fence: test_cluster_fence.c unit_test.h \
 		$(CLUSTER_VERSION_O) $(CLUSTER_FENCE_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_FENCE_O) -o $@
+
+# spec-2.29 Sprint A Step 1: test_cluster_reconfig links cluster_reconfig.o
+# + cluster_epoch.o standalone.  Foundation layer — shmem layout + sizeof
+# bounds (P2.8) + observe_remote CAS-loop semantics (D18b) +
+# advance_for_reconfig pre/post snapshot (D18) + CLUSTER_EPOCH_OBSERVE_MAX_JUMP
+# constant.  Real LMON tick body / ProcessInterrupts wiring land Step 2.
+test_cluster_reconfig: test_cluster_reconfig.c unit_test.h \
+		$(CLUSTER_VERSION_O) $(CLUSTER_RECONFIG_O) $(CLUSTER_EPOCH_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_RECONFIG_O) $(CLUSTER_EPOCH_O) -o $@
 
 # spec-2.6 Sprint A Step 2 D3: cluster_voting_disk_io.o standalone test.
 # Real syscalls (open / pread / pwrite / fdatasync) on a temp file —

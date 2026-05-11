@@ -46,6 +46,7 @@ OBJS = \
 	cluster_elog.o \
 	cluster_epoch.o \
 	cluster_fence.o \
+	cluster_reconfig.o \
 	cluster_guc.o \
 	cluster_ic.o \
 	cluster_ic_chunk.o \

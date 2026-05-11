@@ -58,6 +58,74 @@
 extern uint64 cluster_epoch_get_current(void);
 
 /*
+ * Snapshot read of the LSN at which current_epoch last advanced.  Used
+ * by SRF observability (pg_cluster_reconfig_state) + WAL replay.  0
+ * iff epoch never advanced since postmaster start.
+ */
+extern uint64 cluster_epoch_get_changed_at_lsn(void);
+
+/*
+ * spec-2.29 D18:  Coordinator-only epoch advance.
+ *
+ *	  Atomically increments current_epoch by 1 via CAS-loop (defends
+ *	  against the unlikely-but-possible race of two LMON ticks racing
+ *	  during a deterministic-coordinator switch mid-tick).  Stores the
+ *	  pre / post snapshots back to caller for publish to
+ *	  pg_cluster_reconfig_state.
+ *
+ *	  MUST be called ONLY from the coordinator path of
+ *	  cluster_reconfig_lmon_tick() — non-coordinator survivors must
+ *	  observe via cluster_epoch_observe_remote (envelope piggyback
+ *	  receive path).
+ */
+extern void cluster_epoch_advance_for_reconfig(uint64 *old_out, uint64 *new_out);
+
+/*
+ * spec-2.29 D18:  Coordinator-only setter for epoch_changed_at_lsn.
+ *
+ *	  Atomic pg_atomic_write_u64 — caller passes GetXLogInsertRecPtr()
+ *	  immediately after cluster_epoch_advance_for_reconfig.  Used by
+ *	  WAL replay + pg_cluster_reconfig_state SRF observability.
+ */
+extern void cluster_epoch_set_changed_at_lsn(uint64 lsn);
+
+/*
+ * spec-2.29 D18b:  Defense-bounded CAS-loop max-merge observe.
+ *
+ *	  Called from cluster_ic_envelope_verify (spec-2.29 D20) when an
+ *	  inbound envelope carries env_epoch > my_epoch (newer epoch from
+ *	  a coordinator's prior tick).  CAS-loops local current_epoch up
+ *	  to remote_epoch monotonically — never retreats.  Caller MUST
+ *	  have completed CRC + auth + source_node_id verify before
+ *	  invoking observe_remote (per spec-2.4 §2.7 contract +
+ *	  spec-2.29 I9 envelope-observe-after-verify invariant).
+ *
+ *	  Returns true iff a CAS actually succeeded (epoch was advanced).
+ *	  Returns false if my_epoch >= remote_epoch already (no-op).
+ *
+ *	  Hostile-spoof defense: caller is responsible for checking
+ *	  remote_epoch - my_epoch <= CLUSTER_EPOCH_OBSERVE_MAX_JUMP BEFORE
+ *	  calling this function;observe_remote itself does NOT check —
+ *	  the bound check happens at the envelope verify site so the
+ *	  hostile frame can be dropped cleanly (DROP_NO_CLOSE) rather
+ *	  than silently capped here.
+ */
+extern bool cluster_epoch_observe_remote(uint64 remote_epoch);
+
+/*
+ * spec-2.29 D18b:  Maximum permitted epoch jump per single envelope.
+ *
+ *	  envelope receive path rejects (DROP_NO_CLOSE +
+ *	  unreasonable_epoch_jump counter) any frame where
+ *	  env_epoch - my_epoch > MAX_JUMP.  Bound is conservative —
+ *	  legitimate reconfig advances epoch by exactly 1 per event;
+ *	  a peer ahead by 16 events means LMON tick missed 16
+ *	  CSSD DEAD edges in this node, which is itself a serious
+ *	  liveness gap warranting log + bump rather than silent catchup.
+ */
+#define CLUSTER_EPOCH_OBSERVE_MAX_JUMP ((uint64) 16)
+
+/*
  * Shmem registration.  Called from cluster_init_shmem() in
  * postmaster phase 1.  Size returned by cluster_epoch_shmem_size
  * is added to the cluster-subsystem shmem RequestAddinShmemSpace

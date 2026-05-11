@@ -262,6 +262,11 @@ typedef enum BuiltinTrancheIds {
 	 * broadcast — only LMON acquires for write, postmaster_check + view
 	 * SRF are read-only paths). */
 	LWTRANCHE_CLUSTER_FENCE,
+	/* PGRAC (spec-2.29 Sprint A Step 1): ClusterReconfigState lwlock
+	 * guards last_applied event publish path.  Per L23 compound-atomic
+	 * lesson — apply_counter inc + last_applied write share critical
+	 * section so concurrent SRF reads see consistent snapshot. */
+	LWTRANCHE_CLUSTER_RECONFIG,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;
