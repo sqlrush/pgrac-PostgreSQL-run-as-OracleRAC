@@ -412,6 +412,60 @@ Verbosity of fence-related entries in the postmaster log.
 * `debug` — adds DEBUG2 entries for each backend that received the
   freeze signal.  Verbose, dev / test only.
 
+## Reconfig coordinator observability
+
+### `pg_cluster_reconfig_state` view
+
+Single-row view (always exactly one row when `cluster.enabled = on`;
+zero rows when `cluster.enabled = off`) exposing the last reconfig
+event applied locally.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `event_id` | `bigint` | Deduplication hash of `(dead_bitmap, cssd_dead_generation)`.  `0` = never applied (sentinel). |
+| `coordinator_node_id` | `integer` | `min(survivor_set)` deterministic coordinator for the event.  `0` when never applied (sentinel — distinguish via `event_id`). |
+| `old_epoch` | `bigint` | Membership epoch immediately before the bump. |
+| `new_epoch` | `bigint` | Membership epoch after the bump.  Equals `old_epoch + 1` when this node was the coordinator;equals `old_epoch` when this node was a survivor observer (the new epoch arrives via IC envelope piggyback). |
+| `dead_bitmap` | `text` | 16-byte bitmap of declared peers in `DEAD` state, formatted as `0x` + 32 hex digits.  Bit `i` set means `node_id = i` was DEAD at apply time. |
+| `applied_at` | `timestamptz` | Server-local timestamp of the apply.  `NULL` when never applied. |
+| `observer_role` | `text` | One of `coordinator` / `survivor` / `none`.  `none` only when `event_id = 0`. |
+| `event_seq` | `bigint` | Per-process monotonic apply counter.  Increments on every published event. |
+| `cssd_dead_generation` | `bigint` | Snapshot of the `cssd` peer-state transition counter at apply time.  Used to distinguish a rejoin-then-redeath from a single sustained outage. |
+
+Example query:
+
+```sql
+SELECT * FROM pg_cluster_reconfig_state;
+-- event_id            | 0xABCDEF...
+-- coordinator_node_id | 0
+-- old_epoch           | 5
+-- new_epoch           | 6
+-- dead_bitmap         | 0x00000000000000000000000000000002
+-- applied_at          | 2026-05-11 12:34:56+00
+-- observer_role       | coordinator
+-- event_seq           | 1
+-- cssd_dead_generation | 7
+```
+
+### Reconfig error code
+
+| SQLSTATE | Name | Cause | Retry semantics |
+|---|---|---|---|
+| `53R60` | `ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS` | A writable transaction was aborted because cluster membership changed mid-flight.  Only fires on transactions that have already allocated a top-level transaction id (i.e. have performed at least one write). | **Immediate retry safe.**  The transaction was aborted before its commit record was written;the next attempt will run under the new membership epoch. |
+
+Compare with the related codes:
+
+| SQLSTATE | Trigger | Source spec |
+|---|---|---|
+| `53R40` `ERRCODE_CLUSTER_QUORUM_LOST` | Commit-boundary fail-closed gate fired before commit record was written. | Voting-disk quorum (spec-2.6). |
+| `53R50` `ERRCODE_CLUSTER_QUORUM_LOST_BACKEND` | In-flight backend aborted by quorum-loss freeze broadcast. | Fence-lite (spec-2.28). |
+| `53R60` `ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS` | In-flight writable backend aborted by reconfig coordinator. | Reconfig coordinator (spec-2.29). |
+
+Clients should be prepared to retry on any of these — they share the
+"transaction aborted, cluster control-plane changed" semantics.  In
+all three cases the abort happens before the commit record is durable,
+so client retry is safe.
+
 ## pgrac.conf format
 
 INI-style: section headers in `[brackets]` and `key = value`

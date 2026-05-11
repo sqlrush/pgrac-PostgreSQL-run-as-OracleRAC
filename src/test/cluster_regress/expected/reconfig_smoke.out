@@ -1,0 +1,92 @@
+-- spec-2.29 D15: Reconfig coordinator smoke test (cluster_regress).
+--
+--   Verifies the catalog surface added by spec-2.29 Step 3:
+--     - 0 NEW PGC_POSTMASTER GUCs (cssd_heartbeat_interval_ms from
+--       spec-2.5 reused)
+--     - 1 NEW SQLSTATE 53R60 ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS
+--     - pg_cluster_reconfig_state view (9 columns, always-1-row
+--       contract per P2.9)
+--     - 1 NEW wait event (BgProcLmonReconfigTick)
+--     - 5 NEW inject points (cluster-reconfig-tick-entry +
+--       cluster-reconfig-decide-coordinator +
+--       cluster-reconfig-epoch-bump-pre +
+--       cluster-reconfig-broadcast-procsig-pre +
+--       cluster-cssd-mark-peer-dead)
+--
+-- All assertions are catalog-level (no reconfig runtime exercise);
+-- runtime CSSD DEAD edge -> LMON tick -> epoch++ -> PROCSIG broadcast
+-- is TAP-tested in t/099_reconfig_actor.pl (Step 5 D13).
+--
+-- ----------
+-- Block 1: pg_cluster_reconfig_state view exists with 9 columns.
+-- ----------
+SELECT count(*) AS column_count
+  FROM information_schema.columns
+ WHERE table_name = 'pg_cluster_reconfig_state';
+ column_count
+--------------
+            9
+(1 row)
+
+-- ----------
+-- Block 2: pg_cluster_reconfig_state SRF P2.9 always-1-row contract.
+-- Never-applied state surfaces as event_id=0 + observer_role='none' +
+-- applied_at NULL.  cluster.enabled=off returns 0 rows (distinct from
+-- never-applied 1-row).
+-- ----------
+SELECT count(*) AS row_count
+  FROM pg_cluster_reconfig_state;
+ row_count
+-----------
+         1
+(1 row)
+
+SELECT event_id,
+       coordinator_node_id,
+       old_epoch,
+       new_epoch,
+       applied_at IS NULL AS applied_at_null,
+       observer_role,
+       event_seq,
+       cssd_dead_generation
+  FROM pg_cluster_reconfig_state;
+ event_id | coordinator_node_id | old_epoch | new_epoch | applied_at_null | observer_role | event_seq | cssd_dead_generation
+----------+---------------------+-----------+-----------+-----------------+---------------+-----------+----------------------
+        0 |                   0 |         0 |         0 | t               | none          |         0 |                    0
+(1 row)
+
+-- ----------
+-- Block 3: 1 NEW wait event visible.
+-- ----------
+SELECT count(*)
+  FROM pg_stat_cluster_wait_events
+ WHERE name = 'BgProcLmonReconfigTick';
+ count
+-------
+     1
+(1 row)
+
+-- ----------
+-- Block 4: 5 NEW inject points visible.
+-- ----------
+SELECT count(*)
+  FROM pg_stat_cluster_injections
+ WHERE name LIKE 'cluster-reconfig-%'
+    OR name = 'cluster-cssd-mark-peer-dead';
+ count
+-------
+     5
+(1 row)
+
+-- ----------
+-- Block 5: dead_bitmap default hex format (16 bytes = 32 hex digits +
+-- "0x" prefix = 34 chars).  Never-applied → all zero.
+-- ----------
+SELECT length(dead_bitmap) AS dead_bitmap_len,
+       dead_bitmap = '0x00000000000000000000000000000000' AS dead_bitmap_zero
+  FROM pg_cluster_reconfig_state;
+ dead_bitmap_len | dead_bitmap_zero
+-----------------+------------------
+              34 | t
+(1 row)
+

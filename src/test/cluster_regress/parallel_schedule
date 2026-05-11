@@ -12,3 +12,4 @@ test: cssd_smoke
 test: smgr_cluster_2node_smoke
 test: quorum_voting_smoke
 test: fence_smoke
+test: reconfig_smoke

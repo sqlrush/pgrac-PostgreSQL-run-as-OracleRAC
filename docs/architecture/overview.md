@@ -124,6 +124,73 @@ behaviour is governed by four PGC_POSTMASTER GUCs:
 > exists.  External fence command integration (IPMI / STONITH /
 > cloud API) is not in scope and will land in a future watchdog spec.
 
+## Reconfig coordinator
+
+When the cluster sub-system service `cssd` (cluster synchronization
+service) detects that a peer has stopped sending heartbeats for longer
+than the deadband window, the surviving nodes run a deterministic
+reconfig coordinator:
+
+1. Every surviving node's `lmon` (lock monitor) reads the current peer
+   liveness state from `cssd` once per tick.
+2. The set of declared peers (excluding the dead set and any local
+   node that has lost quorum) is the **survivor set**.
+3. The lowest `node_id` in the survivor set is the **coordinator**.
+   Every surviving node computes the same coordinator independently —
+   there is no leader election round-trip.
+4. Every surviving in-quorum node broadcasts
+   `PROCSIG_CLUSTER_RECONFIG_START` to its own local backends.
+   Backends notice this at the next `CHECK_FOR_INTERRUPTS` and
+   abort any in-flight writable transaction with SQLSTATE `53R60`
+   (`ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS`).  Read-only transactions
+   absorb silently.
+5. Only the coordinator advances the cluster membership epoch.  The
+   new epoch is carried on the next outbound `cluster_ic` envelope
+   from each node;peers observe and converge via Lamport piggyback.
+6. `pg_cluster_reconfig_state` records the applied event:  event id,
+   coordinator node id, old/new epoch, dead bitmap, applied timestamp,
+   observer role (coordinator / survivor / none) and a snapshot of the
+   `cssd` dead-generation counter that disambiguates a rejoin-then-
+   redeath from a single sustained outage.
+
+```
+peer dies
+  |
+  +- cssd deadband on every surviving node
+  |     |
+  |     +- pg_cluster_cssd_peers shows peer state = suspected → dead
+  |
+  +- lmon tick on every in-quorum survivor
+        |
+        +- compute survivor set + coordinator (deterministic)
+        |
+        +- broadcast PROCSIG_CLUSTER_RECONFIG_START to local backends
+        |     |
+        |     +- backend ProcessInterrupts:
+        |           writable tx → ERROR (53R60) → rollback + retry safe
+        |           read-only / idle → absorb
+        |
+        +- if self == coordinator: epoch ++ + record event
+        +- else                 : record observer event (no epoch++)
+```
+
+The retry path is deliberately fast.  Clients that observe `53R60`
+should retry the transaction immediately;the next attempt runs under
+the new membership epoch.  The coordinator broadcast and per-node
+`PROCSIG` delivery typically complete in a single LMON tick (default
+100 ms), so the visible downtime for a writable client is bounded by
+the cssd deadband plus one tick.
+
+> **Status.** Reconfig coordinator A-scope (internal-only) ships with
+> a single-tick deterministic-coordinator design, no phase machine,
+> no voting-disk persistence of reconfig events, and no peer-fence
+> actor.  The fail-closed authority remains
+> `cluster_qvotec_in_quorum()` + the spec-2.28 freeze gate + the
+> commit gate;the reconfig coordinator only advances the epoch and
+> wakes backends — it does not itself prevent a write.  Larger
+> coordination flows (peer-fence broadcast, phase machine, voting-disk
+> event log, dynamic election) are future spec work.
+
 ## Postmaster startup flow
 
 ```
