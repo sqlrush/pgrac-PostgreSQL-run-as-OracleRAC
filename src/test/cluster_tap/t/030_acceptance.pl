@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'65', 'E1 pg_stat_cluster_wait_events returns 65 rows (61 prior + 3 qvotec spec-2.6 D11 + 1 fence spec-2.28 D9)');
+	'66', 'E1 pg_stat_cluster_wait_events returns 66 rows (65 prior + 1 reconfig spec-2.29 D9)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'65', 'E4 pg_stat_gcluster_wait_events returns 65 rows (single-node, +3 qvotec spec-2.6 D11 + 1 fence spec-2.28 D9)');
+	'66', 'E4 pg_stat_gcluster_wait_events returns 66 rows (single-node, +1 reconfig spec-2.29 D9)');
 
 
 # ============================================================
@@ -297,12 +297,12 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 
 # ============================================================
-# §M  error injection 24 注入点 + 5 fault types (6 tests)
+# §M  error injection 102 注入点 + 5 fault types (6 tests)
 # ============================================================
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'97', 'M1 97 injection points (89 prior + 5 qvotec spec-2.6 D14 + 3 fence spec-2.28 D12: pre-freeze-broadcast / pre-self-fence-shutdown / post-thaw-broadcast)');
+	'102', 'M1 102 injection points (97 prior + 5 reconfig spec-2.29 D10)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '194',
-	'M5 inject category has 97×2 = 194 sub-keys (.fault_type + .hits) after spec-2.28 D12');
+	) eq '204',
+	'M5 inject category has 102×2 = 204 sub-keys (.fault_type + .hits) after spec-2.29 D10');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
