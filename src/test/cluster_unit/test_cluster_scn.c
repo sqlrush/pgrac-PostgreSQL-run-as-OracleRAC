@@ -44,7 +44,10 @@
 #include <signal.h>
 #include <string.h>
 
-#include "access/xact.h" /* PGRAC: spec-1.18 xl_xact_scn struct */
+#include "access/xact.h"				 /* PGRAC: spec-1.18 xl_xact_scn struct */
+#include "cluster/cluster_conf.h"		 /* CLUSTER_MAX_NODES */
+#include "cluster/cluster_ic_envelope.h" /* spec-2.9 D4:  ClusterICEnvelope + PGRAC_IC_MSG_BOC_BROADCAST */
+#include "cluster/cluster_ic_router.h" /* spec-2.9 D4: ClusterICFanoutResult */
 #include "cluster/cluster_scn.h"
 #include "port/atomics.h"
 #include "storage/lwlock.h"
@@ -221,6 +224,40 @@ int cluster_boc_sweep_interval_ms = 1;
 void
 cluster_shmem_register_region(const void *r pg_attribute_unused())
 {}
+
+/*
+ * spec-2.9 D4 / L104 standalone-test-stub-must-cover-cross-module-call:
+ *
+ *	cluster_scn.c now references cluster_ic_send_envelope_fanout and
+ *	cluster_cssd_get_alive_peer_count from its LMON-side BOC drain body
+ *	(spec-2.9 D2 review fix).  Both symbols live in sibling cluster_ic_router.o and
+ *	cluster_cssd.o respectively;  this standalone unit-test binary links
+ *	cluster_scn.o only, so the cross-module refs need local stubs to
+ *	satisfy the linker.
+ *
+ *	The LMON drain path itself is never invoked from any T-scn-13 test
+ *	(handler branch is exercised directly), so the stubs can be vacuous:
+ *	all peers PEER_DOWN for fanout, 0 for alive-peer-count.
+ */
+void
+cluster_ic_send_envelope_fanout(uint8 msg_type pg_attribute_unused(),
+								const void *payload pg_attribute_unused(),
+								uint32 payload_len pg_attribute_unused(),
+								ClusterICFanoutResult per_peer[])
+{
+	if (per_peer != NULL) {
+		int i;
+
+		for (i = 0; i < CLUSTER_MAX_NODES; i++)
+			per_peer[i] = CLUSTER_IC_FANOUT_PEER_DOWN;
+	}
+}
+
+int
+cluster_cssd_get_alive_peer_count(void)
+{
+	return 0;
+}
 
 UT_DEFINE_GLOBALS();
 
@@ -564,10 +601,65 @@ UT_TEST(test_spec118_xl_xact_scn_size_is_8_bytes)
 }
 
 
+/*
+ * ============================================================
+ * spec-2.9 D4:  T-scn-13 BOC broadcast skeleton tests
+ *	Q1-Q10 frozen v0.3.  T-scn-13c (handler does NOT call
+ *	cluster_scn_observe) is a static grep / code-review invariant
+ *	per spec-2.9 §4.1; not a runtime UT here (cluster_scn.o standalone
+ *	can't observe stubbed cluster_scn_observe coverage without breaking
+ *	cluster_scn's own internal observe paths).
+ * ============================================================
+ */
+
+/* T-scn-13a: handler symbol linkable (taking address). */
+UT_TEST(test_spec29_boc_broadcast_handler_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_broadcast_handler);
+}
+
+/*
+ * T-scn-13b: handler call with mock envelope succeeds and asserts
+ *	payload_zero invariant (env->payload_length == 0).  Verifies
+ *	receive-side runtime path is exercisable in unit test scope.
+ */
+UT_TEST(test_spec29_boc_broadcast_handler_payload_zero_invariant)
+{
+	ClusterICEnvelope env;
+
+	memset(&env, 0, sizeof(env));
+	env.magic = PGRAC_IC_ENVELOPE_MAGIC;
+	env.version = PGRAC_IC_ENVELOPE_VERSION_V1;
+	env.msg_type = PGRAC_IC_MSG_BOC_BROADCAST;
+	env.source_node_id = 7;
+	env.scn = 12345;
+	env.payload_length = 0;
+
+	/* If handler crashes on Assert(env->payload_length == 0) or env
+	 * NULL guard, abort() fires via ExceptionalCondition stub.  We
+	 * reach here only on success. */
+	cluster_scn_boc_broadcast_handler(&env, NULL);
+
+	/* Reached only if Assert(env != NULL) + Assert(payload_length == 0)
+	 * both passed and ereport(DEBUG2) didn't crash via stubs. */
+	UT_ASSERT(true);
+}
+
+/*
+ * T-scn-13d: PGRAC_IC_MSG_BOC_BROADCAST enum value invariant.
+ *	Catches silent renumber per L74 cross-ref grep watch.  Wire-level
+ *	value frozen at 3 per spec-2.0 §4 + spec-2.9 §0 Q3.
+ */
+UT_TEST(test_spec29_boc_broadcast_msg_type_enum_value)
+{
+	UT_ASSERT_EQ((int)PGRAC_IC_MSG_BOC_BROADCAST, 3);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(28);
+	UT_PLAN(31);
 
 	/* Stage 1.4 stub (5) */
 	UT_RUN(test_scn_typedef_size_is_8_bytes);
@@ -606,6 +698,13 @@ main(void)
 	/* Spec-1.18 WAL xl_scn + replay observe wrapper (2) */
 	UT_RUN(test_spec118_recovery_replay_observe_linkable);
 	UT_RUN(test_spec118_xl_xact_scn_size_is_8_bytes);
+
+	/* Spec-2.9 D4 BOC broadcast skeleton tests (3) — T-scn-13a/b/d.
+	 * T-scn-13c is a code-review invariant (handler does NOT call
+	 * cluster_scn_observe); see comment block above for rationale. */
+	UT_RUN(test_spec29_boc_broadcast_handler_linkable);
+	UT_RUN(test_spec29_boc_broadcast_handler_payload_zero_invariant);
+	UT_RUN(test_spec29_boc_broadcast_msg_type_enum_value);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

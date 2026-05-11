@@ -275,8 +275,12 @@ extern uint64 cluster_scn_observe_bump_count(void);
  *	or sweep interval not elapsed.  Sweep work: refresh
  *	last_advance_at, run wraparound watermark check, bump
  *	boc_sweep_count, compute pending_at_last_sweep, update
- *	boc_max_batch_size, emit broadcast_pulse stub (Stage 2+ wires
- *	interconnect).
+ *	boc_max_batch_size, mark a BOC broadcast pulse for LMON-mediated
+ *	fanout.
+ *
+ *	cluster_scn_lmon_drain_boc_broadcast -- LMON-side drain of walwriter
+ *	BOC sweeps.  This owns the actual IC fanout because tier1 TCP fds
+ *	are LMON process-local (L61).
  *
  *	cluster_scn_boc_pending_since_last_sweep -- lock-free read of
  *	(current_local_scn - boc_last_sweep_local_scn).  walwriter uses
@@ -289,6 +293,28 @@ extern uint64 cluster_scn_boc_sweep_count(void);
 extern TimestampTz cluster_scn_boc_last_sweep_at(void);
 extern uint64 cluster_scn_boc_pending_at_last_sweep(void);
 extern uint64 cluster_scn_boc_max_batch_size(void);
+extern void cluster_scn_lmon_drain_boc_broadcast(void);
+
+
+/*
+ * spec-2.9 D3: PGRAC_IC_MSG_BOC_BROADCAST dispatch handler.
+ *
+ *	Registered by cluster_lmon.c phase 1 (spec-2.9 D1) as the recv-side
+ *	dispatch entry for BOC broadcast frames.  Body is a deliberate NO-OP
+ *	(spec-2.9 §3.0 I6 SCN-via-envelope-piggyback): envelope.scn is
+ *	observed via cluster_ic_envelope_verify -> cluster_ic_envelope_observe_scn
+ *	(spec-2.4 D5) BEFORE dispatch fires; handler MUST NOT call
+ *	cluster_scn_observe directly (spec-2.9 §3.0 I6 + T-scn-13c grep
+ *	invariant).
+ *
+ *	Forward declaration of struct ClusterICEnvelope avoids pulling
+ *	cluster_ic_envelope.h into this header (minimizes header coupling;
+ *	cluster_scn.h is included by many backend translation units that
+ *	have no other reason to pull IC headers in).
+ */
+struct ClusterICEnvelope;
+extern void cluster_scn_boc_broadcast_handler(const struct ClusterICEnvelope *env,
+											  const void *payload);
 
 
 /*

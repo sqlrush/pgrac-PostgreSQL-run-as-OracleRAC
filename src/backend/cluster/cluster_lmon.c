@@ -65,6 +65,7 @@
 #include "cluster/cluster_ic_chunk.h" /* cluster_ic_chunk_scan_reassembly_timeouts (2.4) */
 #include "cluster/cluster_ic_router.h"
 #include "cluster/cluster_ic_tier1.h"
+#include "cluster/cluster_scn.h" /* cluster_scn_boc_broadcast_handler (spec-2.9 D1) */
 #include "utils/timestamp.h"
 #include "utils/wait_event.h" /* WAIT_EVENT_CLUSTER_BGPROC_LMON_MAIN_LOOP (1.11 Sprint B) */
 
@@ -214,6 +215,36 @@ cluster_lmon_shmem_init(void)
 
 			cluster_ic_register_msg_type(&cssd_heartbeat_info);
 			cssd_heartbeat_registered = true;
+		}
+	}
+
+	/*
+	 * spec-2.9 D1:  register PGRAC_IC_MSG_BOC_BROADCAST msg_type=3 in
+	 * postmaster phase 1.  The wire send is LMON-mediated because tier1
+	 * TCP fds are LMON process-local (L61).  walwriter still owns the BOC
+	 * sweep cadence by advancing cluster_scn.boc_sweep_count; LMON drains
+	 * that signal via cluster_scn_lmon_drain_boc_broadcast().
+	 * broadcast_ok = true per Q3=A (BOC pulse is point-to-all by
+		 * definition).  Handler lives in cluster_scn.c (Q9=A: SCN module
+		 * owns the handler; LMON only registers msg types in phase 1).
+	 *
+	 * Mirror pattern:  spec-2.3 HEARTBEAT + spec-2.5 CSSD_HEARTBEAT
+	 * registrations above — static bool guard + struct literal.
+	 */
+	{
+		static bool boc_broadcast_registered = false;
+
+		if (!boc_broadcast_registered) {
+			const ClusterICMsgTypeInfo boc_broadcast_info = {
+				.msg_type = PGRAC_IC_MSG_BOC_BROADCAST,
+				.name = "boc_broadcast",
+				.allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON,
+				.broadcast_ok = true,
+				.handler = cluster_scn_boc_broadcast_handler,
+			};
+
+			cluster_ic_register_msg_type(&boc_broadcast_info);
+			boc_broadcast_registered = true;
 		}
 	}
 }
@@ -715,6 +746,13 @@ LmonMain(void)
 			 * Idempotent within one DEAD episode (same event_id → skip).
 			 */
 			cluster_reconfig_lmon_tick();
+
+			/*
+			 * spec-2.9 D2 review fix: BOC_BROADCAST is triggered by
+			 * walwriter BOC sweeps, but the actual tier1 fanout must run
+			 * in LMON because LMON owns the process-local IC fds.
+			 */
+			cluster_scn_lmon_drain_boc_broadcast();
 
 			CLUSTER_INJECTION_POINT("cluster-lmon-main-loop-iter");
 

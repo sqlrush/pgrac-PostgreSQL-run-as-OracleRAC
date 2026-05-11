@@ -48,7 +48,10 @@
 
 #include "cluster/cluster_scn.h"
 
-#include "cluster/cluster_guc.h"	/* cluster_node_id GUC */
+#include "cluster/cluster_cssd.h" /* cluster_cssd_get_alive_peer_count (spec-2.9 D2 Q7 zero-peer short-circuit) */
+#include "cluster/cluster_guc.h"		 /* cluster_node_id GUC */
+#include "cluster/cluster_ic_envelope.h" /* ClusterICEnvelope (spec-2.9 D3) */
+#include "cluster/cluster_ic_router.h" /* cluster_ic_send_envelope_fanout + PGRAC_IC_MSG_BOC_BROADCAST */
 #include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
 #include "cluster/cluster_shmem.h"
 #include "miscadmin.h"
@@ -652,23 +655,143 @@ cluster_scn_observe_bump_count(void)
 /*
  * ============================================================
  * spec-1.17 BOC tick (walwriter periodic sweep)
+ * + spec-2.9 BOC broadcast send/recv (Q1-Q10 frozen 2026-05-11)
  * ============================================================
  */
 
 /*
- * cluster_scn_emit_broadcast_pulse -- Stage 1.17 stub.
+ * cluster_scn_boc_broadcast_handler -- spec-2.9 D3 dispatch handler.
  *
- *	Stage 2+ Cache Fusion / GES will replace this body with real
- *	cross-node broadcast over the interconnect.  spec-1.17 single-node
- *	emits DEBUG2 only.
+ *	Registered via cluster_lmon.c phase 1 (spec-2.9 D1) for msg_type =
+ *	PGRAC_IC_MSG_BOC_BROADCAST (= 3).
+ *
+ *	NO-OP body by design (spec-2.9 §3.0 I6 SCN-via-envelope-piggyback):
+ *	envelope.scn (frozen at offset 20 per spec-2.3) is observed via
+ *	cluster_ic_envelope_verify -> cluster_ic_envelope_observe_scn
+ *	(spec-2.4 D5) BEFORE this handler fires.  Handler MUST NOT call
+ *	cluster_scn_observe directly (spec-2.9 §3.0 I6 + T-scn-13c grep
+ *	invariant).
+ *
+ *	DEBUG2 log is the only side-effect (spec-2.9 §3.0 I5 payload-zero):
+ *	BOC pulse traffic is otherwise invisible from SQL surface; this
+ *	helps dev/test trace cross-instance pulse arrival.
+ */
+void
+cluster_scn_boc_broadcast_handler(const ClusterICEnvelope *env,
+								  const void *payload pg_attribute_unused())
+{
+	/* spec-2.9 §3.0 I5 payload-zero invariant:  BOC_BROADCAST carries
+	 * no payload.  Receive-side Assert mirrors send-side payload_len=0
+	 * (cluster_scn_emit_broadcast_pulse, spec-2.9 D2).  Field name on
+	 * the envelope wire is payload_length (uint32, offset 28). */
+	Assert(env != NULL);
+	Assert(env->payload_length == 0);
+
+	ereport(DEBUG2,
+			(errmsg("cluster_scn: BOC broadcast received from peer %u (env.scn=" UINT64_FORMAT ")",
+					env->source_node_id, env->scn)));
+}
+
+/*
+ * cluster_scn_emit_broadcast_pulse -- spec-2.9 D2 walwriter marker.
+ *
+ *	Replaces the spec-1.17 single-node DEBUG2 stub.  The walwriter BOC
+ *	tick owns the sweep cadence, but it must NOT touch the tier1 TCP
+ *	send path: tier1 fds are LMON process-local (L61) and fanout is
+ *	explicitly LMON-only.  Therefore the actual wire send is drained by
+ *	cluster_scn_lmon_drain_boc_broadcast(), which observes the monotone
+ *	boc_sweep_count advanced immediately before this marker is called.
+ *
+ *	v0.3 Q6 / I8 — walwriter-not-in-crit-section invariant:
+ *	  Caller walwriter::cluster_scn_boc_tick runs in WalWriterMain main
+ *	  loop body, which by spec-1.17 design carries no critical section.
+ *	  First-line Assert pins this invariant; future walwriter refactor
+ *	  that accidentally introduces a crit section is caught at debug
+ *	  build time before silently breaking IC send safety.
+ *
+ *	v0.3 Q7 / I9 zero-peer-short-circuit is enforced in the LMON drain
+ *	path, where the router/fanout is actually reachable.
  */
 static void
 cluster_scn_emit_broadcast_pulse(void)
 {
-	ereport(DEBUG2, (errmsg("cluster_scn: BOC pulse (sweep_count=" UINT64_FORMAT
-							", local=" UINT64_FORMAT ")",
+	/* v0.3 Q6 / I8: walwriter BOC tick site invariant — never in crit
+	 * section.  Cheap enforcement that turns a verbal assumption into a
+	 * code constraint.  Silent return defensive path is explicitly
+	 * forbidden per spec-2.9 Q6 (would mask broken caller context). */
+	Assert(CritSectionCount == 0);
+
+	ereport(DEBUG3, (errmsg("cluster_scn: BOC broadcast pending (sweep_count=" UINT64_FORMAT
+							", local_scn=" UINT64_FORMAT ")",
 							pg_atomic_read_u64(&cluster_scn_state->boc_sweep_count),
 							pg_atomic_read_u64(&cluster_scn_state->current_local_scn))));
+}
+
+/*
+ * cluster_scn_lmon_drain_boc_broadcast -- spec-2.9 D2 review fix.
+ *
+ *	LMON-mediated fanout for walwriter-owned BOC sweeps.  This preserves
+ *	Q1=A's walwriter cadence without violating the IC ownership model:
+ *	only LMON may use cluster_ic_send_envelope_fanout because only LMON
+ *	owns tier1 TCP fds.  The handoff signal is the monotone
+ *	boc_sweep_count in ClusterScnSharedState, so no new shmem fields are
+ *	needed and the spec remains 0 catalog/shmem-surface churn.
+ */
+void
+cluster_scn_lmon_drain_boc_broadcast(void)
+{
+	static uint64 last_drained_sweep_count = 0;
+	ClusterICFanoutResult per_peer[CLUSTER_MAX_NODES];
+	uint64 sweep_count;
+	int peer;
+	int done = 0;
+	int would_block = 0;
+	int hard_error = 0;
+
+	if (!cluster_enabled)
+		return;
+	if (cluster_scn_state == NULL)
+		return;
+
+	Assert(MyBackendType == B_LMON);
+
+	sweep_count = pg_atomic_read_u64(&cluster_scn_state->boc_sweep_count);
+	if (sweep_count == last_drained_sweep_count)
+		return;
+
+	/* v0.3 Q7 / I9: 0 peer means no router/fanout work and no log spam.
+	 * Do not mark the sweep drained here; if a peer becomes alive before
+	 * the next walwriter sweep, LMON may still emit the latest SCN. */
+	if (cluster_cssd_get_alive_peer_count() == 0)
+		return;
+
+	cluster_ic_send_envelope_fanout(PGRAC_IC_MSG_BOC_BROADCAST, NULL, 0, per_peer);
+	last_drained_sweep_count = sweep_count;
+
+	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++) {
+		switch (per_peer[peer]) {
+		case CLUSTER_IC_FANOUT_DONE:
+			done++;
+			break;
+		case CLUSTER_IC_FANOUT_WOULD_BLOCK:
+			would_block++;
+			break;
+		case CLUSTER_IC_FANOUT_HARD_ERROR:
+			hard_error++;
+			break;
+		case CLUSTER_IC_FANOUT_PEER_DOWN:
+			break;
+		}
+	}
+
+	if (done > 0)
+		ereport(DEBUG3, (errmsg("cluster_scn: BOC broadcast fanout done "
+								"(sweep_count=" UINT64_FORMAT ", done=%d)",
+								sweep_count, done)));
+	if (would_block > 0 || hard_error > 0)
+		ereport(DEBUG2, (errmsg("cluster_scn: BOC broadcast fanout partial "
+								"(sweep_count=" UINT64_FORMAT ", would_block=%d, hard_error=%d)",
+								sweep_count, would_block, hard_error)));
 }
 
 /*
