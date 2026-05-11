@@ -23,7 +23,7 @@
 SELECT count(*) AS column_count
   FROM information_schema.columns
  WHERE table_name = 'pg_cluster_reconfig_state';
- column_count
+ column_count 
 --------------
             9
 (1 row)
@@ -36,7 +36,7 @@ SELECT count(*) AS column_count
 -- ----------
 SELECT count(*) AS row_count
   FROM pg_cluster_reconfig_state;
- row_count
+ row_count 
 -----------
          1
 (1 row)
@@ -50,7 +50,7 @@ SELECT event_id,
        event_seq,
        cssd_dead_generation
   FROM pg_cluster_reconfig_state;
- event_id | coordinator_node_id | old_epoch | new_epoch | applied_at_null | observer_role | event_seq | cssd_dead_generation
+ event_id | coordinator_node_id | old_epoch | new_epoch | applied_at_null | observer_role | event_seq | cssd_dead_generation 
 ----------+---------------------+-----------+-----------+-----------------+---------------+-----------+----------------------
         0 |                   0 |         0 |         0 | t               | none          |         0 |                    0
 (1 row)
@@ -61,7 +61,7 @@ SELECT event_id,
 SELECT count(*)
   FROM pg_stat_cluster_wait_events
  WHERE name = 'BgProcLmonReconfigTick';
- count
+ count 
 -------
      1
 (1 row)
@@ -73,7 +73,7 @@ SELECT count(*)
   FROM pg_stat_cluster_injections
  WHERE name LIKE 'cluster-reconfig-%'
     OR name = 'cluster-cssd-mark-peer-dead';
- count
+ count 
 -------
      5
 (1 row)
@@ -85,7 +85,7 @@ SELECT count(*)
 SELECT length(dead_bitmap) AS dead_bitmap_len,
        dead_bitmap = '0x00000000000000000000000000000000' AS dead_bitmap_zero
   FROM pg_cluster_reconfig_state;
- dead_bitmap_len | dead_bitmap_zero
+ dead_bitmap_len | dead_bitmap_zero 
 -----------------+------------------
               34 | t
 (1 row)
