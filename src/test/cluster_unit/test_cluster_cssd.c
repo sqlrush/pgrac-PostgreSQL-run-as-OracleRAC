@@ -528,7 +528,7 @@ UT_TEST(test_t11_declared_alive_filter_L86)
 	/* Reset declared set to test scope. */
 	for (i = 0; i < CLUSTER_MAX_NODES; i++)
 		ut_declared_set[i] = false;
-	ut_declared_set[0] = true;	/* self */
+	ut_declared_set[0] = true; /* self */
 	ut_declared_set[1] = true;
 	ut_declared_set[5] = true;
 
@@ -544,16 +544,16 @@ UT_TEST(test_t11_declared_alive_filter_L86)
 	cluster_cssd_get_declared_alive_bitmap(bitmap);
 
 	/* Self (node 0) excluded — byte[0] bit 0 must be clear. */
-	UT_ASSERT_EQ((int) (bitmap[0] & 0x01), 0);
+	UT_ASSERT_EQ((int)(bitmap[0] & 0x01), 0);
 	/* node 1 declared + ALIVE — byte[0] bit 1 must be set. */
-	UT_ASSERT_EQ((int) ((bitmap[0] >> 1) & 0x01), 1);
+	UT_ASSERT_EQ((int)((bitmap[0] >> 1) & 0x01), 1);
 	/* node 2/3/4 un-declared — byte[0] bits 2/3/4 must be clear. */
-	UT_ASSERT_EQ((int) ((bitmap[0] >> 2) & 0x07), 0);
+	UT_ASSERT_EQ((int)((bitmap[0] >> 2) & 0x07), 0);
 	/* node 5 declared + ALIVE — byte[0] bit 5 must be set. */
-	UT_ASSERT_EQ((int) ((bitmap[0] >> 5) & 0x01), 1);
+	UT_ASSERT_EQ((int)((bitmap[0] >> 5) & 0x01), 1);
 	/* nodes 8..127 un-declared — all subsequent bytes must be zero. */
 	for (i = 1; i < CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES; i++)
-		UT_ASSERT_EQ((int) bitmap[i], 0);
+		UT_ASSERT_EQ((int)bitmap[i], 0);
 }
 
 

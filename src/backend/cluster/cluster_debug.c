@@ -620,7 +620,7 @@ dump_cluster_cssd(ReturnSetInfo *rsinfo)
 		int i;
 
 		emit_row(rsinfo, "cluster_cssd", "cssd.declared_alive_count",
-				 fmt_int32((int32) alive_count));
+				 fmt_int32((int32)alive_count));
 
 		cluster_cssd_get_declared_alive_bitmap(alive_bitmap);
 		hex_buf[0] = '0';
@@ -628,8 +628,7 @@ dump_cluster_cssd(ReturnSetInfo *rsinfo)
 		for (i = 0; i < CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES; i++)
 			snprintf(hex_buf + 2 + (i * 2), 3, "%02x", alive_bitmap[i]);
 		hex_buf[2 + CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES * 2] = '\0';
-		emit_row(rsinfo, "cluster_cssd", "cssd.declared_alive_bitmap",
-				 pstrdup(hex_buf));
+		emit_row(rsinfo, "cluster_cssd", "cssd.declared_alive_bitmap", pstrdup(hex_buf));
 	}
 }
 

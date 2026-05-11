@@ -359,8 +359,8 @@ extern uint64 cluster_cssd_get_dead_generation(void);
 extern int cluster_cssd_get_declared_alive_count(void);
 
 #define CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES 16
-extern void cluster_cssd_get_declared_alive_bitmap(
-	uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES]);
+extern void
+cluster_cssd_get_declared_alive_bitmap(uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_BITMAP_BYTES]);
 
 
 /*

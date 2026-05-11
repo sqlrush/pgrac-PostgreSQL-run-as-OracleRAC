@@ -397,8 +397,7 @@ cluster_cssd_get_declared_alive_count(void)
 	if (CssdShmem == NULL)
 		return 0;
 
-	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++)
-	{
+	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++) {
 		if (peer == cluster_node_id)
 			continue;
 		if (cluster_conf_lookup_node(peer) == NULL)
@@ -420,8 +419,7 @@ cluster_cssd_get_declared_alive_bitmap(uint8 out_bitmap[CLUSTER_CSSD_PEER_ALIVE_
 	if (CssdShmem == NULL)
 		return;
 
-	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++)
-	{
+	for (peer = 0; peer < CLUSTER_MAX_NODES; peer++) {
 		if (peer == cluster_node_id)
 			continue;
 		if (cluster_conf_lookup_node(peer) == NULL)
