@@ -467,7 +467,7 @@ cluster_fence_check_interrupts(void)
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK);
 
-		/* Step 4 D11:  per-backend received counter.  This is visible to
+	/* Step 4 D11:  per-backend received counter.  This is visible to
 		 * the current backend through pg_stat_cluster_counters; there is no
 		 * cross-process aggregate in v0.15.0. */
 	fence_counters_lookup_lazy();

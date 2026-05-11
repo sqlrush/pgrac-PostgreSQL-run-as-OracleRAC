@@ -123,7 +123,7 @@ extern bool cluster_epoch_observe_remote(uint64 remote_epoch);
  *	  CSSD DEAD edges in this node, which is itself a serious
  *	  liveness gap warranting log + bump rather than silent catchup.
  */
-#define CLUSTER_EPOCH_OBSERVE_MAX_JUMP ((uint64) 16)
+#define CLUSTER_EPOCH_OBSERVE_MAX_JUMP ((uint64)16)
 
 /*
  * Shmem registration.  Called from cluster_init_shmem() in

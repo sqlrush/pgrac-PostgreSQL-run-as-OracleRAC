@@ -135,8 +135,7 @@ cluster_epoch_advance_for_reconfig(uint64 *old_out, uint64 *new_out)
 
 	Assert(old_out != NULL && new_out != NULL);
 
-	if (cluster_epoch_state == NULL)
-	{
+	if (cluster_epoch_state == NULL) {
 		/* Caller invoked before postmaster shmem init — should
 		 * never happen on the LMON tick path, but defensive. */
 		*old_out = CLUSTER_EPOCH_INITIAL;
@@ -144,11 +143,9 @@ cluster_epoch_advance_for_reconfig(uint64 *old_out, uint64 *new_out)
 		return;
 	}
 
-	for (;;)
-	{
+	for (;;) {
 		old_val = pg_atomic_read_u64(&cluster_epoch_state->current_epoch);
-		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch,
-										   &old_val,
+		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch, &old_val,
 										   old_val + 1))
 			break;
 		/* CAS lost — re-read and retry */
@@ -198,13 +195,11 @@ cluster_epoch_observe_remote(uint64 remote_epoch)
 	if (cluster_epoch_state == NULL)
 		return false;
 
-	for (;;)
-	{
+	for (;;) {
 		cur_val = pg_atomic_read_u64(&cluster_epoch_state->current_epoch);
 		if (cur_val >= remote_epoch)
-			return false;	/* monotonic — never retreat */
-		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch,
-										   &cur_val,
+			return false; /* monotonic — never retreat */
+		if (pg_atomic_compare_exchange_u64(&cluster_epoch_state->current_epoch, &cur_val,
 										   remote_epoch))
 			return true;
 		/* CAS lost — re-read and retry */

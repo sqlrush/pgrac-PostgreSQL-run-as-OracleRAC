@@ -56,8 +56,8 @@
 #include "utils/timestamp.h"
 
 #include "cluster/cluster_conf.h"
-#include "cluster/cluster_cssd.h"  /* cluster_cssd_outbound_slots (spec-2.5 D2.6) */
-#include "cluster/cluster_fence.h" /* cluster_fence_lmon_tick (spec-2.28 D5) */
+#include "cluster/cluster_cssd.h"	  /* cluster_cssd_outbound_slots (spec-2.5 D2.6) */
+#include "cluster/cluster_fence.h"	  /* cluster_fence_lmon_tick (spec-2.28 D5) */
 #include "cluster/cluster_reconfig.h" /* cluster_reconfig_lmon_tick (spec-2.29 Step 2 D3) */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"

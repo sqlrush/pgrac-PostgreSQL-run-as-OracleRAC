@@ -87,9 +87,9 @@ typedef struct ClusterICPeerStateShmem {
 	pg_atomic_uint64 chunk_reassembly_timeout_count; /* spec-2.4 D6 timeout cleanup */
 	pg_atomic_uint32 chunk_reassembly_active;		 /* in-flight reassembly seq_next */
 	/* spec-2.29 D20 hostile-spoof defense: env_epoch - my_epoch > MAX_JUMP. */
-	pg_atomic_uint64 unreasonable_epoch_jump_count;	 /* envelope verify step 7 reject (> MAX_JUMP) */
+	pg_atomic_uint64 unreasonable_epoch_jump_count; /* envelope verify step 7 reject (> MAX_JUMP) */
 	/* spec-2.29 D18b: my_epoch advanced via envelope-piggyback observe. */
-	pg_atomic_uint64 epoch_observe_advance_count;	 /* env_epoch > my_epoch, advanced */
+	pg_atomic_uint64 epoch_observe_advance_count; /* env_epoch > my_epoch, advanced */
 	/*
 	 * spec-2.4 hardening v1.0.1 F3 (L74 cross-aux-process-close-must-be-LMON-mediated):
 	 * close_requested = 1 when non-LMON aux context wants to close the peer.

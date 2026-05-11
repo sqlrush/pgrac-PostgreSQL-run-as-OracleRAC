@@ -95,14 +95,11 @@ static bool epoch_init_done = false;
 void *
 ShmemInitStruct(const char *name, Size size pg_attribute_unused(), bool *foundPtr)
 {
-	if (strcmp(name, "pgrac cluster reconfig") == 0)
-	{
+	if (strcmp(name, "pgrac cluster reconfig") == 0) {
 		*foundPtr = reconfig_init_done;
 		reconfig_init_done = true;
 		return reconfig_shmem_storage;
-	}
-	else if (strcmp(name, "pgrac cluster epoch") == 0)
-	{
+	} else if (strcmp(name, "pgrac cluster epoch") == 0) {
 		*foundPtr = epoch_init_done;
 		epoch_init_done = true;
 		return epoch_shmem_storage;
@@ -139,10 +136,26 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 
 /* errmsg / errhint / errcode helpers — actual errstart / errstart_cold /
  * errfinish stubs are defined below alongside setjmp catcher state. */
-int errmsg(const char *f pg_attribute_unused(), ...) { return 0; }
-int errmsg_internal(const char *f pg_attribute_unused(), ...) { return 0; }
-int errhint(const char *f pg_attribute_unused(), ...) { return 0; }
-int errcode(int s pg_attribute_unused()) { return 0; }
+int
+errmsg(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errmsg_internal(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errhint(const char *f pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errcode(int s pg_attribute_unused())
+{
+	return 0;
+}
 
 /* Step 2 deps — cluster_reconfig.c lmon_tick body + ProcessInterrupts. */
 #include "cluster/cluster_conf.h"
@@ -228,7 +241,7 @@ GetCurrentTimestamp(void)
 XLogRecPtr
 GetXLogInsertRecPtr(void)
 {
-	return (XLogRecPtr) 0x10000000;
+	return (XLogRecPtr)0x10000000;
 }
 
 /* SRF stubs (Step 3 D5b) — test never invokes cluster_get_reconfig_state but
@@ -240,8 +253,7 @@ InitMaterializedSRF(FunctionCallInfo fcinfo pg_attribute_unused(),
 {}
 void
 tuplestore_putvalues(Tuplestorestate *state pg_attribute_unused(),
-					 TupleDesc tdesc pg_attribute_unused(),
-					 Datum *values pg_attribute_unused(),
+					 TupleDesc tdesc pg_attribute_unused(), Datum *values pg_attribute_unused(),
 					 bool *isnull pg_attribute_unused())
 {}
 text *
@@ -261,8 +273,7 @@ BackendIdGetProc(BackendId beid pg_attribute_unused())
 	return NULL;
 }
 int
-SendProcSignal(pid_t pid pg_attribute_unused(),
-			   ProcSignalReason r pg_attribute_unused(),
+SendProcSignal(pid_t pid pg_attribute_unused(), ProcSignalReason r pg_attribute_unused(),
 			   BackendId beid pg_attribute_unused())
 {
 	return 0;
@@ -282,7 +293,10 @@ errstart(int elevel, const char *d pg_attribute_unused())
 	return elevel >= 21; /* ERROR threshold */
 }
 bool
-errstart_cold(int elevel, const char *d) { return errstart(elevel, d); }
+errstart_cold(int elevel, const char *d)
+{
+	return errstart(elevel, d);
+}
 void
 errfinish(const char *f pg_attribute_unused(), int l pg_attribute_unused(),
 		  const char *fn pg_attribute_unused())
@@ -297,8 +311,7 @@ static void
 ut_reset_mocks(void)
 {
 	int i;
-	for (i = 0; i < CLUSTER_MAX_NODES; i++)
-	{
+	for (i = 0; i < CLUSTER_MAX_NODES; i++) {
 		ut_peer_state[i] = CLUSTER_CSSD_PEER_ALIVE;
 		ut_declared_set[i] = false;
 	}
@@ -366,16 +379,16 @@ UT_TEST(test_reconfig_shmem_init_idempotent)
 	/* get_last_event should populate with never-applied sentinel
 	 * (event_id = 0, observer_role = NONE). */
 	cluster_reconfig_get_last_event(&evt);
-	UT_ASSERT_EQ((unsigned long long) evt.event_id, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_id, 0ULL);
 	UT_ASSERT_EQ(evt.observer_role, CLUSTER_RECONFIG_OBSERVER_NONE);
-	UT_ASSERT_EQ((long long) evt.applied_at, 0LL);
+	UT_ASSERT_EQ((long long)evt.applied_at, 0LL);
 
 	/* Second init — found = true branch.  Should NOT re-zero state
 	 * (postmaster restart preserves shmem on the same shmem segment
 	 * for the same process — the found-flag prevents double init). */
 	cluster_reconfig_shmem_init();
 	cluster_reconfig_get_last_event(&evt);
-	UT_ASSERT_EQ((unsigned long long) evt.event_id, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_id, 0ULL);
 }
 
 
@@ -400,12 +413,12 @@ UT_TEST(test_reconfig_publish_increments_apply_counter)
 	cluster_reconfig_publish_event(&in);
 
 	cluster_reconfig_get_last_event(&evt);
-	UT_ASSERT_EQ((unsigned long long) evt.event_id, 0xABCDEFULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_id, 0xABCDEFULL);
 	UT_ASSERT_EQ(evt.coordinator_node_id, 0);
-	UT_ASSERT_EQ((unsigned long long) evt.new_epoch, 6ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.new_epoch, 6ULL);
 	UT_ASSERT_EQ(evt.observer_role, CLUSTER_RECONFIG_OBSERVER_COORDINATOR);
-	UT_ASSERT_EQ((unsigned long long) evt.event_seq, 1ULL);
-	UT_ASSERT_EQ((unsigned long long) evt.cssd_dead_generation, 3ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_seq, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.cssd_dead_generation, 3ULL);
 }
 
 
@@ -423,13 +436,13 @@ UT_TEST(test_reconfig_publish_overwrites_event_seq_monotonically)
 	in.observer_role = CLUSTER_RECONFIG_OBSERVER_COORDINATOR;
 	cluster_reconfig_publish_event(&in);
 	cluster_reconfig_get_last_event(&evt);
-	UT_ASSERT_EQ((unsigned long long) evt.event_seq, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_seq, 1ULL);
 
 	in.event_id = 2;
 	in.event_seq = 99;
 	cluster_reconfig_publish_event(&in);
 	cluster_reconfig_get_last_event(&evt);
-	UT_ASSERT_EQ((unsigned long long) evt.event_seq, 2ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.event_seq, 2ULL);
 }
 
 
@@ -443,7 +456,7 @@ UT_TEST(test_reconfig_broadcast_increments_counter)
 	cluster_reconfig_broadcast_local_procsig();
 	cluster_reconfig_broadcast_local_procsig();
 
-	UT_ASSERT_EQ((unsigned long long) cluster_reconfig_get_procsig_broadcast_count(), 2ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_reconfig_get_procsig_broadcast_count(), 2ULL);
 }
 
 
@@ -458,12 +471,12 @@ UT_TEST(test_epoch_observe_remote_advance_from_zero)
 
 	epoch_init_done = false;
 	cluster_epoch_shmem_init();
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 0ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 0ULL);
 
 	/* Advance from 0 → 7. */
 	advanced = cluster_epoch_observe_remote(7);
 	UT_ASSERT(advanced);
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 7ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 7ULL);
 }
 
 
@@ -473,12 +486,12 @@ UT_TEST(test_epoch_observe_remote_no_op_equal)
 
 	epoch_init_done = false;
 	cluster_epoch_shmem_init();
-	(void) cluster_epoch_observe_remote(7); /* establish baseline */
+	(void)cluster_epoch_observe_remote(7); /* establish baseline */
 
 	/* observe_remote(7) again — local already at 7, no advance. */
 	advanced = cluster_epoch_observe_remote(7);
 	UT_ASSERT(!advanced);
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 7ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 7ULL);
 }
 
 
@@ -488,12 +501,12 @@ UT_TEST(test_epoch_observe_remote_no_retreat)
 
 	epoch_init_done = false;
 	cluster_epoch_shmem_init();
-	(void) cluster_epoch_observe_remote(7);
+	(void)cluster_epoch_observe_remote(7);
 
 	/* observe_remote(3) — stale, must NOT retreat. */
 	advanced = cluster_epoch_observe_remote(3);
 	UT_ASSERT(!advanced);
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 7ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 7ULL);
 }
 
 
@@ -504,14 +517,14 @@ UT_TEST(test_epoch_observe_remote_monotonic_chain)
 
 	/* Apply a chain of advances + no-ops + retreats;final must be
 	 * the max observed, not the last observed. */
-	UT_ASSERT(cluster_epoch_observe_remote(5));   /* 0 → 5 */
+	UT_ASSERT(cluster_epoch_observe_remote(5));	  /* 0 → 5 */
 	UT_ASSERT(!cluster_epoch_observe_remote(3));  /* stale */
 	UT_ASSERT(cluster_epoch_observe_remote(10));  /* 5 → 10 */
 	UT_ASSERT(!cluster_epoch_observe_remote(8));  /* stale */
 	UT_ASSERT(!cluster_epoch_observe_remote(10)); /* no-op */
 	UT_ASSERT(cluster_epoch_observe_remote(11));  /* 10 → 11 */
 
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 11ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 11ULL);
 }
 
 
@@ -524,15 +537,15 @@ UT_TEST(test_epoch_advance_for_reconfig_pre_post_snapshots)
 
 	/* From 0 → 1. */
 	cluster_epoch_advance_for_reconfig(&old_v, &new_v);
-	UT_ASSERT_EQ((unsigned long long) old_v, 0ULL);
-	UT_ASSERT_EQ((unsigned long long) new_v, 1ULL);
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 1ULL);
+	UT_ASSERT_EQ((unsigned long long)old_v, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)new_v, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 1ULL);
 
 	/* Idempotent — each call advances by exactly 1. */
 	cluster_epoch_advance_for_reconfig(&old_v, &new_v);
-	UT_ASSERT_EQ((unsigned long long) old_v, 1ULL);
-	UT_ASSERT_EQ((unsigned long long) new_v, 2ULL);
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_current(), 2ULL);
+	UT_ASSERT_EQ((unsigned long long)old_v, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)new_v, 2ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_current(), 2ULL);
 }
 
 
@@ -542,7 +555,7 @@ UT_TEST(test_epoch_observe_max_jump_constant)
 	 * envelope frames.  Caller (D20 envelope verify path) checks
 	 * remote - my <= MAX_JUMP before calling observe_remote;
 	 * constant must be exactly 16 per spec §3.7-bis + §6 R11. */
-	UT_ASSERT_EQ((unsigned long long) CLUSTER_EPOCH_OBSERVE_MAX_JUMP, 16ULL);
+	UT_ASSERT_EQ((unsigned long long)CLUSTER_EPOCH_OBSERVE_MAX_JUMP, 16ULL);
 }
 
 
@@ -553,11 +566,11 @@ UT_TEST(test_epoch_changed_at_lsn_set_and_get)
 	epoch_init_done = false;
 	cluster_epoch_shmem_init();
 
-	UT_ASSERT_EQ((unsigned long long) cluster_epoch_get_changed_at_lsn(), 0ULL);
+	UT_ASSERT_EQ((unsigned long long)cluster_epoch_get_changed_at_lsn(), 0ULL);
 
 	cluster_epoch_set_changed_at_lsn(0xDEADBEEFCAFEBABEULL);
 	lsn = cluster_epoch_get_changed_at_lsn();
-	UT_ASSERT_EQ((unsigned long long) lsn, 0xDEADBEEFCAFEBABEULL);
+	UT_ASSERT_EQ((unsigned long long)lsn, 0xDEADBEEFCAFEBABEULL);
 }
 
 
@@ -567,14 +580,14 @@ UT_TEST(test_epoch_changed_at_lsn_set_and_get)
 
 UT_TEST(test_reconfig_compute_event_id_deterministic)
 {
-	uint8 bmp[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
+	uint8 bmp[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
 	uint64 id1, id2;
 
 	bmp[0] = 0x02; /* node 1 dead */
 
 	id1 = cluster_reconfig_compute_event_id(bmp, 7);
 	id2 = cluster_reconfig_compute_event_id(bmp, 7);
-	UT_ASSERT_EQ((unsigned long long) id1, (unsigned long long) id2);
+	UT_ASSERT_EQ((unsigned long long)id1, (unsigned long long)id2);
 	/* sanity: hash output != 0 (probabilistically); 0 reserved sentinel. */
 	UT_ASSERT(id1 != 0);
 }
@@ -582,8 +595,8 @@ UT_TEST(test_reconfig_compute_event_id_deterministic)
 
 UT_TEST(test_reconfig_compute_event_id_dead_bitmap_sensitivity)
 {
-	uint8 bmp1[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
-	uint8 bmp2[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
+	uint8 bmp1[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
+	uint8 bmp2[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
 	uint64 id1, id2;
 
 	bmp1[0] = 0x02; /* node 1 dead */
@@ -597,7 +610,7 @@ UT_TEST(test_reconfig_compute_event_id_dead_bitmap_sensitivity)
 
 UT_TEST(test_reconfig_compute_event_id_dead_gen_sensitivity)
 {
-	uint8 bmp[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
+	uint8 bmp[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
 	uint64 id_gen5, id_gen6;
 
 	bmp[0] = 0x02;
@@ -641,8 +654,8 @@ UT_TEST(test_reconfig_lmon_tick_dedups_same_event_id)
 	cluster_reconfig_lmon_tick();
 	second_apply = cluster_reconfig_get_apply_counter();
 
-	UT_ASSERT_EQ((unsigned long long) first_apply, 1ULL);
-	UT_ASSERT_EQ((unsigned long long) second_apply, 1ULL); /* unchanged */
+	UT_ASSERT_EQ((unsigned long long)first_apply, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)second_apply, 1ULL); /* unchanged */
 }
 
 
@@ -672,8 +685,8 @@ UT_TEST(test_reconfig_lmon_tick_refires_on_dead_gen_bump)
 	cluster_reconfig_lmon_tick();
 	apply2 = cluster_reconfig_get_apply_counter();
 
-	UT_ASSERT_EQ((unsigned long long) apply1, 1ULL);
-	UT_ASSERT_EQ((unsigned long long) apply2, 2ULL);
+	UT_ASSERT_EQ((unsigned long long)apply1, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)apply2, 2ULL);
 }
 
 
@@ -690,16 +703,15 @@ UT_TEST(test_reconfig_lmon_tick_skips_when_not_in_quorum)
 	cluster_reconfig_shmem_init();
 
 	cluster_node_id = 0;
-	ut_in_quorum_value = false;	/* I2:  not in_quorum */
+	ut_in_quorum_value = false; /* I2:  not in_quorum */
 	ut_declared_set[0] = true;
 	ut_declared_set[1] = true;
 	ut_peer_state[1] = CLUSTER_CSSD_PEER_DEAD;
 
 	apply_before = cluster_reconfig_get_apply_counter();
 	cluster_reconfig_lmon_tick();
-	UT_ASSERT_EQ(
-		(unsigned long long) cluster_reconfig_get_apply_counter(),
-		(unsigned long long) apply_before);
+	UT_ASSERT_EQ((unsigned long long)cluster_reconfig_get_apply_counter(),
+				 (unsigned long long)apply_before);
 }
 
 
@@ -711,7 +723,7 @@ UT_TEST(test_reconfig_lmon_tick_skips_when_disabled)
 	reconfig_init_done = false;
 	cluster_reconfig_shmem_init();
 
-	cluster_enabled = false;	/* L20: disable-cluster runtime gate */
+	cluster_enabled = false; /* L20: disable-cluster runtime gate */
 	cluster_node_id = 0;
 	ut_in_quorum_value = true;
 	ut_declared_set[0] = true;
@@ -720,9 +732,8 @@ UT_TEST(test_reconfig_lmon_tick_skips_when_disabled)
 
 	apply_before = cluster_reconfig_get_apply_counter();
 	cluster_reconfig_lmon_tick();
-	UT_ASSERT_EQ(
-		(unsigned long long) cluster_reconfig_get_apply_counter(),
-		(unsigned long long) apply_before);
+	UT_ASSERT_EQ((unsigned long long)cluster_reconfig_get_apply_counter(),
+				 (unsigned long long)apply_before);
 }
 
 
@@ -742,9 +753,8 @@ UT_TEST(test_reconfig_lmon_tick_skips_on_empty_dead_bitmap)
 
 	apply_before = cluster_reconfig_get_apply_counter();
 	cluster_reconfig_lmon_tick();
-	UT_ASSERT_EQ(
-		(unsigned long long) cluster_reconfig_get_apply_counter(),
-		(unsigned long long) apply_before);
+	UT_ASSERT_EQ((unsigned long long)cluster_reconfig_get_apply_counter(),
+				 (unsigned long long)apply_before);
 }
 
 
@@ -767,9 +777,8 @@ UT_TEST(test_reconfig_lmon_tick_undeclared_peer_ignored_F11)
 
 	apply_before = cluster_reconfig_get_apply_counter();
 	cluster_reconfig_lmon_tick();
-	UT_ASSERT_EQ(
-		(unsigned long long) cluster_reconfig_get_apply_counter(),
-		(unsigned long long) apply_before);
+	UT_ASSERT_EQ((unsigned long long)cluster_reconfig_get_apply_counter(),
+				 (unsigned long long)apply_before);
 }
 
 
@@ -804,13 +813,13 @@ UT_TEST(test_reconfig_lmon_tick_coordinator_advances_epoch)
 	cluster_reconfig_lmon_tick();
 	epoch_after = cluster_epoch_get_current();
 
-	UT_ASSERT_EQ((unsigned long long) epoch_before, 0ULL);
-	UT_ASSERT_EQ((unsigned long long) epoch_after, 1ULL); /* coordinator bumped */
+	UT_ASSERT_EQ((unsigned long long)epoch_before, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)epoch_after, 1ULL); /* coordinator bumped */
 
 	cluster_reconfig_get_last_event(&evt);
 	UT_ASSERT_EQ(evt.coordinator_node_id, 0);
 	UT_ASSERT_EQ(evt.observer_role, CLUSTER_RECONFIG_OBSERVER_COORDINATOR);
-	UT_ASSERT_EQ((unsigned long long) evt.new_epoch, 1ULL);
+	UT_ASSERT_EQ((unsigned long long)evt.new_epoch, 1ULL);
 }
 
 
@@ -839,9 +848,9 @@ UT_TEST(test_reconfig_lmon_tick_survivor_does_not_advance_epoch)
 	cluster_reconfig_lmon_tick();
 	epoch_after = cluster_epoch_get_current();
 
-	UT_ASSERT_EQ((unsigned long long) epoch_before, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)epoch_before, 0ULL);
 	/* I7:  non-coord survivor MUST NOT advance epoch — that's coord's job. */
-	UT_ASSERT_EQ((unsigned long long) epoch_after, 0ULL);
+	UT_ASSERT_EQ((unsigned long long)epoch_after, 0ULL);
 
 	cluster_reconfig_get_last_event(&evt);
 	UT_ASSERT_EQ(evt.coordinator_node_id, 0);
@@ -921,17 +930,14 @@ UT_TEST(test_reconfig_check_pending_in_tx_quorum_lost_errors)
 	ut_reset_mocks();
 	cluster_reconfig_start_pending = 1;
 	ut_in_tx_state = true;
-	ut_top_xid = 42;	/* writable tx */
+	ut_top_xid = 42;			/* writable tx */
 	ut_in_quorum_value = false; /* quorum lost → 53R50 branch */
 
-	if (sigsetjmp(ut_ereport_jump, 1) == 0)
-	{
+	if (sigsetjmp(ut_ereport_jump, 1) == 0) {
 		ut_ereport_jump_armed = true;
 		cluster_reconfig_check_pending_in_proc_interrupts();
 		UT_ASSERT(false); /* should have ereport ERROR */
-	}
-	else
-	{
+	} else {
 		ut_ereport_jump_armed = false;
 		UT_ASSERT_EQ(ut_ereport_fired_count, 1);
 	}
@@ -943,17 +949,14 @@ UT_TEST(test_reconfig_check_pending_in_tx_in_quorum_53R60_errors)
 	ut_reset_mocks();
 	cluster_reconfig_start_pending = 1;
 	ut_in_tx_state = true;
-	ut_top_xid = 42;	/* writable tx */
-	ut_in_quorum_value = true;	/* in_quorum → 53R60 reconfig_in_progress */
+	ut_top_xid = 42;		   /* writable tx */
+	ut_in_quorum_value = true; /* in_quorum → 53R60 reconfig_in_progress */
 
-	if (sigsetjmp(ut_ereport_jump, 1) == 0)
-	{
+	if (sigsetjmp(ut_ereport_jump, 1) == 0) {
 		ut_ereport_jump_armed = true;
 		cluster_reconfig_check_pending_in_proc_interrupts();
 		UT_ASSERT(false);
-	}
-	else
-	{
+	} else {
 		ut_ereport_jump_armed = false;
 		UT_ASSERT_EQ(ut_ereport_fired_count, 1);
 	}

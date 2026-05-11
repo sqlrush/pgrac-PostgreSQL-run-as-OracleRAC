@@ -223,31 +223,26 @@ cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload, ui
 
 		memcpy(&env_epoch, &env->epoch, sizeof(uint64)); /* L34 unaligned */
 
-		if (env_epoch == my_epoch)
-		{
+		if (env_epoch == my_epoch) {
 			/* common case — match, hot path OK */
-		}
-		else if (env_epoch > my_epoch)
-		{
+		} else if (env_epoch > my_epoch) {
 			uint64 delta = env_epoch - my_epoch;
 
-			if (delta > CLUSTER_EPOCH_OBSERVE_MAX_JUMP)
-			{
+			if (delta > CLUSTER_EPOCH_OBSERVE_MAX_JUMP) {
 				/* R11: hostile-spoof defense — peer claims epoch
 				 * unreasonably far ahead.  Drop frame, bump counter,
 				 * do NOT close peer (still legitimate transport;
 				 * underlying CSSD deadband will fire DEAD if peer is
 				 * actually bad). */
-				cluster_ic_tier1_bump_unreasonable_epoch_jump((int32) env->source_node_id);
-				ereport(LOG,
-						(errcode(ERRCODE_CLUSTER_IC_STALE_EPOCH_DROP),
-						 errmsg("cluster_ic dropped envelope from node %u: "
-								"unreasonable epoch jump " UINT64_FORMAT " -> " UINT64_FORMAT
-								" (delta " UINT64_FORMAT " > MAX_JUMP %u)",
-								env->source_node_id, my_epoch, env_epoch,
-								delta, (unsigned) CLUSTER_EPOCH_OBSERVE_MAX_JUMP),
-						 errdetail("spec-2.29 R11 hostile-spoof defense -- "
-								   "peer NOT closed.")));
+				cluster_ic_tier1_bump_unreasonable_epoch_jump((int32)env->source_node_id);
+				ereport(LOG, (errcode(ERRCODE_CLUSTER_IC_STALE_EPOCH_DROP),
+							  errmsg("cluster_ic dropped envelope from node %u: "
+									 "unreasonable epoch jump " UINT64_FORMAT " -> " UINT64_FORMAT
+									 " (delta " UINT64_FORMAT " > MAX_JUMP %u)",
+									 env->source_node_id, my_epoch, env_epoch, delta,
+									 (unsigned)CLUSTER_EPOCH_OBSERVE_MAX_JUMP),
+							  errdetail("spec-2.29 R11 hostile-spoof defense -- "
+										"peer NOT closed.")));
 				return CLUSTER_IC_ENVELOPE_DROP_NO_CLOSE;
 			}
 
@@ -256,21 +251,18 @@ cluster_ic_envelope_verify(const ClusterICEnvelope *env, const void *payload, ui
 			 * observer raced ahead — still a successful observe from this
 			 * frame's POV, so we count + fall through OK. */
 			if (cluster_epoch_observe_remote(env_epoch))
-				cluster_ic_tier1_bump_epoch_observe_advance((int32) env->source_node_id);
+				cluster_ic_tier1_bump_epoch_observe_advance((int32)env->source_node_id);
 			/* fall through OK */
-		}
-		else
-		{
+		} else {
 			/* env_epoch < my_epoch:  stale frame (pre-reconfig in-flight
 			 * or replay).  Original spec-2.4 stale drop behavior. */
-			cluster_ic_tier1_bump_stale_epoch_drop((int32) env->source_node_id);
-			ereport(LOG,
-					(errcode(ERRCODE_CLUSTER_IC_STALE_EPOCH_DROP),
-					 errmsg("cluster_ic dropped envelope from node %u: "
-							"stale epoch " UINT64_FORMAT " < current " UINT64_FORMAT,
-							env->source_node_id, env_epoch, my_epoch),
-					 errdetail("spec-2.4 Invariant 2 enforce -- pre-reconfig "
-							   "or replay frame;peer NOT closed.")));
+			cluster_ic_tier1_bump_stale_epoch_drop((int32)env->source_node_id);
+			ereport(LOG, (errcode(ERRCODE_CLUSTER_IC_STALE_EPOCH_DROP),
+						  errmsg("cluster_ic dropped envelope from node %u: "
+								 "stale epoch " UINT64_FORMAT " < current " UINT64_FORMAT,
+								 env->source_node_id, env_epoch, my_epoch),
+						  errdetail("spec-2.4 Invariant 2 enforce -- pre-reconfig "
+									"or replay frame;peer NOT closed.")));
 			return CLUSTER_IC_ENVELOPE_DROP_NO_CLOSE;
 		}
 	}

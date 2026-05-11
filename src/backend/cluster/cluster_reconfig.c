@@ -47,31 +47,31 @@
 
 #include <string.h>
 
-#include "access/transam.h"			   /* TransactionIdIsValid */
-#include "access/xact.h"			   /* IsTransactionState (Step 2 D4) */
-#include "access/xlog.h"			   /* GetXLogInsertRecPtr (Step 2 D2) */
-#include "common/hashfn.h"			   /* hash_bytes_extended */
-#include "fmgr.h"					   /* PG_FUNCTION_ARGS (Step 3 D5b SRF) */
-#include "funcapi.h"				   /* InitMaterializedSRF (Step 3 D5b SRF) */
-#include "miscadmin.h"				   /* MyProcPid */
+#include "access/transam.h" /* TransactionIdIsValid */
+#include "access/xact.h"	/* IsTransactionState (Step 2 D4) */
+#include "access/xlog.h"	/* GetXLogInsertRecPtr (Step 2 D2) */
+#include "common/hashfn.h"	/* hash_bytes_extended */
+#include "fmgr.h"			/* PG_FUNCTION_ARGS (Step 3 D5b SRF) */
+#include "funcapi.h"		/* InitMaterializedSRF (Step 3 D5b SRF) */
+#include "miscadmin.h"		/* MyProcPid */
 #include "storage/lwlock.h"
-#include "storage/proc.h"			   /* PGPROC */
-#include "storage/procsignal.h"		   /* SendProcSignal + PROCSIG_CLUSTER_RECONFIG_START */
+#include "storage/proc.h"		/* PGPROC */
+#include "storage/procsignal.h" /* SendProcSignal + PROCSIG_CLUSTER_RECONFIG_START */
 #include "storage/shmem.h"
-#include "storage/sinvaladt.h"		   /* BackendIdGetProc */
-#include "utils/builtins.h"			   /* cstring_to_text */
+#include "storage/sinvaladt.h" /* BackendIdGetProc */
+#include "utils/builtins.h"	   /* cstring_to_text */
 #include "utils/timestamp.h"
-#include "utils/wait_event.h"		   /* WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK (D9) */
+#include "utils/wait_event.h" /* WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK (D9) */
 
-#include "cluster/cluster_conf.h"	   /* cluster_conf_lookup_node */
-#include "cluster/cluster_cssd.h"	   /* cluster_cssd_get_peer_state, get_dead_generation */
-#include "cluster/cluster_elog.h"	   /* cluster_node_id */
-#include "cluster/cluster_epoch.h"	   /* advance + observe + set_changed_at_lsn */
-#include "cluster/cluster_guc.h"	   /* cluster_enabled */
-#include "cluster/cluster_inject.h"	   /* CLUSTER_INJECTION_POINT */
-#include "cluster/cluster_qvotec.h"	   /* cluster_qvotec_in_quorum */
-#include "cluster/cluster_shmem.h"	   /* cluster_shmem_register_region */
-#include "cluster/cluster_signal.h"	   /* cluster_reconfig_start_pending */
+#include "cluster/cluster_conf.h"	/* cluster_conf_lookup_node */
+#include "cluster/cluster_cssd.h"	/* cluster_cssd_get_peer_state, get_dead_generation */
+#include "cluster/cluster_elog.h"	/* cluster_node_id */
+#include "cluster/cluster_epoch.h"	/* advance + observe + set_changed_at_lsn */
+#include "cluster/cluster_guc.h"	/* cluster_enabled */
+#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_qvotec.h" /* cluster_qvotec_in_quorum */
+#include "cluster/cluster_shmem.h"	/* cluster_shmem_register_region */
+#include "cluster/cluster_signal.h" /* cluster_reconfig_start_pending */
 
 
 /*
@@ -88,8 +88,7 @@
  *	    + 8 event_seq + 8 cssd_dead_generation = 80 bytes exactly.
  *	  Allow up to 96 bytes for future field append without bump.
  */
-StaticAssertDecl(sizeof(ReconfigEvent) <= 96,
-				 "ReconfigEvent must fit within 96 bytes");
+StaticAssertDecl(sizeof(ReconfigEvent) <= 96, "ReconfigEvent must fit within 96 bytes");
 StaticAssertDecl(sizeof(ReconfigEvent) >= 64,
 				 "ReconfigEvent must be at least 64 bytes (defensive — fields enumerated)");
 
@@ -117,13 +116,10 @@ cluster_reconfig_shmem_init(void)
 {
 	bool found;
 
-	ReconfigShmem = (ClusterReconfigState *)
-		ShmemInitStruct("pgrac cluster reconfig",
-						cluster_reconfig_shmem_size(),
-						&found);
+	ReconfigShmem = (ClusterReconfigState *)ShmemInitStruct("pgrac cluster reconfig",
+															cluster_reconfig_shmem_size(), &found);
 
-	if (!found)
-	{
+	if (!found) {
 		/* First-time init — zero everything, then set up LWLock +
 		 * never-applied sentinel (event_id=0, observer_role=NONE).
 		 */
@@ -170,8 +166,7 @@ cluster_reconfig_get_last_event(ReconfigEvent *out)
 {
 	Assert(out != NULL);
 
-	if (ReconfigShmem == NULL)
-	{
+	if (ReconfigShmem == NULL) {
 		/* Defense: shmem not initialized (e.g. cluster.enabled=off
 		 * path or pre-postmaster).  Caller still gets a well-defined
 		 * never-applied state. */
@@ -200,7 +195,7 @@ void
 cluster_reconfig_publish_event(const ReconfigEvent *evt)
 {
 	ReconfigEvent published;
-	uint64		event_seq;
+	uint64 event_seq;
 
 	Assert(evt != NULL);
 
@@ -217,12 +212,9 @@ cluster_reconfig_publish_event(const ReconfigEvent *evt)
 
 	elog(DEBUG1,
 		 "cluster_reconfig: event %lu applied (coord=%d old=%lu new=%lu role=%d dead_gen=%lu)",
-		 (unsigned long) published.event_id,
-		 published.coordinator_node_id,
-		 (unsigned long) published.old_epoch,
-		 (unsigned long) published.new_epoch,
-		 published.observer_role,
-		 (unsigned long) published.cssd_dead_generation);
+		 (unsigned long)published.event_id, published.coordinator_node_id,
+		 (unsigned long)published.old_epoch, (unsigned long)published.new_epoch,
+		 published.observer_role, (unsigned long)published.cssd_dead_generation);
 }
 
 
@@ -270,7 +262,7 @@ static inline void
 dead_bitmap_set_bit(uint8 *bmp, int i)
 {
 	Assert(i >= 0 && i < CLUSTER_RECONFIG_DEAD_BITMAP_BYTES * 8);
-	bmp[i / 8] |= (uint8) (1u << (i % 8));
+	bmp[i / 8] |= (uint8)(1u << (i % 8));
 }
 
 
@@ -290,12 +282,11 @@ static int
 dead_bitmap_lowest_bit_set(const uint8 *bmp)
 {
 	int i, j;
-	for (i = 0; i < CLUSTER_RECONFIG_DEAD_BITMAP_BYTES; i++)
-	{
+	for (i = 0; i < CLUSTER_RECONFIG_DEAD_BITMAP_BYTES; i++) {
 		if (bmp[i] == 0)
 			continue;
 		for (j = 0; j < 8; j++)
-			if (bmp[i] & (uint8) (1u << j))
+			if (bmp[i] & (uint8)(1u << j))
 				return i * 8 + j;
 	}
 	return -1;
@@ -312,15 +303,13 @@ dead_bitmap_lowest_bit_set(const uint8 *bmp)
  *	  yields 0 we treat that as fresh-tick (re-publish, no harm).
  */
 uint64
-cluster_reconfig_compute_event_id(
-	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
-	uint64      cssd_dead_generation)
+cluster_reconfig_compute_event_id(const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
+								  uint64 cssd_dead_generation)
 {
 	uint8 hash_input[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES + sizeof(uint64)];
 
 	memcpy(hash_input, dead_bitmap, CLUSTER_RECONFIG_DEAD_BITMAP_BYTES);
-	memcpy(hash_input + CLUSTER_RECONFIG_DEAD_BITMAP_BYTES,
-		   &cssd_dead_generation, sizeof(uint64));
+	memcpy(hash_input + CLUSTER_RECONFIG_DEAD_BITMAP_BYTES, &cssd_dead_generation, sizeof(uint64));
 	return hash_bytes_extended(hash_input, sizeof(hash_input), 0);
 }
 
@@ -361,13 +350,13 @@ cluster_reconfig_get_last_event_id(void)
 void
 cluster_reconfig_lmon_tick(void)
 {
-	uint8	dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
-	uint8	alive_set[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = {0};
-	int32	self_id;
-	int		coordinator;
-	uint64	cssd_dead_generation;
-	uint64	event_id;
-	int		i;
+	uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
+	uint8 alive_set[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] = { 0 };
+	int32 self_id;
+	int coordinator;
+	uint64 cssd_dead_generation;
+	uint64 event_id;
+	int i;
 
 	/* L20: runtime feature flag check first line. */
 	if (!cluster_enabled)
@@ -386,7 +375,7 @@ cluster_reconfig_lmon_tick(void)
 
 	self_id = cluster_node_id;
 	if (self_id < 0 || self_id >= CLUSTER_MAX_NODES)
-		return;	/* defensive: bad self id, cannot participate */
+		return; /* defensive: bad self id, cannot participate */
 
 	/*
 	 * §3.1 + F11: build dead_bitmap and alive_set using CSSD peer_state,
@@ -396,21 +385,20 @@ cluster_reconfig_lmon_tick(void)
 	if (cluster_conf_lookup_node(self_id) != NULL)
 		dead_bitmap_set_bit(alive_set, self_id);
 	else
-		return;	/* self un-declared — must not be coordinator */
+		return; /* self un-declared — must not be coordinator */
 
-	for (i = 0; i < CLUSTER_MAX_NODES; i++)
-	{
+	for (i = 0; i < CLUSTER_MAX_NODES; i++) {
 		ClusterCssdPeerState state;
 
 		if (i == self_id)
 			continue;
 		if (cluster_conf_lookup_node(i) == NULL)
-			continue;	/* F11: skip un-declared peer */
+			continue; /* F11: skip un-declared peer */
 
 		state = cluster_cssd_get_peer_state(i);
 		if (state == CLUSTER_CSSD_PEER_DEAD)
 			dead_bitmap_set_bit(dead_bitmap, i);
-		else	/* ALIVE or SUSPECTED counts as alive for survivor set */
+		else /* ALIVE or SUSPECTED counts as alive for survivor set */
 			dead_bitmap_set_bit(alive_set, i);
 	}
 
@@ -423,7 +411,7 @@ cluster_reconfig_lmon_tick(void)
 	 * adds DEAD, and CSSD state is mutually exclusive). */
 	coordinator = dead_bitmap_lowest_bit_set(alive_set);
 	if (coordinator < 0)
-		return;	/* total cluster failure;fail-closed already via QVOTEC */
+		return; /* total cluster failure;fail-closed already via QVOTEC */
 
 	CLUSTER_INJECTION_POINT("cluster-reconfig-decide-coordinator");
 
@@ -434,8 +422,7 @@ cluster_reconfig_lmon_tick(void)
 	/* Dedup against last_applied.  Same dead_bitmap within one DEAD
 	 * episode → same dead_gen → same event_id → skip.  Rejoin-then-
 	 * redeath bumps dead_gen → different event_id → re-fire. */
-	if (event_id == cluster_reconfig_get_last_event_id())
-	{
+	if (event_id == cluster_reconfig_get_last_event_id()) {
 		if (ReconfigShmem != NULL)
 			pg_atomic_fetch_add_u64(&ReconfigShmem->dedup_skip_counter, 1);
 		return;
@@ -448,20 +435,17 @@ cluster_reconfig_lmon_tick(void)
 	/* P1.3 (b) + I7:  ONLY the deterministic coordinator advances epoch
 	 * and publishes coordinator-role event.  Non-coordinator survivors
 	 * publish observer-role event for local observability. */
-	if (self_id == coordinator)
-	{
-		cluster_reconfig_apply_epoch_bump_as_coordinator(
-			dead_bitmap, coordinator, cssd_dead_generation);
-	}
-	else
-	{
+	if (self_id == coordinator) {
+		cluster_reconfig_apply_epoch_bump_as_coordinator(dead_bitmap, coordinator,
+														 cssd_dead_generation);
+	} else {
 		ReconfigEvent evt;
 
 		memset(&evt, 0, sizeof(evt));
 		evt.event_id = event_id;
 		evt.coordinator_node_id = coordinator;
 		evt.old_epoch = cluster_epoch_get_current();
-		evt.new_epoch = evt.old_epoch;	/* survivor not yet observed via piggyback */
+		evt.new_epoch = evt.old_epoch; /* survivor not yet observed via piggyback */
 		memcpy(evt.dead_bitmap, dead_bitmap, CLUSTER_RECONFIG_DEAD_BITMAP_BYTES);
 		evt.applied_at = GetCurrentTimestamp();
 		evt.observer_role = CLUSTER_RECONFIG_OBSERVER_SURVIVOR;
@@ -495,24 +479,22 @@ cluster_reconfig_broadcast_local_procsig(void)
 
 	CLUSTER_INJECTION_POINT("cluster-reconfig-broadcast-procsig-pre");
 
-	for (beid = 1; beid <= MaxBackends; beid++)
-	{
-		PGPROC *proc = BackendIdGetProc((BackendId) beid);
+	for (beid = 1; beid <= MaxBackends; beid++) {
+		PGPROC *proc = BackendIdGetProc((BackendId)beid);
 		pid_t pid;
 
 		if (proc == NULL)
 			continue;
 		pid = proc->pid;
 		if (pid == 0 || pid == self_pid)
-			continue;	/* skip LMON self */
-		(void) SendProcSignal(pid, PROCSIG_CLUSTER_RECONFIG_START, (BackendId) beid);
+			continue; /* skip LMON self */
+		(void)SendProcSignal(pid, PROCSIG_CLUSTER_RECONFIG_START, (BackendId)beid);
 		signaled++;
 	}
 
 	pg_atomic_fetch_add_u64(&ReconfigShmem->procsig_broadcast_count, 1);
 
-	elog(DEBUG1,
-		 "cluster_reconfig: broadcast PROCSIG_CLUSTER_RECONFIG_START to %d backend(s)",
+	elog(DEBUG1, "cluster_reconfig: broadcast PROCSIG_CLUSTER_RECONFIG_START to %d backend(s)",
 		 signaled);
 }
 
@@ -528,8 +510,7 @@ cluster_reconfig_broadcast_local_procsig(void)
  */
 void
 cluster_reconfig_apply_epoch_bump_as_coordinator(
-	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
-	int32 coordinator_node_id,
+	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES], int32 coordinator_node_id,
 	uint64 cssd_dead_generation)
 {
 	uint64 old_epoch, new_epoch;
@@ -548,7 +529,7 @@ cluster_reconfig_apply_epoch_bump_as_coordinator(
 	 * + future WAL replay).  GetXLogInsertRecPtr is the next insert
 	 * position;adequate for "approximately when" semantics. */
 	lsn = GetXLogInsertRecPtr();
-	cluster_epoch_set_changed_at_lsn((uint64) lsn);
+	cluster_epoch_set_changed_at_lsn((uint64)lsn);
 
 	memset(&evt, 0, sizeof(evt));
 	evt.event_id = cluster_reconfig_compute_event_id(dead_bitmap, cssd_dead_generation);
@@ -593,9 +574,9 @@ cluster_reconfig_check_pending_in_proc_interrupts(void)
 		return;
 
 	if (cluster_reconfig_start_pending == 0)
-		return;	/* hot-path early return */
+		return; /* hot-path early return */
 
-	cluster_reconfig_start_pending = false;	/* read-clear FIRST */
+	cluster_reconfig_start_pending = false; /* read-clear FIRST */
 
 	/* I6:  PG ProcessInterrupts already guards CritSectionCount > 0
 	 * (postgres.c top of function).  We add IsTransactionState absorb
@@ -611,17 +592,15 @@ cluster_reconfig_check_pending_in_proc_interrupts(void)
 		return;
 
 	if (!cluster_qvotec_in_quorum())
-		ereport(ERROR,
-				(errcode(ERRCODE_CLUSTER_QUORUM_LOST_BACKEND),
-				 errmsg("transaction aborted: cluster quorum lost during reconfig"),
-				 errhint("the cluster lost majority quorum;all uncommitted writes "
-						 "have been rolled back;retry after quorum recovery")));
+		ereport(ERROR, (errcode(ERRCODE_CLUSTER_QUORUM_LOST_BACKEND),
+						errmsg("transaction aborted: cluster quorum lost during reconfig"),
+						errhint("the cluster lost majority quorum;all uncommitted writes "
+								"have been rolled back;retry after quorum recovery")));
 
-	ereport(ERROR,
-			(errcode(ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS),
-			 errmsg("transaction aborted: cluster reconfiguration in progress"),
-			 errhint("cluster membership changed during your transaction;"
-					 " the transaction was aborted before commit;retry is safe")));
+	ereport(ERROR, (errcode(ERRCODE_CLUSTER_RECONFIG_IN_PROGRESS),
+					errmsg("transaction aborted: cluster reconfiguration in progress"),
+					errhint("cluster membership changed during your transaction;"
+							" the transaction was aborted before commit;retry is safe")));
 }
 
 
@@ -644,15 +623,14 @@ cluster_reconfig_check_pending_in_proc_interrupts(void)
 static const char *
 reconfig_observer_role_to_string(int32 role)
 {
-	switch (role)
-	{
-		case CLUSTER_RECONFIG_OBSERVER_COORDINATOR:
-			return "coordinator";
-		case CLUSTER_RECONFIG_OBSERVER_SURVIVOR:
-			return "survivor";
-		case CLUSTER_RECONFIG_OBSERVER_NONE:
-		default:
-			return "none";
+	switch (role) {
+	case CLUSTER_RECONFIG_OBSERVER_COORDINATOR:
+		return "coordinator";
+	case CLUSTER_RECONFIG_OBSERVER_SURVIVOR:
+		return "survivor";
+	case CLUSTER_RECONFIG_OBSERVER_NONE:
+	default:
+		return "none";
 	}
 }
 
@@ -683,33 +661,33 @@ cluster_get_reconfig_state(PG_FUNCTION_ARGS)
 	bool nulls[9];
 
 	InitMaterializedSRF(fcinfo, 0);
-	rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
 
 	if (!cluster_enabled)
-		return (Datum) 0;	/* disabled — 0 rows */
+		return (Datum)0; /* disabled — 0 rows */
 
 	cluster_reconfig_get_last_event(&evt);
 
 	memset(nulls, false, sizeof(nulls));
 
-	values[0] = Int64GetDatum((int64) evt.event_id);
+	values[0] = Int64GetDatum((int64)evt.event_id);
 	values[1] = Int32GetDatum(evt.coordinator_node_id);
-	values[2] = Int64GetDatum((int64) evt.old_epoch);
-	values[3] = Int64GetDatum((int64) evt.new_epoch);
+	values[2] = Int64GetDatum((int64)evt.old_epoch);
+	values[3] = Int64GetDatum((int64)evt.new_epoch);
 	values[4] = PointerGetDatum(reconfig_dead_bitmap_to_hex_text(evt.dead_bitmap));
 
 	if (evt.applied_at == 0)
-		nulls[5] = true;	/* never-applied: applied_at NULL */
+		nulls[5] = true; /* never-applied: applied_at NULL */
 	else
 		values[5] = TimestampTzGetDatum(evt.applied_at);
 
-	values[6] = PointerGetDatum(cstring_to_text(
-		reconfig_observer_role_to_string(evt.observer_role)));
-	values[7] = Int64GetDatum((int64) evt.event_seq);
-	values[8] = Int64GetDatum((int64) evt.cssd_dead_generation);
+	values[6]
+		= PointerGetDatum(cstring_to_text(reconfig_observer_role_to_string(evt.observer_role)));
+	values[7] = Int64GetDatum((int64)evt.event_seq);
+	values[8] = Int64GetDatum((int64)evt.cssd_dead_generation);
 
 	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-	return (Datum) 0;
+	return (Datum)0;
 }
 
 
@@ -729,13 +707,11 @@ cluster_reconfig_shmem_size(void)
 
 void
 cluster_reconfig_shmem_init(void)
-{
-}
+{}
 
 void
 cluster_reconfig_shmem_register(void)
-{
-}
+{}
 
 void
 cluster_reconfig_get_last_event(ReconfigEvent *out)
@@ -746,30 +722,25 @@ cluster_reconfig_get_last_event(ReconfigEvent *out)
 
 void
 cluster_reconfig_publish_event(const ReconfigEvent *evt pg_attribute_unused())
-{
-}
+{}
 
 void
 cluster_reconfig_lmon_tick(void)
-{
-}
+{}
 
 void
 cluster_reconfig_broadcast_local_procsig(void)
-{
-}
+{}
 
 void
 cluster_reconfig_apply_epoch_bump_as_coordinator(
 	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES] pg_attribute_unused(),
-	int32       coordinator_node_id pg_attribute_unused(),
-	uint64      cssd_dead_generation pg_attribute_unused())
-{
-}
+	int32 coordinator_node_id pg_attribute_unused(),
+	uint64 cssd_dead_generation pg_attribute_unused())
+{}
 
 void
 cluster_reconfig_check_pending_in_proc_interrupts(void)
-{
-}
+{}
 
 #endif /* USE_PGRAC_CLUSTER */

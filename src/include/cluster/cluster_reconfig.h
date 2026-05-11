@@ -75,9 +75,9 @@
  *	  1 = coordinator → self computed Q2 A'' rule + applied epoch++
  *	  2 = survivor  → received via envelope piggyback (Steps 2-3)
  */
-#define CLUSTER_RECONFIG_OBSERVER_NONE        0
+#define CLUSTER_RECONFIG_OBSERVER_NONE 0
 #define CLUSTER_RECONFIG_OBSERVER_COORDINATOR 1
-#define CLUSTER_RECONFIG_OBSERVER_SURVIVOR    2
+#define CLUSTER_RECONFIG_OBSERVER_SURVIVOR 2
 
 
 /*
@@ -91,8 +91,7 @@
  *	  shmem region size is computed via sizeof(ClusterReconfigState)
  *	  expression rather than literal byte count.
  */
-typedef struct ReconfigEvent
-{
+typedef struct ReconfigEvent {
 	/*
 	 * event_id — siphash2-4(dead_bitmap[16] || cssd_dead_generation).
 	 *
@@ -109,24 +108,24 @@ typedef struct ReconfigEvent
 	 * siphash output 0 is astronomically rare and treated as
 	 * fresh-tick anyway).
 	 */
-	uint64		event_id;
+	uint64 event_id;
 
 	/* min(QVOTEC_in_quorum_self ∪ CSSD_alive_set − CSSD_dead_set) */
-	int32		coordinator_node_id;
-	uint32		_pad0;
+	int32 coordinator_node_id;
+	uint32 _pad0;
 
-	uint64		old_epoch;
-	uint64		new_epoch; /* coordinator: old+1;survivor: observed via piggyback */
+	uint64 old_epoch;
+	uint64 new_epoch; /* coordinator: old+1;survivor: observed via piggyback */
 
-	uint8		dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES];
+	uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES];
 
 	TimestampTz applied_at;
 
-	int32		observer_role; /* CLUSTER_RECONFIG_OBSERVER_* */
-	uint32		_pad1;
+	int32 observer_role; /* CLUSTER_RECONFIG_OBSERVER_* */
+	uint32 _pad1;
 
-	uint64		event_seq;            /* per-process monotonic apply counter */
-	uint64		cssd_dead_generation; /* P1.2 — snapshot at apply time */
+	uint64 event_seq;			 /* per-process monotonic apply counter */
+	uint64 cssd_dead_generation; /* P1.2 — snapshot at apply time */
 } ReconfigEvent;
 
 
@@ -137,13 +136,12 @@ typedef struct ReconfigEvent
  *	  write is lock-exclusive — see cluster_reconfig_publish_event).
  *	  Atomic counters need no lock.
  */
-typedef struct ClusterReconfigState
-{
-	LWLock			 lock;
-	ReconfigEvent	 last_applied; /* event_id=0 → never applied */
-	pg_atomic_uint64 apply_counter;          /* total events observed */
-	pg_atomic_uint64 dedup_skip_counter;     /* duplicate event_id skipped */
-	pg_atomic_uint64 procsig_broadcast_count;/* PROCSIG broadcast tally */
+typedef struct ClusterReconfigState {
+	LWLock lock;
+	ReconfigEvent last_applied;				  /* event_id=0 → never applied */
+	pg_atomic_uint64 apply_counter;			  /* total events observed */
+	pg_atomic_uint64 dedup_skip_counter;	  /* duplicate event_id skipped */
+	pg_atomic_uint64 procsig_broadcast_count; /* PROCSIG broadcast tally */
 } ClusterReconfigState;
 
 
@@ -201,9 +199,8 @@ extern void cluster_reconfig_broadcast_local_procsig(void);
  * Step 2 body: full D18 call + GetXLogInsertRecPtr + publish.
  */
 extern void cluster_reconfig_apply_epoch_bump_as_coordinator(
-	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
-	int32       coordinator_node_id,
-	uint64      cssd_dead_generation);
+	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES], int32 coordinator_node_id,
+	uint64 cssd_dead_generation);
 
 
 /* ============================================================
@@ -238,9 +235,9 @@ extern void cluster_reconfig_publish_event(const ReconfigEvent *evt);
  * ============================================================
  */
 
-extern uint64 cluster_reconfig_compute_event_id(
-	const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
-	uint64      cssd_dead_generation);
+extern uint64
+cluster_reconfig_compute_event_id(const uint8 dead_bitmap[CLUSTER_RECONFIG_DEAD_BITMAP_BYTES],
+								  uint64 cssd_dead_generation);
 
 
 /* ============================================================
