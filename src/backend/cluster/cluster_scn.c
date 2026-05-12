@@ -100,6 +100,22 @@ typedef struct ClusterScnSharedState {
 	 * sweep ran" (a snapshot, not a live value).
 	 */
 	pg_atomic_uint64 boc_last_batch_size; /* set under LWLock at sweep */
+	/*
+	 * spec-2.10 D2:  scn_boc_broadcast_fanout_count counts successful LMON
+	 * drain batches, NOT per-peer delivered frames.  Incremented atomically
+	 * by cluster_scn_lmon_drain_boc_broadcast whenever fanout produces at
+	 * least 1 DONE result (i.e. >= 1 peer actually received the BOC frame
+	 * in this drain iteration).
+	 *
+	 * Diff semantics:  sweep_count - fanout_count is PRIMARILY a measure of
+	 * LMON coalescing (walwriter triggers N sweeps per LMON main loop
+	 * interval window;  LMON drain coalesces them into 1 fanout batch).
+	 * It ALSO includes drain iterations that produced no successful fanout
+	 * (0-peer short-circuit, all-PEER_DOWN, all-WOULD_BLOCK, all-HARD_ERROR).
+	 * It is NOT a precise "lost frame" count.  Diagnostic value is at ratio
+	 * level, not exact-loss-count level.  See spec-2.10 §3.0 I3 + §2.2.
+	 */
+	pg_atomic_uint64 boc_broadcast_fanout_count;
 } ClusterScnSharedState;
 
 
@@ -268,7 +284,7 @@ scn_check_wraparound_watermark(uint64 current)
  *	with no LWLock.  node_id is set-once at shmem_init, so lock-free
  *	read is safe.  Wraparound watermark + last_advance_at refresh are
  *	deferred to cluster_scn_boc_tick (walwriter periodic sweep) ->
- *	staleness ≤ cluster.boc_sweep_interval_ms (default 1ms).
+ *	staleness ≤ cluster.boc_sweep_interval_ms (default 100ms).
  *
  *	Performance rationale: spec-1.16 LWLock path showed p99 abnormality
  *	on pgbench 5k tps (cacheline ping-pong / spinlock backoff / cold
@@ -784,10 +800,17 @@ cluster_scn_lmon_drain_boc_broadcast(void)
 		}
 	}
 
-	if (done > 0)
+	if (done > 0) {
+		/* PGRAC: spec-2.10 D3 — bump aggregate fanout_count when >= 1 peer
+		 * actually received the frame.  WOULD_BLOCK / HARD_ERROR / PEER_DOWN
+		 * not counted (failed fanout cases).  See spec-2.10 §3.0 I3 + §2.2
+		 * for diff semantic vs sweep_count. */
+		pg_atomic_fetch_add_u64(&cluster_scn_state->boc_broadcast_fanout_count, 1);
+
 		ereport(DEBUG3, (errmsg("cluster_scn: BOC broadcast fanout done "
 								"(sweep_count=" UINT64_FORMAT ", done=%d)",
 								sweep_count, done)));
+	}
 	if (would_block > 0 || hard_error > 0)
 		ereport(DEBUG2, (errmsg("cluster_scn: BOC broadcast fanout partial "
 								"(sweep_count=" UINT64_FORMAT ", would_block=%d, hard_error=%d)",
@@ -959,6 +982,21 @@ cluster_scn_boc_max_batch_size(void)
 	return pg_atomic_read_u64(&cluster_scn_state->boc_max_batch_size);
 }
 
+/*
+ * spec-2.10 D4:  accessor for LMON drain-side success-batch counter.
+ *
+ *	Counts successful LMON drain batches (>= 1 peer DONE per fanout
+ *	iteration), NOT per-peer delivered frames.  See ClusterScnSharedState
+ *	boc_broadcast_fanout_count comment + spec-2.10 §3.0 I3 / §2.2 for full
+ *	semantics.  Lock-free atomic read (mirror cluster_scn_boc_sweep_count).
+ */
+uint64
+cluster_scn_boc_broadcast_fanout_count(void)
+{
+	Assert(cluster_scn_state != NULL);
+	return pg_atomic_read_u64(&cluster_scn_state->boc_broadcast_fanout_count);
+}
+
 
 /*
  * ============================================================
@@ -997,6 +1035,7 @@ cluster_scn_shmem_init(void)
 		pg_atomic_init_u64(&cluster_scn_state->boc_last_sweep_local_scn, 0);
 		pg_atomic_init_u64(&cluster_scn_state->boc_max_batch_size, 0);
 		pg_atomic_init_u64(&cluster_scn_state->boc_last_batch_size, 0);
+		pg_atomic_init_u64(&cluster_scn_state->boc_broadcast_fanout_count, 0);
 	}
 }
 

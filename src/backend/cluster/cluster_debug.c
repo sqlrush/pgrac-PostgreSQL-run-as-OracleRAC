@@ -699,6 +699,11 @@ dump_scn(ReturnSetInfo *rsinfo)
 				 fmt_int64((int64)cluster_scn_boc_pending_at_last_sweep()));
 		emit_row(rsinfo, "scn", "scn_boc_max_batch_size",
 				 fmt_int64((int64)cluster_scn_boc_max_batch_size()));
+		/* PGRAC: spec-2.10 D5 — LMON drain-side success-batch counter.
+		 * Pairs with scn_boc_sweep_count for producer/consumer view.
+		 * Diff主要反映 LMON coalescing,见 spec-2.10 §2.2 / §3.0 I3. */
+		emit_row(rsinfo, "scn", "scn_boc_broadcast_fanout_count",
+				 fmt_int64((int64)cluster_scn_boc_broadcast_fanout_count()));
 	}
 }
 

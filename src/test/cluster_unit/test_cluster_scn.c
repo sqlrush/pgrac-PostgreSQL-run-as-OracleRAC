@@ -602,6 +602,39 @@ UT_TEST(test_spec117_boc_max_batch_size_linkable)
 }
 
 /*
+ * spec-2.10 D6 T-scn-14 (v0.2 scope 收紧):
+ *
+ *	Standalone unit binary 不能验真 GUC default (cluster_boc_sweep_interval_ms
+ *	是 unit test stub 变量,改 stub != 证明真 cluster_guc.c default);不能
+ *	sizeof/offsetof private ClusterScnSharedState (cluster_scn.c 内部 struct,
+ *	header 0 references)。真 GUC default 验证移到 D7 TAP via SHOW.
+ *
+ *	保留:
+ *	  T-scn-14a: cluster_scn_boc_broadcast_fanout_count 符号 linkable
+ *	  T-scn-14c: cluster_scn_shmem_size() public smoke (pure function,
+ *	             不依赖 cluster_scn_state)
+ *
+ *	删除(v0.1 → v0.2):
+ *	  T-scn-14b cluster_boc_sweep_interval_ms == 100 (stub 测 stub)
+ *	  T-scn-14 sizeof(ClusterScnSharedState) increase (私有 struct)
+ *	  T-scn-14 offsetof layout invariant (私有 struct)
+ */
+UT_TEST(test_spec210_boc_broadcast_fanout_count_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_boc_broadcast_fanout_count);
+}
+
+UT_TEST(test_spec210_scn_shmem_size_smoke)
+{
+	/* cluster_scn_shmem_size() 是 public extern (cluster_scn.h:359);
+	 * 不依赖 cluster_scn_state pointer。返回值应 > 0 (struct 含 ≥ 1
+	 * pg_atomic_uint64);spec-2.10 加 boc_broadcast_fanout_count 后理
+	 * 论 > spec-2.9 baseline,但不在此处比较 baseline(避免 hard-code
+	 * baseline value spec-by-spec 增加的脆性)。仅 smoke > 0. */
+	UT_ASSERT(cluster_scn_shmem_size() > 0);
+}
+
+/*
  * spec-1.18 symbol-linkable smoke tests.
  *
  *	Real semantics (commit_scn round-tripping through xl_xact_scn,
@@ -678,7 +711,7 @@ UT_TEST(test_spec29_boc_broadcast_msg_type_enum_value)
 int
 main(void)
 {
-	UT_PLAN(31);
+	UT_PLAN(33);
 
 	/* Stage 1.4 stub (5) */
 	UT_RUN(test_scn_typedef_size_is_8_bytes);
@@ -724,6 +757,12 @@ main(void)
 	UT_RUN(test_spec29_boc_broadcast_handler_linkable);
 	UT_RUN(test_spec29_boc_broadcast_handler_payload_zero_invariant);
 	UT_RUN(test_spec29_boc_broadcast_msg_type_enum_value);
+
+	/* Spec-2.10 D6 BOC piggyback observability skeleton (2) — T-scn-14a/c.
+	 * T-scn-14b/14 sizeof/14 offsetof 删除 per v0.2 P2 scope 收紧;真 GUC
+	 * default 验证移到 D7 TAP 101 via SHOW cluster.boc_sweep_interval_ms. */
+	UT_RUN(test_spec210_boc_broadcast_fanout_count_linkable);
+	UT_RUN(test_spec210_scn_shmem_size_smoke);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

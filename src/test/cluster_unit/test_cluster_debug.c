@@ -825,6 +825,14 @@ cluster_scn_boc_max_batch_size(void)
 {
 	return 0;
 }
+/* spec-2.10 D5 / L104 stub: cluster_debug emit_row references new
+ * cluster_scn module accessor;test_cluster_debug standalone binary
+ * doesn't link cluster_scn.o,vacuous stub. */
+uint64
+cluster_scn_boc_broadcast_fanout_count(void)
+{
+	return 0;
+}
 
 
 UT_DEFINE_GLOBALS();

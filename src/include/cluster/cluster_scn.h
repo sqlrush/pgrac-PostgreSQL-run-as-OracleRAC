@@ -295,6 +295,13 @@ extern uint64 cluster_scn_boc_pending_at_last_sweep(void);
 extern uint64 cluster_scn_boc_max_batch_size(void);
 extern void cluster_scn_lmon_drain_boc_broadcast(void);
 
+/*
+ * spec-2.10 D4:  LMON drain-side counter accessor.  Counts successful
+ * LMON drain batches (>= 1 peer DONE), not per-peer delivered frames.
+ * See cluster_scn.c ClusterScnSharedState.boc_broadcast_fanout_count.
+ */
+extern uint64 cluster_scn_boc_broadcast_fanout_count(void);
+
 
 /*
  * spec-2.9 D3: PGRAC_IC_MSG_BOC_BROADCAST dispatch handler.

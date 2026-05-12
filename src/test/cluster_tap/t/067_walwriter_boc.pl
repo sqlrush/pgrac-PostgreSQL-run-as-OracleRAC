@@ -155,18 +155,18 @@ ok($max_batch_t1 >= $max_batch_t0,
 # ----------
 my $interval_default = $node->safe_psql('postgres',
 	"SHOW cluster.boc_sweep_interval_ms");
-is($interval_default, '1ms',
-   'L6 cluster.boc_sweep_interval_ms default 1ms');
+is($interval_default, '100ms',
+   'L6 cluster.boc_sweep_interval_ms default 100ms after spec-2.10 D1');
 
-# Live SIGHUP adjust to 100ms
+# Live SIGHUP adjust to 10ms.
 $node->safe_psql('postgres',
-	"ALTER SYSTEM SET cluster.boc_sweep_interval_ms = 100");
+	"ALTER SYSTEM SET cluster.boc_sweep_interval_ms = 10");
 $node->reload;
 usleep(200_000);
 my $interval_new = $node->safe_psql('postgres',
 	"SHOW cluster.boc_sweep_interval_ms");
-is($interval_new, '100ms',
-   'L6 cluster.boc_sweep_interval_ms live SIGHUP adjusted to 100ms (PGC_SIGHUP works)');
+is($interval_new, '10ms',
+   'L6 cluster.boc_sweep_interval_ms live SIGHUP adjusted to 10ms (PGC_SIGHUP works)');
 
 # Restore for subsequent tests
 $node->safe_psql('postgres', "ALTER SYSTEM RESET cluster.boc_sweep_interval_ms");
@@ -213,12 +213,13 @@ my @expected_keys = (
 	'scn_boc_sweep_count',
 	'scn_boc_last_sweep_at',
 	'scn_boc_pending_at_last_sweep',
-	'scn_boc_max_batch_size');
+	'scn_boc_max_batch_size',
+	'scn_boc_broadcast_fanout_count');
 foreach my $k (@expected_keys)
 {
 	my $count = $node->safe_psql('postgres',
 		"SELECT count(*) FROM pg_cluster_state WHERE category='scn' AND key='$k'");
-	is($count, '1', "L8 pg_cluster_state has scn key '$k' (Q5 dump_scn 14 keys)");
+	is($count, '1', "L8 pg_cluster_state has scn key '$k' (Q5 dump_scn 15 keys)");
 }
 
 
@@ -291,7 +292,7 @@ is($sweeps_off_t1, $sweeps_off_t0,
 # ----------
 # L11b (round 10 P1): cluster.enabled=off must not cap walwriter
 # cur_timeout to cluster.boc_sweep_interval_ms.  Pre-fix: walwriter
-# woke every 1ms (boc_sweep_interval_ms default) instead of vanilla
+# woke every 100ms (boc_sweep_interval_ms default) instead of vanilla
 # wal_writer_delay (10ms in this test).  No direct PG view exposes
 # walwriter wake count, so we verify indirectly: with cluster.enabled
 # =off, boc_max_batch_size + boc_last_batch_size never advance because

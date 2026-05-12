@@ -134,13 +134,15 @@ int cluster_undo_segments_per_instance = 16;
 
 /*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
- * sweep target staleness in ms.  Range [1, 1000]; default 1ms.  Actual
+ * sweep target staleness in ms.  Range [1, 1000]; default 100ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
  * tune wal_writer_delay to match if sub-WalWriterDelay sweep wanted.
  * 100us range deferred to a future high-frequency-timing spec (custom
  * timer / wakeup mechanism, not walwriter loop).
  */
-int cluster_boc_sweep_interval_ms = 1;
+/* PGRAC: spec-2.10 D1 — default 1 → 100ms;must match GUC default per
+ * check_GUC_init Assert (boot_val 与 C-var 初值不一致会触发 guc.c:4820 TRAP). */
+int cluster_boc_sweep_interval_ms = 100;
 
 
 /*
@@ -826,7 +828,12 @@ cluster_init_guc(void)
 					 "Min(WalWriterDelay, this); set wal_writer_delay below this "
 					 "value if you want sub-200ms BOC.  100us-class precision "
 					 "needs a future high-frequency-timing spec."),
-		&cluster_boc_sweep_interval_ms, 1, 1, 1000, PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
+		/* PGRAC: spec-2.10 D1 — default 1 → 100ms.  spec-2.9 skeleton phase
+		 * used eager 1ms cadence.  100ms降的是 walwriter wake / shmem
+		 * atomic / boc_sweep_count growth churn 100x;IC fanout cadence
+		 * 不动(LMON tick 1000ms 是 bottleneck per spec-2.10 §0 Q5 / §3.1).
+		 * Range 1..1000 保持. */
+		&cluster_boc_sweep_interval_ms, 100, 1, 1000, PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 		"cluster.enabled",
