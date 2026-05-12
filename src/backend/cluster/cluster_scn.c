@@ -116,6 +116,23 @@ typedef struct ClusterScnSharedState {
 	 * level, not exact-loss-count level.  See spec-2.10 §3.0 I3 + §2.2.
 	 */
 	pg_atomic_uint64 boc_broadcast_fanout_count;
+	/*
+	 * spec-2.11 D3:  cross-instance commit_scn lookup invocation defer
+	 * counter.
+	 *
+	 *	Skeleton-only counter.  Bumped atomically by
+	 *	cluster_scn_lookup_commit_remote() stub body every call (which
+	 *	always returns CLUSTER_SCN_LOOKUP_DEFER in spec-2.11).
+	 *
+	 *	Future amend (spec-2.26 / Stage 3 真激活):  may expand to
+	 *	per-state counters (found / not_found / error) — but skeleton
+	 *	阶段 1 counter only (Q4.1 spec frozen).
+	 *
+	 *	Skeleton phase invocation_count == defer_count by definition;
+	 *	an explicit invocation_total is NOT created here to avoid
+	 *	premature shmem layout commitment.  See spec-2.11 §3.0 I1.
+	 */
+	pg_atomic_uint64 commit_lookup_defer_count;
 } ClusterScnSharedState;
 
 
@@ -997,6 +1014,58 @@ cluster_scn_boc_broadcast_fanout_count(void)
 	return pg_atomic_read_u64(&cluster_scn_state->boc_broadcast_fanout_count);
 }
 
+/*
+ * spec-2.11 D2:  cross-instance commit_scn lookup stub.
+ *
+ *	Skeleton phase:  always returns CLUSTER_SCN_LOOKUP_DEFER + bumps
+ *	commit_lookup_defer_count atomically.  out_commit_scn is NOT written
+ *	(caller's sentinel preserved).
+ *
+ *	Caller contract (spec-2.11 §3.0 I1-I4 + header doxygen):
+ *	  - out_commit_scn MUST be non-NULL (Q3-extra;defensive Assert
+ *	    catches future FOUND path NULL deref early at debug build).
+ *	  - Caller MUST `switch (result)`;  never `if (result)` (FOUND=0).
+ *	  - On DEFER, caller MUST fall back to PG-native visibility path.
+ *	  - DO NOT treat DEFER as INVISIBLE (would silently hide rows).
+ *
+ *	Forward-link:  spec-2.26 dual-dim visibility entry skeleton +
+ *	Stage 3 真激活 will replace this stub body with real cross-instance
+ *	commit_scn protocol (cluster_ic msg replier + TT slot lookup +
+ *	per-state result mapping).
+ */
+ClusterScnLookupResult
+cluster_scn_lookup_commit_remote(TransactionId xid pg_attribute_unused(), SCN *out_commit_scn)
+{
+	/* Q3-extra (user-mandated):  Header contract requires out_commit_scn
+	 * non-NULL.  Stub body asserts even though it doesn't write — this
+	 * catches caller bugs early at debug build before spec-2.26+ FOUND
+	 * path lands.  Runtime semantics unchanged (still DEFER). */
+	Assert(out_commit_scn != NULL);
+
+	/* spec-2.11 D2 skeleton stub:  always DEFER.  out_commit_scn left
+	 * unchanged (caller's sentinel preserved).  spec-2.26 / Stage 3 真激活
+	 * will replace this body. */
+	pg_atomic_fetch_add_u64(&cluster_scn_state->commit_lookup_defer_count, 1);
+
+	return CLUSTER_SCN_LOOKUP_DEFER;
+}
+
+/*
+ * spec-2.11 D4:  accessor for skeleton-phase defer counter.
+ *
+ *	Lock-free atomic read (mirror cluster_scn_boc_broadcast_fanout_count
+ *	pattern from spec-2.10 D4).  Bumped by D2 stub on every call.
+ *	Future spec-2.26 / Stage 3 真激活 may add per-state counters via
+ *	amend (FOUND / NOT_FOUND / ERROR);  skeleton has 1 counter only
+ *	(Q4.1 spec frozen).
+ */
+uint64
+cluster_scn_commit_lookup_defer_count(void)
+{
+	Assert(cluster_scn_state != NULL);
+	return pg_atomic_read_u64(&cluster_scn_state->commit_lookup_defer_count);
+}
+
 
 /*
  * ============================================================
@@ -1036,6 +1105,8 @@ cluster_scn_shmem_init(void)
 		pg_atomic_init_u64(&cluster_scn_state->boc_max_batch_size, 0);
 		pg_atomic_init_u64(&cluster_scn_state->boc_last_batch_size, 0);
 		pg_atomic_init_u64(&cluster_scn_state->boc_broadcast_fanout_count, 0);
+		/* spec-2.11 D3: init skeleton-phase commit_scn lookup defer counter. */
+		pg_atomic_init_u64(&cluster_scn_state->commit_lookup_defer_count, 0);
 	}
 }
 

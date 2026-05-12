@@ -214,7 +214,8 @@ my @expected_keys = (
 	'scn_boc_last_sweep_at',
 	'scn_boc_pending_at_last_sweep',
 	'scn_boc_max_batch_size',
-	'scn_boc_broadcast_fanout_count');
+	'scn_boc_broadcast_fanout_count',
+	'scn_commit_lookup_defer_count');	  # spec-2.11 D5
 foreach my $k (@expected_keys)
 {
 	my $count = $node->safe_psql('postgres',

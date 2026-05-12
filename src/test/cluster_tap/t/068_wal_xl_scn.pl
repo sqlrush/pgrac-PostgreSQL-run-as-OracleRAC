@@ -304,12 +304,12 @@ is($standby_off_after, $standby_off_before,
 # ----------
 # L11: XACT_XINFO_HAS_SCN bit 9 + xl_xact_scn cross-check via pg_cluster_state.
 # ----------
-# scn keys now 15 after spec-2.10 added scn_boc_broadcast_fanout_count.
+# scn keys now 16 after spec-2.11 added scn_commit_lookup_defer_count.
 my $scn_key_count = $primary->safe_psql('postgres', q{
 	SELECT count(*) FROM pg_cluster_state WHERE category='scn'
 });
-is($scn_key_count, '15',
-	'L11 pg_cluster_state has 15 scn keys after spec-2.10 fanout counter');
+is($scn_key_count, '16',
+	'L11 pg_cluster_state has 16 scn keys after spec-2.11 commit_lookup_defer counter');
 
 
 # ----------

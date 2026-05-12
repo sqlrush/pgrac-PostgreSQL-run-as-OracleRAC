@@ -704,6 +704,11 @@ dump_scn(ReturnSetInfo *rsinfo)
 		 * Diff主要反映 LMON coalescing,见 spec-2.10 §2.2 / §3.0 I3. */
 		emit_row(rsinfo, "scn", "scn_boc_broadcast_fanout_count",
 				 fmt_int64((int64)cluster_scn_boc_broadcast_fanout_count()));
+		/* PGRAC: spec-2.11 D5 — cross-instance commit_scn lookup defer
+		 * counter.  Skeleton-only;  stub always returns DEFER and bumps
+		 * this counter.  See spec-2.11 §2.2 + §3.0 I1. */
+		emit_row(rsinfo, "scn", "scn_commit_lookup_defer_count",
+				 fmt_int64((int64)cluster_scn_commit_lookup_defer_count()));
 	}
 }
 

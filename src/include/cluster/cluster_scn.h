@@ -304,6 +304,68 @@ extern uint64 cluster_scn_boc_broadcast_fanout_count(void);
 
 
 /*
+ * spec-2.11 D1:  cross-instance commit_scn lookup result enum.
+ *
+ *	Skeleton phase (spec-2.11 ship):  stub always returns DEFER.
+ *	spec-2.26 dual-dim entry skeleton + Stage 3 真激活 will populate
+ *	FOUND / NOT_FOUND / ERROR semantics.
+ *
+ *	Caller contract (spec-2.11 §3.0 I3 + I4):
+ *	  - MUST use `switch (result) { ... }` not `if (result) ...`
+ *	    (FOUND = 0 triggers false-positive on bool truth test).
+ *	  - On DEFER, caller MUST fall back to PG-native visibility path
+ *	    (TransactionIdDidCommit + xact_redo etc).
+ *	  - DO NOT treat DEFER as INVISIBLE (would silently hide rows).
+ *	  - On NOT_FOUND / ERROR (future), caller decides per its own
+ *	    fallback policy (likely fall back to PG-native too).
+ */
+typedef enum ClusterScnLookupResult {
+	CLUSTER_SCN_LOOKUP_FOUND = 0,	  /* commit_scn found and written
+									   * to *out_commit_scn;  caller may
+									   * compare against snapshot SCN */
+	CLUSTER_SCN_LOOKUP_DEFER = 1,	  /* lookup not yet implemented
+									   * (spec-2.11 skeleton);  caller
+									   * MUST fall back to PG-native */
+	CLUSTER_SCN_LOOKUP_NOT_FOUND = 2, /* xid not found in any TT slot
+									   * (aborted / recycled / unknown);
+									   * caller per its fallback policy */
+	CLUSTER_SCN_LOOKUP_ERROR = 3,	  /* transient failure (shmem not
+									   * init / network / etc);  caller
+									   * per its fallback policy */
+} ClusterScnLookupResult;
+
+/*
+ * spec-2.11 D2:  cross-instance commit_scn lookup API.
+ *
+ *	Header contract (spec-2.11 §3.0 I1-I4):
+ *	  - `out_commit_scn` MUST be non-NULL (D2 stub asserts;Q3-extra).
+ *	  - Only valid on result == FOUND (future Stage 3+);  skeleton
+ *	    phase always returns DEFER without writing *out_commit_scn.
+ *	  - Caller MUST `switch (result)`,  never `if (result)` (FOUND=0).
+ *
+ *	spec-2.11 skeleton stub:  always returns CLUSTER_SCN_LOOKUP_DEFER
+ *	+ bumps cluster_scn.commit_lookup_defer_count (observable via
+ *	pg_cluster_state.scn.scn_commit_lookup_defer_count).
+ *
+ *	Forward-link:  spec-2.26 dual-dim visibility entry skeleton +
+ *	Stage 3 真激活 will replace stub body with real cross-instance
+ *	protocol;  caller landing point is spec-2.26 entry in cluster-
+ *	side visibility path (NOT heapam_visibility.c per AD-012 例外 9).
+ */
+extern ClusterScnLookupResult cluster_scn_lookup_commit_remote(TransactionId xid,
+															   SCN *out_commit_scn);
+
+/*
+ * spec-2.11 D4:  lookup invocation defer counter accessor.
+ *
+ *	Skeleton phase counter — bumped atomically by lookup stub every
+ *	call (always returns DEFER).  Lock-free atomic read.  Future
+ *	spec-2.26 / Stage 3 真激活 may add per-state counters via amend.
+ */
+extern uint64 cluster_scn_commit_lookup_defer_count(void);
+
+
+/*
  * spec-2.9 D3: PGRAC_IC_MSG_BOC_BROADCAST dispatch handler.
  *
  *	Registered by cluster_lmon.c phase 1 (spec-2.9 D1) as the recv-side

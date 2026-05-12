@@ -132,12 +132,47 @@ void
 elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ...)
 {}
 
-/* shmem / lwlock / fmgr / pg_atomic stubs (advance/observe path; never
- * invoked in this binary -- address-only / pure-function tests). */
+/* shmem / lwlock / fmgr / pg_atomic stubs.
+ *
+ *	spec-2.11 P1.2 修订:  原 stub 返回 NULL + *foundPtr=true → 任何对
+ *	cluster_scn_state 字段的 atomic 读写都会 SEGV(NULL pointer deref).
+ *	T-scn-15c 真行为测试需要 atomic fetch_add 真生效,所以扩展 stub:
+ *
+ *	  (i) 维护一个 per-name static buffer cache(指针稳定),首次访问
+ *	      *foundPtr=false 触发 caller init path(zero-fill atomic
+ *	      fields);后续访问 *foundPtr=true 保持复用
+ *	  (ii) buffer 用 BSS static(zero-init by C runtime) + uint64 union
+ *	      member 强制至少 8-byte alignment — 满足 LWLock /
+ *	      pg_atomic_uint64 alignment 和 init 前置条件
+ *	  (iii) 仅 "pgrac cluster scn" 名走真 buffer 路径;其他 region 名
+ *	      retain 旧 NULL 行为(避免影响其他 spec stub 假设)
+ *
+ *	T-scn-15c 用法:测试体前置调 cluster_scn_shmem_init() → 触发
+ *	ShmemInitStruct("pgrac cluster scn", ...) → 首次 *foundPtr=false
+ *	→ cluster_scn_shmem_init body 执行 atomic init zero loop →
+ *	cluster_scn_state 真指向 valid buffer → atomic ops 真生效.
+ */
 void *
-ShmemInitStruct(const char *name pg_attribute_unused(), Size size pg_attribute_unused(),
-				bool *foundPtr)
+ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 {
+	/* spec-2.11 P1.2:  per-name persistent buffer cache for cluster_scn.
+	 * Use a union instead of plain char[] so pg_atomic_uint64 and LWLock
+	 * inside ClusterScnSharedState are not placed on a 1-byte-aligned
+	 * address in standalone unit tests. */
+	static union {
+		uint64 force_align;
+		char data[8192]; /* generous;  cluster_scn_shmem_size() << 8KB */
+	} scn_buf;
+	static bool scn_initialized = false;
+
+	if (name != NULL && strcmp(name, "pgrac cluster scn") == 0) {
+		Assert(size <= sizeof(scn_buf.data)); /* catch shmem layout growth */
+		*foundPtr = scn_initialized;
+		scn_initialized = true; /* subsequent calls see found=true */
+		return scn_buf.data;
+	}
+
+	/* All other names:  retain spec-1.X stub behavior. */
 	*foundPtr = true;
 	return NULL;
 }
@@ -635,6 +670,74 @@ UT_TEST(test_spec210_scn_shmem_size_smoke)
 }
 
 /*
+ * spec-2.11 D6 T-scn-15:  commit_scn cross-instance lookup skeleton.
+ *
+ *	4 tests per spec-2.11 Q4.3 + user 修正(真行为验证):
+ *	  T-scn-15a: cluster_scn_lookup_commit_remote 符号 linkable
+ *	  T-scn-15b: ClusterScnLookupResult enum 4 值 invariant
+ *	  T-scn-15c: 真行为 — read defer_count → call lookup → assert
+ *	             DEFER + sentinel unchanged + counter +1
+ *	  T-scn-15d: cluster_scn_commit_lookup_defer_count accessor linkable
+ *
+ *	P1.2 fix:  T-scn-15c 真行为需 cluster_scn_state 真 init.  Test 体
+ *	前置调 cluster_scn_shmem_init() 触发 ShmemInitStruct("pgrac
+ *	cluster scn", ...) 走 P1.2 扩展的 stub 路径(static scn_buf +
+ *	首次 *foundPtr=false 触发 init zero loop).
+ */
+UT_TEST(test_spec211_commit_lookup_remote_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_lookup_commit_remote);
+}
+
+UT_TEST(test_spec211_lookup_result_enum_invariant)
+{
+	/* spec-2.11 Q3.2:  FOUND=0 / DEFER=1 / NOT_FOUND=2 / ERROR=3.
+	 * Catch silent renumber per L74 cross-ref grep watch.  These
+	 * values are part of the lookup ABI;  bumping them silently would
+	 * break future spec-2.26+ caller switch dispatch. */
+	UT_ASSERT_EQ((int)CLUSTER_SCN_LOOKUP_FOUND, 0);
+	UT_ASSERT_EQ((int)CLUSTER_SCN_LOOKUP_DEFER, 1);
+	UT_ASSERT_EQ((int)CLUSTER_SCN_LOOKUP_NOT_FOUND, 2);
+	UT_ASSERT_EQ((int)CLUSTER_SCN_LOOKUP_ERROR, 3);
+}
+
+UT_TEST(test_spec211_lookup_stub_real_behavior)
+{
+	/* spec-2.11 Q4.3 user 修正:  真行为验证 — 不仅 symbol linkable.
+	 *
+	 *	(1) read defer_count baseline
+	 *	(2) mock SCN sentinel = magic value
+	 *	(3) call lookup(xid, &sentinel)
+	 *	(4) assert return == DEFER
+	 *	(5) assert sentinel UNCHANGED (stub does not write out_commit_scn)
+	 *	(6) assert defer_count == baseline + 1
+	 *
+	 *	P1.2 fix:  cluster_scn_state 必须 真 init 才能 atomic ops 生效.
+	 *	test 前置调 cluster_scn_shmem_init() → ShmemInitStruct 走 P1.2
+	 *	扩展路径 → cluster_scn_state 真指向 static scn_buf.
+	 */
+	uint64 pre;
+	SCN sentinel = (SCN)0xDEADBEEFCAFEBABEULL;
+	ClusterScnLookupResult result;
+
+	/* P1.2:  trigger ShmemInitStruct + cluster_scn_state init. */
+	cluster_scn_shmem_init();
+
+	pre = cluster_scn_commit_lookup_defer_count();
+
+	result = cluster_scn_lookup_commit_remote((TransactionId)123, &sentinel);
+
+	UT_ASSERT_EQ((int)result, (int)CLUSTER_SCN_LOOKUP_DEFER);
+	UT_ASSERT_EQ((uint64)sentinel, (uint64)0xDEADBEEFCAFEBABEULL);
+	UT_ASSERT_EQ(cluster_scn_commit_lookup_defer_count(), pre + 1);
+}
+
+UT_TEST(test_spec211_commit_lookup_defer_count_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_scn_commit_lookup_defer_count);
+}
+
+/*
  * spec-1.18 symbol-linkable smoke tests.
  *
  *	Real semantics (commit_scn round-tripping through xl_xact_scn,
@@ -711,7 +814,7 @@ UT_TEST(test_spec29_boc_broadcast_msg_type_enum_value)
 int
 main(void)
 {
-	UT_PLAN(33);
+	UT_PLAN(37);
 
 	/* Stage 1.4 stub (5) */
 	UT_RUN(test_scn_typedef_size_is_8_bytes);
@@ -763,6 +866,17 @@ main(void)
 	 * default 验证移到 D7 TAP 101 via SHOW cluster.boc_sweep_interval_ms. */
 	UT_RUN(test_spec210_boc_broadcast_fanout_count_linkable);
 	UT_RUN(test_spec210_scn_shmem_size_smoke);
+
+	/* Spec-2.11 D6 commit_scn cross-instance lookup skeleton (4) —
+	 * T-scn-15 a/b/c/d.  c 真行为验证 per Q4.3 user 修正(read counter
+	 * → call → assert DEFER + sentinel unchanged + counter +1);依赖
+	 * P1.2 ShmemInitStruct stub 扩展(static scn_buf + 首次 *foundPtr
+	 * = false → cluster_scn_shmem_init zero loop → cluster_scn_state
+	 * 真指向 valid buffer → atomic ops 真生效)。 */
+	UT_RUN(test_spec211_commit_lookup_remote_linkable);
+	UT_RUN(test_spec211_lookup_result_enum_invariant);
+	UT_RUN(test_spec211_lookup_stub_real_behavior);
+	UT_RUN(test_spec211_commit_lookup_defer_count_linkable);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
