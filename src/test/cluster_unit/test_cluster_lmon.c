@@ -500,6 +500,14 @@ cluster_ges_reply_handler(const ClusterICEnvelope *env pg_attribute_unused(),
 						  const void *payload pg_attribute_unused())
 {}
 
+/* spec-2.14 D12 / L104 stub: cluster_lmon.c calls
+ * cluster_grd_master_map_init() at postmaster phase 1.  Vacuous stub
+ * for standalone link;  real master_map init behavior verified by
+ * test_cluster_grd T-grd-1d (sparse declared list). */
+void
+cluster_grd_master_map_init(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 

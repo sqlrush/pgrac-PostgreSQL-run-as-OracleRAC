@@ -82,6 +82,7 @@ PG_FUNCTION_INFO_V1(cluster_get_ic_peers);
  * disable-mode stub body is at the bottom of this file.
  */
 PG_FUNCTION_INFO_V1(cluster_get_ic_msg_types);
+PG_FUNCTION_INFO_V1(cluster_get_grd_shards); /* spec-2.14 D7 */
 
 /*
  * spec-2.5 D15 -- cluster_get_cssd_peers SRF.  Body lives in
@@ -1222,6 +1223,17 @@ cluster_get_ic_msg_types(PG_FUNCTION_ARGS pg_attribute_unused())
 {
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					errmsg("cluster_get_ic_msg_types requires --enable-cluster")));
+	PG_RETURN_NULL();
+}
+
+/*
+ * spec-2.14 D7 -- cluster_get_grd_shards disable-cluster stub.
+ */
+Datum
+cluster_get_grd_shards(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_get_grd_shards requires --enable-cluster")));
 	PG_RETURN_NULL();
 }
 

@@ -65,6 +65,7 @@
 #include "cluster/cluster_epoch.h"	  /* cluster_epoch_shmem_register (2.4) */
 #include "cluster/cluster_scn.h"	  /* cluster_scn_shmem_register (1.15) */
 #include "cluster/cluster_ges.h"	  /* cluster_ges_shmem_register (spec-2.13) */
+#include "cluster/cluster_grd.h"	  /* cluster_grd_shmem_register (spec-2.14) */
 #include "cluster/cluster_stats.h"	  /* cluster_stats_shmem_register (1.14 Sprint A) */
 #include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
 #include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
@@ -390,6 +391,12 @@ cluster_init_shmem_module(void)
 	if (cluster_shmem_lookup_region("pgrac cluster ges") == NULL)
 		cluster_ges_shmem_register();
 
+	/* spec-2.14 D5: register cluster_grd shmem region (GRD routing
+	 * substrate; 4096 atomic master[] + 5 atomic uint64 counters;
+	 * lock-free per Q9). */
+	if (cluster_shmem_lookup_region("pgrac cluster grd") == NULL)
+		cluster_grd_shmem_register();
+
 	/*
 	 * spec-2.4 D2: register cluster_epoch shmem region.  64-byte cache-
 	 * line aligned (false sharing防 on hot envelope build/verify path);
@@ -542,6 +549,29 @@ cluster_init_shmem(void)
 	 */
 	if (cluster_enabled)
 		cluster_conf_load();
+
+	/*
+	 * spec-2.14 D4: initialize GRD master map after cluster_conf is
+	 * loaded.  declared-node-aware: scans cluster_conf_lookup_node() over
+	 * 0..CLUSTER_MAX_NODES + cluster_conf_node_count() cross-check
+	 * (handles sparse node_id 0/2/5 in pgrac.conf; per Q10 + P2.1).
+	 *
+	 * Must run AFTER cluster_conf_load() (depends on declared topology)
+	 * and AFTER the shmem region init loop above (depends on
+	 * cluster_grd_state non-NULL).
+	 *
+	 * Triple gate per L15 caller primary pattern:
+	 *   1. cluster_enabled — disable-cluster path skips entirely
+	 *   2. cluster_node_id >= 0 — bootstrap / --check / --boot have
+	 *      cluster_node_id = -1 (default) and single-node fallback
+	 *      populates nodes[0].node_id = -1, which yields declared_count = 0
+	 *      via the i = 0..CLUSTER_MAX_NODES scan (negative ids skipped) →
+	 *      i % 0 UB in the distribution loop.  Real postmaster start with
+	 *      cluster.node_id GUC set in postgresql.conf gets here cleanly.
+	 *   3. cluster_conf_node_count() > 0 — defensive symmetry.
+	 */
+	if (cluster_enabled && cluster_node_id >= 0 && cluster_conf_node_count() > 0)
+		cluster_grd_master_map_init();
 
 	/*
 	 * Stage 0.18: bind the cluster_ic vtable for the configured tier.

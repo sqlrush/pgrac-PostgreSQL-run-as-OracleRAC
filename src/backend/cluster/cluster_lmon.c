@@ -257,9 +257,11 @@ cluster_lmon_shmem_init(void)
 	 * Skeleton phase (spec-2.13 ship):
 	 *   - allowed_producer_mask = CLUSTER_IC_PRODUCER_NONE (Q4.2 = D):
 	 *     this is the SKELETON防误发 default — NOT GES最终设计.
-	 *     spec-2.14 D1 第 1 件事 amend mask = CLUSTER_IC_PRODUCER_BACKEND
-	 *     when real caller-side send lands.  Do NOT inherit NONE as a
-	 *     permanent rule (spec-2.13 §3.2 + §10 explicit doc).
+	 *     spec-2.16 cross-node grant/convert 真 caller-side 实装时
+	 *     amend mask = CLUSTER_IC_PRODUCER_BACKEND.  spec-2.14 是路由
+	 *     substrate 无 caller (per spec-2.14 v0.4 P2.3 修正).  Do NOT
+	 *     inherit NONE as a permanent rule (spec-2.13 §3.2 + §10
+	 *     explicit doc).
 	 *   - broadcast_ok = false:  GES request/reply are point-to-point,
 	 *     never broadcast.
 	 *   - handler:  stub永远 DEFER + atomic counter +1 + DEBUG2 log

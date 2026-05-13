@@ -1620,6 +1620,21 @@ CREATE VIEW pg_cluster_ic_msg_types AS
 REVOKE ALL ON pg_cluster_ic_msg_types FROM PUBLIC;
 GRANT SELECT ON pg_cluster_ic_msg_types TO PUBLIC;
 
+-- PGRAC: pg_cluster_grd_shards (spec-2.14 D7; 2026-05-13).
+--   Lists all 4096 GRD shard → master_node_id mappings + is_local flag
+--   (== cluster.node_id).  Backed by cluster_get_grd_shards (OID 8921).
+--   GRD master_map is initialized at LMON postmaster phase 1 via
+--   declared-node-aware modulo (cluster_conf_lookup_node scan).  Stage 6
+--   DRM will refresh master[] on reconfig;  this spec ships static init.
+CREATE VIEW pg_cluster_grd_shards AS
+    SELECT shard_id,
+           master_node_id,
+           is_local
+      FROM cluster_get_grd_shards();
+
+REVOKE ALL ON pg_cluster_grd_shards FROM PUBLIC;
+GRANT SELECT ON pg_cluster_grd_shards TO PUBLIC;
+
 -- PGRAC: pg_cluster_state (stage 0.29).
 --   One-stop diagnostic snapshot covering every cluster subsystem's
 --   runtime state expressed as (category, key, value) triples:

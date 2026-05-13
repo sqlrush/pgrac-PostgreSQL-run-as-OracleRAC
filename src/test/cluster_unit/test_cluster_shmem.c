@@ -367,6 +367,32 @@ void
 cluster_ges_shmem_register(void)
 {}
 
+/* spec-2.14 D12 / L104 stub: cluster_grd shmem region (real impl in
+ * cluster_grd.c).  cluster_shmem.c calls cluster_grd_shmem_register
+ * to register the "pgrac cluster grd" region; standalone unit test
+ * doesn't link cluster_grd.o. */
+void
+cluster_grd_shmem_register(void)
+{}
+
+/* spec-2.14 D4 / L104 stub: cluster_grd master map init (real impl in
+ * cluster_grd.c).  cluster_shmem.c calls cluster_grd_master_map_init
+ * after cluster_conf_load (declared-node-aware shard distribution);
+ * standalone unit test doesn't link cluster_grd.o. */
+void
+cluster_grd_master_map_init(void)
+{}
+
+/* spec-2.14 D4 / L104 stub: cluster_conf_node_count (real impl in
+ * cluster_conf.c).  cluster_shmem.c calls it as a triple-gate condition
+ * before cluster_grd_master_map_init; standalone unit test returns 0 so
+ * the gate short-circuits without needing cluster_conf shmem. */
+int
+cluster_conf_node_count(void)
+{
+	return 0;
+}
+
 /* spec-2.2 D3 stub: tier1 shmem region (real impl in cluster_ic_tier1.c). */
 void
 cluster_ic_tier1_shmem_register(void)

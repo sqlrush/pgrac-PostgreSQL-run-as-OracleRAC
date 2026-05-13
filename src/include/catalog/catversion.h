@@ -248,6 +248,9 @@
  * errcode / wait event / inject point catalog rows behind this
  * already-bumped catversion.
  */
-#define CATALOG_VERSION_NO 202605260
+/* spec-2.14 D8 (2026-05-13):  add cluster_get_grd_shards SRF + pg_cluster_grd_shards
+ * view + cluster_grd shmem region.  catversion bump to invalidate any catalog-
+ * aware tooling caches when spec-2.14 GRD routing substrate lands. */
+#define CATALOG_VERSION_NO 202605270
 
 #endif

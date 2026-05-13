@@ -77,6 +77,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_lck.h"   /* cluster_lck_status (spec-1.12 D12) */
 #include "cluster/cluster_scn.h"   /* cluster_scn_current (spec-1.15 D6) */
 #include "cluster/cluster_ges.h"   /* cluster_ges_{request,reply}_defer_count (spec-2.13 D4) */
+#include "cluster/cluster_grd.h"   /* cluster_grd_* observability accessors (spec-2.14 D6) */
 #include "cluster/cluster_cssd.h"  /* cluster_cssd_status (spec-2.5 D12) */
 #include "cluster/cluster_stats.h" /* cluster_stats_status (spec-1.14 D12) */
 #include "cluster/cluster_lmon.h"  /* cluster_lmon_status (spec-1.11 Sprint B D12) */
@@ -744,6 +745,50 @@ dump_scn(ReturnSetInfo *rsinfo)
 
 
 /*
+ * dump_grd -- spec-2.14 D6 GRD routing substrate observability.
+ *
+ *	Emits 8 rows under category='grd':
+ *	  - grd_shard_count:             4096 (constant)
+ *	  - grd_local_master_count:      shards mastered by self node
+ *	  - grd_remote_master_count:     4096 - local (SQL-friendly though derivable)
+ *	  - grd_shard_lookup_count:      total lookup invocations (v0.4 NEW)
+ *	  - grd_local_master_lookup_count:  lookup_master() == self count
+ *	  - grd_remote_master_lookup_count: lookup_master() != self count
+ *	  - grd_resid_encode_count:      resid_encode invocations (v0.4 NEW)
+ *	  - grd_master_map_refresh_count: init + future DRM refresh count
+ *
+ *	Counter invariant (v0.4 P1.2):
+ *	  grd_shard_lookup_count >=
+ *	      grd_local_master_lookup_count + grd_remote_master_lookup_count
+ *	  (>= not =;  shard_lookup() thin wrapper increments total only)
+ *
+ *	Substrate phase (spec-2.14 ship):  no caller-side LockAcquire integration
+ *	(spec-2.15+),  so counters stay 0 in production until spec-2.15+ wires
+ *	real callers.  Future spec-2.15 entry table operations split counters
+ *	by GES state (GRANTED / WAITING / CONVERTING / DEADLOCK).
+ */
+static void
+dump_grd(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "grd", "grd_shard_count", fmt_int32((int32)PGRAC_GRD_SHARD_COUNT));
+	emit_row(rsinfo, "grd", "grd_local_master_count",
+			 fmt_int32((int32)cluster_grd_local_master_count()));
+	emit_row(rsinfo, "grd", "grd_remote_master_count",
+			 fmt_int32((int32)cluster_grd_remote_master_count()));
+	emit_row(rsinfo, "grd", "grd_shard_lookup_count",
+			 fmt_int64((int64)cluster_grd_shard_lookup_count()));
+	emit_row(rsinfo, "grd", "grd_local_master_lookup_count",
+			 fmt_int64((int64)cluster_grd_local_master_lookup_count()));
+	emit_row(rsinfo, "grd", "grd_remote_master_lookup_count",
+			 fmt_int64((int64)cluster_grd_remote_master_lookup_count()));
+	emit_row(rsinfo, "grd", "grd_resid_encode_count",
+			 fmt_int64((int64)cluster_grd_resid_encode_count()));
+	emit_row(rsinfo, "grd", "grd_master_map_refresh_count",
+			 fmt_int64((int64)cluster_grd_master_map_refresh_count_get()));
+}
+
+
+/*
  * dump_ges -- spec-2.13 D4 GES protocol skeleton observability.
  *
  *	Emits 2 rows under category='ges':
@@ -941,6 +986,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_cluster_cssd(rsinfo);
 		dump_scn(rsinfo);
 		dump_ges(rsinfo);
+		dump_grd(rsinfo);
 	}
 #else
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

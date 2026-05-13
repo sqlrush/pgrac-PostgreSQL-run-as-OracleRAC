@@ -874,6 +874,51 @@ cluster_ges_reply_defer_count(void)
 	return 0;
 }
 
+/* spec-2.14 D12 / L104 stubs: cluster_debug dump_grd references 7 new
+ * spec-2.14 cluster_grd module accessors;  test_cluster_debug standalone
+ * binary doesn't link cluster_grd.o,  vacuous stubs. */
+uint32
+cluster_grd_local_master_count(void)
+{
+	return 0;
+}
+
+uint32
+cluster_grd_remote_master_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_grd_shard_lookup_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_grd_local_master_lookup_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_grd_remote_master_lookup_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_grd_resid_encode_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_grd_master_map_refresh_count_get(void)
+{
+	return 0;
+}
+
 
 UT_DEFINE_GLOBALS();
 
