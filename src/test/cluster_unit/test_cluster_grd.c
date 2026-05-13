@@ -153,7 +153,7 @@ ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 			 * standalone shmem stub's alignment to at least 8 bytes for
 			 * pg_atomic_uint64 fields inside ClusterGrdShared. */
 			uint64 force_align;
-			char data[131072]; /* 4096 atomic uint32 + 6 atomic uint64 < 17KB; buffer 128KB 充足 */
+			char data[131072]; /* 4096 atomic uint32 + counter fields < 17KB; buffer 128KB 充足 */
 		} grd_buf;
 		static bool grd_initialized = false;
 
@@ -199,10 +199,29 @@ cluster_conf_node_count(void)
 
 int32 cluster_node_id = 0; /* NodeId typedef = int32 (cluster_scn.h:135) */
 
-/* spec-2.15 D11:  cluster.grd_max_entries GUC stub (standalone harness
- * keeps 0 → skeleton mode → lookup_or_create returns NOT_READY).
- * cluster_unit harness does NOT exercise the HTAB code path. */
+/* spec-2.15 D11:  cluster.grd_max_entries GUC stub.  Most tests keep 0
+ * → skeleton mode → lookup_or_create returns NOT_READY; the soft-cap
+ * regression test sets 1 and drives a tiny fake HTAB path. */
 int cluster_grd_max_entries = 0;
+
+#define FAKE_GRD_HTAB_MAX_ENTRIES 4
+#define FAKE_GRD_HTAB_ENTRY_BYTES 4096
+
+static int fake_grd_htab_token;
+static int fake_grd_htab_count;
+static Size fake_grd_entrysize;
+static union {
+	uint64 force_align;
+	char data[FAKE_GRD_HTAB_MAX_ENTRIES][FAKE_GRD_HTAB_ENTRY_BYTES];
+} fake_grd_htab_entries;
+
+static void
+reset_fake_grd_htab(void)
+{
+	fake_grd_htab_count = 0;
+	fake_grd_entrysize = 0;
+	memset(&fake_grd_htab_entries, 0, sizeof(fake_grd_htab_entries));
+}
 
 
 /* ============================================================
@@ -219,13 +238,19 @@ ShmemInitHash(const char *name pg_attribute_unused(), long init_size pg_attribut
 			  long max_size pg_attribute_unused(), HASHCTL *infoP pg_attribute_unused(),
 			  int hash_flags pg_attribute_unused())
 {
-	return NULL;
+	Assert(infoP != NULL);
+	Assert(infoP->entrysize <= FAKE_GRD_HTAB_ENTRY_BYTES);
+
+	fake_grd_entrysize = infoP->entrysize;
+	fake_grd_htab_count = 0;
+	memset(&fake_grd_htab_entries, 0, sizeof(fake_grd_htab_entries));
+	return (HTAB *)&fake_grd_htab_token;
 }
 
 long
 hash_get_num_entries(HTAB *hashp pg_attribute_unused())
 {
-	return 0;
+	return fake_grd_htab_count;
 }
 
 void *
@@ -234,8 +259,39 @@ hash_search_with_hash_value(HTAB *hashp pg_attribute_unused(),
 							uint32 hashvalue pg_attribute_unused(),
 							HASHACTION action pg_attribute_unused(), bool *foundPtr)
 {
+	int i;
+
+	Assert(keyPtr != NULL);
+	Assert(fake_grd_entrysize > 0);
+
+	for (i = 0; i < fake_grd_htab_count; i++) {
+		char *entry = fake_grd_htab_entries.data[i];
+
+		if (memcmp(entry, keyPtr, sizeof(ClusterResId)) == 0) {
+			if (foundPtr != NULL)
+				*foundPtr = true;
+			return entry;
+		}
+	}
+
 	if (foundPtr != NULL)
 		*foundPtr = false;
+
+	if (action == HASH_FIND)
+		return NULL;
+
+	if (action == HASH_ENTER_NULL) {
+		char *entry;
+
+		if (fake_grd_htab_count >= FAKE_GRD_HTAB_MAX_ENTRIES)
+			return NULL;
+
+		entry = fake_grd_htab_entries.data[fake_grd_htab_count++];
+		memset(entry, 0, fake_grd_entrysize);
+		memcpy(entry, keyPtr, sizeof(ClusterResId));
+		return entry;
+	}
+
 	return NULL;
 }
 
@@ -252,7 +308,9 @@ hash_seq_search(HASH_SEQ_STATUS *status pg_attribute_unused())
 Size
 hash_estimate_size(long num_entries pg_attribute_unused(), Size entrysize pg_attribute_unused())
 {
-	return 0;
+	if (num_entries <= 0 || entrysize == 0)
+		return 0;
+	return (Size)num_entries * entrysize + 1024;
 }
 
 void
@@ -263,7 +321,7 @@ RequestNamedLWLockTranche(const char *tranche_name pg_attribute_unused(),
 LWLockPadded *
 GetNamedLWLockTranche(const char *tranche_name pg_attribute_unused())
 {
-	static LWLockPadded dummy_locks[1];
+	static LWLockPadded dummy_locks[PGRAC_GRD_SHARD_COUNT];
 	return dummy_locks;
 }
 
@@ -599,7 +657,7 @@ UT_DEFINE_GLOBALS();
 
 
 /* ============================================================
- * spec-2.15 T-grd-2 a-e (5 NEW unit tests).
+ * spec-2.15 T-grd-2 a-f (6 NEW unit tests).
  *
  *   T-grd-2 covers the entry-table infrastructure layer:
  *     a) enum value invariant (NOT sizeof — C enum size impl-defined)
@@ -612,6 +670,7 @@ UT_DEFINE_GLOBALS();
  *        invariant via DESCRIBE-only check).
  *     d) entry slock_t mutation safety (init + try-acquire idempotent)
  *     e) hash 单源 (hash64 % 4096 与 32-bit projection 一致)
+ *     f) existing entry lookup survives soft cap; only new entries FULL
  *
  *   holders/waiters/converts cap behavior tests推 spec-2.16 配 mutator API.
  * ============================================================ */
@@ -703,6 +762,50 @@ UT_TEST(test_grd_hash_source_unification)
 	UT_ASSERT_EQ(shard_a, shard_b);
 }
 
+UT_TEST(test_grd_entry_existing_hit_survives_soft_cap)
+{
+	LOCKTAG src;
+	ClusterResId resid_a;
+	ClusterResId resid_b;
+	ClusterGrdEntry *first = NULL;
+	ClusterGrdEntry *second = NULL;
+	ClusterGrdEntry *third = (ClusterGrdEntry *)0xdeadbeef;
+	ClusterGrdEntryResult r;
+
+	/* Regression for the Step 5 review fix: soft cap must apply only to
+	 * new entries.  A table at cap must still return the existing handle
+	 * for the same resource. */
+	reset_fake_grd_htab();
+	cluster_grd_max_entries = 1;
+	cluster_grd_shmem_init();
+
+	memset(&src, 0, sizeof(src));
+	src.locktag_field1 = 42;
+	src.locktag_type = LOCKTAG_RELATION;
+	src.locktag_lockmethodid = 1;
+	cluster_grd_resid_encode(&src, &resid_a);
+
+	r = cluster_grd_entry_lookup_or_create(&resid_a, true, &first);
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_NE((void *)first, (void *)NULL);
+	UT_ASSERT_EQ(cluster_grd_entry_count(), 1);
+
+	r = cluster_grd_entry_lookup_or_create(&resid_a, true, &second);
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_EQ((void *)second, (void *)first);
+	UT_ASSERT_EQ(cluster_grd_entry_count(), 1);
+
+	src.locktag_field1 = 43;
+	cluster_grd_resid_encode(&src, &resid_b);
+	r = cluster_grd_entry_lookup_or_create(&resid_b, true, &third);
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_GRD_ENTRY_FULL);
+	UT_ASSERT_EQ((void *)third, (void *)NULL);
+	UT_ASSERT_EQ(cluster_grd_entry_count(), 1);
+
+	cluster_grd_max_entries = 0;
+	reset_fake_grd_htab();
+}
+
 
 int
 /* cppcheck-suppress constParameter
@@ -710,7 +813,7 @@ int
  * other cluster_unit binaries; argv is intentionally unused. */
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(12);
+	UT_PLAN(13);
 
 	UT_RUN(test_grd_clusterresid_size_16);
 	UT_RUN(test_grd_resid_encode_decode_roundtrip);
@@ -720,12 +823,13 @@ main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 	UT_RUN(test_grd_is_local_master_matrix);
 	UT_RUN(test_grd_is_cluster_aware_classification);
 
-	/* spec-2.15 T-grd-2 a-e */
+	/* spec-2.15 T-grd-2 a-f */
 	UT_RUN(test_grd_entry_result_enum_value_invariant);
 	UT_RUN(test_grd_entry_lookup_not_ready_when_guc_zero);
 	UT_RUN(test_grd_named_tranche_describe_only);
 	UT_RUN(test_grd_entry_release_no_op_safe);
 	UT_RUN(test_grd_hash_source_unification);
+	UT_RUN(test_grd_entry_existing_hit_survives_soft_cap);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

@@ -747,7 +747,8 @@ dump_scn(ReturnSetInfo *rsinfo)
 /*
  * dump_grd -- spec-2.14 D6 GRD routing substrate observability.
  *
- *	Emits 8 rows under category='grd':
+ *	Emits 14 rows under category='grd' (8 from spec-2.14 + 6 from
+ *	spec-2.15 entry-table infrastructure):
  *	  - grd_shard_count:             4096 (constant)
  *	  - grd_local_master_count:      shards mastered by self node
  *	  - grd_remote_master_count:     4096 - local (SQL-friendly though derivable)
@@ -756,6 +757,12 @@ dump_scn(ReturnSetInfo *rsinfo)
  *	  - grd_remote_master_lookup_count: lookup_master() != self count
  *	  - grd_resid_encode_count:      resid_encode invocations (v0.4 NEW)
  *	  - grd_master_map_refresh_count: init + future DRM refresh count
+ *	  - grd_max_entries:             cluster.grd_max_entries GUC value
+ *	  - grd_entry_count:             current live entry count
+ *	  - grd_allocated_bytes:         entry HTAB allocation estimate
+ *	  - grd_entry_create_count:      lifetime created entries
+ *	  - grd_entry_lookup_hit_count:  lifetime OK lookups
+ *	  - grd_entry_full_count:        lifetime FULL returns
  *
  *	Counter invariant (v0.4 P1.2):
  *	  grd_shard_lookup_count >=

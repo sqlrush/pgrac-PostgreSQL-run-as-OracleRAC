@@ -197,7 +197,10 @@ cluster_grd_shmem_init(void)
 		pg_atomic_init_u64(&cluster_grd_state->remote_master_lookup_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->master_map_refresh_count, 0);
 
-		/* spec-2.15 v0.3 NEW 3 atomic counter. */
+		/* spec-2.15 v0.3 NEW counters.  entry_current_count is the
+		 * current-size source for cap checks and grd_entry_count; the
+		 * three lifetime counters are exposed as pg_cluster_state rows. */
+		pg_atomic_init_u64(&cluster_grd_state->entry_current_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->entry_create_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->entry_lookup_hit_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->entry_full_count, 0);
@@ -579,9 +582,12 @@ cluster_grd_master_map_refresh_count_get(void)
  *   hash64 % 4096;HTAB bucket via hash_search_with_hash_value() with
  *   32-bit projection of same hash64.  绝不让 dynahash 自己 hash key.
  *
- *   I17 double-cap check:soft cap (hash_get_num_entries vs GUC) in
- *   shard lock + hard cap (HASH_ENTER_NULL → NULL) defensive.  Race
- *   window ±N (N=concurrent shard count) — Oracle GRD soft cap 同款.
+ *   I17 double-cap check:
+ *     1. HASH_FIND existing entry first; existing entries must remain
+ *        reusable even when the table is at soft cap.
+ *     2. Soft cap reads entry_current_count atomically and applies only
+ *        to new entries.
+ *     3. HASH_ENTER_NULL → NULL remains the hard-cap/OOM defensive path.
  * ============================================================ */
 
 ClusterGrdEntryResult
@@ -591,7 +597,6 @@ cluster_grd_entry_lookup_or_create(const ClusterResId *resid, bool create, Clust
 	uint32 shard_id;
 	uint32 hashvalue;
 	bool found;
-	HASHACTION action;
 	ClusterGrdEntry *entry;
 
 	Assert(resid != NULL);
@@ -618,10 +623,28 @@ cluster_grd_entry_lookup_or_create(const ClusterResId *resid, bool create, Clust
 	 * LWLock 必先于 entry slock_t). */
 	LWLockAcquire(&cluster_grd_shard_locks[shard_id].lock, LW_EXCLUSIVE);
 
-	/* Step 4: v0.4 P1.2 double-cap check — soft cap first (I17).
-	 * HASH_PARTITION=4096 lets nbuckets >= 4096 even when GUC=16,
-	 * so HASH_ENTER_NULL alone cannot stop the soft cap. */
-	if (create && hash_get_num_entries(cluster_grd_entry_htab) >= cluster_grd_max_entries) {
+	/* Step 4: always look for an existing entry before any cap decision.
+	 * Otherwise a table at soft cap would reject reusing an already-created
+	 * resource and return FULL incorrectly. */
+	entry
+		= hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue, HASH_FIND, &found);
+	if (entry != NULL) {
+		pg_atomic_fetch_add_u64(&cluster_grd_state->entry_lookup_hit_count, 1);
+		LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
+		*out = entry;
+		return CLUSTER_GRD_ENTRY_OK;
+	}
+
+	if (!create) {
+		LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
+		return CLUSTER_GRD_ENTRY_NOT_FOUND;
+	}
+
+	/* Step 5: new-entry soft cap.  Use our own atomic current count rather
+	 * than hash_get_num_entries(); future remove will decrement this counter
+	 * in cluster_grd_entry_release while holding the proper partition lock. */
+	if (pg_atomic_read_u64(&cluster_grd_state->entry_current_count)
+		>= (uint64)cluster_grd_max_entries) {
 		LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
 		pg_atomic_fetch_add_u64(&cluster_grd_state->entry_full_count, 1);
 		ereport(LOG, (errmsg("cluster_grd: entry table soft cap reached "
@@ -630,28 +653,24 @@ cluster_grd_entry_lookup_or_create(const ClusterResId *resid, bool create, Clust
 		return CLUSTER_GRD_ENTRY_FULL;
 	}
 
-	/* Step 5: HASH_FIND or HASH_ENTER_NULL (v0.3 P1.2 — NOT HASH_ENTER
-	 * because the latter ereport(ERROR) FATAL cannot support the FULL
-	 * sentinel; HASH_ENTER_NULL returns NULL on shmem OOM for the hard
-	 * cap defensive bounce). */
-	action = create ? HASH_ENTER_NULL : HASH_FIND;
-	entry = hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue, action, &found);
+	/* Step 6: HASH_ENTER_NULL only after existing lookup + soft cap.  NOT
+	 * HASH_ENTER because the latter ereport(ERROR) cannot support the FULL
+	 * sentinel. */
+	entry = hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue, HASH_ENTER_NULL,
+										&found);
 
-	/* Step 6: sentinel 5 paths — NOT_FOUND on lookup miss; FULL on
-	 * HASH_ENTER_NULL OOM defensive bounce; OK otherwise. */
+	/* Step 7: sentinel 5 paths — FULL on HASH_ENTER_NULL OOM defensive
+	 * bounce; OK otherwise. */
 	if (entry == NULL) {
 		LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
-		if (create) {
-			/* HASH_ENTER_NULL returned NULL — shmem OOM defensive. */
-			pg_atomic_fetch_add_u64(&cluster_grd_state->entry_full_count, 1);
-			ereport(LOG, (errmsg("cluster_grd: HASH_ENTER_NULL returned NULL "
-								 "(shmem OOM defensive bounce)")));
-			return CLUSTER_GRD_ENTRY_FULL;
-		}
-		return CLUSTER_GRD_ENTRY_NOT_FOUND;
+		/* HASH_ENTER_NULL returned NULL — shmem OOM defensive. */
+		pg_atomic_fetch_add_u64(&cluster_grd_state->entry_full_count, 1);
+		ereport(LOG, (errmsg("cluster_grd: HASH_ENTER_NULL returned NULL "
+							 "(shmem OOM defensive bounce)")));
+		return CLUSTER_GRD_ENTRY_FULL;
 	}
 
-	if (!found && create) {
+	if (!found) {
 		/* New entry — init slock + body zero. */
 		SpinLockInit(&entry->lock);
 		entry->ngranted = 0;
@@ -661,11 +680,12 @@ cluster_grd_entry_lookup_or_create(const ClusterResId *resid, bool create, Clust
 		entry->state_flags = 0;
 		/* holders / waiters / converts arrays left uninitialized;
 		 * spec-2.16 mutator path initializes per-slot on add. */
+		pg_atomic_fetch_add_u64(&cluster_grd_state->entry_current_count, 1);
 		pg_atomic_fetch_add_u64(&cluster_grd_state->entry_create_count, 1);
 	}
 	pg_atomic_fetch_add_u64(&cluster_grd_state->entry_lookup_hit_count, 1);
 
-	/* Step 7: release shard partition LWLock — caller holds entry handle. */
+	/* Step 8: release shard partition LWLock — caller holds entry handle. */
 	LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
 
 	*out = entry;
@@ -690,9 +710,10 @@ cluster_grd_entry_release(ClusterGrdEntry *entry)
 /* ============================================================
  * spec-2.15 v0.3:  6 observability accessor (P1.2 metric scope 收紧).
  *
- *   3 derived (GUC value / hash_get_num_entries / static allocated_bytes)
- *   + 3 atomic (entry_create_count / entry_lookup_hit_count /
- *               entry_full_count) = 6 cleanly-observable metric.
+ *   3 derived/internal (GUC value / entry_current_count / static
+ *   allocated_bytes) + 3 public atomic lifetime counters
+ *   (entry_create_count / entry_lookup_hit_count / entry_full_count)
+ *   = 6 cleanly-observable metrics.
  *
  *   holder/waiter/convert counter 推 spec-2.16 配 mutator API.
  * ============================================================ */
@@ -708,7 +729,7 @@ cluster_grd_entry_count(void)
 {
 	if (cluster_grd_entry_htab == NULL)
 		return 0;
-	return (int)hash_get_num_entries(cluster_grd_entry_htab);
+	return (int)pg_atomic_read_u64(&cluster_grd_state->entry_current_count);
 }
 
 Size

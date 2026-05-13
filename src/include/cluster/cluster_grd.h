@@ -146,8 +146,11 @@ typedef struct ClusterGrdShared {
 	pg_atomic_uint64 remote_master_lookup_count; /* lookup_master != self */
 	pg_atomic_uint64 master_map_refresh_count;	 /* init + future DRM */
 
-	/* spec-2.15 v0.3:  3 NEW atomic counter (P1.3 scope 收紧 — 删
-	 * holder/waiter/convert counter,推 spec-2.16 配 mutator API). */
+	/* spec-2.15 v0.3:  3 NEW public atomic counters (P1.3 scope 收紧 —
+	 * 删 holder/waiter/convert counter,推 spec-2.16 配 mutator API).
+	 * entry_current_count is an internal current-size source for soft-cap
+	 * and observability; it is not a separate pg_cluster_state row. */
+	pg_atomic_uint64 entry_current_count;	 /* current live HTAB entries */
 	pg_atomic_uint64 entry_create_count;	 /* lifetime ++ on HASH_ENTER_NULL OK + new */
 	pg_atomic_uint64 entry_lookup_hit_count; /* lifetime ++ on OK return (hit 语义;P2.5) */
 	pg_atomic_uint64 entry_full_count;		 /* lifetime ++ on FULL */
@@ -279,8 +282,8 @@ extern void cluster_grd_request_lwlocks(void);
  *  create=true → ShmemInitHash HASH_ENTER_NULL (v0.3 P1.2);
  *  create=false → HASH_FIND.
  *
- *  v0.4 P1.2 双层 cap check:soft cap hash_get_num_entries vs
- *  cluster_grd_max_entries 在 shard partition LWLock 内显式查 → FULL;
+ *  v0.4 P1.2 + review fix: lookup existing entry first; soft cap only
+ *  applies to new entries and reads entry_current_count atomically.
  *  hard cap HASH_ENTER_NULL 返回 NULL → FULL (defensive 防 shmem OOM).
  *
  *  shard partition LWLock (named tranche) acquired internally;
@@ -312,11 +315,11 @@ extern void cluster_grd_entry_release(ClusterGrdEntry *entry);
  * spec-2.15 v0.3:  6 observability accessor extern — scope 收紧 P1.3 选 B
  *  删 3 holder/waiter/convert accessor (推 spec-2.16).
  *
- *  All accessor are atomic_read O(1) / GUC / hash_get_num_entries cheap —
+ *  All accessors are atomic_read O(1) / GUC / init-time constants —
  *  cleanly observable (P1.2:no PG-HTAB-unfriendly bucket_count/max_chain).
  */
 extern int cluster_grd_max_entries_get(void);  /* GUC value (derived) */
-extern int cluster_grd_entry_count(void);	   /* hash_get_num_entries cheap (derived) */
+extern int cluster_grd_entry_count(void);	   /* current live entries (atomic) */
 extern Size cluster_grd_allocated_bytes(void); /* init 时计算固定 (derived) */
 extern uint64
 cluster_grd_entry_create_count(void); /* lifetime ++ on HASH_ENTER_NULL OK + new (atomic) */
