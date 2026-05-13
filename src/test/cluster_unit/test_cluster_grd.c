@@ -199,6 +199,18 @@ cluster_conf_node_count(void)
 
 int32 cluster_node_id = 0; /* NodeId typedef = int32 (cluster_scn.h:135) */
 
+/* spec-2.16 D8 L104 stubs:  cluster_grd_lmon_tick_dead_sweep depends on
+ * cluster_cssd_get_dead_generation + cluster_cssd_get_peer_state.  Mock
+ * to default-ALIVE (no sweep triggered). */
+uint64 cluster_cssd_get_dead_generation(void) { return 0; }
+
+typedef enum { CSSD_PEER_ALIVE = 0, CSSD_PEER_SUSPECTED = 1, CSSD_PEER_DEAD = 2 } _stub_peer_state;
+int /* ClusterCssdPeerState */
+cluster_cssd_get_peer_state(int32 peer_id pg_attribute_unused())
+{
+	return 0; /* CLUSTER_CSSD_PEER_ALIVE */
+}
+
 /* spec-2.15 D11:  cluster.grd_max_entries GUC stub.  Most tests keep 0
  * → skeleton mode → lookup_or_create returns NOT_READY; the soft-cap
  * regression test sets 1 and drives a tiny fake HTAB path. */

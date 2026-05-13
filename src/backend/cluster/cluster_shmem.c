@@ -518,13 +518,6 @@ cluster_request_shmem(void)
 	 * without re-triggering RequestNamedLWLockTranche.
 	 */
 	cluster_grd_request_lwlocks();
-
-	/* spec-2.16 D4/D5:  request named LWLock tranches for outbound ring
-	 * and work queue (single LWLock each).  Same lifecycle constraint
-	 * as cluster_grd_request_lwlocks — call ONCE inside
-	 * process_shmem_requests_in_progress window. */
-	RequestNamedLWLockTranche("ClusterGrdOutbound", 1);
-	RequestNamedLWLockTranche("ClusterGrdWorkQueue", 1);
 }
 
 /*

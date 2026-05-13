@@ -484,6 +484,14 @@ void
 cluster_reconfig_lmon_tick(void)
 {}
 
+/* spec-2.16 D8 L104 stub:  cluster_lmon.c calls cluster_grd_lmon_tick_
+ * dead_sweep() each tick before reconfig_lmon_tick.  test_cluster_lmon
+ * standalone doesn't link cluster_grd.o,  vacuous stub. */
+void cluster_grd_lmon_tick_dead_sweep(void);
+void
+cluster_grd_lmon_tick_dead_sweep(void)
+{}
+
 /* spec-2.13 D8 / L104 stubs: cluster_lmon.c registers 2 GES handler
  * function pointers (cluster_ges_{request,reply}_handler) into the
  * ICMsgType registry in postmaster phase 1.  test_cluster_lmon

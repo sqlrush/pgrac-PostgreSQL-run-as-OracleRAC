@@ -402,6 +402,18 @@ cluster_conf_node_count(void)
 	return 0;
 }
 
+/* spec-2.16 D3/D4/D5 L104 stubs:  3 NEW shmem register hooks invoked
+ * by cluster_shmem.c::cluster_init_shmem_module().  Vacuous for standalone
+ * unit test path. */
+void cluster_grd_pending_shmem_register(void) {}
+void cluster_grd_outbound_shmem_register(void) {}
+void cluster_grd_work_queue_shmem_register(void) {}
+
+/* spec-2.16 cluster_shmem.c also calls RequestNamedLWLockTranche for the
+ * 2 NEW Step 2 tranches.  PG built-in stub already declared in this
+ * file's "RequestNamedLWLockTranche" extern (from cluster_grd_request_
+ * lwlocks block above).  No additional symbol needed. */
+
 /* spec-2.2 D3 stub: tier1 shmem region (real impl in cluster_ic_tier1.c). */
 void
 cluster_ic_tier1_shmem_register(void)

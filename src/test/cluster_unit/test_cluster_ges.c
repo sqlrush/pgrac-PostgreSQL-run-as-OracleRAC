@@ -175,6 +175,65 @@ cluster_shmem_register_region(const void *r pg_attribute_unused())
 
 
 /* ============================================================
+ * spec-2.16 Step 6 L104 stubs — cross-module deps activated by
+ *   Step 3 D6 handler (5-item validation + work_queue enqueue +
+ *   REJECT_BUSY fallback).  Stubs default to "pass-through" so
+ *   既有 T-ges-1 tests still PASS with handler 真激活 behavior.
+ * ============================================================ */
+
+int cluster_node_id = 0;
+
+bool
+cluster_qvotec_in_quorum(void)
+{
+	return true; /* default in-quorum so validation step 4 passes */
+}
+
+uint64
+cluster_epoch_get_current(void)
+{
+	return 0; /* default epoch 0 — matches env_sentinel.epoch */
+}
+
+/* cluster_conf — return non-NULL so validation step 4 declared check passes */
+const void *
+cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
+{
+	static char dummy;
+	return (const void *)&dummy;
+}
+
+/* GRD inc helpers — stub bump local counters (test verifies via accessor) */
+static uint64 stub_work_queue_full = 0;
+static uint64 stub_inbound_validation_fail = 0;
+static uint64 stub_cleanup_deferred = 0;
+static uint64 stub_reply_deferred = 0;
+static uint64 stub_reply_dropped = 0;
+
+void cluster_grd_inc_ges_work_queue_full(void) { stub_work_queue_full++; }
+void cluster_grd_inc_ges_inbound_validation_fail(void) { stub_inbound_validation_fail++; }
+void cluster_grd_inc_ges_cleanup_deferred(void) { stub_cleanup_deferred++; }
+void cluster_grd_inc_ges_reply_deferred(void) { stub_reply_deferred++; }
+void cluster_grd_inc_ges_reply_dropped(void) { stub_reply_dropped++; }
+
+/* work_queue + outbound enqueue stubs — accept always (no overflow path tested
+ * at unit layer; TAP exercises overflow with real shmem). */
+bool
+cluster_grd_work_queue_enqueue(uint32 src pg_attribute_unused(),
+							   const void *p pg_attribute_unused(),
+							   uint16 l pg_attribute_unused())
+{
+	return true;
+}
+
+void
+cluster_grd_outbound_enqueue_lmon_reply(uint32 d pg_attribute_unused(),
+										const void *p pg_attribute_unused(),
+										uint16 l pg_attribute_unused())
+{}
+
+
+/* ============================================================
  * T-ges-1 a/b/c/d/e (spec-2.13 D6 Q5.2).
  * ============================================================ */
 

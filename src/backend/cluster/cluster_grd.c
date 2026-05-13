@@ -134,6 +134,12 @@ void
 cluster_grd_request_lwlocks(void)
 {
 	RequestNamedLWLockTranche("ClusterGrdShard", PGRAC_GRD_SHARD_COUNT);
+	/* spec-2.16 D4/D5:  outbound ring + work queue named tranches.
+	 * Same process_shmem_requests_in_progress lifecycle window — co-
+	 * located here so cluster_unit standalone tests piggyback on the
+	 * existing cluster_grd_request_lwlocks stub (L104). */
+	RequestNamedLWLockTranche("ClusterGrdOutbound", 1);
+	RequestNamedLWLockTranche("ClusterGrdWorkQueue", 1);
 }
 
 
