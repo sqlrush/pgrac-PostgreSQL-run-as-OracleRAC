@@ -1,0 +1,147 @@
+#!/usr/bin/env perl
+#-------------------------------------------------------------------------
+#
+# 104_grd_entry_shmem_alloc_smoke.pl
+#	  spec-2.15 D13: single-node TAP smoke for cluster_grd entry table
+#	  infrastructure layer.  4 mandatory tests (v0.2 P1.2 — internal C
+#	  API behavior 留给 cluster_unit T-grd-2,TAP 只测 user-visible
+#	  surface):
+#	    L1  single-node primary alive
+#	    L2  cluster.grd_max_entries=0 (default) → pg_cluster_grd_entries
+#	        empty + grd_allocated_bytes=0 (NOT_READY sentinel 对外显化)
+#	    L3  cluster.grd_max_entries=16 restart → grd_allocated_bytes>0
+#	        (v0.4 P1.1 NOTE: HASH_PARTITION=4096 forces nbuckets>=4096
+#	        so hash_estimate_size(4096,...) ≈ 3-5MB,not naive 12KB) +
+#	        pg_cluster_grd_entries still 0 row (0 caller)
+#	    L4  SET cluster.grd_max_entries session-level fail (PGC_POSTMASTER)
+#	        + dump_grd 14 row baseline + 3 NEW atomic counter all 0
+#
+#	  Spec authority: pgrac:specs/spec-2.15-grd-entry-table-holders-
+#	  waiters.md (frozen v0.4 Q1-Q15 + 4 轮 codereview corrections).
+#
+#
+# Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, Regents of the University of California
+# Portions Copyright (c) 2026, pgrac contributors
+#
+# Author: SqlRush <sqlrush@gmail.com>
+#
+# IDENTIFICATION
+#	  src/test/cluster_tap/t/104_grd_entry_shmem_alloc_smoke.pl
+#
+# NOTES
+#	  pgrac-original file.
+#	  Spec: spec-2.15-grd-entry-table-holders-waiters.md (frozen v0.4)
+#
+#-------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use FindBin;
+use lib "$FindBin::RealBin/../lib";
+
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+use PgracClusterNode;
+
+
+# ----------
+# L1: single-node primary init + start (no ClusterPair / no IC).
+# ----------
+my $node = PgracClusterNode->new('main');
+$node->init;
+$node->append_conf('postgresql.conf', "cluster.node_id = 0\n");
+$node->start;
+
+is($node->safe_psql('postgres', 'SELECT 1'), '1',
+   'L1 single-node primary alive');
+
+
+# ----------
+# L2: cluster.grd_max_entries=0 (default) — sentinel NOT_READY 对外显化
+#     pg_cluster_grd_entries empty + grd_allocated_bytes=0.
+# ----------
+is($node->safe_psql('postgres', 'SHOW cluster.grd_max_entries'),
+   '0',
+   'L2a cluster.grd_max_entries default 0');
+
+is($node->safe_psql('postgres',
+		'SELECT count(*)::int FROM pg_cluster_grd_entries'),
+   '0',
+   'L2b pg_cluster_grd_entries empty when GUC=0 (NOT_READY sentinel)');
+
+is($node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		   WHERE category='grd' AND key='grd_allocated_bytes'}),
+   '0',
+   'L2c grd_allocated_bytes=0 when GUC=0 (entry HTAB not allocated)');
+
+
+# ----------
+# L3: cluster.grd_max_entries=16 restart — HTAB allocated.
+#     v0.4 P1.1: HASH_PARTITION=4096 forces nbuckets>=4096,so
+#     hash_estimate_size(4096, sizeof(ClusterGrdEntry)) ≈ 3-5MB,
+#     not the naive 16 × sizeof(entry) = 12KB.
+# ----------
+$node->stop;
+$node->append_conf('postgresql.conf', "cluster.grd_max_entries = 16\n");
+$node->start;
+
+is($node->safe_psql('postgres', 'SHOW cluster.grd_max_entries'),
+   '16',
+   'L3a postmaster started cleanly with cluster.grd_max_entries=16');
+
+ok($node->safe_psql('postgres',
+		q{SELECT value::bigint > 0 FROM pg_cluster_state
+		   WHERE category='grd' AND key='grd_allocated_bytes'}) eq 't',
+   'L3b grd_allocated_bytes > 0 (v0.4 P1.1: HASH_PARTITION nbuckets >= 4096)');
+
+is($node->safe_psql('postgres',
+		'SELECT count(*)::int FROM pg_cluster_grd_entries'),
+   '0',
+   'L3c pg_cluster_grd_entries still 0 row (本 spec 0 caller / 0 mutation)');
+
+
+# ----------
+# L4: SET fail (PGC_POSTMASTER) + dump_grd 14 row baseline + 3 NEW atomic
+#     counter all 0 (本 spec 0 caller / 0 mutation).
+# ----------
+{
+	my $stderr_l4;
+	$node->psql('postgres',
+		'SET cluster.grd_max_entries = 32;',
+		stderr => \$stderr_l4);
+	like($stderr_l4, qr/cannot be (changed|set)/i,
+		 'L4a cluster.grd_max_entries is PGC_POSTMASTER (SET fails at session level)');
+}
+
+# dump_grd category='grd' total row count: spec-2.14 ships 8 emit_row,
+# spec-2.15 v0.3 adds 6 (3 derived + 3 atomic) → 14 total.
+is($node->safe_psql('postgres',
+		q{SELECT count(*)::int FROM pg_cluster_state WHERE category='grd'}),
+   '14',
+   'L4b dump_grd category="grd" emits 14 rows (spec-2.14 8 + spec-2.15 6)');
+
+# All 3 NEW atomic counter baseline 0 (本 spec 0 caller invokes
+# cluster_grd_entry_lookup_or_create).
+is($node->safe_psql('postgres',
+		q{SELECT (SELECT value FROM pg_cluster_state
+		           WHERE category='grd' AND key='grd_entry_create_count')
+		    || '|' ||
+		         (SELECT value FROM pg_cluster_state
+		           WHERE category='grd' AND key='grd_entry_lookup_hit_count')
+		    || '|' ||
+		         (SELECT value FROM pg_cluster_state
+		           WHERE category='grd' AND key='grd_entry_full_count')}),
+   '0|0|0',
+   'L4c grd_entry_{create,lookup_hit,full}_count all 0 baseline (0 caller)');
+
+
+# ----------
+# Cleanup.
+# ----------
+$node->stop;
+
+done_testing();
