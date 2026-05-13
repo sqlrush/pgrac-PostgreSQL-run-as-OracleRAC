@@ -53,27 +53,27 @@
 #include "utils/memutils.h" /* TopMemoryContext */
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_conf.h"	  /* cluster_conf_shmem_size / init */
-#include "cluster/cluster_elog.h"	  /* CLUSTER_LOG */
-#include "cluster/cluster_guc.h"	  /* cluster_node_id / cluster_shmem_max_regions */
-#include "cluster/cluster_ic.h"		  /* cluster_ic_init / shutdown (stage 0.18) */
-#include "cluster/cluster_ic_tier1.h" /* cluster_ic_tier1_shmem_register (spec-2.2 D3) */
-#include "cluster/cluster_cssd.h"	  /* cluster_cssd_shmem_register (2.5 Sprint A) */
-#include "cluster/cluster_diag.h"	  /* cluster_diag_shmem_register (1.13 Sprint A) */
-#include "cluster/cluster_inject.h"	  /* CLUSTER_INJECTION_POINT */
-#include "cluster/cluster_lck.h"	  /* cluster_lck_shmem_register (1.12 Sprint A) */
-#include "cluster/cluster_epoch.h"	  /* cluster_epoch_shmem_register (2.4) */
-#include "cluster/cluster_scn.h"	  /* cluster_scn_shmem_register (1.15) */
-#include "cluster/cluster_ges.h"	  /* cluster_ges_shmem_register (spec-2.13) */
-#include "cluster/cluster_grd.h"	  /* cluster_grd_shmem_register (spec-2.14) */
-#include "cluster/cluster_grd_pending.h"		/* cluster_grd_pending_shmem_register (spec-2.16 D3) */
+#include "cluster/cluster_conf.h"			/* cluster_conf_shmem_size / init */
+#include "cluster/cluster_elog.h"			/* CLUSTER_LOG */
+#include "cluster/cluster_guc.h"			/* cluster_node_id / cluster_shmem_max_regions */
+#include "cluster/cluster_ic.h"				/* cluster_ic_init / shutdown (stage 0.18) */
+#include "cluster/cluster_ic_tier1.h"		/* cluster_ic_tier1_shmem_register (spec-2.2 D3) */
+#include "cluster/cluster_cssd.h"			/* cluster_cssd_shmem_register (2.5 Sprint A) */
+#include "cluster/cluster_diag.h"			/* cluster_diag_shmem_register (1.13 Sprint A) */
+#include "cluster/cluster_inject.h"			/* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_lck.h"			/* cluster_lck_shmem_register (1.12 Sprint A) */
+#include "cluster/cluster_epoch.h"			/* cluster_epoch_shmem_register (2.4) */
+#include "cluster/cluster_scn.h"			/* cluster_scn_shmem_register (1.15) */
+#include "cluster/cluster_ges.h"			/* cluster_ges_shmem_register (spec-2.13) */
+#include "cluster/cluster_grd.h"			/* cluster_grd_shmem_register (spec-2.14) */
+#include "cluster/cluster_grd_pending.h"	/* cluster_grd_pending_shmem_register (spec-2.16 D3) */
 #include "cluster/cluster_grd_outbound.h"	/* cluster_grd_outbound_shmem_register (spec-2.16 D4) */
 #include "cluster/cluster_grd_work_queue.h" /* cluster_grd_work_queue_shmem_register (spec-2.16 D5) */
-#include "cluster/cluster_stats.h"	  /* cluster_stats_shmem_register (1.14 Sprint A) */
-#include "cluster/cluster_lmon.h"	  /* cluster_lmon_shmem_register (1.11 Sprint A) */
-#include "cluster/cluster_pcm_lock.h" /* cluster_pcm_lock_module_init (stage 1.7) */
-#include "cluster/cluster_qvotec.h"	  /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
-#include "cluster/cluster_fence.h"	  /* cluster_fence_shmem_register (spec-2.28 Sprint A Step 1) */
+#include "cluster/cluster_stats.h"			/* cluster_stats_shmem_register (1.14 Sprint A) */
+#include "cluster/cluster_lmon.h"			/* cluster_lmon_shmem_register (1.11 Sprint A) */
+#include "cluster/cluster_pcm_lock.h"		/* cluster_pcm_lock_module_init (stage 1.7) */
+#include "cluster/cluster_qvotec.h" /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
+#include "cluster/cluster_fence.h"	/* cluster_fence_shmem_register (spec-2.28 Sprint A Step 1) */
 #include "cluster/cluster_reconfig.h" /* cluster_reconfig_shmem_register (spec-2.29 Sprint A Step 1) */
 /* spec-2.7 hardening F1: cluster_smgr_shmem_register;intentionally no
  * trailing line-end comment so the longer storage/ path doesn't force

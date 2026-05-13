@@ -72,12 +72,15 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #ifdef USE_PGRAC_CLUSTER
 
 #include "cluster/cluster_conf.h"
-#include "cluster/cluster_elog.h"  /* cluster_phase */
-#include "cluster/cluster_diag.h"  /* cluster_diag_status (spec-1.13 D12) */
-#include "cluster/cluster_lck.h"   /* cluster_lck_status (spec-1.12 D12) */
-#include "cluster/cluster_scn.h"   /* cluster_scn_current (spec-1.15 D6) */
-#include "cluster/cluster_ges.h"   /* cluster_ges_{request,reply}_defer_count (spec-2.13 D4) */
-#include "cluster/cluster_grd.h"   /* cluster_grd_* observability accessors (spec-2.14 D6) */
+#include "cluster/cluster_elog.h" /* cluster_phase */
+#include "cluster/cluster_diag.h" /* cluster_diag_status (spec-1.13 D12) */
+#include "cluster/cluster_lck.h"  /* cluster_lck_status (spec-1.12 D12) */
+#include "cluster/cluster_scn.h"  /* cluster_scn_current (spec-1.15 D6) */
+#include "cluster/cluster_ges.h"  /* cluster_ges_{request,reply}_defer_count (spec-2.13 D4) */
+#include "cluster/cluster_grd.h"  /* cluster_grd_* observability accessors (spec-2.14 D6) */
+#include "cluster/cluster_grd_outbound.h"
+#include "cluster/cluster_grd_pending.h"
+#include "cluster/cluster_grd_work_queue.h"
 #include "cluster/cluster_cssd.h"  /* cluster_cssd_status (spec-2.5 D12) */
 #include "cluster/cluster_stats.h" /* cluster_stats_status (spec-1.14 D12) */
 #include "cluster/cluster_lmon.h"  /* cluster_lmon_status (spec-1.11 Sprint B D12) */
@@ -804,6 +807,34 @@ dump_grd(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_grd_entry_lookup_hit_count()));
 	emit_row(rsinfo, "grd", "grd_entry_full_count",
 			 fmt_int64((int64)cluster_grd_entry_full_count()));
+
+	emit_row(rsinfo, "grd", "grd_holders_full_count",
+			 fmt_int64((int64)cluster_grd_holders_full_count()));
+	emit_row(rsinfo, "grd", "grd_waiters_full_count",
+			 fmt_int64((int64)cluster_grd_waiters_full_count()));
+	emit_row(rsinfo, "grd", "grd_converts_full_count",
+			 fmt_int64((int64)cluster_grd_converts_full_count()));
+	emit_row(rsinfo, "grd", "grd_ngranted_promoted_count",
+			 fmt_int64((int64)cluster_grd_ngranted_promoted_count()));
+	emit_row(rsinfo, "grd", "grd_ges_work_queue_full_count",
+			 fmt_int64((int64)cluster_grd_ges_work_queue_full_count()));
+	emit_row(rsinfo, "grd", "grd_ges_cleanup_deferred_count",
+			 fmt_int64((int64)cluster_grd_ges_cleanup_deferred_count()));
+	emit_row(rsinfo, "grd", "grd_ges_inbound_validation_fail_count",
+			 fmt_int64((int64)cluster_grd_ges_inbound_validation_fail_count()));
+	emit_row(rsinfo, "grd", "grd_ges_reply_deferred_count",
+			 fmt_int64((int64)cluster_grd_ges_reply_deferred_count()));
+	emit_row(rsinfo, "grd", "grd_ges_reply_dropped_count",
+			 fmt_int64((int64)cluster_grd_ges_reply_dropped_count()));
+	emit_row(rsinfo, "grd", "grd_outbound_ring_depth",
+			 fmt_int32((int32)cluster_grd_outbound_ring_depth()));
+	emit_row(rsinfo, "grd", "grd_outbound_reply_dirty_depth",
+			 fmt_int32((int32)cluster_grd_outbound_reply_dirty_depth()));
+	emit_row(rsinfo, "grd", "grd_outbound_cleanup_dirty_depth",
+			 fmt_int32((int32)cluster_grd_outbound_cleanup_dirty_depth()));
+	emit_row(rsinfo, "grd", "grd_work_queue_depth",
+			 fmt_int32((int32)cluster_grd_work_queue_depth()));
+	emit_row(rsinfo, "grd", "grd_pending_count", fmt_int64((int64)cluster_grd_pending_count()));
 }
 
 

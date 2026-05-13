@@ -51,6 +51,8 @@
 #include <string.h>
 
 #include "cluster/cluster_ges.h"
+#include "cluster/cluster_grd_outbound.h"
+#include "cluster/cluster_grd_work_queue.h"
 #include "cluster/cluster_ic_envelope.h"
 #include "port/atomics.h"
 
@@ -209,28 +211,58 @@ static uint64 stub_inbound_validation_fail = 0;
 static uint64 stub_cleanup_deferred = 0;
 static uint64 stub_reply_deferred = 0;
 static uint64 stub_reply_dropped = 0;
+static uint64 stub_work_queue_enqueue_count = 0;
+static uint64 stub_lmon_reply_enqueue_count = 0;
 
-void cluster_grd_inc_ges_work_queue_full(void) { stub_work_queue_full++; }
-void cluster_grd_inc_ges_inbound_validation_fail(void) { stub_inbound_validation_fail++; }
-void cluster_grd_inc_ges_cleanup_deferred(void) { stub_cleanup_deferred++; }
-void cluster_grd_inc_ges_reply_deferred(void) { stub_reply_deferred++; }
-void cluster_grd_inc_ges_reply_dropped(void) { stub_reply_dropped++; }
+void
+cluster_grd_inc_ges_work_queue_full(void)
+{
+	stub_work_queue_full++;
+}
+void
+cluster_grd_inc_ges_inbound_validation_fail(void)
+{
+	stub_inbound_validation_fail++;
+}
+void
+cluster_grd_inc_ges_cleanup_deferred(void)
+{
+	stub_cleanup_deferred++;
+}
+void
+cluster_grd_inc_ges_reply_deferred(void)
+{
+	stub_reply_deferred++;
+}
+void
+cluster_grd_inc_ges_reply_dropped(void)
+{
+	stub_reply_dropped++;
+}
 
 /* work_queue + outbound enqueue stubs — accept always (no overflow path tested
  * at unit layer; TAP exercises overflow with real shmem). */
 bool
 cluster_grd_work_queue_enqueue(uint32 src pg_attribute_unused(),
-							   const void *p pg_attribute_unused(),
-							   uint16 l pg_attribute_unused())
+							   const void *p pg_attribute_unused(), uint16 l pg_attribute_unused())
 {
+	stub_work_queue_enqueue_count++;
 	return true;
+}
+
+bool
+cluster_grd_work_queue_dequeue(ClusterGrdWorkItem *out pg_attribute_unused())
+{
+	return false;
 }
 
 void
 cluster_grd_outbound_enqueue_lmon_reply(uint32 d pg_attribute_unused(),
 										const void *p pg_attribute_unused(),
 										uint16 l pg_attribute_unused())
-{}
+{
+	stub_lmon_reply_enqueue_count++;
+}
 
 
 /* ============================================================
@@ -328,6 +360,58 @@ UT_TEST(test_ges_handler_counter_monotonic_n_invocations)
 	UT_ASSERT_EQ(cluster_ges_reply_defer_count(), pre_reply + (uint64)N);
 }
 
+UT_TEST(test_ges_request_valid_payload_enqueues_work)
+{
+	ClusterICEnvelope env;
+	GesRequestPayload req;
+	uint64 pre_fail = stub_inbound_validation_fail;
+	uint64 pre_enqueue = stub_work_queue_enqueue_count;
+
+	cluster_ges_shmem_init();
+	cluster_node_id = 0;
+	memset(&env, 0, sizeof(env));
+	env.source_node_id = 1;
+	env.epoch = 0;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = GES_REQ_OPCODE_REQUEST;
+	req.holder_node_id = 1;
+
+	cluster_ges_request_handler(&env, &req);
+
+	UT_ASSERT_EQ(stub_inbound_validation_fail, pre_fail);
+	UT_ASSERT_EQ(stub_work_queue_enqueue_count, pre_enqueue + 1);
+}
+
+UT_TEST(test_ges_reply_valid_payload_echoes_local_holder)
+{
+	ClusterICEnvelope env;
+	GesReplyPayload rep;
+	uint64 pre_fail = stub_inbound_validation_fail;
+	uint64 pre_reply = cluster_ges_reply_defer_count();
+
+	cluster_ges_shmem_init();
+	cluster_node_id = 0;
+	memset(&env, 0, sizeof(env));
+	env.source_node_id = 1;
+	env.epoch = 0;
+
+	memset(&rep, 0, sizeof(rep));
+	rep.opcode = GES_REPLY_OPCODE_REJECT;
+	rep.reject_reason = GES_REJECT_REASON_LOCK_CONFLICT;
+	rep.holder_node_id = 0;
+
+	cluster_ges_reply_handler(&env, &rep);
+
+	UT_ASSERT_EQ(stub_inbound_validation_fail, pre_fail);
+	UT_ASSERT_EQ(cluster_ges_reply_defer_count(), pre_reply + 1);
+}
+
+UT_TEST(test_ges_lmon_drain_work_queue_symbol_linkable)
+{
+	UT_ASSERT_NOT_NULL((void *)cluster_ges_lmon_drain_work_queue);
+}
+
 
 UT_DEFINE_GLOBALS();
 
@@ -335,7 +419,7 @@ UT_DEFINE_GLOBALS();
 int
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(6);
+	UT_PLAN(9);
 
 	UT_RUN(test_ges_request_handler_linkable);
 	UT_RUN(test_ges_reply_handler_linkable);
@@ -343,6 +427,9 @@ main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 	UT_RUN(test_ges_request_handler_real_behavior);
 	UT_RUN(test_ges_reply_handler_real_behavior);
 	UT_RUN(test_ges_handler_counter_monotonic_n_invocations);
+	UT_RUN(test_ges_request_valid_payload_enqueues_work);
+	UT_RUN(test_ges_reply_valid_payload_echoes_local_holder);
+	UT_RUN(test_ges_lmon_drain_work_queue_symbol_linkable);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

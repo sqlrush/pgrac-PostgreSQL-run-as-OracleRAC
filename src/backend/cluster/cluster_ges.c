@@ -41,7 +41,7 @@
 #include "cluster/cluster_guc.h" /* cluster_node_id */
 #include "cluster/cluster_ic_envelope.h"
 #include "cluster/cluster_qvotec.h" /* cluster_qvotec_in_quorum */
-#include "cluster/cluster_conf.h"   /* cluster_conf_lookup_node */
+#include "cluster/cluster_conf.h"	/* cluster_conf_lookup_node */
 #include "cluster/cluster_shmem.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
@@ -122,13 +122,23 @@ cluster_ges_shmem_register(void)
  */
 static bool
 ges_validate_inbound(const ClusterICEnvelope *env, uint32 payload_node_id, uint64 payload_epoch,
-					 uint32 payload_opcode, uint32 opcode_min, uint32 opcode_max)
+					 uint32 payload_opcode, uint32 opcode_min, uint32 opcode_max,
+					 bool payload_node_must_be_source)
 {
 	uint64 accepted_epoch;
 
-	/* (1) payload.node_id == env.source_node_id */
-	if (payload_node_id != env->source_node_id)
-		return false;
+	/*
+	 * (1) Request payloads identify the remote holder and must match the
+	 * envelope source.  Reply payloads echo the original local holder tuple,
+	 * so holder_node_id must be this node, not the replying master.
+	 */
+	if (payload_node_must_be_source) {
+		if (payload_node_id != env->source_node_id)
+			return false;
+	} else {
+		if ((int32)payload_node_id != cluster_node_id)
+			return false;
+	}
 
 	/* (2) payload.epoch == env.epoch */
 	if (payload_epoch != env->epoch)
@@ -171,12 +181,12 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	}
 	req = (const GesRequestPayload *)payload;
 
-	holder_epoch = ((uint64)req->holder_cluster_epoch_lo) |
-				   (((uint64)req->holder_cluster_epoch_hi) << 32);
+	holder_epoch
+		= ((uint64)req->holder_cluster_epoch_lo) | (((uint64)req->holder_cluster_epoch_hi) << 32);
 
 	/* spec-2.16 v0.4 L1.8 + v0.5:  5-item validation. */
 	if (!ges_validate_inbound(env, req->holder_node_id, holder_epoch, req->opcode,
-							  GES_REQ_OPCODE_REQUEST, GES_REQ_OPCODE_RELEASE)) {
+							  GES_REQ_OPCODE_REQUEST, GES_REQ_OPCODE_RELEASE, true)) {
 		cluster_grd_inc_ges_inbound_validation_fail();
 		return;
 	}
@@ -219,11 +229,11 @@ cluster_ges_reply_handler(const ClusterICEnvelope *env, const void *payload)
 	}
 	rep = (const GesReplyPayload *)payload;
 
-	holder_epoch = ((uint64)rep->holder_cluster_epoch_lo) |
-				   (((uint64)rep->holder_cluster_epoch_hi) << 32);
+	holder_epoch
+		= ((uint64)rep->holder_cluster_epoch_lo) | (((uint64)rep->holder_cluster_epoch_hi) << 32);
 
 	if (!ges_validate_inbound(env, rep->holder_node_id, holder_epoch, rep->opcode,
-							  GES_REPLY_OPCODE_GRANT, GES_REPLY_OPCODE_REJECT)) {
+							  GES_REPLY_OPCODE_GRANT, GES_REPLY_OPCODE_REJECT, false)) {
 		cluster_grd_inc_ges_inbound_validation_fail();
 		return;
 	}
@@ -231,11 +241,55 @@ cluster_ges_reply_handler(const ClusterICEnvelope *env, const void *payload)
 	/* Step 4 D9 wires pending_signal (CAS state + SetLatch).  For Step 3,
 	 * the validation pass is recorded via reply_defer_count.  Real
 	 * signal lands when pending table HTAB is allocated in Step 4. */
-	ereport(DEBUG2,
-			(errmsg_internal("cluster_ges_reply: validated reply opcode=%u "
-							 "reject_reason=%u from peer %u (Step 3 — pending signal "
-							 "wires Step 4)",
-							 rep->opcode, rep->reject_reason, env->source_node_id)));
+	ereport(DEBUG2, (errmsg_internal("cluster_ges_reply: validated reply opcode=%u "
+									 "reject_reason=%u from peer %u (Step 3 — pending signal "
+									 "wires Step 4)",
+									 rep->opcode, rep->reject_reason, env->source_node_id)));
+}
+
+int
+cluster_ges_lmon_drain_work_queue(void)
+{
+	ClusterGrdWorkItem item;
+	int drained = 0;
+
+	while (drained < 64 && cluster_grd_work_queue_dequeue(&item)) {
+		const GesRequestPayload *req;
+		GesReplyPayload reply;
+
+		drained++;
+
+		if (item.payload_len < sizeof(GesRequestPayload)) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			continue;
+		}
+
+		req = (const GesRequestPayload *)item.payload;
+
+		/* RELEASE is cleanup-only in the current substrate path. */
+		if (req->opcode == GES_REQ_OPCODE_RELEASE)
+			continue;
+
+		/*
+		 * The full grant/convert state machine is not wired to PG lock.c yet.
+		 * Reject rather than grant so a future caller can fail closed instead
+		 * of observing a false grant.
+		 */
+		memset(&reply, 0, sizeof(reply));
+		reply.opcode = GES_REPLY_OPCODE_REJECT;
+		reply.reject_reason = GES_REJECT_REASON_LOCK_CONFLICT;
+		reply.holder_node_id = req->holder_node_id;
+		reply.holder_procno = req->holder_procno;
+		reply.holder_cluster_epoch_lo = req->holder_cluster_epoch_lo;
+		reply.holder_cluster_epoch_hi = req->holder_cluster_epoch_hi;
+		reply.holder_request_id_lo = req->holder_request_id_lo;
+		reply.holder_request_id_hi = req->holder_request_id_hi;
+		memcpy(reply.resid, req->resid, sizeof(reply.resid));
+
+		cluster_grd_outbound_enqueue_lmon_reply(item.source_node_id, &reply, sizeof(reply));
+	}
+
+	return drained;
 }
 
 

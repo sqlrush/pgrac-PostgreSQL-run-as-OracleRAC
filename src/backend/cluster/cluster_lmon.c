@@ -56,9 +56,10 @@
 #include "utils/timestamp.h"
 
 #include "cluster/cluster_conf.h"
-#include "cluster/cluster_cssd.h"	  /* cluster_cssd_outbound_slots (spec-2.5 D2.6) */
-#include "cluster/cluster_fence.h"	  /* cluster_fence_lmon_tick (spec-2.28 D5) */
-#include "cluster/cluster_grd.h"	  /* cluster_grd_lmon_tick_dead_sweep (spec-2.16 D8) */
+#include "cluster/cluster_cssd.h"  /* cluster_cssd_outbound_slots (spec-2.5 D2.6) */
+#include "cluster/cluster_fence.h" /* cluster_fence_lmon_tick (spec-2.28 D5) */
+#include "cluster/cluster_grd.h"   /* cluster_grd_lmon_tick_dead_sweep (spec-2.16 D8) */
+#include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_reconfig.h" /* cluster_reconfig_lmon_tick (spec-2.29 Step 2 D3) */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic.h"
@@ -255,18 +256,15 @@ cluster_lmon_shmem_init(void)
 	 * PGRAC_IC_MSG_GES_REPLY=5 in postmaster phase 1.  Mirror BOC_BROADCAST
 	 * registration pattern above (static bool guard + struct literal).
 	 *
-	 * Skeleton phase (spec-2.13 ship):
-	 *   - allowed_producer_mask = CLUSTER_IC_PRODUCER_NONE (Q4.2 = D):
-	 *     this is the SKELETON防误发 default — NOT GES最终设计.
-	 *     spec-2.16 cross-node grant/convert 真 caller-side 实装时
-	 *     amend mask = CLUSTER_IC_PRODUCER_BACKEND.  spec-2.14 是路由
-	 *     substrate 无 caller (per spec-2.14 v0.4 P2.3 修正).  Do NOT
-	 *     inherit NONE as a permanent rule (spec-2.13 §3.2 + §10
-	 *     explicit doc).
+	 * spec-2.16 Step 7 hardening:
+	 *   - allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON.  Backend and
+	 *     cleanup producers enqueue bounded slots; LMON owns tier1 fds and
+	 *     performs the actual send.  This preserves the single IC-owner
+	 *     process invariant until LMS worker pool lands in a later spec.
 	 *   - broadcast_ok = false:  GES request/reply are point-to-point,
 	 *     never broadcast.
-	 *   - handler:  stub永远 DEFER + atomic counter +1 + DEBUG2 log
-	 *     (cluster_ges_{request,reply}_handler in cluster_ges.c).
+	 *   - handler: request path validates + enqueues work; LMON drain emits
+	 *     a safe REJECT until the full grant/convert state machine is wired.
 	 *
 	 * Both msg_types registered in spec-2.13 (Q2=C: 2 个 wire ABI
 	 * 一次性 fixed) so spec-2.14/2.16 caller-side can直接调用 without
@@ -279,7 +277,7 @@ cluster_lmon_shmem_init(void)
 			const ClusterICMsgTypeInfo ges_request_info = {
 				.msg_type = PGRAC_IC_MSG_GES_REQUEST,
 				.name = "ges_request",
-				.allowed_producer_mask = CLUSTER_IC_PRODUCER_NONE,
+				.allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON,
 				.broadcast_ok = false,
 				.handler = cluster_ges_request_handler,
 			};
@@ -296,7 +294,7 @@ cluster_lmon_shmem_init(void)
 			const ClusterICMsgTypeInfo ges_reply_info = {
 				.msg_type = PGRAC_IC_MSG_GES_REPLY,
 				.name = "ges_reply",
-				.allowed_producer_mask = CLUSTER_IC_PRODUCER_NONE,
+				.allowed_producer_mask = CLUSTER_IC_PRODUCER_LMON,
 				.broadcast_ok = false,
 				.handler = cluster_ges_reply_handler,
 			};
@@ -807,6 +805,8 @@ LmonMain(void)
 			 * reconfig epoch bump (S1 → S2 order writ).  bitmap diff
 			 * per v0.5 P1.2;  no-op when dead_generation unchanged. */
 			cluster_grd_lmon_tick_dead_sweep();
+			cluster_ges_lmon_drain_work_queue();
+			cluster_grd_outbound_lmon_drain_send();
 
 			cluster_reconfig_lmon_tick();
 

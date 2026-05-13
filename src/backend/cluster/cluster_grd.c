@@ -38,7 +38,7 @@
 #include "cluster/cluster_guc.h" /* cluster_node_id, cluster_grd_max_entries */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h" /* spec-2.16 D8 newly-dead bitmap diff */
-#include "common/hashfn.h" /* hash_bytes_extended (spec-2.29 同款) */
+#include "common/hashfn.h"		  /* hash_bytes_extended (spec-2.29 同款) */
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/lock.h"
@@ -995,9 +995,10 @@ cluster_grd_entry_grant_holder(ClusterGrdEntry *entry pg_attribute_unused(),
 							   const ClusterGrdHolderId *holder pg_attribute_unused(),
 							   int mode pg_attribute_unused())
 {
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("cluster_grd_entry_grant_holder not implemented in Step 1"),
-					errhint("spec-2.16 Step 4 D9 activates the 6-step state machine + mutator body")));
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cluster_grd_entry_grant_holder not implemented in Step 1"),
+			 errhint("spec-2.16 Step 4 D9 activates the 6-step state machine + mutator body")));
 	return CLUSTER_GRD_ENTRY_ERROR; /* unreachable */
 }
 
@@ -1062,10 +1063,9 @@ cluster_grd_cleanup_on_node_dead(int32 dead_node_id)
 	int swept = 0;
 
 	if (cluster_grd_entry_htab == NULL) {
-		ereport(DEBUG2,
-				(errmsg_internal("cluster_grd_cleanup_on_node_dead(%d): "
-								 "entry HTAB not allocated;  no-op",
-								 dead_node_id)));
+		ereport(DEBUG2, (errmsg_internal("cluster_grd_cleanup_on_node_dead(%d): "
+										 "entry HTAB not allocated;  no-op",
+										 dead_node_id)));
 		return;
 	}
 
@@ -1102,8 +1102,8 @@ cluster_grd_cleanup_on_node_dead(int32 dead_node_id)
 
 	if (swept > 0)
 		ereport(DEBUG1, (errmsg_internal("cluster_grd_cleanup_on_node_dead(%d): "
-										"swept %d holder/waiter/convert slots",
-										dead_node_id, swept)));
+										 "swept %d holder/waiter/convert slots",
+										 dead_node_id, swept)));
 }
 
 /*
@@ -1122,19 +1122,17 @@ void
 cluster_grd_cleanup_stale_epoch(uint64 current_epoch)
 {
 	if (cluster_grd_entry_htab == NULL) {
-		ereport(DEBUG2,
-				(errmsg_internal("cluster_grd_cleanup_stale_epoch(%lu): "
-								 "entry HTAB not allocated;  no-op",
-								 (unsigned long)current_epoch)));
+		ereport(DEBUG2, (errmsg_internal("cluster_grd_cleanup_stale_epoch(%lu): "
+										 "entry HTAB not allocated;  no-op",
+										 (unsigned long)current_epoch)));
 		return;
 	}
 
 	/* No-op until spec-2.17 extends ClusterGrdHolder with cluster_epoch
 	 * field.  Documented forward-link;  not a TODO that breaks contract. */
-	ereport(DEBUG2,
-			(errmsg_internal("cluster_grd_cleanup_stale_epoch(%lu): holder "
-							 "struct lacks epoch field until spec-2.17;  no-op",
-							 (unsigned long)current_epoch)));
+	ereport(DEBUG2, (errmsg_internal("cluster_grd_cleanup_stale_epoch(%lu): holder "
+									 "struct lacks epoch field until spec-2.17;  no-op",
+									 (unsigned long)current_epoch)));
 }
 
 

@@ -492,6 +492,18 @@ void
 cluster_grd_lmon_tick_dead_sweep(void)
 {}
 
+int
+cluster_ges_lmon_drain_work_queue(void)
+{
+	return 0;
+}
+
+int
+cluster_grd_outbound_lmon_drain_send(void)
+{
+	return 0;
+}
+
 /* spec-2.13 D8 / L104 stubs: cluster_lmon.c registers 2 GES handler
  * function pointers (cluster_ges_{request,reply}_handler) into the
  * ICMsgType registry in postmaster phase 1.  test_cluster_lmon

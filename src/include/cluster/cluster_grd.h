@@ -400,8 +400,7 @@ typedef struct ClusterGrdHolderId {
 	uint64 request_id;
 } ClusterGrdHolderId;
 
-StaticAssertDecl(sizeof(ClusterGrdHolderId) == 24,
-				 "ClusterGrdHolderId 4-tuple ABI 24-byte lock");
+StaticAssertDecl(sizeof(ClusterGrdHolderId) == 24, "ClusterGrdHolderId 4-tuple ABI 24-byte lock");
 
 /*
  * 4 cap counter + 5 nofail counter (Q12 v0.6).

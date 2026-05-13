@@ -59,6 +59,8 @@ make_temp_path(const char *suffix)
 {
 	char *path = malloc(64);
 
+	if (path == NULL)
+		exit(1);
 	snprintf(path, 64, "/tmp/pgrac_voting_test_%d_%s", getpid(), suffix);
 	(void)unlink(path); /* ignore ENOENT */
 	return path;

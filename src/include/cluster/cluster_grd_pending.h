@@ -38,7 +38,7 @@
 #ifndef FRONTEND
 
 #include "port/atomics.h"
-#include "cluster/cluster_ges.h" /* ClusterGrdHolderId 4-tuple */
+#include "cluster/cluster_grd.h" /* ClusterGrdHolderId 4-tuple */
 
 /*
  * Pending request lifecycle state (spec-2.16 v0.3 L1.4 — handler
@@ -92,8 +92,7 @@ extern void cluster_grd_pending_register(const ClusterGrdPendingKey *key);
 extern void cluster_grd_pending_signal(const ClusterGrdPendingKey *key,
 									   ClusterGrdPendingState verdict);
 extern void cluster_grd_pending_release(const ClusterGrdPendingKey *key);
-extern ClusterGrdPendingState
-cluster_grd_pending_lookup_state(const ClusterGrdPendingKey *key);
+extern ClusterGrdPendingState cluster_grd_pending_lookup_state(const ClusterGrdPendingKey *key);
 extern uint64 cluster_grd_pending_count(void);
 
 #endif /* !FRONTEND */

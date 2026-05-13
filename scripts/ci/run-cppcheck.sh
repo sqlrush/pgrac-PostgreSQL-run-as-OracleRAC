@@ -134,6 +134,16 @@ SHAREDFS_SUPP=(
   --suppress=syntaxError:src/include/cluster/cluster_cssd.h
 )
 
+# Reason: standalone cluster unit tests define PG-core and pgrac stubs with
+# signatures that intentionally mirror non-const production APIs.  cppcheck
+# 2.20 flags many stub parameters as constParameterPointer candidates because
+# the stub bodies are no-ops.  Changing those signatures would stop matching
+# the production symbol contracts under test, so suppress this style-only
+# finding for cluster_unit test stubs.
+UNIT_STUB_SUPP=(
+  --suppress=constParameterPointer:src/test/cluster_unit/test_cluster_*.c
+)
+
 echo "## cppcheck $(cppcheck --version)"
 echo "Scanning: ${CLUSTER_DIRS[*]}"
 
@@ -144,6 +154,7 @@ cppcheck \
   "${GLOBAL_SUPP[@]}" \
   "${PG_HEADER_SUPP[@]}" \
   "${SHAREDFS_SUPP[@]}" \
+  "${UNIT_STUB_SUPP[@]}" \
   --inline-suppr \
   --error-exitcode=0 \
   --xml --xml-version=2 \

@@ -76,6 +76,15 @@ syntaxError:src/include/cluster/cluster_ic_envelope.h
 # Same pattern as cluster_ic_envelope.h precedent above (L67 in lessons SSOT).
 syntaxError:src/include/cluster/cluster_cssd.h
 
+# === cluster_unit standalone stubs ===
+# Reason: standalone cluster unit tests define PG-core and pgrac stubs with
+# signatures that intentionally mirror non-const production APIs.  cppcheck
+# 2.20 flags many stub parameters as constParameterPointer candidates because
+# the stub bodies are no-ops.  Changing those signatures would stop matching
+# the production symbol contracts under test, so suppress this style-only
+# finding for cluster_unit test stubs.
+constParameterPointer:src/test/cluster_unit/test_cluster_*.c
+
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a
 # "Reason:" line on the next line.  Currently:

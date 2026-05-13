@@ -78,14 +78,14 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '18',
-   'L2 pg_cluster_shmem returns 18 rows (17 prior + cluster_grd at spec-2.14)');
+   '21',
+   'L2 pg_cluster_shmem returns 21 rows (18 prior + 3 GES queue regions at spec-2.16)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_cluster_shmem}),
-   'pgrac cluster conf,pgrac cluster control,pgrac cluster cssd,pgrac cluster diag,pgrac cluster epoch,pgrac cluster fence,pgrac cluster ges,pgrac cluster grd,pgrac cluster lck,pgrac cluster lmon,pgrac cluster pcm grd,pgrac cluster qvotec,pgrac cluster reconfig,pgrac cluster scn,pgrac cluster smgr,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
-   'L3 pg_cluster_shmem rows are exactly the 18 foundational regions (17 prior + cluster_grd since spec-2.14)');
+   'pgrac cluster conf,pgrac cluster control,pgrac cluster cssd,pgrac cluster diag,pgrac cluster epoch,pgrac cluster fence,pgrac cluster ges,pgrac cluster grd,pgrac cluster grd outbound,pgrac cluster grd pending,pgrac cluster grd work queue,pgrac cluster lck,pgrac cluster lmon,pgrac cluster pcm grd,pgrac cluster qvotec,pgrac cluster reconfig,pgrac cluster scn,pgrac cluster smgr,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
+   'L3 pg_cluster_shmem rows are exactly the 21 foundational regions (spec-2.16 GES queues included)');
 
 
 # ----------
@@ -133,8 +133,8 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'shmem' AND key = 'region_count'}),
-   '18',
-   'L8 pg_cluster_state.shmem.region_count = 18 (17 prior + cluster_grd at spec-2.14)');
+   '21',
+   'L8 pg_cluster_state.shmem.region_count = 21 (spec-2.16 GES queues included)');
 
 is($node->safe_psql(
 		'postgres', q{
@@ -153,15 +153,15 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.bytes'}),
-   '18',
-   'L10 pg_cluster_state.shmem has 18 region.<name>.bytes keys (one per region)');
+   '21',
+   'L10 pg_cluster_state.shmem has 21 region.<name>.bytes keys (one per region)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.owner'}),
-   '18',
-   'L11 pg_cluster_state.shmem has 18 region.<name>.owner keys (one per region)');
+   '21',
+   'L11 pg_cluster_state.shmem has 21 region.<name>.owner keys (one per region)');
 
 
 # ----------
@@ -174,8 +174,8 @@ is($node->safe_psql(
 	  FROM pg_settings
 	 WHERE name = 'cluster.shmem_max_regions'
 }),
-   'integer|postmaster|64|18|256',
-   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [18,256] (spec-2.14 cluster_grd bumps min_val 17→18)');
+   'integer|postmaster|64|21|256',
+   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [21,256] (spec-2.16 GES queues bump min_val 18→21)');
 
 is($node->safe_psql(
 		'postgres',
@@ -234,24 +234,24 @@ is($node->safe_psql(
 
 
 # ----------
-# L18: GUC max_regions=17 (boundary minimum) admits all baseline regions.
+# L18: GUC max_regions=21 (boundary minimum) admits all baseline regions.
 # ----------
 $node->stop;
-$node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 18\n");
+$node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 21\n");
 $node->start;
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '18',
-   'L18 cluster.shmem_max_regions = 18 exactly admits the 18 baseline regions (lower bound match)');
+   '21',
+   'L18 cluster.shmem_max_regions = 21 exactly admits the 21 baseline regions (lower bound match)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'guc' AND key = 'cluster.shmem_max_regions'}),
-   '18',
-   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 18');
+   '21',
+   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 21');
 
 $node->stop;
 

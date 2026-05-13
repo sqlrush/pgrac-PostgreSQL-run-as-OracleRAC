@@ -411,7 +411,7 @@ cluster_init_guc(void)
 										 "registers one region.  Raise if FATAL on startup with "
 										 "errcode 53400 \"cluster shmem registry capacity "
 										 "exceeded\"."),
-							&cluster_shmem_max_regions, 64, 18, 256,
+							&cluster_shmem_max_regions, 64, 21, 256,
 							PGC_POSTMASTER, /* registry array is palloc'd once at init */
 							0,				/* flags */
 							NULL,			/* check_hook */
@@ -486,12 +486,8 @@ cluster_init_guc(void)
 										 "rolling back via GES_RELEASE.  PG lock_timeout=0 "
 										 "(disabled) does NOT short-circuit this — backend "
 										 "uses ges_request_timeout_ms when lock_timeout=0."),
-							&cluster_ges_request_timeout_ms, 60000, 1, 600000,
-							PGC_USERSET,
-							GUC_UNIT_MS,
-							NULL,
-							NULL,
-							NULL);
+							&cluster_ges_request_timeout_ms, 60000, 1, 600000, PGC_USERSET,
+							GUC_UNIT_MS, NULL, NULL, NULL);
 
 	DefineCustomIntVariable("cluster.pcm_grd_max_entries",
 							gettext_noop("Maximum entries in the PCM GRD master shmem region."),

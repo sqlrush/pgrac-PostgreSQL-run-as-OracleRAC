@@ -110,8 +110,8 @@ typedef enum ClusterGrdOutboundOrigin {
  */
 typedef struct ClusterGrdOutboundSlot {
 	uint32 dest_node_id;
-	uint8 msg_type;	  /* ClusterICMsgType */
-	uint8 origin;	  /* ClusterGrdOutboundOrigin */
+	uint8 msg_type; /* ClusterICMsgType */
+	uint8 origin;	/* ClusterGrdOutboundOrigin */
 	uint16 payload_len;
 	uint8 payload[PGRAC_GES_OUTBOUND_PAYLOAD_MAX];
 } ClusterGrdOutboundSlot;
@@ -145,14 +145,11 @@ extern void cluster_grd_outbound_shmem_register(void);
  *                             ges_cleanup_deferred_count++ (NEVER
  *                             returns false).
  */
-extern bool cluster_grd_outbound_enqueue_backend_request(uint32 dest_node_id,
-														 const void *payload,
+extern bool cluster_grd_outbound_enqueue_backend_request(uint32 dest_node_id, const void *payload,
 														 uint16 payload_len);
-extern void cluster_grd_outbound_enqueue_lmon_reply(uint32 dest_node_id,
-													const void *payload,
+extern void cluster_grd_outbound_enqueue_lmon_reply(uint32 dest_node_id, const void *payload,
 													uint16 payload_len);
-extern void cluster_grd_outbound_enqueue_cleanup_release(uint32 dest_node_id,
-														 const void *payload,
+extern void cluster_grd_outbound_enqueue_cleanup_release(uint32 dest_node_id, const void *payload,
 														 uint16 payload_len);
 
 /*
@@ -165,6 +162,7 @@ extern void cluster_grd_outbound_enqueue_cleanup_release(uint32 dest_node_id,
  */
 extern bool cluster_grd_outbound_dequeue(ClusterGrdOutboundSlot *out);
 extern int cluster_grd_outbound_drain_dirty_lists(void);
+extern int cluster_grd_outbound_lmon_drain_send(void);
 
 /* Observability accessor (debug emit_row + view) */
 extern uint32 cluster_grd_outbound_ring_depth(void); /* in-ring slot count */

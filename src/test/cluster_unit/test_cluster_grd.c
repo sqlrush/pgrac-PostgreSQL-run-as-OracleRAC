@@ -202,7 +202,11 @@ int32 cluster_node_id = 0; /* NodeId typedef = int32 (cluster_scn.h:135) */
 /* spec-2.16 D8 L104 stubs:  cluster_grd_lmon_tick_dead_sweep depends on
  * cluster_cssd_get_dead_generation + cluster_cssd_get_peer_state.  Mock
  * to default-ALIVE (no sweep triggered). */
-uint64 cluster_cssd_get_dead_generation(void) { return 0; }
+uint64
+cluster_cssd_get_dead_generation(void)
+{
+	return 0;
+}
 
 typedef enum { CSSD_PEER_ALIVE = 0, CSSD_PEER_SUSPECTED = 1, CSSD_PEER_DEAD = 2 } _stub_peer_state;
 int /* ClusterCssdPeerState */

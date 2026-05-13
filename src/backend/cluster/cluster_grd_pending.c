@@ -85,29 +85,26 @@ cluster_grd_pending_shmem_register(void)
 void
 cluster_grd_pending_register(const ClusterGrdPendingKey *key pg_attribute_unused())
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cluster_grd_pending_register not implemented in Step 1"),
-			 errhint("spec-2.16 Step 3 D6 activates pending table register")));
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_grd_pending_register not implemented in Step 1"),
+					errhint("spec-2.16 Step 3 D6 activates pending table register")));
 }
 
 void
 cluster_grd_pending_signal(const ClusterGrdPendingKey *key pg_attribute_unused(),
 						   ClusterGrdPendingState verdict pg_attribute_unused())
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cluster_grd_pending_signal not implemented in Step 1"),
-			 errhint("spec-2.16 Step 3 D6 activates LMON reply CAS + SetLatch")));
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_grd_pending_signal not implemented in Step 1"),
+					errhint("spec-2.16 Step 3 D6 activates LMON reply CAS + SetLatch")));
 }
 
 void
 cluster_grd_pending_release(const ClusterGrdPendingKey *key pg_attribute_unused())
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cluster_grd_pending_release not implemented in Step 1"),
-			 errhint("spec-2.16 Step 3 D6 activates HASH_REMOVE on post-wait")));
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_grd_pending_release not implemented in Step 1"),
+					errhint("spec-2.16 Step 3 D6 activates HASH_REMOVE on post-wait")));
 }
 
 ClusterGrdPendingState

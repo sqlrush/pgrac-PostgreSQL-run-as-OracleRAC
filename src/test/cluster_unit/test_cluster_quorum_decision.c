@@ -383,7 +383,7 @@ UT_TEST(test_d_10_null_inputs_lost_defensive)
 
 	/* 0 disks → LOST. */
 	{
-		ClusterVotingSlot dummy_slot;
+		ClusterVotingSlot dummy_slot = { 0 };
 		ClusterVotingDiskIoState dummy_io = CLUSTER_VOTING_DISK_IO_OK;
 
 		UT_ASSERT_EQ(decide_quorum_view(&dummy_slot, &dummy_io, 0, N_NODES, 0, 1000, TEST_NOW_US,

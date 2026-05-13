@@ -14,7 +14,7 @@
 #	        so hash_estimate_size(4096,...) ≈ 3-5MB,not naive 12KB) +
 #	        pg_cluster_grd_entries still 0 row (0 caller)
 #	    L4  SET cluster.grd_max_entries session-level fail (PGC_POSTMASTER)
-#	        + dump_grd 14 row baseline + 3 NEW atomic counter all 0
+#	        + dump_grd 28 row baseline + 3 NEW atomic counter all 0
 #
 #	  Spec authority: pgrac:specs/spec-2.15-grd-entry-table-holders-
 #	  waiters.md (frozen v0.4 Q1-Q15 + 4 轮 codereview corrections).
@@ -105,7 +105,7 @@ is($node->safe_psql('postgres',
 
 
 # ----------
-# L4: SET fail (PGC_POSTMASTER) + dump_grd 14 row baseline + 3 NEW atomic
+# L4: SET fail (PGC_POSTMASTER) + dump_grd 28 row baseline + 3 NEW atomic
 #     counter all 0 (本 spec 0 caller / 0 mutation).
 # ----------
 {
@@ -118,11 +118,11 @@ is($node->safe_psql('postgres',
 }
 
 # dump_grd category='grd' total row count: spec-2.14 ships 8 emit_row,
-# spec-2.15 v0.3 adds 6 (3 derived + 3 atomic) → 14 total.
+# spec-2.15 v0.3 adds 6, and spec-2.16 exposes 14 queue/pending counters.
 is($node->safe_psql('postgres',
 		q{SELECT count(*)::int FROM pg_cluster_state WHERE category='grd'}),
-   '14',
-   'L4b dump_grd category="grd" emits 14 rows (spec-2.14 8 + spec-2.15 6)');
+   '28',
+   'L4b dump_grd category="grd" emits 28 rows (spec-2.14 8 + spec-2.15 6 + spec-2.16 14)');
 
 # All 3 NEW atomic counter baseline 0 (本 spec 0 caller invokes
 # cluster_grd_entry_lookup_or_create).

@@ -53,8 +53,8 @@ cluster_grd_work_queue_shmem_init(void)
 {
 	bool found;
 
-	cluster_grd_work_queue_state =
-		ShmemInitStruct("pgrac cluster grd work queue", cluster_grd_work_queue_shmem_size(), &found);
+	cluster_grd_work_queue_state = ShmemInitStruct("pgrac cluster grd work queue",
+												   cluster_grd_work_queue_shmem_size(), &found);
 	if (!found)
 		memset(cluster_grd_work_queue_state, 0, sizeof(*cluster_grd_work_queue_state));
 
@@ -101,8 +101,8 @@ cluster_grd_work_queue_enqueue(uint32 source_node_id, const void *payload, uint1
 	if (payload_len > 0)
 		memcpy(slot->payload, payload, payload_len);
 
-	cluster_grd_work_queue_state->head =
-		(cluster_grd_work_queue_state->head + 1) % PGRAC_GES_WORK_QUEUE_CAPACITY;
+	cluster_grd_work_queue_state->head
+		= (cluster_grd_work_queue_state->head + 1) % PGRAC_GES_WORK_QUEUE_CAPACITY;
 	cluster_grd_work_queue_state->count++;
 
 	LWLockRelease(cluster_grd_work_queue_lock);
@@ -120,8 +120,8 @@ cluster_grd_work_queue_dequeue(ClusterGrdWorkItem *out)
 	LWLockAcquire(cluster_grd_work_queue_lock, LW_EXCLUSIVE);
 	if (cluster_grd_work_queue_state->count > 0) {
 		*out = cluster_grd_work_queue_state->items[cluster_grd_work_queue_state->tail];
-		cluster_grd_work_queue_state->tail =
-			(cluster_grd_work_queue_state->tail + 1) % PGRAC_GES_WORK_QUEUE_CAPACITY;
+		cluster_grd_work_queue_state->tail
+			= (cluster_grd_work_queue_state->tail + 1) % PGRAC_GES_WORK_QUEUE_CAPACITY;
 		cluster_grd_work_queue_state->count--;
 		got = true;
 	}
@@ -133,7 +133,7 @@ uint32
 cluster_grd_work_queue_depth(void)
 {
 	uint32 depth;
-	if (cluster_grd_work_queue_state == NULL)
+	if (cluster_grd_work_queue_state == NULL || cluster_grd_work_queue_lock == NULL)
 		return 0;
 	LWLockAcquire(cluster_grd_work_queue_lock, LW_SHARED);
 	depth = cluster_grd_work_queue_state->count;

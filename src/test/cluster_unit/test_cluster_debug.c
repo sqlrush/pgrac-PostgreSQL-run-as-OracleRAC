@@ -956,6 +956,77 @@ cluster_grd_entry_full_count(void)
 	return 0;
 }
 
+uint64
+cluster_grd_holders_full_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_waiters_full_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_converts_full_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ngranted_promoted_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ges_work_queue_full_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ges_cleanup_deferred_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ges_inbound_validation_fail_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ges_reply_deferred_count(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_ges_reply_dropped_count(void)
+{
+	return 0;
+}
+uint32
+cluster_grd_outbound_ring_depth(void)
+{
+	return 0;
+}
+uint32
+cluster_grd_outbound_reply_dirty_depth(void)
+{
+	return 0;
+}
+uint32
+cluster_grd_outbound_cleanup_dirty_depth(void)
+{
+	return 0;
+}
+uint32
+cluster_grd_work_queue_depth(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_pending_count(void)
+{
+	return 0;
+}
+
 
 UT_DEFINE_GLOBALS();
 

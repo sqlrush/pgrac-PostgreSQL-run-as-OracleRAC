@@ -128,6 +128,7 @@ extern void cluster_ges_shmem_register(void);
  */
 extern void cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload);
 extern void cluster_ges_reply_handler(const ClusterICEnvelope *env, const void *payload);
+extern int cluster_ges_lmon_drain_work_queue(void);
 
 /*
  * Counter accessors -- spec-2.13 D4.
@@ -225,8 +226,7 @@ typedef struct GesRequestPayload {
 	uint32 resid[4]; /* ClusterResId byte-image (16B) */
 } GesRequestPayload;
 
-StaticAssertDecl(sizeof(GesRequestPayload) == 48,
-				 "GesRequestPayload wire ABI 48-byte lock");
+StaticAssertDecl(sizeof(GesRequestPayload) == 48, "GesRequestPayload wire ABI 48-byte lock");
 
 /*
  * GES reply payload (variant on GES_REPLY msg_type=5).
@@ -252,8 +252,7 @@ typedef struct GesReplyPayload {
 	uint32 resid[4];
 } GesReplyPayload;
 
-StaticAssertDecl(sizeof(GesReplyPayload) == 48,
-				 "GesReplyPayload wire ABI 48-byte lock");
+StaticAssertDecl(sizeof(GesReplyPayload) == 48, "GesReplyPayload wire ABI 48-byte lock");
 
 #endif /* !FRONTEND */
 
