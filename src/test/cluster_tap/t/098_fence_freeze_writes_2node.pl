@@ -97,6 +97,17 @@ is($pair->node0->safe_psql('postgres', 'SELECT 1'),
 is($pair->node1->safe_psql('postgres', 'SELECT 1'),
 	'1', 'L1 node1 postmaster alive');
 
+# L66 family Ubuntu CI runner load 下 qvotec lease + cssd heartbeat
+# convergence 可能 1-3s,start_pair 不等收敛.  poll_query_until 在
+# Ubuntu 2-vCPU shared runner 上等 in_quorum=t (默认 180s timeout)
+# 替代 race-prone 直查.  spec-2.28 Hardening (098 L1 wait fix).
+$pair->node0->poll_query_until('postgres',
+	q{SELECT in_quorum FROM pg_cluster_quorum_state}, 't')
+	or die "node0 in_quorum did not converge to true within timeout";
+$pair->node1->poll_query_until('postgres',
+	q{SELECT in_quorum FROM pg_cluster_quorum_state}, 't')
+	or die "node1 in_quorum did not converge to true within timeout";
+
 is($pair->node0->safe_psql('postgres',
 		'SELECT in_quorum FROM pg_cluster_quorum_state'),
 	't', 'L1 node0 in_quorum=t');
