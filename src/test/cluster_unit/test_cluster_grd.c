@@ -144,13 +144,17 @@ elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ..
 void *
 ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 {
-	static union {
-		uint64 force_align;
-		char data[131072]; /* 4096 atomic uint32 + 6 atomic uint64 < 17KB; buffer 128KB 充足 */
-	} grd_buf;
-	static bool grd_initialized = false;
-
 	if (name != NULL && strcmp(name, "pgrac cluster grd") == 0) {
+		static union {
+			/* cppcheck-suppress unusedStructMember
+			 * Reason: force_align is intentionally never read; it raises the
+			 * standalone shmem stub's alignment to at least 8 bytes for
+			 * pg_atomic_uint64 fields inside ClusterGrdShared. */
+			uint64 force_align;
+			char data[131072]; /* 4096 atomic uint32 + 6 atomic uint64 < 17KB; buffer 128KB 充足 */
+		} grd_buf;
+		static bool grd_initialized = false;
+
 		Assert(size <= sizeof(grd_buf.data));
 		*foundPtr = grd_initialized;
 		grd_initialized = true;
@@ -493,6 +497,9 @@ UT_DEFINE_GLOBALS();
 
 
 int
+/* cppcheck-suppress constParameter
+ * Reason: main() keeps the standard test harness signature used by the
+ * other cluster_unit binaries; argv is intentionally unused. */
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
 	UT_PLAN(7);

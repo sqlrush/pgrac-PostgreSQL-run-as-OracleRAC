@@ -116,6 +116,9 @@ cluster_grd_resid_encode(const LOCKTAG *src, ClusterResId *dst)
 	Assert(src != NULL);
 	Assert(dst != NULL);
 
+	if (src == NULL || dst == NULL)
+		return;
+
 	dst->field1 = src->locktag_field1;
 	dst->field2 = src->locktag_field2;
 	dst->field3 = src->locktag_field3;
@@ -133,6 +136,9 @@ cluster_grd_resid_decode(const ClusterResId *src, LOCKTAG *dst)
 {
 	Assert(src != NULL);
 	Assert(dst != NULL);
+
+	if (src == NULL || dst == NULL)
+		return;
 
 	dst->locktag_field1 = src->field1;
 	dst->locktag_field2 = src->field2;
@@ -155,6 +161,9 @@ bool
 cluster_grd_is_cluster_aware(const LOCKTAG *tag)
 {
 	Assert(tag != NULL);
+
+	if (tag == NULL)
+		return false;
 
 	switch ((LockTagType)tag->locktag_type) {
 	case LOCKTAG_RELATION:	  /* TM 表锁跨节点 (feature-024) */
@@ -191,6 +200,9 @@ cluster_grd_hash_resource(const ClusterResId *resid)
 	uint8 hash_input[14];
 
 	Assert(resid != NULL);
+
+	if (resid == NULL)
+		return 0;
 
 	/* Pack 14B input: field1-3 + type + lockmethodid.  Skip ONLY field4. */
 	memcpy(&hash_input[0], &resid->field1, 4);
