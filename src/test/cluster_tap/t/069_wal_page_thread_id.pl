@@ -298,7 +298,7 @@ unlike($log_content, qr/invalid Stage 1 cluster fields/,
 # ----------
 my $pg_controldata = $node->config_data('--bindir') . '/pg_controldata';
 my $controldata_out = `$pg_controldata @{[$node->data_dir]}`;
-like($controldata_out, qr/Catalog version number:\s+(20260518[1-9]|2026051[89]\d|20260520\d|2026052[1-9]\d|20260[6-9]\d{3}|2026[1-9]\d{4}|202[7-9]\d{5}|20[3-9]\d{6})/,
+like($controldata_out, qr/Catalog version number:\s+(20260518[1-9]|2026051[89]\d|20260520\d|2026052[1-9]\d|2026053\d{2}|20260[6-9]\d{3}|2026[1-9]\d{4}|202[7-9]\d{5}|20[3-9]\d{6})/,
 	'L12 catversion >= 202605181 (Q1=A spec-1.19 itself no bump; spec-1.22 -> 202605190; spec-2.2 -> 202605200; later specs widen further)');
 
 
