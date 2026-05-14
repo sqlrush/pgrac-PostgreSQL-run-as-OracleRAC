@@ -36,6 +36,7 @@
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_grd.h"
 #include "cluster/cluster_guc.h" /* cluster_node_id, cluster_grd_max_entries */
+#include "cluster/cluster_signal.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h" /* spec-2.16 D8 newly-dead bitmap diff */
 #include "storage/proc.h"		  /* spec-2.17 D8 — MyProc->cluster_grd_bast_pending */
@@ -1261,22 +1262,37 @@ cluster_grd_bast_handler(void)
 void
 cluster_grd_cancel_handler(void)
 {
-	/* spec-2.17 Step 4 skeleton — Step 6 真激活(CANCEL semantics:
-	 * abort wait;未 grant → GES_CANCEL_PENDING,已 grant → GES_RELEASE). */
-	/* No-op for now;  Step 6 wires backend cancel path. */
+	/* Checkpoint-safe placeholder.  The signal path is now correct
+	 * (signal handler → pending flag → ProcessInterrupts → here), but
+	 * wait-abort semantics are still owned by the caller-side activation
+	 * step.  Do not pretend to cancel a GRD wait from this skeleton. */
 }
 
-#define DEFINE_BAST_COUNTER(short_name, full_field) \
-	void cluster_grd_inc_##short_name(void) \
-	{ \
-		if (cluster_grd_state != NULL) \
-			pg_atomic_fetch_add_u64(&cluster_grd_state->ges_##full_field, 1); \
-	} \
-	uint64 cluster_grd_##full_field(void) \
-	{ \
-		if (cluster_grd_state == NULL) \
-			return 0; \
-		return pg_atomic_read_u64(&cluster_grd_state->ges_##full_field); \
+void
+cluster_grd_check_pending_interrupts(void)
+{
+	if (cluster_ges_bast_pending) {
+		cluster_ges_bast_pending = false;
+		cluster_grd_bast_handler();
+	}
+
+	if (cluster_ges_cancel_pending) {
+		cluster_ges_cancel_pending = false;
+		cluster_grd_cancel_handler();
+	}
+}
+
+#define DEFINE_BAST_COUNTER(short_name, full_field)                                                \
+	void cluster_grd_inc_##short_name(void)                                                        \
+	{                                                                                              \
+		if (cluster_grd_state != NULL)                                                             \
+			pg_atomic_fetch_add_u64(&cluster_grd_state->ges_##full_field, 1);                      \
+	}                                                                                              \
+	uint64 cluster_grd_##full_field(void)                                                          \
+	{                                                                                              \
+		if (cluster_grd_state == NULL)                                                             \
+			return 0;                                                                              \
+		return pg_atomic_read_u64(&cluster_grd_state->ges_##full_field);                           \
 	}
 
 DEFINE_BAST_COUNTER(bast_sent, bast_sent_count)
@@ -1333,8 +1349,9 @@ DEFINE_BAST_COUNTER(deadlock_chunk_oo_buffer_overflow, deadlock_chunk_oo_buffer_
 void
 cluster_grd_cleanup_on_backend_exit(int procno)
 {
-	/* Skeleton — Hardening round wire on_proc_exit hook + entry sweep. */
-	(void) procno;
-	if (MyProc != NULL)
-		MyProc->cluster_grd_bast_pending = false;
+	/* Checkpoint skeleton only.  Do not clear MyProc flags here: clearing
+	 * BAST/CANCEL state without walking GRD entries can hide protocol work.
+	 * The real implementation must sweep holders/waiters/converts for procno
+	 * under the same entry-lock discipline as cleanup_on_node_dead(). */
+	(void)procno;
 }

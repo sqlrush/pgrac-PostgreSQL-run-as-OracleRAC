@@ -1,13 +1,16 @@
 # GES BAST + Cross-Node Deadlock — User Manual
 
-> Status: introduced in linkdb v0.25.0-stage2.17.  spec-2.17 ships
-> caller-side LockAcquireExtended 7-step state machine + BAST advisory
-> protocol + cross-node deadlock detector + CANCEL ProcSignal.
+> Status: spec-2.17 checkpoint documentation.  The current code exposes
+> BAST/CANCEL/deadlock GUCs, counters, opcodes, generation guards, and
+> safe ProcSignal dispatch scaffolding.  Caller-side LockAcquireExtended,
+> full BAST round trip, cross-node deadlock detection, and CANCEL wait abort
+> are not production-active until the remaining spec-2.17 activation work
+> lands.
 
 ## Overview
 
-spec-2.17 closes Phase 2.B GRD/LMS/LMD subsystem by activating caller-
-side and adding three coordination mechanisms:
+spec-2.17 checkpoint work prepares Phase 2.B GRD/LMS/LMD activation by
+adding surfaces for three coordination mechanisms:
 
 - **BAST (Blocking Asynchronous Trap)** — master notifies original
   holder advisory when new requester wants incompatible mode;
@@ -25,14 +28,14 @@ side and adding three coordination mechanisms:
 
 | GUC | Default | Range | Context | Description |
 |---|---|---|---|---|
-| `cluster.ges_bast_retry_interval_ms` | `10000` | `[1000, 60000]` | `USERSET` | BAST retry interval (ms). Master 重发周期(不是 kill 阈值) |
-| `cluster.ges_bast_max_retries` | `3` | `[1, 10]` | `USERSET` | Max BAST retry attempts before REJECT to new requester |
-| `cluster.ges_deadlock_check_interval_ms` | `1000` | `[100, 10000]` | `USERSET` | Deadlock probe periodic interval |
-| `cluster.ges_deadlock_chunk_timeout_ms` | `2000` | `[500, 30000]` | `USERSET` | Chunked reassembly timeout (drop entire probe on miss) |
-| `cluster.ges_deadlock_max_edges` | `1024` | `[64, 65536]` | `USERSET` | Max wait-for edges per probe (hard cap protects LMON) |
-| `cluster.ges_deadlock_max_vertices` | `256` | `[16, 16384]` | `USERSET` | Max vertices per probe |
-| `cluster.ges_deadlock_max_in_flight_probes` | `4` | `[1, 32]` | `USERSET` | Max concurrent in-flight probes per coordinator |
-| `cluster.ges_deadlock_tick_budget_us` | `5000` | `[500, 50000]` | `USERSET` | Single LMON tick deadlock work budget (us) |
+| `cluster.ges_bast_retry_interval_ms` | `10000` | `[1000, 60000]` | `SIGHUP` | BAST retry interval (ms). Master 重发周期(不是 kill 阈值) |
+| `cluster.ges_bast_max_retries` | `3` | `[1, 10]` | `SIGHUP` | Max BAST retry attempts before REJECT to new requester |
+| `cluster.ges_deadlock_check_interval_ms` | `1000` | `[100, 10000]` | `SIGHUP` | Deadlock probe periodic interval |
+| `cluster.ges_deadlock_chunk_timeout_ms` | `2000` | `[500, 30000]` | `SIGHUP` | Chunked reassembly timeout (drop entire probe on miss) |
+| `cluster.ges_deadlock_max_edges` | `1024` | `[64, 65536]` | `SIGHUP` | Max wait-for edges per probe (hard cap protects LMON) |
+| `cluster.ges_deadlock_max_vertices` | `256` | `[16, 16384]` | `SIGHUP` | Max vertices per probe |
+| `cluster.ges_deadlock_max_in_flight_probes` | `4` | `[1, 32]` | `SIGHUP` | Max concurrent in-flight probes per coordinator |
+| `cluster.ges_deadlock_tick_budget_us` | `5000` | `[500, 50000]` | `SIGHUP` | Single LMON tick deadlock work budget (us) |
 
 ## Wait Events
 
@@ -67,14 +70,12 @@ NEW 9 `pg_cluster_state` rows in the `grd` category:
 - `grd_deadlock_probe_collision_drop_count` — probe_id collision drop
 - `grd_deadlock_chunk_oo_buffer_overflow_count` — Out-of-order chunk buffer overflow
 
-## Architecture Highlights
+## Checkpoint Surfaces
 
-- **7-step LockAcquireExtended state machine S1-S7**(fast path 强制走 partition LWLock + reservation 防 split-grant)
-- **BAST handler 0 主动 release**(I85 — naturally 等 canonical LockRelease 顺路补发 GES_RELEASE)
-- **Vertex dictionary + edge chunk protocol** for deadlock probes(I82 collision-free)
-- **Deterministic age-based victim selection**(I69 — `(cluster_epoch, local_start_ts_ms DESC, node_id, xid)`)
-- **6-tuple identity payload** with `target_generation` + `request_seq` 防 stale signal(I81)
-- **LMON deadlock budget hard cap**(I83 — max_edges 1024 + max_vertices 256 + max_in_flight_probes 4 + tick_budget_us 5000)
+- **Safe ProcSignal scaffolding** for BAST/CANCEL: signal context only sets pending flags; real work is consumed from `ProcessInterrupts`.
+- **BAST advisory flag**: current handler marks `cluster_grd_bast_pending`; it does not actively release locks.
+- **Reserved deadlock protocol knobs and counters**: GUCs and counters exist; Tarjan/cycle detection and victim selection are not active in this checkpoint.
+- **Generation guard substrate**: `PGPROC.cluster_grd_generation` gives future BAST/CANCEL payload validation a stale-signal discriminator.
 
 ## MVP Scope
 

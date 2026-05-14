@@ -194,11 +194,31 @@ UT_TEST(test_freeze_handler_arms_process_interrupts)
 	InterruptPending = 0;
 }
 
+UT_TEST(test_ges_bast_cancel_handlers_arm_process_interrupts)
+{
+	cluster_ges_bast_pending = 0;
+	cluster_ges_cancel_pending = 0;
+	InterruptPending = 0;
+
+	cluster_handle_ges_bast_interrupt();
+	UT_ASSERT_EQ((int)cluster_ges_bast_pending, 1);
+	UT_ASSERT_EQ((int)InterruptPending, 1);
+
+	InterruptPending = 0;
+	cluster_handle_ges_cancel_interrupt();
+	UT_ASSERT_EQ((int)cluster_ges_cancel_pending, 1);
+	UT_ASSERT_EQ((int)InterruptPending, 1);
+
+	cluster_ges_bast_pending = 0;
+	cluster_ges_cancel_pending = 0;
+	InterruptPending = 0;
+}
+
 
 int
 main(void)
 {
-	UT_PLAN(7);
+	UT_PLAN(8);
 	UT_RUN(test_cluster_reconfig_start_after_recovery_conflict_bufferpin);
 	UT_RUN(test_pg_native_reasons_unchanged);
 	UT_RUN(test_num_procsignals_is_19);
@@ -206,6 +226,7 @@ main(void)
 	UT_RUN(test_handler_symbol_linkable);
 	UT_RUN(test_handler_sets_pending_flag);
 	UT_RUN(test_freeze_handler_arms_process_interrupts);
+	UT_RUN(test_ges_bast_cancel_handlers_arm_process_interrupts);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

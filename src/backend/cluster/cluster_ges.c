@@ -169,6 +169,7 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 {
 	const GesRequestPayload *req;
 	uint64 holder_epoch;
+	bool payload_node_must_be_source;
 
 	Assert(env != NULL);
 	Assert(cluster_ges_state != NULL);
@@ -184,11 +185,40 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	holder_epoch
 		= ((uint64)req->holder_cluster_epoch_lo) | (((uint64)req->holder_cluster_epoch_hi) << 32);
 
-	/* spec-2.16 v0.4 L1.8 + v0.5:  5-item validation. */
+	/* spec-2.16 v0.4 L1.8 + v0.5:  5-item validation.
+	 *
+	 * spec-2.17 adds BAST as master->holder advisory.  For that opcode the
+	 * payload holder node is the local target, not the envelope source.  The
+	 * remaining request-family opcodes still identify the remote sender and
+	 * must match env->source_node_id. */
+	payload_node_must_be_source = (req->opcode != GES_REQ_OPCODE_BAST);
 	if (!ges_validate_inbound(env, req->holder_node_id, holder_epoch, req->opcode,
-							  GES_REQ_OPCODE_REQUEST, GES_REQ_OPCODE_RELEASE, true)) {
+							  GES_REQ_OPCODE_REQUEST, GES_REQ_OPCODE_CANCEL_PENDING,
+							  payload_node_must_be_source)) {
 		cluster_grd_inc_ges_inbound_validation_fail();
 		return;
+	}
+
+	/* spec-2.17 checkpoint dispatch.  These opcodes are accepted and
+	 * accounted explicitly so they are not misclassified as validation
+	 * failures.  Full BAST/CANCEL/deadlock state machines land with the
+	 * caller-side activation path; until then, keep behavior fail-closed. */
+	switch ((GesRequestOpcode)req->opcode) {
+	case GES_REQ_OPCODE_BAST:
+		cluster_grd_inc_bast_received();
+		return;
+	case GES_REQ_OPCODE_BAST_ACK:
+		cluster_grd_inc_bast_ack();
+		return;
+	case GES_REQ_OPCODE_DEADLOCK_PROBE:
+		cluster_grd_inc_deadlock_probe_drop();
+		return;
+	case GES_REQ_OPCODE_CANCEL_PENDING:
+		return;
+	case GES_REQ_OPCODE_REQUEST:
+	case GES_REQ_OPCODE_CONVERT:
+	case GES_REQ_OPCODE_RELEASE:
+		break;
 	}
 
 	/* Phase 1 (handler):  enqueue into work_queue.  Grant decision runs

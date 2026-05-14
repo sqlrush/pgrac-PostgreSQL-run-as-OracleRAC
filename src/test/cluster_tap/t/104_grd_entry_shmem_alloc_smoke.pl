@@ -14,7 +14,7 @@
 #	        so hash_estimate_size(4096,...) ≈ 3-5MB,not naive 12KB) +
 #	        pg_cluster_grd_entries still 0 row (0 caller)
 #	    L4  SET cluster.grd_max_entries session-level fail (PGC_POSTMASTER)
-#	        + dump_grd 28 row baseline + 3 NEW atomic counter all 0
+#	        + dump_grd 37 row baseline + GRD atomic counters all 0
 #
 #	  Spec authority: pgrac:specs/spec-2.15-grd-entry-table-holders-
 #	  waiters.md (frozen v0.4 Q1-Q15 + 4 轮 codereview corrections).
@@ -105,8 +105,8 @@ is($node->safe_psql('postgres',
 
 
 # ----------
-# L4: SET fail (PGC_POSTMASTER) + dump_grd 28 row baseline + 3 NEW atomic
-#     counter all 0 (本 spec 0 caller / 0 mutation).
+# L4: SET fail (PGC_POSTMASTER) + dump_grd 37 row baseline + GRD atomic
+#     counters all 0 (本 spec 0 caller / 0 mutation).
 # ----------
 {
 	my $stderr_l4;
@@ -118,11 +118,12 @@ is($node->safe_psql('postgres',
 }
 
 # dump_grd category='grd' total row count: spec-2.14 ships 8 emit_row,
-# spec-2.15 v0.3 adds 6, and spec-2.16 exposes 14 queue/pending counters.
+# spec-2.15 v0.3 adds 6, spec-2.16 exposes 14 queue/pending counters,
+# and spec-2.17 adds 9 BAST/deadlock checkpoint counters.
 is($node->safe_psql('postgres',
 		q{SELECT count(*)::int FROM pg_cluster_state WHERE category='grd'}),
-   '28',
-   'L4b dump_grd category="grd" emits 28 rows (spec-2.14 8 + spec-2.15 6 + spec-2.16 14)');
+   '37',
+   'L4b dump_grd category="grd" emits 37 rows (spec-2.14 8 + spec-2.15 6 + spec-2.16 14 + spec-2.17 9)');
 
 # All 3 NEW atomic counter baseline 0 (本 spec 0 caller invokes
 # cluster_grd_entry_lookup_or_create).
@@ -137,6 +138,22 @@ is($node->safe_psql('postgres',
 		           WHERE category='grd' AND key='grd_entry_full_count')}),
    '0|0|0',
    'L4c grd_entry_{create,lookup_hit,full}_count all 0 baseline (0 caller)');
+
+is($node->safe_psql('postgres',
+		q{SELECT count(*)::int FROM pg_cluster_state
+		   WHERE category='grd'
+		     AND key IN ('grd_bast_sent_count',
+		                 'grd_bast_received_count',
+		                 'grd_bast_ack_count',
+		                 'grd_bast_retry_count',
+		                 'grd_bast_reject_count',
+		                 'grd_bast_stale_drop_count',
+		                 'grd_deadlock_probe_drop_count',
+		                 'grd_deadlock_probe_collision_drop_count',
+		                 'grd_deadlock_chunk_oo_buffer_overflow_count')
+		     AND value = '0'}),
+   '9',
+   'L4d spec-2.17 BAST/deadlock checkpoint counters all 0 baseline');
 
 
 # ----------

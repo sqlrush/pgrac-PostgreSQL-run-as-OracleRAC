@@ -198,6 +198,8 @@ cluster_conf_node_count(void)
 }
 
 int32 cluster_node_id = 0; /* NodeId typedef = int32 (cluster_scn.h:135) */
+volatile sig_atomic_t cluster_ges_bast_pending = 0;
+volatile sig_atomic_t cluster_ges_cancel_pending = 0;
 
 /* spec-2.17 L104 stub:  MyProc reference for bast_handler.  Tests don't
  * exercise BAST handler runtime;  unit test only verifies symbol linkage. */

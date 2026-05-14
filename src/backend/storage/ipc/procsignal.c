@@ -701,11 +701,11 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 		cluster_handle_freeze_writes_interrupt();
 	if (CheckProcSignal(PROCSIG_CLUSTER_THAW_WRITES))
 		cluster_handle_thaw_writes_interrupt();
-	/* spec-2.17 Q8 + Q9 — BAST + CANCEL handler dispatch. */
+	/* spec-2.17 Q8 + Q9 — async-signal-safe BAST/CANCEL dispatch. */
 	if (CheckProcSignal(PROCSIG_CLUSTER_GES_BAST))
-		cluster_grd_bast_handler();
+		cluster_handle_ges_bast_interrupt();
 	if (CheckProcSignal(PROCSIG_CLUSTER_GES_CANCEL))
-		cluster_grd_cancel_handler();
+		cluster_handle_ges_cancel_interrupt();
 #endif
 
 	SetLatch(MyLatch);

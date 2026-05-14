@@ -213,6 +213,9 @@ static uint64 stub_reply_deferred = 0;
 static uint64 stub_reply_dropped = 0;
 static uint64 stub_work_queue_enqueue_count = 0;
 static uint64 stub_lmon_reply_enqueue_count = 0;
+static uint64 stub_bast_received = 0;
+static uint64 stub_bast_ack = 0;
+static uint64 stub_deadlock_probe_drop = 0;
 
 void
 cluster_grd_inc_ges_work_queue_full(void)
@@ -238,6 +241,21 @@ void
 cluster_grd_inc_ges_reply_dropped(void)
 {
 	stub_reply_dropped++;
+}
+void
+cluster_grd_inc_bast_received(void)
+{
+	stub_bast_received++;
+}
+void
+cluster_grd_inc_bast_ack(void)
+{
+	stub_bast_ack++;
+}
+void
+cluster_grd_inc_deadlock_probe_drop(void)
+{
+	stub_deadlock_probe_drop++;
 }
 
 /* work_queue + outbound enqueue stubs — accept always (no overflow path tested
@@ -431,10 +449,62 @@ test_ges_opcode_enum_spec_2_17_extension(void)
 	UT_ASSERT_EQ((int)GES_REQ_OPCODE_CANCEL_PENDING, 7);
 }
 
+static void
+test_ges_bast_opcode_validates_as_target_local(void)
+{
+	ClusterICEnvelope env;
+	GesRequestPayload req;
+	uint64 pre_fail = stub_inbound_validation_fail;
+	uint64 pre_bast = stub_bast_received;
+	uint64 pre_enqueue = stub_work_queue_enqueue_count;
+
+	cluster_ges_shmem_init();
+	cluster_node_id = 0;
+	memset(&env, 0, sizeof(env));
+	env.source_node_id = 1; /* master */
+	env.epoch = 0;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = GES_REQ_OPCODE_BAST;
+	req.holder_node_id = 0; /* local target, not envelope source */
+
+	cluster_ges_request_handler(&env, &req);
+
+	UT_ASSERT_EQ(stub_inbound_validation_fail, pre_fail);
+	UT_ASSERT_EQ(stub_bast_received, pre_bast + 1);
+	UT_ASSERT_EQ(stub_work_queue_enqueue_count, pre_enqueue);
+}
+
+static void
+test_ges_bast_ack_opcode_validates_as_source_holder(void)
+{
+	ClusterICEnvelope env;
+	GesRequestPayload req;
+	uint64 pre_fail = stub_inbound_validation_fail;
+	uint64 pre_ack = stub_bast_ack;
+	uint64 pre_enqueue = stub_work_queue_enqueue_count;
+
+	cluster_ges_shmem_init();
+	cluster_node_id = 0;
+	memset(&env, 0, sizeof(env));
+	env.source_node_id = 1; /* holder */
+	env.epoch = 0;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = GES_REQ_OPCODE_BAST_ACK;
+	req.holder_node_id = 1; /* holder must match envelope source */
+
+	cluster_ges_request_handler(&env, &req);
+
+	UT_ASSERT_EQ(stub_inbound_validation_fail, pre_fail);
+	UT_ASSERT_EQ(stub_bast_ack, pre_ack + 1);
+	UT_ASSERT_EQ(stub_work_queue_enqueue_count, pre_enqueue);
+}
+
 int
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(10);
+	UT_PLAN(12);
 
 	UT_RUN(test_ges_request_handler_linkable);
 	UT_RUN(test_ges_reply_handler_linkable);
@@ -446,6 +516,8 @@ main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 	UT_RUN(test_ges_reply_valid_payload_echoes_local_holder);
 	UT_RUN(test_ges_lmon_drain_work_queue_symbol_linkable);
 	UT_RUN(test_ges_opcode_enum_spec_2_17_extension);
+	UT_RUN(test_ges_bast_opcode_validates_as_target_local);
+	UT_RUN(test_ges_bast_ack_opcode_validates_as_source_holder);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

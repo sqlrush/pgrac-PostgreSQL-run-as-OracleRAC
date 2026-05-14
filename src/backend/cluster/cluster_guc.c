@@ -504,44 +504,45 @@ cluster_init_guc(void)
 							gettext_noop("BAST retry interval (ms) when holder is non-responsive."),
 							gettext_noop("Range [1000, 60000].  Default 10000(10s).  Master 重发 "
 										 "周期(不是 kill 阈值)— Q11 v0.6 不 kill healthy holder。"),
-							&cluster_ges_bast_retry_interval_ms, 10000, 1000, 60000, PGC_USERSET,
+							&cluster_ges_bast_retry_interval_ms, 10000, 1000, 60000, PGC_SIGHUP,
 							GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("cluster.ges_bast_max_retries",
-							gettext_noop("Maximum BAST retry attempts before REJECT to new requester."),
-							gettext_noop("Range [1, 10].  Default 3.  超此次数 master enqueue REJECT。"),
-							&cluster_ges_bast_max_retries, 3, 1, 10, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_bast_max_retries",
+		gettext_noop("Maximum BAST retry attempts before REJECT to new requester."),
+		gettext_noop("Range [1, 10].  Default 3.  超此次数 master enqueue REJECT。"),
+		&cluster_ges_bast_max_retries, 3, 1, 10, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	/* spec-2.17 D17 + D25 + D24 + D26:  deadlock detector GUCs. */
-	DefineCustomIntVariable("cluster.ges_deadlock_check_interval_ms",
-							gettext_noop("Deadlock probe periodic interval (ms)."),
-							gettext_noop("Range [100, 10000].  Default 1000.  LMON tick body 周期扫描。"),
-							&cluster_ges_deadlock_check_interval_ms, 1000, 100, 10000, PGC_USERSET,
-							GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("cluster.ges_deadlock_chunk_timeout_ms",
-							gettext_noop("Deadlock probe chunked reassembly timeout (ms)."),
-							gettext_noop("Range [500, 30000].  Default 2000.  超时 drop entire probe。"),
-							&cluster_ges_deadlock_chunk_timeout_ms, 2000, 500, 30000, PGC_USERSET,
-							GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("cluster.ges_deadlock_max_edges",
-							gettext_noop("Deadlock graph max edges per probe."),
-							gettext_noop("Range [64, 65536].  Default 1024.  Hard cap protects LMON。"),
-							&cluster_ges_deadlock_max_edges, 1024, 64, 65536, PGC_USERSET, 0, NULL,
-							NULL, NULL);
-	DefineCustomIntVariable("cluster.ges_deadlock_max_vertices",
-							gettext_noop("Deadlock graph max vertices per probe."),
-							gettext_noop("Range [16, 16384].  Default 256."),
-							&cluster_ges_deadlock_max_vertices, 256, 16, 16384, PGC_USERSET, 0, NULL,
-							NULL, NULL);
-	DefineCustomIntVariable("cluster.ges_deadlock_max_in_flight_probes",
-							gettext_noop("Max concurrent in-flight deadlock probes per coordinator."),
-							gettext_noop("Range [1, 32].  Default 4.  Back-pressure防 probe storm。"),
-							&cluster_ges_deadlock_max_in_flight_probes, 4, 1, 32, PGC_USERSET, 0,
-							NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_deadlock_check_interval_ms",
+		gettext_noop("Deadlock probe periodic interval (ms)."),
+		gettext_noop("Range [100, 10000].  Default 1000.  LMON tick body 周期扫描。"),
+		&cluster_ges_deadlock_check_interval_ms, 1000, 100, 10000, PGC_SIGHUP, GUC_UNIT_MS, NULL,
+		NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_deadlock_chunk_timeout_ms",
+		gettext_noop("Deadlock probe chunked reassembly timeout (ms)."),
+		gettext_noop("Range [500, 30000].  Default 2000.  超时 drop entire probe。"),
+		&cluster_ges_deadlock_chunk_timeout_ms, 2000, 500, 30000, PGC_SIGHUP, GUC_UNIT_MS, NULL,
+		NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_deadlock_max_edges", gettext_noop("Deadlock graph max edges per probe."),
+		gettext_noop("Range [64, 65536].  Default 1024.  Hard cap protects LMON。"),
+		&cluster_ges_deadlock_max_edges, 1024, 64, 65536, PGC_SIGHUP, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_deadlock_max_vertices", gettext_noop("Deadlock graph max vertices per probe."),
+		gettext_noop("Range [16, 16384].  Default 256."), &cluster_ges_deadlock_max_vertices, 256,
+		16, 16384, PGC_SIGHUP, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_deadlock_max_in_flight_probes",
+		gettext_noop("Max concurrent in-flight deadlock probes per coordinator."),
+		gettext_noop("Range [1, 32].  Default 4.  Back-pressure防 probe storm。"),
+		&cluster_ges_deadlock_max_in_flight_probes, 4, 1, 32, PGC_SIGHUP, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("cluster.ges_deadlock_tick_budget_us",
 							gettext_noop("Max time(us)budget for deadlock work per LMON tick."),
 							gettext_noop("Range [500, 50000].  Default 5000(5ms).  超 budget → "
 										 "drop newest probe + degrade mode让其他子系统跑。"),
-							&cluster_ges_deadlock_tick_budget_us, 5000, 500, 50000, PGC_USERSET, 0,
+							&cluster_ges_deadlock_tick_budget_us, 5000, 500, 50000, PGC_SIGHUP, 0,
 							NULL, NULL, NULL);
 
 	DefineCustomIntVariable("cluster.pcm_grd_max_entries",

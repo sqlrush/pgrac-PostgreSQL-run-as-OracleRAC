@@ -204,10 +204,11 @@ extern uint64 cluster_grd_deadlock_chunk_oo_buffer_overflow_count(void);
 /* spec-2.17 D21 — cleanup_on_backend_exit(I65 — CANCEL/SIGTERM/
  * on_proc_exit/self-abort;NOT BAST timeout). */
 extern void cluster_grd_cleanup_on_backend_exit(int procno);
+extern void cluster_grd_check_pending_interrupts(void);
 
 /* spec-2.17 D8 + D12 — BAST handler + 6 counter helpers(skeleton phase). */
-extern void cluster_grd_bast_handler(void);				/* ProcessInterrupts hook */
-extern void cluster_grd_cancel_handler(void);			/* ProcessInterrupts hook */
+extern void cluster_grd_bast_handler(void);	  /* ProcessInterrupts hook */
+extern void cluster_grd_cancel_handler(void); /* ProcessInterrupts hook */
 extern void cluster_grd_inc_bast_sent(void);
 extern void cluster_grd_inc_bast_received(void);
 extern void cluster_grd_inc_bast_ack(void);

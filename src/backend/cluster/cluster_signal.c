@@ -63,6 +63,8 @@
  *	Stage 0.15 has no consumers; readers land in Stage 2.X.
  * ============================================================ */
 volatile sig_atomic_t cluster_reconfig_start_pending = false;
+volatile sig_atomic_t cluster_ges_bast_pending = false;
+volatile sig_atomic_t cluster_ges_cancel_pending = false;
 
 
 /* ============================================================
@@ -147,5 +149,30 @@ cluster_handle_thaw_writes_interrupt(void)
 
 	/* Per Invariant I2:  DO NOT clear ClusterFenceFreezePending. */
 
+	SetLatch(MyLatch);
+}
+
+
+/*
+ * cluster_handle_ges_bast_interrupt / cluster_handle_ges_cancel_interrupt
+ *
+ * spec-2.17: BAST/CANCEL use the same two-phase pattern as freeze and
+ * reconfig.  Signal context only marks a pending flag and wakes the backend;
+ * cluster_grd_check_pending_interrupts() performs the real GRD work from
+ * ProcessInterrupts.
+ */
+void
+cluster_handle_ges_bast_interrupt(void)
+{
+	cluster_ges_bast_pending = true;
+	InterruptPending = true;
+	SetLatch(MyLatch);
+}
+
+void
+cluster_handle_ges_cancel_interrupt(void)
+{
+	cluster_ges_cancel_pending = true;
+	InterruptPending = true;
 	SetLatch(MyLatch);
 }

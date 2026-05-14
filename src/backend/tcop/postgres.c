@@ -81,6 +81,7 @@
 
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_fence.h" /* spec-2.28 D4 cluster_fence_check_interrupts */
+#include "cluster/cluster_grd.h"   /* spec-2.17 BAST/CANCEL pending dispatch */
 #include "cluster/cluster_reconfig.h" /* spec-2.29 D4 cluster_reconfig_check_pending_in_proc_interrupts */
 #endif
 
@@ -3076,6 +3077,15 @@ ProcessInterrupts(void)
 	 *	case where epoch advanced but quorum did not collapse.
 	 */
 	cluster_reconfig_check_pending_in_proc_interrupts();
+
+	/*
+	 * PGRAC: spec-2.17 BAST/CANCEL dispatch.
+	 *
+	 * ProcSignal handlers only set sig_atomic_t pending flags; real GRD
+	 * processing must run from this normal backend context, after the PG
+	 * ProcessInterrupts critical-section guard has passed.
+	 */
+	cluster_grd_check_pending_interrupts();
 #endif
 
 	if (CheckClientConnectionPending) {
