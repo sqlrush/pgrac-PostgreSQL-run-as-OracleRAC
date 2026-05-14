@@ -35,13 +35,13 @@
 #include "utils/rel.h"
 
 #ifdef USE_PGRAC_CLUSTER
-#include "cluster/cluster_diag.h"  /* DiagMain (stage 1.13 Sprint A) */
-#include "cluster/cluster_lck.h"   /* LckMain (stage 1.12 Sprint A) */
-#include "cluster/cluster_lmon.h"  /* LmonMain (stage 1.11 Sprint A) */
+#include "cluster/cluster_diag.h"	/* DiagMain (stage 1.13 Sprint A) */
+#include "cluster/cluster_lck.h"	/* LckMain (stage 1.12 Sprint A) */
+#include "cluster/cluster_lmon.h"	/* LmonMain (stage 1.11 Sprint A) */
 #include "cluster/cluster_cssd.h"	/* CssdMain (stage 2.5 Sprint A) */
 #include "cluster/cluster_qvotec.h" /* ClusterQvotecMain (spec-2.6 Sprint A Step 3 D7) */
 #include "cluster/cluster_lms.h"	/* LmsMain (spec-2.18 Sprint A Step 1) */
-#include "cluster/cluster_stats.h" /* ClusterStatsMain (stage 1.14 Sprint A) */
+#include "cluster/cluster_stats.h"	/* ClusterStatsMain (stage 1.14 Sprint A) */
 #endif
 
 
@@ -156,7 +156,18 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	 * This will need rethinking if we ever want more than one of a particular
 	 * auxiliary process type.
 	 */
-	ProcSignalInit(MaxBackends + MyAuxProcType + 1);
+	/*
+	 * PGRAC: spec-2.18 Sprint A LMS skeleton does not consume PG ProcSignal
+	 * reasons yet.  Registering it in ProcSignal makes proc_exit() run
+	 * CleanupProcSignalState(), whose pss_barrierCV broadcast can spin during
+	 * fast shutdown on the current LMS no-work skeleton.  Keep LMS on the
+	 * ordinary aux-process PGPROC/latch path, but leave ProcSignal opt-in to
+	 * the later production spec that wires real BAST/CANCEL SIGUSR1 handling.
+	 */
+#ifdef USE_PGRAC_CLUSTER
+	if (MyAuxProcType != LmsProcess)
+#endif
+		ProcSignalInit(MaxBackends + MyAuxProcType + 1);
 
 	/*
 	 * Auxiliary processes don't run transactions, but they may need a
@@ -175,8 +186,7 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	 * minimal handlers before publishing backend status so fast shutdown
 	 * cannot lose SIGTERM in the pgstat-visible / pre-LmsMain window.
 	 */
-	if (MyAuxProcType == LmsProcess)
-	{
+	if (MyAuxProcType == LmsProcess) {
 		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 		pqsignal(SIGINT, SignalHandlerForShutdownRequest);
 		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);

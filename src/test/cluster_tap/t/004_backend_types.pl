@@ -88,24 +88,23 @@ is($unknown_count, '0',
 # process actually spawned by postmaster.  Spec-1.12 Sprint A: LCK
 # aux process is the second.  Spec-1.13 Sprint A: DIAG aux process
 # is the third.  Spec-1.14 Sprint A: Cluster Stats aux process is
-# the fourth.  Spec-2.18 Sprint A Step 1-6 (skeleton):  the LMS
-# AuxProcType / BackendType / shmem region / lwlock tranche /
-# NUM_AUXILIARY_PROCS bump are all wired but the auto-spawn is
-# deferred to the Hardening round (LMS exit/recycle path infinite-
-# loops in CleanupProcSignalState).  Other types remain deferred
-# to Stage 2-6.  'lms' is therefore listed in the "not visible yet"
-# bucket below;  it will move out once the LMS spawn path is safe.
+# the fourth.  Spec-2.18 Sprint A: LMS aux process is the seventh
+# cluster aux process and is now spawned by the PM_RUN ServerLoop
+# respawn path.  Other types (heartbeat / interconnect listener / etc)
+# remain deferred to Stage 2-6.  Excluded 'lmon', 'lck', 'diag',
+# 'cluster stats', and 'lms' from the "no pgrac process visible" assertion
+# accordingly.
 my $pgrac_visible = $node->safe_psql(
 	'postgres',
 	q{SELECT count(*) FROM pg_stat_activity
 	   WHERE backend_type IN (
 	       'heartbeat', 'interconnect listener',
-	       'lmd', 'lms', 'lms worker',
+	       'lmd', 'lms worker',
 	       'managed recovery process', 'recovery coordinator',
 	       'recovery worker', 'sinval broadcaster',
 	       'tt gc', 'undo cleaner')});
 is($pgrac_visible, '0',
-	'no pgrac process descriptor visible at stage 0.10 except LMON (1.11) + LCK (1.12) + DIAG (1.13) + Cluster Stats (1.14) Sprint A (LMS Hardening; others deferred to Stage 2-6)');
+	'no pgrac process descriptor visible at stage 0.10 except LMON (1.11) + LCK (1.12) + DIAG (1.13) + Cluster Stats (1.14) + LMS (2.18) Sprint A (others deferred to Stage 2-6)');
 
 # LMON is spawned by postmaster (spec-1.11 Sprint A).  Verify it
 # appears in pg_stat_activity exactly once.
@@ -141,17 +140,13 @@ my $cluster_stats_visible = $node->safe_psql(
 is($cluster_stats_visible, '1',
 	'Cluster Stats aux process visible in pg_stat_activity (spec-1.14 Sprint A)');
 
-# Spec-2.18 Sprint A Step 1-6 skeleton: LMS auto-spawn deferred to the
-# Hardening round (root-cause analysis ongoing for an infinite
-# pss_barrierCV broadcast in CleanupProcSignalState).  Verify that the
-# 'lms' descriptor string is reachable through the switch (any future
-# spawn will surface here), and that exactly zero LMS instances are
-# alive in this skeleton run.
-my $lms_visible = $node->safe_psql(
+# LMS is spawned by postmaster (spec-2.18 Sprint A) from the PM_RUN
+# ServerLoop respawn path.  Poll because PM_RUN becomes observable before
+# the next ServerLoop iteration necessarily starts LMS.
+ok($node->poll_query_until(
 	'postgres',
-	q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'lms'});
-is($lms_visible, '0',
-	'LMS spawn deferred in spec-2.18 Sprint A Step 1-6 skeleton (Hardening round wires the exit/recycle path)');
+	q{SELECT count(*) = 1 FROM pg_stat_activity WHERE backend_type = 'lms'}),
+	'LMS aux process visible in pg_stat_activity (spec-2.18 Sprint A)');
 
 
 $node->stop;
