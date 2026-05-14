@@ -12,7 +12,7 @@
  *	    keep their numeric positions; the 16 pgrac values are appended
  *	    after B_WAL_WRITER (CSSD added in spec-2.5 Sprint A;
  *	    QVOTEC added in spec-2.6 Sprint A Step 3 D7).
- *	  - BACKEND_NUM_TYPES == 30 (14 PG + 16 pgrac).
+ *	  - BACKEND_NUM_TYPES == 31 (14 PG + 17 pgrac;spec-2.18 added B_LMS).
  *	  - The 16 new values are pairwise distinct and dense (no holes).
  *	  - B_UNDO_CLEANER == BACKEND_NUM_TYPES - 1 (last value).
  *
@@ -88,11 +88,12 @@ UT_DEFINE_GLOBALS();
  * ----------
  */
 
-UT_TEST(test_backend_num_types_is_30)
+UT_TEST(test_backend_num_types_is_31)
 {
-	/* 14 PG-native (B_INVALID..B_WAL_WRITER) + 16 pgrac = 30
-	 * (spec-2.5 added B_CSSD; spec-2.6 Sprint A Step 3 added B_QVOTEC) */
-	UT_ASSERT_EQ(BACKEND_NUM_TYPES, 30);
+	/* 14 PG-native (B_INVALID..B_WAL_WRITER) + 17 pgrac = 31
+	 * (spec-2.5 added B_CSSD; spec-2.6 Sprint A Step 3 added B_QVOTEC;
+	 * spec-2.18 Sprint A Step 1 added B_LMS) */
+	UT_ASSERT_EQ(BACKEND_NUM_TYPES, 31);
 }
 
 UT_TEST(test_pgrac_values_appended_after_wal_writer)
@@ -106,6 +107,7 @@ UT_TEST(test_pgrac_values_appended_after_wal_writer)
 	UT_ASSERT(B_LCK > B_WAL_WRITER);
 	UT_ASSERT(B_LMD > B_WAL_WRITER);
 	UT_ASSERT(B_LMON > B_WAL_WRITER);
+	UT_ASSERT(B_LMS > B_WAL_WRITER);
 	UT_ASSERT(B_LMS_WORKER > B_WAL_WRITER);
 	UT_ASSERT(B_MRP > B_WAL_WRITER);
 	UT_ASSERT(B_QVOTEC > B_WAL_WRITER);
@@ -130,8 +132,9 @@ UT_TEST(test_pg_native_values_unchanged)
 UT_TEST(test_pgrac_values_are_dense_and_distinct)
 {
 	/*
-	 * 16 pgrac values must occupy positions 14..29 with no holes
-	 * and no duplicates.  Asserting strict ordering proves both
+	 * 17 pgrac values must occupy positions 14..30 with no holes
+	 * and no duplicates (spec-2.18 added B_LMS between B_LMON and
+	 * B_LMS_WORKER).  Asserting strict ordering proves both
 	 * (alphabetic order matches enum order in §2.2 of spec-0.10).
 	 */
 	UT_ASSERT(B_CLUSTER_STATS < B_CSSD);
@@ -141,7 +144,8 @@ UT_TEST(test_pgrac_values_are_dense_and_distinct)
 	UT_ASSERT(B_INTERCONNECT < B_LCK);
 	UT_ASSERT(B_LCK < B_LMD);
 	UT_ASSERT(B_LMD < B_LMON);
-	UT_ASSERT(B_LMON < B_LMS_WORKER);
+	UT_ASSERT(B_LMON < B_LMS);
+	UT_ASSERT(B_LMS < B_LMS_WORKER);
 	UT_ASSERT(B_LMS_WORKER < B_MRP);
 	UT_ASSERT(B_MRP < B_QVOTEC);
 	UT_ASSERT(B_QVOTEC < B_RECOVERY_COORD);
@@ -165,7 +169,7 @@ int
 main(void)
 {
 	UT_PLAN(5);
-	UT_RUN(test_backend_num_types_is_30);
+	UT_RUN(test_backend_num_types_is_31);
 	UT_RUN(test_pgrac_values_appended_after_wal_writer);
 	UT_RUN(test_pg_native_values_unchanged);
 	UT_RUN(test_pgrac_values_are_dense_and_distinct);
