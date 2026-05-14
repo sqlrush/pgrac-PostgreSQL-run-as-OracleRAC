@@ -123,5 +123,11 @@ extern void cluster_handle_freeze_writes_interrupt(void);
  */
 extern void cluster_handle_thaw_writes_interrupt(void);
 
+/* spec-2.17 Q8 + Q9 — BAST + CANCEL ProcessInterrupts dispatch
+ * (declared via cluster_signal.h to avoid pulling cluster_grd.h into
+ * procsignal.c).  Real handlers live in cluster_grd.c. */
+extern void cluster_grd_bast_handler(void);
+extern void cluster_grd_cancel_handler(void);
+
 
 #endif /* CLUSTER_SIGNAL_H */

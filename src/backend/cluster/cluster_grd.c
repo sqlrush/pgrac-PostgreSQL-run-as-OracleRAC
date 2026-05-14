@@ -38,6 +38,7 @@
 #include "cluster/cluster_guc.h" /* cluster_node_id, cluster_grd_max_entries */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h" /* spec-2.16 D8 newly-dead bitmap diff */
+#include "storage/proc.h"		  /* spec-2.17 D8 — MyProc->cluster_grd_bast_pending */
 #include "common/hashfn.h"		  /* hash_bytes_extended (spec-2.29 同款) */
 #include "miscadmin.h"
 #include "port/atomics.h"
@@ -227,6 +228,14 @@ cluster_grd_shmem_init(void)
 
 		/* spec-2.17 D28b — generation init 从 1(0 reserved sentinel). */
 		pg_atomic_init_u64(&cluster_grd_state->next_generation, 1);
+
+		/* spec-2.17 D12 — 6 BAST counter init 0. */
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_sent_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_received_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_ack_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_retry_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_reject_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->ges_bast_stale_drop_count, 0);
 	}
 
 	/* spec-2.15 v0.4 P1.1:  entry HTAB allocation gated on GUC.  GUC=0
@@ -1217,3 +1226,57 @@ cluster_grd_alloc_generation(void)
 		return 0;
 	return pg_atomic_fetch_add_u64(&cluster_grd_state->next_generation, 1);
 }
+
+
+/* ============================================================
+ * spec-2.17 D8 + D12:  BAST handler + 6 counter helpers.
+ *
+ *   D8 cluster_grd_bast_handler — ProcessInterrupts hook;backend 收到
+ *   PROCSIG_CLUSTER_GES_BAST 后调.  **硬契约(I85 P1.8 v0.6)**:
+ *   仅标 `MyProc->cluster_grd_bast_pending = true` flag;**0 主动 release**;
+ *   naturally 等 canonical LockRelease/LockReleaseAll 自然路径 → LOCALLOCK
+ *   refcount 0 → 7-step state machine release path 补发 GES_RELEASE.
+ *
+ *   D8 cluster_grd_cancel_handler — ProcessInterrupts hook for
+ *   PROCSIG_CLUSTER_GES_CANCEL.  本 step skeleton — 真激活 Step 6.
+ *
+ *   D12 6 BAST nofail counter inc + read helpers.
+ * ============================================================ */
+
+void
+cluster_grd_bast_handler(void)
+{
+	/* spec-2.17 I85 硬契约:仅标 flag;不主动 release / convert.
+	 * naturally 等 LockRelease canonical 路径补发 GES_RELEASE. */
+	if (MyProc != NULL)
+		MyProc->cluster_grd_bast_pending = true;
+	cluster_grd_inc_bast_received();
+}
+
+void
+cluster_grd_cancel_handler(void)
+{
+	/* spec-2.17 Step 4 skeleton — Step 6 真激活(CANCEL semantics:
+	 * abort wait;未 grant → GES_CANCEL_PENDING,已 grant → GES_RELEASE). */
+	/* No-op for now;  Step 6 wires backend cancel path. */
+}
+
+#define DEFINE_BAST_COUNTER(short_name, full_field) \
+	void cluster_grd_inc_##short_name(void) \
+	{ \
+		if (cluster_grd_state != NULL) \
+			pg_atomic_fetch_add_u64(&cluster_grd_state->ges_##full_field, 1); \
+	} \
+	uint64 cluster_grd_##full_field(void) \
+	{ \
+		if (cluster_grd_state == NULL) \
+			return 0; \
+		return pg_atomic_read_u64(&cluster_grd_state->ges_##full_field); \
+	}
+
+DEFINE_BAST_COUNTER(bast_sent, bast_sent_count)
+DEFINE_BAST_COUNTER(bast_received, bast_received_count)
+DEFINE_BAST_COUNTER(bast_ack, bast_ack_count)
+DEFINE_BAST_COUNTER(bast_retry, bast_retry_count)
+DEFINE_BAST_COUNTER(bast_reject, bast_reject_count)
+DEFINE_BAST_COUNTER(bast_stale_drop, bast_stale_drop_count)

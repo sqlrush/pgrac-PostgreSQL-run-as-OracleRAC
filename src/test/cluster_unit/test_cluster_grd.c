@@ -199,6 +199,10 @@ cluster_conf_node_count(void)
 
 int32 cluster_node_id = 0; /* NodeId typedef = int32 (cluster_scn.h:135) */
 
+/* spec-2.17 L104 stub:  MyProc reference for bast_handler.  Tests don't
+ * exercise BAST handler runtime;  unit test only verifies symbol linkage. */
+struct PGPROC *MyProc = NULL;
+
 /* spec-2.16 D8 L104 stubs:  cluster_grd_lmon_tick_dead_sweep depends on
  * cluster_cssd_get_dead_generation + cluster_cssd_get_peer_state.  Mock
  * to default-ALIVE (no sweep triggered). */
