@@ -1210,6 +1210,10 @@ cluster_grd_lmon_tick_dead_sweep(void)
 uint64
 cluster_grd_alloc_generation(void)
 {
-	Assert(cluster_grd_state != NULL);
+	/* Bootstrap-safe:  cluster_grd_state may be NULL in bootstrap mode
+	 * (postmaster shmem not yet initialized).  Return 0 sentinel —
+	 * caller is InitProcess() PGRAC hook which falls through gracefully. */
+	if (cluster_grd_state == NULL)
+		return 0;
 	return pg_atomic_fetch_add_u64(&cluster_grd_state->next_generation, 1);
 }
