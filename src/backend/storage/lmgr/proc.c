@@ -36,6 +36,8 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/xlogutils.h"
+#include "cluster/cluster_grd.h" /* spec-2.17 D28c — cluster_grd_alloc_generation */
+#include "cluster/cluster_guc.h" /* spec-2.17 — cluster_enabled */
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
@@ -461,6 +463,21 @@ InitProcess(void)
 	 */
 	InitLWLockAccess();
 	InitDeadLockChecking();
+
+	/*
+	 * PGRAC MODIFICATIONS by SqlRush <sqlrush@gmail.com>:
+	 *
+	 * What changed: spec-2.17 D28c — allocate cluster GRD target generation
+	 *               (per-backend monotonic from atomic counter;0 reserved
+	 *               sentinel = uninitialized,真值 from 1)。
+	 * Why: 防 stale BAST/CANCEL 误打到复用 procno 的新 backend
+	 *      (cluster_grd 6-tuple identity payload target_generation 验证).
+	 * Spec: spec-2.17-bast-deadlock-caller-side-4node.md DRAFT v0.1 P1.7
+	 */
+	if (cluster_enabled && MyProc != NULL) {
+		MyProc->cluster_grd_generation = cluster_grd_alloc_generation();
+		MyProc->cluster_grd_bast_pending = false;
+	}
 }
 
 /*

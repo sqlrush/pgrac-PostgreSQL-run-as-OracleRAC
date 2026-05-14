@@ -502,6 +502,14 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 53R70    E    ERRCODE_CLUSTER_GES_TIMEOUT                                    cluster_ges_timeout
 53R71    E    ERRCODE_CLUSTER_GES_PENDING_FULL                               cluster_ges_pending_full
 
+# spec-2.17 D29:  cross-node deadlock + pending CANCEL semantics
+# 53R72 fires when cross-node deadlock detector selects this backend as
+# victim (P2.2 deterministic age-based tuple).  53R73 fires when backend
+#退出 WaitOnLock 时 reservation 已 insert 但 holder 未 promote(P1.4 v0.6 —
+# pending vs granted CANCEL 路径独立)。
+53R72    E    ERRCODE_CLUSTER_GES_DEADLOCK                                   cluster_ges_deadlock
+53R73    E    ERRCODE_CLUSTER_GES_CANCEL_PENDING                             cluster_ges_cancel_pending
+
 Section: Class 54 - Program Limit Exceeded
 
 # this is for wired-in limits, not resource exhaustion problems (class borrowed from DB2)

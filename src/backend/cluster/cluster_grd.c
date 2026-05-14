@@ -224,6 +224,9 @@ cluster_grd_shmem_init(void)
 		pg_atomic_init_u64(&cluster_grd_state->ges_inbound_validation_fail_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_deferred_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_dropped_count, 0);
+
+		/* spec-2.17 D28b — generation init 从 1(0 reserved sentinel). */
+		pg_atomic_init_u64(&cluster_grd_state->next_generation, 1);
 	}
 
 	/* spec-2.15 v0.4 P1.1:  entry HTAB allocation gated on GUC.  GUC=0
@@ -1189,4 +1192,24 @@ cluster_grd_lmon_tick_dead_sweep(void)
 	/* Commit AFTER sweep — crash-safe idempotent;  reboot reconstructs. */
 	cluster_grd_last_dead_bitmap = current_dead_bitmap;
 	cluster_grd_last_dead_generation = current_gen;
+}
+
+
+/* ============================================================
+ * spec-2.17 D28b:  cluster_grd_alloc_generation helper.
+ *
+ *   Called from InitProcess() to allocate a per-backend monotonic
+ *   generation number(uint64).  ABA-free via atomic fetch_add.
+ *   0 reserved sentinel(0 = uninitialized).
+ *
+ *   Used by BAST/CANCEL stale signal validation:
+ *     `MyProc->cluster_grd_generation == payload.target_generation`
+ *     防 stale signal 误打到复用 procno 的新 backend.
+ * ============================================================ */
+
+uint64
+cluster_grd_alloc_generation(void)
+{
+	Assert(cluster_grd_state != NULL);
+	return pg_atomic_fetch_add_u64(&cluster_grd_state->next_generation, 1);
 }

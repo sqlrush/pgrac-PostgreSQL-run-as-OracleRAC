@@ -299,6 +299,22 @@ struct PGPROC {
 	PGPROC *lockGroupLeader;	 /* lock group leader, if I'm a member */
 	dlist_head lockGroupMembers; /* list of members, if I'm a leader */
 	dlist_node lockGroupLink;	 /* my member link, if I'm a member */
+
+	/*
+	 * spec-2.17 P1.7 — cluster GRD target generation(防 stale BAST/CANCEL
+	 * 误打到复用 procno 的新 backend).  InitProcess() atomic fetch_add 1
+	 * from ClusterGrdShared.next_generation.  0 reserved sentinel(0 =
+	 * uninitialized;真值从 1 开始).
+	 */
+	uint64 cluster_grd_generation;
+
+	/*
+	 * spec-2.17 Q10 + I85 — BAST advisory flag.  BAST handler 仅标
+	 * (0 主动 release);naturally 等 canonical LockRelease/LockReleaseAll
+	 * 自然路径 → LOCALLOCK refcount 0 → 7-step state machine release
+	 * path 补发 GES_RELEASE.
+	 */
+	bool cluster_grd_bast_pending;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */

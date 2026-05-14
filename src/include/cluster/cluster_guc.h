@@ -203,6 +203,16 @@ extern int cluster_grd_max_entries;
 extern int cluster_ges_request_timeout_ms;
 extern int cluster_ges_effective_timeout_ms(int lock_timeout_ms);
 
+/* spec-2.17 NEW GUCs(v0.6 frozen baseline). */
+extern int cluster_ges_bast_retry_interval_ms;		  /* D11 */
+extern int cluster_ges_bast_max_retries;			  /* D11 */
+extern int cluster_ges_deadlock_check_interval_ms;	  /* D17 */
+extern int cluster_ges_deadlock_chunk_timeout_ms;	  /* D25 */
+extern int cluster_ges_deadlock_max_edges;			  /* D24 */
+extern int cluster_ges_deadlock_max_vertices;		  /* D24 */
+extern int cluster_ges_deadlock_max_in_flight_probes; /* D24 */
+extern int cluster_ges_deadlock_tick_budget_us;		  /* D26 */
+
 
 /* ----------
  * cluster.phase{1..4}_timeout (Stage 1.10, spec-1.10 §2.2)

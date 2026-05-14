@@ -913,6 +913,18 @@ pgstat_get_wait_cluster_ges(WaitEventCluster w)
 	case WAIT_EVENT_GES_DRAIN:
 		event_name = "GesDrain";
 		break;
+	case WAIT_EVENT_GES_BAST_WAIT:
+		event_name = "GesBastWait";
+		break;
+	case WAIT_EVENT_GES_DEADLOCK_PROBE_WAIT:
+		event_name = "GesDeadlockProbeWait";
+		break;
+	case WAIT_EVENT_GES_CANCEL_DRAIN:
+		event_name = "GesCancelDrain";
+		break;
+	case WAIT_EVENT_GES_DEADLOCK_REASSEMBLY_WAIT:
+		event_name = "GesDeadlockReassemblyWait";
+		break;
 	default:
 		break;
 	}

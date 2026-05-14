@@ -254,12 +254,20 @@
 /* spec-2.15 D9 (2026-05-13):  add cluster_get_grd_entries SRF + pg_cluster_grd_entries
  * view + cluster_grd entry HTAB + cluster.grd_max_entries GUC + named tranche
  * ClusterGrdShard.  catversion bump for catalog-aware tooling caches. */
+/* spec-2.17 D30 (2026-05-30):  PGPROC.cluster_grd_generation uint64 +
+ * cluster_grd_bast_pending bool fields(P1.7 防 stale BAST/CANCEL);
+ * GesRequestOpcode 7 全集(NEW BAST=4/BAST_ACK=5/DEADLOCK_PROBE=6/
+ * CANCEL_PENDING=7);PROCSIG_CLUSTER_GES_BAST + GES_CANCEL slot;
+ * 53R72/53R73 SQLSTATE;4 NEW wait events;7 NEW GUCs(BAST retry +
+ * deadlock budget).  catversion bump for catalog tooling. */
+#define CATALOG_VERSION_NO 202605300
+
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId
  * 4-tuple typedef (24B);  cluster_grd 9 NEW counter (4 cap + 5 nofail);
  * cluster_grd_pending + cluster_grd_outbound + cluster_grd_work_queue
  * shmem regions + LWLock tranches;  cluster.ges_request_timeout_ms GUC;
  * 53R70/53R71 SQLSTATE.  catversion bump for catalog tooling. */
-#define CATALOG_VERSION_NO 202605290
+#define CATALOG_VERSION_NO_PRIOR 202605290
 
 #endif

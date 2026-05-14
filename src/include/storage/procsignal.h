@@ -86,6 +86,8 @@ typedef enum
 	PROCSIG_CLUSTER_RECONFIG_START,	/* LMON: cluster reconfig starting */
 	PROCSIG_CLUSTER_FREEZE_WRITES,	/* spec-2.6: qvotec quorum loss → fail-closed */
 	PROCSIG_CLUSTER_THAW_WRITES,	/* spec-2.6: qvotec quorum recover → resume */
+	PROCSIG_CLUSTER_GES_BAST,		/* spec-2.17 Q8: BAST advisory notify */
+	PROCSIG_CLUSTER_GES_CANCEL,		/* spec-2.17 Q9: CANCEL wait/grant */
 #endif
 
 	NUM_PROCSIGNALS				/* Must be last! */

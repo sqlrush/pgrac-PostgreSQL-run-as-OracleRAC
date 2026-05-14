@@ -167,7 +167,15 @@ typedef struct ClusterGrdShared {
 	pg_atomic_uint64 ges_inbound_validation_fail_count; /* v0.4 L1.8 */
 	pg_atomic_uint64 ges_reply_deferred_count;			/* v0.5 P1.1 reply dirty-list */
 	pg_atomic_uint64 ges_reply_dropped_count;			/* v0.6 L1.1 dirty-list full drop */
+
+	/* spec-2.17 D28b — backend startup generation atomic counter.
+	 * InitProcess() atomic fetch_add 1 → MyProc->cluster_grd_generation.
+	 * init 从 1 开始(0 reserved sentinel = uninitialized). */
+	pg_atomic_uint64 next_generation;
 } ClusterGrdShared;
+
+/* spec-2.17 D28b — extern atomic generation alloc helper(InitProcess hook). */
+extern uint64 cluster_grd_alloc_generation(void);
 
 extern Size cluster_grd_shmem_size(void);
 extern void cluster_grd_shmem_init(void);

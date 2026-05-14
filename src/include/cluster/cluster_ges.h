@@ -179,7 +179,12 @@ extern uint64 cluster_ges_reply_defer_count(void);
 typedef enum GesRequestOpcode {
 	GES_REQ_OPCODE_REQUEST = 1,
 	GES_REQ_OPCODE_CONVERT = 2,
-	GES_REQ_OPCODE_RELEASE = 3
+	GES_REQ_OPCODE_RELEASE = 3,
+	/* spec-2.17 NEW 4 opcode (Q5 v0.6) — BAST/CANCEL/DEADLOCK family */
+	GES_REQ_OPCODE_BAST = 4,			/* master → holder advisory notify */
+	GES_REQ_OPCODE_BAST_ACK = 5,		/* holder → master after natural release */
+	GES_REQ_OPCODE_DEADLOCK_PROBE = 6,	/* coordinator → all nodes probe req */
+	GES_REQ_OPCODE_CANCEL_PENDING = 7	/* backend → master cancel pending */
 } GesRequestOpcode;
 
 typedef enum GesReplyOpcode {
