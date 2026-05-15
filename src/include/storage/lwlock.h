@@ -286,6 +286,13 @@ typedef enum BuiltinTrancheIds {
 	 * frequency add/remove during cluster lock acquire/release vs
 	 * low-frequency daemon-state mutations under LMD lwlock). */
 	LWTRANCHE_CLUSTER_LMD_GRAPH,
+	/* PGRAC (spec-2.23 D1): ClusterGesReplyWaitShared lwlock guards the
+	 * cross-node GES reply wait HTAB (5-tuple key: request_id,
+	 * source_node, dest_node, request_opcode, cluster_epoch).  Backends
+	 * insert on send_request_and_wait; reply handler looks up + wakes;
+	 * timeout sweep deletes stale entries.  HC17 invariant — late reply
+	 * after entry deletion is silently dropped + counter++. */
+	LWTRANCHE_CLUSTER_GES_REPLY_WAIT,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

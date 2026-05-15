@@ -238,17 +238,27 @@ StaticAssertDecl(sizeof(GesRequestPayload) == 48, "GesRequestPayload wire ABI 48
 /*
  * GES reply payload (variant on GES_REPLY msg_type=5).
  *
- *   Layout:
- *     [ 0,  4)  opcode          uint32 LE  (GesReplyOpcode)
- *     [ 4,  8)  reject_reason   uint32 LE  (GesRejectReason; 0 for GRANT)
- *     [ 8, 32)  holder_id       24 bytes   (echoes request)
- *     [32, 48)  resid           16 bytes   (echoes request)
+ *   Layout (spec-2.23 D1 / FU-5 ABI bump 48B → 52B):
+ *     [ 0,  4)  opcode            uint32 LE  (GesReplyOpcode)
+ *     [ 4,  8)  reply_for_opcode  uint32 LE  (original GesRequestOpcode)
+ *     [ 8, 12)  reject_reason     uint32 LE  (GesRejectReason; 0 for GRANT)
+ *     [12, 36)  holder_id         24 bytes   (echoes request)
+ *     [36, 52)  resid             16 bytes   (echoes request)
  *
- *   Total: 48 bytes.  Aligned to 8.
+ *   Total: 52 bytes.  Aligned to 4.
+ *
+ *	 PGRAC: spec-2.23 D1 inserts reply_for_opcode after opcode so D1's
+ *	 5-tuple reply wait key (request_id, source_node, dest_node,
+ *	 request_opcode, cluster_epoch) can distinguish REQUEST vs RELEASE
+ *	 replies that share the same request_id slot.  HC17 invariant.
+ *	 Cross-node wire ABI break — rolling upgrade already prohibited at
+ *	 stage 2.x, so the break does not introduce new constraint.
+ *	 catversion 202605340 (spec-2.23 D18) covers this bump.
  */
 typedef struct GesReplyPayload {
-	uint32 opcode;		  /* GesReplyOpcode */
-	uint32 reject_reason; /* GesRejectReason; 0 if GRANT */
+	uint32 opcode;			 /* GesReplyOpcode */
+	uint32 reply_for_opcode; /* original GesRequestOpcode (spec-2.23 D1 / FU-5) */
+	uint32 reject_reason;	 /* GesRejectReason; 0 if GRANT */
 	/* 24-byte ClusterGrdHolderId inlined (mirror GesRequestPayload). */
 	uint32 holder_node_id;
 	uint32 holder_procno;
@@ -259,7 +269,8 @@ typedef struct GesReplyPayload {
 	uint32 resid[4];
 } GesReplyPayload;
 
-StaticAssertDecl(sizeof(GesReplyPayload) == 48, "GesReplyPayload wire ABI 48-byte lock");
+StaticAssertDecl(sizeof(GesReplyPayload) == 52,
+				 "GesReplyPayload wire ABI 52-byte lock (spec-2.23 D1 / FU-5 bump from 48B)");
 
 
 /*

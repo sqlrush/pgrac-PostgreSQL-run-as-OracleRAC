@@ -216,6 +216,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"ClusterLmd",
 	/* PGRAC LWTRANCHE_CLUSTER_LMD_GRAPH: spec-2.22 D5 */
 	"ClusterLmdGraph",
+	/* PGRAC LWTRANCHE_CLUSTER_GES_REPLY_WAIT: spec-2.23 D1 */
+	"ClusterGesReplyWait",
 #endif
 };
 

@@ -296,6 +296,11 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 		cluster_grd_inc_ges_work_queue_full();
 		memset(&reject, 0, sizeof(reject));
 		reject.opcode = GES_REPLY_OPCODE_REJECT;
+		/* PGRAC: spec-2.23 D1 / HC17 — echo original request opcode so the
+		 * sender's reply wait table 5-tuple key matches.  Without this echo
+		 * REQUEST and RELEASE replies sharing the same request_id slot would
+		 * collide in the wait table. */
+		reject.reply_for_opcode = req->opcode;
 		reject.reject_reason = GES_REJECT_REASON_WORK_QUEUE_FULL;
 		reject.holder_node_id = req->holder_node_id;
 		reject.holder_procno = req->holder_procno;
@@ -383,6 +388,9 @@ cluster_ges_lmon_drain_work_queue(void)
 		 */
 		memset(&reply, 0, sizeof(reply));
 		reply.opcode = GES_REPLY_OPCODE_REJECT;
+		/* PGRAC: spec-2.23 D1 / HC17 — echo original request opcode for
+		 * sender's reply wait table 5-tuple key match. */
+		reply.reply_for_opcode = req->opcode;
 		reply.reject_reason = GES_REJECT_REASON_LOCK_CONFLICT;
 		reply.holder_node_id = req->holder_node_id;
 		reply.holder_procno = req->holder_procno;
