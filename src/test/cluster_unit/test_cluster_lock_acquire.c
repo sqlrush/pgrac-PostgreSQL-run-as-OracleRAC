@@ -77,6 +77,14 @@ void
 elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ...)
 {}
 
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
+}
+
 /*
  * spec-2.20 D13 stubs — control LMS/LMD ready state for HC1 test paths.
  *
