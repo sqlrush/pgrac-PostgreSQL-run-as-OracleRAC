@@ -64,4 +64,78 @@ is($node_off->safe_psql(
 
 $node_off->stop;
 
+
+# ============================================================
+# spec-2.21 D11:  L4-L8 cluster gate regression.
+# ============================================================
+
+my $node_gate = PgracClusterNode->new('lms_gate');
+$node_gate->init;
+$node_gate->append_conf('postgresql.conf', "cluster.node_id = 0\n");
+$node_gate->start;
+
+# L4: pg_advisory_xact_lock — xact-level advisory enters cluster gate
+#     (single-node MVP path: LMS handler grants immediately).
+my $xact_advisory = $node_gate->safe_psql('postgres', q{
+	BEGIN;
+	SELECT pg_advisory_xact_lock(42);
+	COMMIT;
+	SELECT 'L4_ok';
+});
+is($xact_advisory, 'L4_ok',
+   'L4 cluster.lms_enabled=on + pg_advisory_xact_lock(42) acquires cluster path then releases');
+
+# L5: reentrant xact advisory — same xid same key second acquire goes through
+#     LOCALLOCK reentrant path (HC10), does NOT re-enter 7-step.
+my $reentrant = $node_gate->safe_psql('postgres', q{
+	BEGIN;
+	SELECT pg_advisory_xact_lock(43);
+	SELECT pg_advisory_xact_lock(43);
+	SELECT pg_advisory_xact_lock(43);
+	COMMIT;
+	SELECT 'L5_ok';
+});
+is($reentrant, 'L5_ok',
+   'L5 reentrant pg_advisory_xact_lock — LOCALLOCK reentrant path (HC10)');
+
+# L6: pg_advisory_lock — session-level stays native (HC11).
+my $session_advisory = $node_gate->safe_psql('postgres', q{
+	SELECT pg_advisory_lock(44);
+	SELECT pg_advisory_unlock(44);
+	SELECT 'L6_ok';
+});
+is($session_advisory, 'L6_ok',
+   'L6 session-level pg_advisory_lock — HC11 session advisory stays native');
+
+# L7: non-advisory lock (SELECT FOR UPDATE on relation) — gate predicate
+#     filters out non-ADVISORY locktag types.
+$node_gate->safe_psql('postgres',
+	q{CREATE TABLE l7_test(id int PRIMARY KEY, v int); INSERT INTO l7_test VALUES(1, 10);});
+my $non_advisory = $node_gate->safe_psql('postgres', q{
+	BEGIN;
+	SELECT * FROM l7_test WHERE id = 1 FOR UPDATE;
+	COMMIT;
+	SELECT 'L7_ok';
+});
+is($non_advisory, 'L7_ok',
+   'L7 SELECT FOR UPDATE (non-advisory) — gate predicate skips cluster path');
+
+# L8: cluster.lock_acquire_cluster_path emergency bypass — when set false
+#     (PGC_POSTMASTER), entire gate is bypassed.
+$node_gate->stop;
+$node_gate->append_conf('postgresql.conf',
+	"cluster.lock_acquire_cluster_path = off\n");
+$node_gate->start;
+
+my $bypass = $node_gate->safe_psql('postgres', q{
+	BEGIN;
+	SELECT pg_advisory_xact_lock(45);
+	COMMIT;
+	SELECT 'L8_ok';
+});
+is($bypass, 'L8_ok',
+   'L8 cluster.lock_acquire_cluster_path=off emergency bypass — gate skipped');
+
+$node_gate->stop;
+
 done_testing();
