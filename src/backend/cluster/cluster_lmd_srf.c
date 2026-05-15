@@ -160,8 +160,12 @@ cluster_get_lmd_state(PG_FUNCTION_ARGS)
  *	Returns boolean: true if edge added, false if cap rejected (HC12).
  *	Superuser-only;LOG audit + inject_call_count bump on every call.
  */
-PG_FUNCTION_INFO_V1(pg_cluster_lmd_inject_wait_edge);
-
+/*
+ * NB: PG_FUNCTION_INFO_V1(pg_cluster_lmd_inject_wait_edge) is emitted in
+ * cluster_ic.c (always-linked file), so pg_proc.dat resolves the symbol
+ * in both --enable-cluster and --disable-cluster builds (mirror
+ * cluster_get_lmd_state pattern).
+ */
 Datum
 pg_cluster_lmd_inject_wait_edge(PG_FUNCTION_ARGS)
 {

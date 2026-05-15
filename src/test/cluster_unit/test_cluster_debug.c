@@ -1274,6 +1274,53 @@ cluster_lmd_state_to_string(int s pg_attribute_unused())
 	return "(stub)";
 }
 
+/* spec-2.22 D12 — LMD Tarjan + graph counter stubs (9 NEW). */
+uint64
+cluster_lmd_wait_edge_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_wait_edge_full_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_graph_generation_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_tarjan_scan_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cycle_detected_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_victim_cancel_sent_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_revalidate_fail_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cross_node_victim_pending_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_inject_call_count_get(void)
+{
+	return 0;
+}
+
 UT_TEST(test_debug_links_against_pgstat_module)
 {
 	UT_ASSERT_NOT_NULL((void *)cluster_pgstat_get_count);
