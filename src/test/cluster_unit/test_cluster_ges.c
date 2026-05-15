@@ -147,6 +147,31 @@ elog_finish(int e pg_attribute_unused(), const char *f pg_attribute_unused(), ..
 {}
 
 /*
+ * spec-2.22 D6 — cluster_ges.c handler calls pgstat_report_wait_start/_end
+ * for WAIT_EVENT_CLUSTER_LMD_PROBE.  The inline helpers reference
+ * my_wait_event_info which lives in pgstat backend code.  Provide a
+ * file-static fake so the standalone link resolves cleanly.
+ */
+#include "pgstat.h"
+static uint32 ut_wait_event_info_storage = 0;
+uint32 *my_wait_event_info = &ut_wait_event_info_storage;
+
+/* cluster_lmd_graph_snapshot_copy stub — cluster_ges DEADLOCK_PROBE
+ * handler calls into LMD graph;  test_cluster_ges binary links
+ * cluster_ges.o standalone (no cluster_lmd_graph.o), so stub it. */
+#include "cluster/cluster_lmd.h"
+
+int
+cluster_lmd_graph_snapshot_copy(ClusterLmdWaitEdge *out_buf pg_attribute_unused(),
+								int max_edges pg_attribute_unused(), uint64 *out_gen_at_snapshot)
+{
+	if (out_gen_at_snapshot)
+		*out_gen_at_snapshot = 0;
+	return 0;
+}
+/* cluster_lmd_is_ready stub already provided below (line ~275). */
+
+/*
  * spec-2.13 Q9 (L105 inherit):  ShmemInitStruct stub uses union
  * force-align to guarantee 8-byte alignment for pg_atomic_uint64
  * fields inside ClusterGesSharedState.
