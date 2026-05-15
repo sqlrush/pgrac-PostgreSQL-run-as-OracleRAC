@@ -1285,6 +1285,15 @@ pgstat_get_wait_cluster_bgproc(WaitEventCluster w)
 	case WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK:
 		event_name = "BgProcLmonReconfigTick";
 		break;
+	case WAIT_EVENT_CLUSTER_LMD_STARTUP:
+		event_name = "ClusterLmdStartup";
+		break;
+	case WAIT_EVENT_CLUSTER_LMD_SCAN:
+		event_name = "ClusterLmdScan";
+		break;
+	case WAIT_EVENT_CLUSTER_LMD_IDLE:
+		event_name = "ClusterLmdIdle";
+		break;
 	default:
 		break;
 	}

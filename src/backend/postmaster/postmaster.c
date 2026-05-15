@@ -178,6 +178,7 @@
  */
 #include "cluster/cluster_fence.h" /* cluster_fence_postmaster_check (spec-2.28 D6) */
 #include "cluster/cluster_guc.h"   /* cluster_enabled (spec-1.11 Sprint B) */
+#include "cluster/cluster_lmd.h"   /* cluster_lmd_mark_child_exit (spec-2.19 D12 hardening) */
 #include "cluster/cluster_startup_phase.h"
 #endif
 
@@ -1940,8 +1941,7 @@ ServerLoop(void)
 		 * 4-node deadlock-detection legacy path remains active as the
 		 *唯一 fallback (HC1 / §1.4.6 (a)).
 		 */
-		if (cluster_enabled && cluster_lmd_enabled && LmdPID == 0
-			&& pmState == PM_RUN)
+		if (cluster_enabled && cluster_lmd_enabled && LmdPID == 0 && pmState == PM_RUN)
 			LmdPID = StartLmd();
 
 		/*
@@ -3365,6 +3365,7 @@ process_pm_child_exit(void)
 		}
 		/* PGRAC (spec-2.19 Sprint A Step 1): LMD reaper. */
 		if (pid == LmdPID) {
+			cluster_lmd_mark_child_exit();
 			LmdPID = 0;
 			if (!EXIT_STATUS_0(exitstatus))
 				HandleChildCrash(pid, exitstatus, _("LMD process"));

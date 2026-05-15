@@ -50,8 +50,7 @@
  *	Anchored as a compile-time constant so unit tests can verify the
  *	internal table in cluster_views.c stays in sync with the enum.
  */
-#define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
-	66 /* spec-2.29 D9: +1 BgProcLmonReconfigTick (was 65 spec-2.28) */
+#define CLUSTER_WAIT_EVENTS_COUNT 69 /* spec-2.19 D12: +3 LMD lifecycle events (was 66 spec-2.29) */
 
 
 /*

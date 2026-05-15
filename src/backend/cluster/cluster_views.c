@@ -192,6 +192,10 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK,
 	/* spec-2.29 D9: reconfig coordinator LMON tick wait event. */
 	WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK,
+	/* spec-2.19 D12: LMD lifecycle / scan / idle wait events. */
+	WAIT_EVENT_CLUSTER_LMD_STARTUP,
+	WAIT_EVENT_CLUSTER_LMD_SCAN,
+	WAIT_EVENT_CLUSTER_LMD_IDLE,
 };
 
 /* Compile-time assertion: array length must match the documented count. */

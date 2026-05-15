@@ -9,9 +9,10 @@
  *	  the lifecycle skeleton + deadlock-detection ownership migration
  *	  from spec-2.17 caller-side 4-node placeholder to LMD — single
  *	  ownership path with fail-closed semantics (no runtime caller-side
- *	  fallback;HC1).  The LMD main loop wakes on producer-side
- *	  ConditionVariable broadcast (event-driven) and increments
- *	  skeleton counters only.  Real Tarjan cycle detection,
+ *	  fallback;HC1).  The LMD producer API broadcasts its
+ *	  ConditionVariable;the no-graph skeleton loop observes producer
+ *	  deltas on a bounded latch tick and increments skeleton counters
+ *	  only.  Real Tarjan cycle detection,
  *	  wait-for graph maintenance, victim selection, cancellation are NOT
  *	  in this spec — they all land in spec-2.20+ (7-step state machine
  *	  activation wire callsite) and spec-5.9 (victim + cancellation).
@@ -21,7 +22,7 @@
  *	    - WAIT_EVENT_CLUSTER_LMD_STARTUP / SCAN / IDLE wait events (D12)
  *	    - cluster.lmd_enabled GUC PGC_POSTMASTER (D12)
  *	    - pg_cluster_lmd view 4-state分流 + SRF cluster_get_lmd_state() (D11)
- *	    - dump_cluster_lmd 6 emit_row 'lmd' category (D10)
+ *	    - dump_cluster_lmd 7 emit_row 'lmd' category (D10)
  *	    - cluster_unit T-lmd-1..8 (D13)
  *	    - cluster_tap 106_lmd_smoke.pl + L122 alphabetic verify (D14)
  *
@@ -43,15 +44,16 @@
  *	        (d) CRASHED — process 不存在但 enabled=on → 53R81
  *
  *	  HC3 (spec-2.19 §1.4.4 — L121 spec-2.18 v0.3 L2.8 inherit):
- *	      ConditionVariable 4 must-have 契约.
+ *	      ConditionVariable producer-side wake 契约.
  *	    (a) cluster_lmd_submit_wait_edge() 递增 submission_count 后
  *	        立即 ConditionVariableBroadcast(&cv)(不持 LMD LWLock;不得
  *	        处在 signal handler / critical section)
- *	    (b) LMD main loop 必用 submission_count delta while-loop 防
- *	        spurious wakeup;不允许 single WaitOnConditionVariable
- *	    (c) 退出路径必 ConditionVariableCancelSleep()(LMD shutdown /
- *	        SIGTERM / FATAL ereport 全 path)
- *	    (d) 不在 async-signal-unsafe critical path 做 ConditionVariable
+ *	    (b) LMD skeleton main loop 必用 submission_count delta 防
+ *	        spurious wakeup,但当前不注册 CV sleeper;只走 bounded latch
+ *	        idle path.  Production graph-maintenance spec 若改成真实
+ *	        CV consumer,必须同 spec 补 while-loop sleep +
+ *	        ConditionVariableCancelSleep shutdown path.
+ *	    (c) 不在 async-signal-unsafe critical path 做 ConditionVariable
  *	        操作(palloc / elog / LWLock-held)
  *
  *	  HC4 (spec-2.19 §1.4.5 + v0.3 codex P1.5):single ownership exact
@@ -110,10 +112,9 @@
  *	  builds.
  *	  Spec: spec-2.19-lmd-daemon-deadlock-ownership-migration.md
  *	  (FROZEN v0.3 2026-05-14 user approve, Sprint A scope).
- *	  Anchor: cluster_lms.h (spec-2.18) for skeleton pattern;LMD substitutes
- *	  WaitLatch idle with ConditionVariable while-loop wait (HC3 (b))
- *	  because LMD has a real producer (submit_wait_edge from spec-2.17
- *	  caller-side placeholder) and needs cross-process wake.
+ *	  Anchor: cluster_lms.h (spec-2.18) for skeleton pattern;LMD adds
+ *	  producer-side ConditionVariable broadcast but keeps the aux-process
+ *	  latch idle loop until spec-2.20+ wires the real graph consumer.
  *
  *-------------------------------------------------------------------------
  */
@@ -145,14 +146,13 @@
  *	**禁止 `state >= LMD_READY` 数值比较** — DRAINING / STOPPED /
  *	DISABLED 全部不应 false-positive 匹配 READY.
  */
-typedef enum ClusterLmdState
-{
-	CLUSTER_LMD_NOT_STARTED = 0,	/* postmaster has not yet spawned LMD */
-	CLUSTER_LMD_STARTING = 1,		/* StartChildProcess returned pid; LMD main not yet active */
-	CLUSTER_LMD_READY = 2,			/* LMD main loop active; owns deadlock detection */
-	CLUSTER_LMD_DRAINING = 3,		/* shutdown_requested set; draining wake events */
-	CLUSTER_LMD_STOPPED = 4,		/* LMD proc_exit complete; postmaster reaper to harvest */
-	CLUSTER_LMD_DISABLED = 5		/* cluster.lmd_enabled=off startup-only; LMD process 不 fork */
+typedef enum ClusterLmdState {
+	CLUSTER_LMD_NOT_STARTED = 0, /* postmaster has not yet spawned LMD */
+	CLUSTER_LMD_STARTING = 1,	 /* StartChildProcess returned pid; LMD main not yet active */
+	CLUSTER_LMD_READY = 2,		 /* LMD main loop active; owns deadlock detection */
+	CLUSTER_LMD_DRAINING = 3,	 /* shutdown_requested set; draining wake events */
+	CLUSTER_LMD_STOPPED = 4,	 /* LMD proc_exit complete; postmaster reaper to harvest */
+	CLUSTER_LMD_DISABLED = 5	 /* cluster.lmd_enabled=off startup-only; LMD process 不 fork */
 } ClusterLmdState;
 
 #define CLUSTER_LMD_STATE_LAST CLUSTER_LMD_DISABLED
@@ -188,17 +188,16 @@ typedef enum ClusterLmdState
  *	  - lmd_idle_count               : idle timeouts (no new submission seen)
  *	  - lmd_error_count              : ereport-class errors (LMD-owned counter)
  */
-typedef struct ClusterLmdSharedState
-{
-	LWLock		lwlock;				/* LWTRANCHE_CLUSTER_LMD guards non-atomic fields */
-	pg_atomic_uint32 lmd_state;		/* ClusterLmdState atomic (HC4 single ownership field) */
-	pid_t		pid;				/* set by LMD in STARTING */
-	TimestampTz spawned_at;			/* set by LMD in STARTING */
-	TimestampTz ready_at;			/* set by LMD in READY */
-	TimestampTz stopped_at;			/* set by LMD in STOPPED */
-	bool		shutdown_requested; /* postmaster sets; LMD main loop polls + exits */
+typedef struct ClusterLmdSharedState {
+	LWLock lwlock;				/* LWTRANCHE_CLUSTER_LMD guards non-atomic fields */
+	pg_atomic_uint32 lmd_state; /* ClusterLmdState atomic (HC4 single ownership field) */
+	pid_t pid;					/* set by LMD in STARTING */
+	TimestampTz spawned_at;		/* set by LMD in STARTING */
+	TimestampTz ready_at;		/* set by LMD in READY */
+	TimestampTz stopped_at;		/* set by LMD in STOPPED */
+	bool shutdown_requested;	/* postmaster sets; LMD main loop polls + exits */
 
-	/* HC3 ConditionVariable wake substrate (skeleton: producer wakes, consumer waits) */
+	/* HC3 producer-side ConditionVariable wake substrate. */
 	ConditionVariable cv;
 
 	/*
@@ -226,7 +225,7 @@ typedef struct ClusterLmdSharedState
  *	spawn failure / lmd_enabled=off (DISABLED state at startup).
  *	Asserts !IsUnderPostmaster.
  */
-extern int	cluster_lmd_start(void);
+extern int cluster_lmd_start(void);
 
 /*
  * Postmaster sync wait for LMD readiness (bounded polling).
@@ -241,6 +240,13 @@ extern bool cluster_lmd_wait_for_ready(int timeout_ms);
  * Postmaster shutdown signal.  Idempotent.  Asserts !IsUnderPostmaster.
  */
 extern void cluster_lmd_request_shutdown(void);
+
+/*
+ * Postmaster reaper notification.  Non-blocking / LWLock-free by design:
+ * the reaper must be able to clear a stale READY state even if the LMD
+ * child died while holding its own LWLock.
+ */
+extern void cluster_lmd_mark_child_exit(void);
 
 /*
  * LMD main entry — invoked from auxprocess.c dispatch.  Asserts
@@ -303,4 +309,4 @@ extern void cluster_lmd_shmem_init(void);
 extern void cluster_lmd_shmem_register(void);
 extern ClusterLmdSharedState *cluster_lmd_shared_state(void);
 
-#endif							/* CLUSTER_LMD_H */
+#endif /* CLUSTER_LMD_H */

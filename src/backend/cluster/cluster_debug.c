@@ -903,12 +903,11 @@ dump_lmd(ReturnSetInfo *rsinfo)
 
 	emit_row(rsinfo, "lmd", "lmd_state", cluster_lmd_state_to_string(s));
 	emit_row(rsinfo, "lmd", "lmd_started_count", fmt_int64((int64)cluster_lmd_get_started_count()));
+	emit_row(rsinfo, "lmd", "lmd_ready_at_us", fmt_int64((int64)cluster_lmd_get_ready_at()));
 	emit_row(rsinfo, "lmd", "lmd_edge_submission_count",
 			 fmt_int64((int64)cluster_lmd_get_edge_submission_count()));
-	emit_row(rsinfo, "lmd", "lmd_wake_count",
-			 fmt_int64((int64)cluster_lmd_get_wake_count()));
-	emit_row(rsinfo, "lmd", "lmd_idle_count",
-			 fmt_int64((int64)cluster_lmd_get_idle_count()));
+	emit_row(rsinfo, "lmd", "lmd_wake_count", fmt_int64((int64)cluster_lmd_get_wake_count()));
+	emit_row(rsinfo, "lmd", "lmd_idle_count", fmt_int64((int64)cluster_lmd_get_idle_count()));
 	emit_row(rsinfo, "lmd", "lmd_error_count", fmt_int64((int64)cluster_lmd_get_error_count()));
 }
 

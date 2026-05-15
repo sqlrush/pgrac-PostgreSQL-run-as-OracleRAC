@@ -428,6 +428,10 @@ typedef enum {
 	 * tick CPU to its dedicated wait class — useful for diagnosing
 	 * "is LMON spinning on reconfig dedup checks". */
 	WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK,
+	/* spec-2.19 Sprint A Step 4 D12: LMD lifecycle / idle wait events. */
+	WAIT_EVENT_CLUSTER_LMD_STARTUP,
+	WAIT_EVENT_CLUSTER_LMD_SCAN,
+	WAIT_EVENT_CLUSTER_LMD_IDLE,
 } WaitEventCluster;
 
 

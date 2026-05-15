@@ -21,7 +21,7 @@
 #	        emits 'lmd' between 'lck' and 'lmon' (actual psql output
 #	        verify;**禁止凭字典直觉 sed** — ASCII `d` 0x64 < `o` 0x6F)
 #	    L8: dump_lmd contributes 7 rows under category='lmd'
-#	        (state + 6 counters) in pg_cluster_state
+#	        (state + ready_at_us + 5 counters) in pg_cluster_state
 #	    L9: pg_cluster_lmd view explicit column count = 10
 #	        (regression防御 against view schema drift)
 #	    L10: cluster.lmd_enabled GUC visible in pg_settings as
@@ -95,7 +95,7 @@ is($lmd_state, 'ready',
    "L3 pg_cluster_lmd.state = 'ready' after steady-state startup (HC2 §1.4.6 (c)) — got '$lmd_state'");
 
 my $lmd_reason_null = $node->safe_psql('postgres',
-	q{SELECT reason IS NULL::text FROM pg_cluster_lmd});
+	q{SELECT reason IS NULL FROM pg_cluster_lmd});
 is($lmd_reason_null, 't',
    "L3a pg_cluster_lmd.reason IS NULL when state='ready' (HC2 reason contract)");
 
@@ -168,12 +168,12 @@ is($cat_order, 'lck,lmd,lmon,lms',
 
 # ----------
 # L8:  dump_lmd contributes 7 rows under category='lmd' in
-# pg_cluster_state (state + 6 counters).
+# pg_cluster_state (state + ready_at_us + 5 counters).
 # ----------
 my $lmd_rows = $node->safe_psql('postgres',
 	q{SELECT count(*) FROM pg_cluster_state WHERE category='lmd'});
 is($lmd_rows, '7',
-   "L8 dump_lmd emits 7 rows under category='lmd' (state + 6 counters)");
+   "L8 dump_lmd emits 7 rows under category='lmd' (state + ready_at_us + 5 counters)");
 
 
 # ----------

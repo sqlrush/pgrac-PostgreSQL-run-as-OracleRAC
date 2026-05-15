@@ -211,7 +211,14 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
 		pqsignal(SIGALRM, SIG_IGN);
 		pqsignal(SIGPIPE, SIG_IGN);
-		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		/*
+		 * LMS / LMD deliberately skip ProcSignalInit() in this skeleton
+		 * phase.  Installing procsignal_sigusr1_handler before a slot exists
+		 * makes any startup-window SIGUSR1 dereference uninitialized state.
+		 * Keep SIGUSR1 ignored until the production spec registers the full
+		 * ProcSignal lifecycle.
+		 */
+		pqsignal(SIGUSR1, SIG_IGN);
 		pqsignal(SIGUSR2, SIG_IGN);
 		pqsignal(SIGCHLD, SIG_DFL);
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);

@@ -133,21 +133,31 @@ errhint(const char *fmt pg_attribute_unused(), ...)
  * fields inside ClusterLmdSharedState (strict-alignment platforms
  * require this — ARM Linux / SPARC SIGBUS without union force-align).
  */
+static union {
+	uint64 force_align;
+	char data[1024]; /* generous;cluster_lmd_shmem_size() << 1KB */
+} stub_lmd_buf;
+
+static bool stub_lmd_initialized = false;
+static uint64 stub_cv_broadcast_count = 0;
+
+static void
+reset_lmd_stub_shmem(void)
+{
+	memset(&stub_lmd_buf, 0, sizeof(stub_lmd_buf));
+	stub_lmd_initialized = false;
+	stub_cv_broadcast_count = 0;
+	cluster_lmd_shmem_init();
+}
+
 void *
 ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 {
-	static union {
-		uint64		force_align;
-		char		data[1024]; /* generous;cluster_lmd_shmem_size() << 1KB */
-	}			lmd_buf;
-	static bool lmd_initialized = false;
-
-	if (name != NULL && strcmp(name, "pgrac cluster lmd") == 0)
-	{
-		Assert(size <= sizeof(lmd_buf.data));
-		*foundPtr = lmd_initialized;
-		lmd_initialized = true;
-		return lmd_buf.data;
+	if (name != NULL && strcmp(name, "pgrac cluster lmd") == 0) {
+		Assert(size <= sizeof(stub_lmd_buf.data));
+		*foundPtr = stub_lmd_initialized;
+		stub_lmd_initialized = true;
+		return stub_lmd_buf.data;
 	}
 
 	*foundPtr = true;
@@ -164,8 +174,7 @@ cluster_shmem_register_region(const void *r pg_attribute_unused())
 
 /* LWLock / ConditionVariable stubs — state not exercised in unit tests. */
 void
-LWLockInitialize(LWLock *l pg_attribute_unused(),
-				 int tranche_id pg_attribute_unused())
+LWLockInitialize(LWLock *l pg_attribute_unused(), int tranche_id pg_attribute_unused())
 {}
 
 bool
@@ -181,8 +190,6 @@ LWLockRelease(LWLock *l pg_attribute_unused())
 void
 ConditionVariableInit(ConditionVariable *cv pg_attribute_unused())
 {}
-
-static uint64 stub_cv_broadcast_count = 0;
 
 void
 ConditionVariableBroadcast(ConditionVariable *cv pg_attribute_unused())
@@ -212,16 +219,16 @@ TimestampTz
 GetCurrentTimestamp(void)
 {
 	static int64 t = 1000000;
-	return (TimestampTz) (++t);
+	return (TimestampTz)(++t);
 }
 
 /* cluster.lmd_enabled GUC global (D12) — stubbed here for unit tests;
  * default true mirrors cluster_guc.c declaration.  T-lmd-3 toggles it
  * to exercise DISABLED state branch. */
-bool		cluster_lmd_enabled = true;
+bool cluster_lmd_enabled = true;
 
 /* MyProcPid stub — set by tests as needed. */
-int			MyProcPid = 12345;
+int MyProcPid = 12345;
 
 /* Stub bodies for SetLatch / ResetLatch / WaitLatch — LmdMain main loop
  * exit conditions are not exercised in unit tests (LmdMain itself is
@@ -234,7 +241,7 @@ volatile sig_atomic_t ConfigReloadPending = false;
 volatile sig_atomic_t InterruptPending = false;
 volatile sig_atomic_t ShutdownRequestPending = false;
 ProcessingMode Mode = NormalProcessing;
-bool		IsUnderPostmaster = true;
+bool IsUnderPostmaster = true;
 
 void
 SignalHandlerForConfigReload(int sig pg_attribute_unused())
@@ -253,10 +260,8 @@ ProcessInterrupts(void)
 {}
 
 int
-WaitLatch(struct Latch *l pg_attribute_unused(),
-		  int wakeEvents pg_attribute_unused(),
-		  long timeout pg_attribute_unused(),
-		  uint32 wait_event_info pg_attribute_unused())
+WaitLatch(struct Latch *l pg_attribute_unused(), int wakeEvents pg_attribute_unused(),
+		  long timeout pg_attribute_unused(), uint32 wait_event_info pg_attribute_unused())
 {
 	return 0;
 }
@@ -276,7 +281,7 @@ proc_exit(int code pg_attribute_unused())
 }
 
 extern PGDLLIMPORT sigset_t UnBlockSig;
-sigset_t	UnBlockSig;
+sigset_t UnBlockSig;
 
 /* pqsignal returns previous handler; stub to no-op. */
 pqsigfunc
@@ -301,8 +306,7 @@ procsignal_sigusr1_handler(int sig pg_attribute_unused())
 /* errstart_cold is the cold-path variant of errstart;cluster_lmd_main
  * does ereport(FATAL) when shmem is null, but unit test never hits that. */
 bool
-errstart_cold(int elevel pg_attribute_unused(),
-			  const char *domain pg_attribute_unused())
+errstart_cold(int elevel pg_attribute_unused(), const char *domain pg_attribute_unused())
 {
 	return false;
 }
@@ -324,16 +328,16 @@ errstart_cold(int elevel pg_attribute_unused(),
 UT_TEST(test_lmd_auxproc_and_backend_type_surface)
 {
 	/* Compile-time enum existence — failure to compile = test failure. */
-	UT_ASSERT_NE((int) LmdProcess, (int) LmsProcess);
-	UT_ASSERT_NE((int) LmdProcess, (int) NUM_AUXPROCTYPES);
+	UT_ASSERT_NE((int)LmdProcess, (int)LmsProcess);
+	UT_ASSERT_NE((int)LmdProcess, (int)NUM_AUXPROCTYPES);
 
 	/* B_LMD pre-existing (P1.7) — distinct from B_LMS / B_LMON. */
-	UT_ASSERT_NE((int) B_LMD, (int) B_LMS);
-	UT_ASSERT_NE((int) B_LMD, (int) B_LMON);
+	UT_ASSERT_NE((int)B_LMD, (int)B_LMS);
+	UT_ASSERT_NE((int)B_LMD, (int)B_LMON);
 
 	/* LmdMain symbol linkable (defense-in-depth — auxprocess.c dispatch
 	 * would fail at runtime if not linked). */
-	UT_ASSERT_NOT_NULL((void *) LmdMain);
+	UT_ASSERT_NOT_NULL((void *)LmdMain);
 }
 
 /*
@@ -346,28 +350,27 @@ UT_TEST(test_lmd_auxproc_and_backend_type_surface)
  */
 UT_TEST(test_lmd_shmem_size_init_idempotent)
 {
-	Size		sz;
+	Size sz;
+
+	cluster_lmd_enabled = true;
+	reset_lmd_stub_shmem();
 
 	sz = cluster_lmd_shmem_size();
 	UT_ASSERT(sz > 0);
-	UT_ASSERT(sz == MAXALIGN(sz));	/* MAXALIGN'd */
-
-	/* First init — populates the static buffer. */
-	cluster_lmd_shmem_init();
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_shared_state());
+	UT_ASSERT(sz == MAXALIGN(sz)); /* MAXALIGN'd */
 
 	/* Idempotent — second call finds existing region. */
 	cluster_lmd_shmem_init();
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_shared_state());
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_shared_state());
 
 	/* Accessor surface — all linkable + return 0/initial values. */
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_state);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_pid);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_started_count);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_edge_submission_count);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_wake_count);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_idle_count);
-	UT_ASSERT_NOT_NULL((void *) cluster_lmd_get_error_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_state);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_pid);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_started_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_edge_submission_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_wake_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_idle_count);
+	UT_ASSERT_NOT_NULL((void *)cluster_lmd_get_error_count);
 }
 
 /*
@@ -380,31 +383,31 @@ UT_TEST(test_lmd_shmem_size_init_idempotent)
  *	path actually wires (regression防御 for L107 claim-must-implement-
  *	not-comment — spec body claims it,this test verifies it).
  *
- *	Test sequence:
- *	  1. Reset static buffer via direct re-init (re-enter shmem_init
- *	     after toggling cluster_lmd_enabled).  Note:  the static buffer
- *	     in ShmemInitStruct stub returns found=true after first init,
- *	     so this test depends on running after T-lmd-2 (which did the
- *	     first init with enabled=true) — verify NOT_STARTED post-init.
- *	  2. Subsequent runs see enabled=false → DISABLED branch is the
- *	     branch we test;state was already set in T-lmd-2 to
- *	     NOT_STARTED.  Toggling enabled at runtime does not retroactively
- *	     change state (HC1 PGC_POSTMASTER semantic);that's intentional
- *	     and matches §1.4.6 — DISABLED is a startup-time decision.
+ *	The test resets the standalone shmem stub so both startup-time branches
+ *	are exercised directly.  Runtime changes still do not retroactively
+ *	change state in production;this only verifies the initialization gate.
  */
 UT_TEST(test_lmd_state_initial_not_started_when_enabled)
 {
-	/* T-lmd-2 already initialized with cluster_lmd_enabled=true. */
-	ClusterLmdState s = cluster_lmd_get_state();
+	ClusterLmdState s;
 
-	UT_ASSERT_EQ((int) s, (int) CLUSTER_LMD_NOT_STARTED);
+	cluster_lmd_enabled = false;
+	reset_lmd_stub_shmem();
+	s = cluster_lmd_get_state();
+	UT_ASSERT_EQ((int)s, (int)CLUSTER_LMD_DISABLED);
+
+	cluster_lmd_enabled = true;
+	reset_lmd_stub_shmem();
+	s = cluster_lmd_get_state();
+
+	UT_ASSERT_EQ((int)s, (int)CLUSTER_LMD_NOT_STARTED);
 	/* Verify HC2 enum values are not collided. */
-	UT_ASSERT_EQ((int) CLUSTER_LMD_NOT_STARTED, 0);
-	UT_ASSERT_EQ((int) CLUSTER_LMD_STARTING, 1);
-	UT_ASSERT_EQ((int) CLUSTER_LMD_READY, 2);
-	UT_ASSERT_EQ((int) CLUSTER_LMD_DRAINING, 3);
-	UT_ASSERT_EQ((int) CLUSTER_LMD_STOPPED, 4);
-	UT_ASSERT_EQ((int) CLUSTER_LMD_DISABLED, 5);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_NOT_STARTED, 0);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_STARTING, 1);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_READY, 2);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_DRAINING, 3);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_STOPPED, 4);
+	UT_ASSERT_EQ((int)CLUSTER_LMD_DISABLED, 5);
 }
 
 /*
@@ -423,7 +426,7 @@ UT_TEST(test_lmd_six_counters_initial_zero)
 	UT_ASSERT_EQ(cluster_lmd_get_error_count(), 0ULL);
 	/* lmd_ready_at_us not a "counter" per se but lives in the same
 	 * atomic bank; verify zero initialization. */
-	UT_ASSERT_EQ((uint64) cluster_lmd_get_ready_at(), 0ULL);
+	UT_ASSERT_EQ((uint64)cluster_lmd_get_ready_at(), 0ULL);
 }
 
 /*
@@ -445,34 +448,58 @@ UT_TEST(test_lmd_is_ready_exact_predicate_all_six_states)
 {
 	ClusterLmdSharedState *st = cluster_lmd_shared_state();
 
-	UT_ASSERT_NOT_NULL((void *) st);
+	UT_ASSERT_NOT_NULL((void *)st);
+	st->pid = MyProcPid;
 
 	/* NOT_STARTED (0) → false */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_NOT_STARTED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_NOT_STARTED);
 	UT_ASSERT(!(cluster_lmd_is_ready()));
 
 	/* STARTING (1) → false */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_STARTING);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_STARTING);
 	UT_ASSERT(!(cluster_lmd_is_ready()));
 
 	/* READY (2) → **true** (only valid state) */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_READY);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_READY);
 	UT_ASSERT(cluster_lmd_is_ready());
 
 	/* DRAINING (3) → false (HC4 critical — `>=` would误判 true). */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_DRAINING);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_DRAINING);
 	UT_ASSERT(!(cluster_lmd_is_ready()));
 
 	/* STOPPED (4) → false (HC4 critical — `>=` would误判 true). */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_STOPPED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_STOPPED);
 	UT_ASSERT(!(cluster_lmd_is_ready()));
 
 	/* DISABLED (5) → false (HC4 critical — `>=` would误判 true). */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_DISABLED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_DISABLED);
 	UT_ASSERT(!(cluster_lmd_is_ready()));
 
 	/* Restore to NOT_STARTED for subsequent tests. */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_NOT_STARTED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_NOT_STARTED);
+}
+
+/*
+ * Postmaster reaper hardening: a harvested/crashed LMD child must clear the
+ * caller-side READY gate without taking the LMD LWLock.  This prevents stale
+ * READY after LmdPID has been reset by postmaster.c.
+ */
+UT_TEST(test_lmd_mark_child_exit_clears_ready_atomically)
+{
+	ClusterLmdSharedState *st = cluster_lmd_shared_state();
+
+	UT_ASSERT_NOT_NULL((void *)st);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_READY);
+	UT_ASSERT(cluster_lmd_is_ready());
+
+	cluster_lmd_mark_child_exit();
+
+	UT_ASSERT_EQ(cluster_lmd_get_pid(), 0);
+	UT_ASSERT_EQ((int)cluster_lmd_get_state(), (int)CLUSTER_LMD_STOPPED);
+	UT_ASSERT(!(cluster_lmd_is_ready()));
+
+	/* Restore state for subsequent tests. */
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_NOT_STARTED);
 }
 
 /*
@@ -488,13 +515,13 @@ UT_TEST(test_lmd_is_ready_exact_predicate_all_six_states)
 UT_TEST(test_lmd_submit_wait_edge_inc_counter_and_broadcast)
 {
 	ClusterLmdSharedState *st = cluster_lmd_shared_state();
-	uint64		pre_count;
-	uint64		pre_cv;
+	uint64 pre_count;
+	uint64 pre_cv;
 
-	UT_ASSERT_NOT_NULL((void *) st);
+	UT_ASSERT_NOT_NULL((void *)st);
 
 	/* Ensure state is not DISABLED for this test (no-op branch). */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_NOT_STARTED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_NOT_STARTED);
 
 	pre_count = cluster_lmd_get_edge_submission_count();
 	pre_cv = stub_cv_broadcast_count;
@@ -512,15 +539,15 @@ UT_TEST(test_lmd_submit_wait_edge_inc_counter_and_broadcast)
 	UT_ASSERT_EQ(stub_cv_broadcast_count, pre_cv + 4);
 
 	/* HC6 no-op when DISABLED — counter does NOT increment. */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_DISABLED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_DISABLED);
 	pre_count = cluster_lmd_get_edge_submission_count();
 	pre_cv = stub_cv_broadcast_count;
 	cluster_lmd_submit_wait_edge();
-	UT_ASSERT_EQ(cluster_lmd_get_edge_submission_count(), pre_count);	/* unchanged */
-	UT_ASSERT_EQ(stub_cv_broadcast_count, pre_cv);	/* unchanged */
+	UT_ASSERT_EQ(cluster_lmd_get_edge_submission_count(), pre_count); /* unchanged */
+	UT_ASSERT_EQ(stub_cv_broadcast_count, pre_cv);					  /* unchanged */
 
 	/* Restore state. */
-	pg_atomic_write_u32(&st->lmd_state, (uint32) CLUSTER_LMD_NOT_STARTED);
+	pg_atomic_write_u32(&st->lmd_state, (uint32)CLUSTER_LMD_NOT_STARTED);
 }
 
 /*
@@ -552,26 +579,19 @@ UT_TEST(test_lmd_enabled_guc_default_true)
  *	(0x6F).  This drives the alphabetic insert position in
  *	pg_cluster_state ORDER BY category baseline (017_debug.pl L66).
  *
- *	(The dump_lmd 6 emit_row real path is tested via 017 + 106 TAP
+ *	(The dump_lmd 7 emit_row real path is tested via 017 + 106 TAP
  *	integration;here we verify the string mapping that downstream
  *	dump_lmd uses.)
  */
 UT_TEST(test_lmd_state_to_string_and_alphabetic_position)
 {
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_NOT_STARTED),
-					"not_started");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_STARTING),
-					"starting");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_READY),
-					"ready");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_DRAINING),
-					"draining");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_STOPPED),
-					"stopped");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_DISABLED),
-					"disabled");
-	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string((ClusterLmdState) 999),
-					"(unknown)");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_NOT_STARTED), "not_started");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_STARTING), "starting");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_READY), "ready");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_DRAINING), "draining");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_STOPPED), "stopped");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string(CLUSTER_LMD_DISABLED), "disabled");
+	UT_ASSERT_STR_EQ(cluster_lmd_state_to_string((ClusterLmdState)999), "(unknown)");
 
 	/*
 	 * L122 alphabetic property — `lmd` < `lmon` < `lms`.  Drives the
@@ -592,13 +612,14 @@ UT_DEFINE_GLOBALS();
 int
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(8);
+	UT_PLAN(9);
 
 	UT_RUN(test_lmd_auxproc_and_backend_type_surface);
 	UT_RUN(test_lmd_shmem_size_init_idempotent);
 	UT_RUN(test_lmd_state_initial_not_started_when_enabled);
 	UT_RUN(test_lmd_six_counters_initial_zero);
 	UT_RUN(test_lmd_is_ready_exact_predicate_all_six_states);
+	UT_RUN(test_lmd_mark_child_exit_clears_ready_atomically);
 	UT_RUN(test_lmd_submit_wait_edge_inc_counter_and_broadcast);
 	UT_RUN(test_lmd_enabled_guc_default_true);
 	UT_RUN(test_lmd_state_to_string_and_alphabetic_position);

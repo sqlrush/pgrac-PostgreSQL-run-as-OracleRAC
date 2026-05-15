@@ -5,8 +5,8 @@
  *
  *	  Implements `cluster_get_lmd_state()` -- the SRF backing the
  *	  `pg_cluster_lmd` view (system_views.sql).  Returns 1 row containing
- *	  LMD process pid + 4-state semantic分流 (state + reason) + 6
- *	  observability counters.
+ *	  LMD process pid + 4-state semantic分流 (state + reason) + 5
+ *	  counter columns plus started_at / ready_at timestamps.
  *
  *	  HC2 4-state semantic split (spec-2.19 §1.4.6):
  *	    DISABLED              → reason = 'disabled_by_config'
@@ -53,7 +53,7 @@
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_guc.h"	/* cluster_lmd_enabled */
+#include "cluster/cluster_guc.h" /* cluster_lmd_enabled */
 #include "cluster/cluster_lmd.h"
 
 #define CLUSTER_GET_LMD_STATE_NCOLS 10
@@ -66,11 +66,11 @@
 Datum
 cluster_get_lmd_state(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Datum		values[CLUSTER_GET_LMD_STATE_NCOLS];
-	bool		nulls[CLUSTER_GET_LMD_STATE_NCOLS];
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	Datum values[CLUSTER_GET_LMD_STATE_NCOLS];
+	bool nulls[CLUSTER_GET_LMD_STATE_NCOLS];
 	ClusterLmdState state;
-	pid_t		pid;
+	pid_t pid;
 	TimestampTz spawned_at;
 	TimestampTz ready_at;
 	const char *reason = NULL;
@@ -87,25 +87,22 @@ cluster_get_lmd_state(PG_FUNCTION_ARGS)
 	 * caller-side gate consumers can branch on `reason IS NULL` to
 	 * distinguish steady-state from transient / failed / opt-out paths.
 	 */
-	switch (state)
-	{
-		case CLUSTER_LMD_DISABLED:
-			reason = "disabled_by_config";
-			break;
-		case CLUSTER_LMD_READY:
-			reason = NULL;
-			break;
-		case CLUSTER_LMD_STOPPED:
-			reason = (pid == 0 && cluster_lmd_enabled)
-				? "crashed_unavailable"
-				: "lmd_not_ready";
-			break;
-		case CLUSTER_LMD_NOT_STARTED:
-		case CLUSTER_LMD_STARTING:
-		case CLUSTER_LMD_DRAINING:
-		default:
-			reason = "lmd_not_ready";
-			break;
+	switch (state) {
+	case CLUSTER_LMD_DISABLED:
+		reason = "disabled_by_config";
+		break;
+	case CLUSTER_LMD_READY:
+		reason = NULL;
+		break;
+	case CLUSTER_LMD_STOPPED:
+		reason = (pid == 0 && cluster_lmd_enabled) ? "crashed_unavailable" : "lmd_not_ready";
+		break;
+	case CLUSTER_LMD_NOT_STARTED:
+	case CLUSTER_LMD_STARTING:
+	case CLUSTER_LMD_DRAINING:
+	default:
+		reason = "lmd_not_ready";
+		break;
 	}
 
 	memset(nulls, 0, sizeof(nulls));
@@ -114,7 +111,7 @@ cluster_get_lmd_state(PG_FUNCTION_ARGS)
 	if (pid == 0)
 		nulls[0] = true;
 	else
-		values[0] = Int32GetDatum((int32) pid);
+		values[0] = Int32GetDatum((int32)pid);
 
 	/* 1: state (text) */
 	values[1] = CStringGetTextDatum(cluster_lmd_state_to_string(state));
@@ -137,16 +134,16 @@ cluster_get_lmd_state(PG_FUNCTION_ARGS)
 	else
 		values[4] = TimestampTzGetDatum(ready_at);
 
-	/* 5-9: 6 atomic counters as int8. */
-	values[5] = Int64GetDatum((int64) cluster_lmd_get_started_count());
-	values[6] = Int64GetDatum((int64) cluster_lmd_get_edge_submission_count());
-	values[7] = Int64GetDatum((int64) cluster_lmd_get_wake_count());
-	values[8] = Int64GetDatum((int64) cluster_lmd_get_idle_count());
-	values[9] = Int64GetDatum((int64) cluster_lmd_get_error_count());
+	/* 5-9: 5 atomic counter columns as int8. */
+	values[5] = Int64GetDatum((int64)cluster_lmd_get_started_count());
+	values[6] = Int64GetDatum((int64)cluster_lmd_get_edge_submission_count());
+	values[7] = Int64GetDatum((int64)cluster_lmd_get_wake_count());
+	values[8] = Int64GetDatum((int64)cluster_lmd_get_idle_count());
+	values[9] = Int64GetDatum((int64)cluster_lmd_get_error_count());
 
 	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 
-	return (Datum) 0;
+	return (Datum)0;
 }
 
-#endif							/* USE_PGRAC_CLUSTER */
+#endif /* USE_PGRAC_CLUSTER */

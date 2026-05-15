@@ -174,8 +174,8 @@ is($node->safe_psql(
 	  FROM pg_settings
 	 WHERE name = 'cluster.shmem_max_regions'
 }),
-   'integer|postmaster|64|22|256',
-   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [22,256] (spec-2.18 LMS bumps min_val 21→22)');
+   'integer|postmaster|64|23|256',
+   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [23,256] (spec-2.19 LMD bumps min_val 22→23)');
 
 is($node->safe_psql(
 		'postgres',
@@ -229,12 +229,12 @@ like($stderr,
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '66',
+   '69',
    'L17 pg_stat_cluster_wait_events still 58 rows after 1.3 (1.10 + 1.11 + 1.12 BgProc)');
 
 
 # ----------
-# L18: GUC max_regions=22 (boundary minimum) admits all baseline regions.
+# L18: GUC max_regions=23 (boundary minimum) admits all baseline regions.
 # ----------
 $node->stop;
 $node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 23\n");
@@ -251,7 +251,7 @@ is($node->safe_psql(
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'guc' AND key = 'cluster.shmem_max_regions'}),
    '23',
-   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 22');
+   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 23');
 
 $node->stop;
 
