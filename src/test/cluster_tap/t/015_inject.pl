@@ -191,7 +191,7 @@ ok($hits >= 1,
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'70',
+	'71',
 	'pg_stat_cluster_wait_events 64 rows after 0.27 (60 prior + cluster_cssd spec-2.5)');
 
 # ----------

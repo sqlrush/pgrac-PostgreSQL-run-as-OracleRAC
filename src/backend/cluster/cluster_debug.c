@@ -919,8 +919,7 @@ dump_lmd(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "lmd", "lmd_error_count", fmt_int64((int64)cluster_lmd_get_error_count()));
 
 	/* spec-2.22 D12 — 9 NEW counter rows (real Tarjan + graph + injection). */
-	emit_row(rsinfo, "lmd", "wait_edge_count",
-			 fmt_int64((int64)cluster_lmd_wait_edge_count_get()));
+	emit_row(rsinfo, "lmd", "wait_edge_count", fmt_int64((int64)cluster_lmd_wait_edge_count_get()));
 	emit_row(rsinfo, "lmd", "wait_edge_full_count",
 			 fmt_int64((int64)cluster_lmd_wait_edge_full_count_get()));
 	emit_row(rsinfo, "lmd", "graph_generation",

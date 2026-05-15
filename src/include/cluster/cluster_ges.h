@@ -185,7 +185,8 @@ typedef enum GesRequestOpcode {
 	GES_REQ_OPCODE_BAST_ACK = 5,	   /* holder → master after natural release */
 	GES_REQ_OPCODE_DEADLOCK_PROBE = 6, /* coordinator → all nodes probe req */
 	GES_REQ_OPCODE_CANCEL_PENDING = 7, /* backend → master cancel pending */
-	GES_REQ_OPCODE_DEADLOCK_REPORT = 8 /* spec-2.22 D6: probed node → coordinator (read-only graph snapshot) */
+	GES_REQ_OPCODE_DEADLOCK_REPORT
+	= 8 /* spec-2.22 D6: probed node → coordinator (read-only graph snapshot) */
 } GesRequestOpcode;
 
 typedef enum GesReplyOpcode {
@@ -321,7 +322,7 @@ StaticAssertDecl(sizeof(GesDeadlockProbePayload) == 24,
 typedef struct GesDeadlockReportHeader {
 	uint32 opcode; /* = GES_REQ_OPCODE_DEADLOCK_REPORT (8) */
 	uint32 responding_node_id;
-	uint64 probe_id;	   /* echo from PROBE */
+	uint64 probe_id; /* echo from PROBE */
 	uint64 graph_generation;
 	uint32 lmd_ready_state; /* mirror cluster_lmd_state enum */
 	uint32 nedges;
@@ -341,8 +342,7 @@ StaticAssertDecl(sizeof(GesDeadlockReportHeader) == 32,
  *	out_buf:  caller-provided buffer (header + edges);out_buflen 输入是
  *	  buf 容量,输出是实际 encode 字节数.
  */
-extern int cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe,
-											  void *out_buf,
+extern int cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe, void *out_buf,
 											  Size *inout_buflen);
 
 #endif /* !FRONTEND */

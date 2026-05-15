@@ -124,7 +124,7 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '70',
+   '71',
    'L9 1.4 baseline: pg_stat_cluster_wait_events still 51 (1.6 adds no wait events)');
 
 
@@ -135,7 +135,7 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_cluster_shmem'),
-   '23',
+   '24',
    'L10 spec-2.16 baseline: pg_cluster_shmem 22 rows (21 prior + 1 LMS region at spec-2.18)');
 
 

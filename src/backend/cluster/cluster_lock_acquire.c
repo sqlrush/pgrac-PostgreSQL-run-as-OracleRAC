@@ -55,7 +55,7 @@
 #include "cluster/cluster_lms.h"
 #include "cluster/cluster_lock_acquire.h"
 #include "cluster/cluster_signal.h" /* cluster_ges_cancel_pending sig_atomic_t */
-#include "access/xact.h"			 /* GetTopTransactionIdIfAny */
+#include "access/xact.h"			/* GetTopTransactionIdIfAny */
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/lwlock.h"
@@ -124,16 +124,15 @@ fill_request_holder(ClusterLockAcquireRequest *req)
  *	advisory locks acquired before any write.
  */
 static inline void
-fill_lmd_vertex_from_request(const ClusterLockAcquireRequest *req,
-							 ClusterLmdVertex *out)
+fill_lmd_vertex_from_request(const ClusterLockAcquireRequest *req, ClusterLmdVertex *out)
 {
 	memset(out, 0, sizeof(*out));
-	out->node_id = (int32) req->holder.node_id;
+	out->node_id = (int32)req->holder.node_id;
 	out->procno = req->holder.procno;
 	out->cluster_epoch = req->holder.cluster_epoch;
 	out->request_id = req->request_id;
 	out->xid = GetTopTransactionIdIfAny(); /* may be InvalidTransactionId */
-	out->local_start_ts_ms = (int64) req->caller_local_start_ts_ms;
+	out->local_start_ts_ms = (int64)req->caller_local_start_ts_ms;
 }
 
 
@@ -460,10 +459,9 @@ cluster_lock_acquire_seven_step(const ClusterLockAcquireRequest *req)
 	 *	→ S7 → outer caller ereport.  P-new-2 check point (b) = future
 	 *	`cluster_ges_send_request_and_wait` real wait loop推 spec-2.23.
 	 */
-	if (cluster_ges_cancel_pending)
-	{
+	if (cluster_ges_cancel_pending) {
 		cluster_ges_cancel_pending = false;
-		(void) cluster_lock_acquire_s7_cleanup(req);
+		(void)cluster_lock_acquire_s7_cleanup(req);
 		return CLUSTER_LOCK_ACQUIRE_FAIL_DEADLOCK;
 	}
 

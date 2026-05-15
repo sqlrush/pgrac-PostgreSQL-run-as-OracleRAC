@@ -50,7 +50,7 @@
 
 #include "access/htup_details.h"
 #include "funcapi.h"
-#include "miscadmin.h"		   /* superuser() */
+#include "miscadmin.h" /* superuser() */
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 
@@ -182,20 +182,20 @@ pg_cluster_lmd_inject_wait_edge(PG_FUNCTION_ARGS)
 
 	memset(&waiter, 0, sizeof(waiter));
 	waiter.node_id = w_node;
-	waiter.procno = (uint32) w_procno;
-	waiter.request_id = (uint64) w_request_id;
+	waiter.procno = (uint32)w_procno;
+	waiter.request_id = (uint64)w_request_id;
 	waiter.cluster_epoch = 1; /* spec-2.26 wires real epoch later */
 
 	memset(&blocker, 0, sizeof(blocker));
 	blocker.node_id = b_node;
-	blocker.procno = (uint32) b_procno;
-	blocker.request_id = (uint64) b_request_id;
+	blocker.procno = (uint32)b_procno;
+	blocker.request_id = (uint64)b_request_id;
 	blocker.cluster_epoch = 1;
 
 	ereport(LOG, (errmsg("pg_cluster_lmd_inject_wait_edge: TEST-ONLY injection "
 						 "waiter=(%d,%u," INT64_FORMAT ") blocker=(%d,%u," INT64_FORMAT ")",
-						 w_node, (uint32) w_procno, w_request_id,
-						 b_node, (uint32) b_procno, b_request_id)));
+						 w_node, (uint32)w_procno, w_request_id, b_node, (uint32)b_procno,
+						 b_request_id)));
 
 	ok = cluster_lmd_inject_wait_edge(&waiter, &blocker);
 	PG_RETURN_BOOL(ok);

@@ -465,8 +465,8 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid pg_attribute_
  * ============================================================ */
 
 int
-cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe,
-								   void *out_buf, Size *inout_buflen)
+cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe, void *out_buf,
+								   Size *inout_buflen)
 {
 	GesDeadlockReportHeader *hdr;
 	Size header_size = sizeof(GesDeadlockReportHeader);
@@ -485,24 +485,23 @@ cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe,
 
 	pgstat_report_wait_start(PG_WAIT_EXTENSION | WAIT_EVENT_CLUSTER_LMD_PROBE);
 
-	max_edges = (int) ((*inout_buflen - header_size) / sizeof(ClusterLmdWaitEdge));
+	max_edges = (int)((*inout_buflen - header_size) / sizeof(ClusterLmdWaitEdge));
 	if (max_edges < 0)
 		max_edges = 0;
 
-	hdr = (GesDeadlockReportHeader *) out_buf;
+	hdr = (GesDeadlockReportHeader *)out_buf;
 	memset(hdr, 0, sizeof(*hdr));
 	hdr->opcode = GES_REQ_OPCODE_DEADLOCK_REPORT;
-	hdr->responding_node_id = (uint32) cluster_node_id;
+	hdr->responding_node_id = (uint32)cluster_node_id;
 	hdr->probe_id = probe->probe_id;
-	hdr->lmd_ready_state = (uint32) cluster_lmd_is_ready();
+	hdr->lmd_ready_state = (uint32)cluster_lmd_is_ready();
 
-	edges_dst = (ClusterLmdWaitEdge *) ((char *) out_buf + header_size);
-	n_copied = cluster_lmd_graph_snapshot_copy(edges_dst, max_edges,
-											   &gen_at_snapshot);
-	hdr->nedges = (uint32) n_copied;
+	edges_dst = (ClusterLmdWaitEdge *)((char *)out_buf + header_size);
+	n_copied = cluster_lmd_graph_snapshot_copy(edges_dst, max_edges, &gen_at_snapshot);
+	hdr->nedges = (uint32)n_copied;
 	hdr->graph_generation = gen_at_snapshot;
 
-	edges_size = (Size) n_copied * sizeof(ClusterLmdWaitEdge);
+	edges_size = (Size)n_copied * sizeof(ClusterLmdWaitEdge);
 	*inout_buflen = header_size + edges_size;
 
 	pgstat_report_wait_end();

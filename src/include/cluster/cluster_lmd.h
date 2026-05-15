@@ -321,8 +321,7 @@ extern void cluster_lmd_cancel_wait_edge(void);
  *	内部 vertex key 是完整 identity 4-tuple (P1.3 semantic).
  * ============================================================ */
 
-typedef struct ClusterLmdVertex
-{
+typedef struct ClusterLmdVertex {
 	/* Identity 4-tuple (HC13). */
 	int32 node_id;
 	uint32 procno;
@@ -330,15 +329,14 @@ typedef struct ClusterLmdVertex
 	uint64 request_id;
 
 	/* Sort metadata (A4 victim selection only;not part of identity). */
-	TransactionId xid;	   /* may be InvalidTransactionId — advisory lock OK */
+	TransactionId xid; /* may be InvalidTransactionId — advisory lock OK */
 	int64 local_start_ts_ms;
 } ClusterLmdVertex;
 
 StaticAssertDecl(sizeof(ClusterLmdVertex) == 40,
 				 "ClusterLmdVertex ABI 40-byte lock (4+4+8+8 identity + 4+8 metadata + 4 pad)");
 
-typedef struct ClusterLmdWaitEdge
-{
+typedef struct ClusterLmdWaitEdge {
 	ClusterLmdVertex waiter;  /* this backend stuck waiting on S4 */
 	ClusterLmdVertex blocker; /* current holder waiter is blocked by */
 	uint64 graph_generation;  /* snapshot at add time — revalidate basis */
@@ -357,8 +355,7 @@ StaticAssertDecl(sizeof(ClusterLmdWaitEdge) == 96,
  *	severely禁止 fallback PG local deadlock detector).
  */
 extern bool cluster_lmd_submit_wait_edge_real(const ClusterLmdVertex *waiter,
-											  const ClusterLmdVertex *blocker,
-											  uint64 request_id);
+											  const ClusterLmdVertex *blocker, uint64 request_id);
 
 extern void cluster_lmd_cancel_wait_edge_real(const ClusterLmdVertex *waiter);
 
@@ -395,28 +392,22 @@ extern void cluster_lmd_graph_shmem_init(void);
 /* Graph low-level mutators (used by cluster_lmd_tarjan.c + D16 SRF). */
 extern bool cluster_lmd_graph_add_edge(const ClusterLmdWaitEdge *edge);
 extern bool cluster_lmd_graph_remove_edge_by_waiter(const ClusterLmdVertex *waiter);
-extern int cluster_lmd_graph_snapshot_copy(ClusterLmdWaitEdge *out_buf,
-										   int max_edges,
+extern int cluster_lmd_graph_snapshot_copy(ClusterLmdWaitEdge *out_buf, int max_edges,
 										   uint64 *out_gen_at_snapshot);
 
 /* spec-2.22 D3 — Tarjan public API. */
-extern int cluster_lmd_tarjan_scan_snapshot(const ClusterLmdWaitEdge *edges,
-											int nedges,
+extern int cluster_lmd_tarjan_scan_snapshot(const ClusterLmdWaitEdge *edges, int nedges,
 											ClusterLmdVertex *out_cycle_vertices,
-											int max_cycle_vertices,
-											int *out_cycle_count);
-extern void cluster_lmd_tarjan_pick_victim(const ClusterLmdVertex *cycle_vertices,
-										   int nvertices,
+											int max_cycle_vertices, int *out_cycle_count);
+extern void cluster_lmd_tarjan_pick_victim(const ClusterLmdVertex *cycle_vertices, int nvertices,
 										   ClusterLmdVertex *out_victim);
-extern bool cluster_lmd_tarjan_revalidate(const ClusterLmdVertex *cycle_vertices,
-										  int nvertices,
+extern bool cluster_lmd_tarjan_revalidate(const ClusterLmdVertex *cycle_vertices, int nvertices,
 										  uint64 snapshot_generation);
 extern void cluster_lmd_tarjan_run_local_scan(void);
 
 /* spec-2.22 D8 — victim signal helper (defined in cluster_lmd_tarjan.c
  * Step 6;forward-declared so Step 4 build links). */
-extern void cluster_lmd_signal_local_victim(uint32 procno, uint64 request_id,
-											uint64 cluster_epoch);
+extern void cluster_lmd_signal_local_victim(uint32 procno, uint64 request_id, uint64 cluster_epoch);
 
 /*
  * shmem region helpers — registered by cluster_init_shmem_module()

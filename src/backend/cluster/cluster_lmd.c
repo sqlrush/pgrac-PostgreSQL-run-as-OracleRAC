@@ -629,8 +629,7 @@ LmdMain(void)
 		 * is cheap when graph is empty (early return), so no need to
 		 * differentiate paths.
 		 */
-		if (lmd_get_state() == CLUSTER_LMD_READY)
-		{
+		if (lmd_get_state() == CLUSTER_LMD_READY) {
 			cluster_lmd_tarjan_run_local_scan();
 		}
 
@@ -643,8 +642,7 @@ LmdMain(void)
 		pg_atomic_fetch_add_u64(&cluster_lmd_state->lmd_idle_count, 1);
 		/* spec-2.22 D9:scan interval GUC controls wake period. */
 		(void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						cluster_lmd_scan_interval_ms,
-						WAIT_EVENT_CLUSTER_LMD_SCAN);
+						cluster_lmd_scan_interval_ms, WAIT_EVENT_CLUSTER_LMD_SCAN);
 		ResetLatch(MyLatch);
 	}
 

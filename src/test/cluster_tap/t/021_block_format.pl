@@ -166,7 +166,7 @@ SKIP: {
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '23',
+   '24',
    'L10 pg_cluster_shmem 22 rows (21 prior + 1 LMS region at spec-2.18)');
 
 
@@ -188,7 +188,7 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '70',
+   '71',
    'L12 pg_stat_cluster_wait_events still 58 rows after 1.4');
 
 
