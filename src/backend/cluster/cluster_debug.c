@@ -917,6 +917,26 @@ dump_lmd(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "lmd", "lmd_wake_count", fmt_int64((int64)cluster_lmd_get_wake_count()));
 	emit_row(rsinfo, "lmd", "lmd_idle_count", fmt_int64((int64)cluster_lmd_get_idle_count()));
 	emit_row(rsinfo, "lmd", "lmd_error_count", fmt_int64((int64)cluster_lmd_get_error_count()));
+
+	/* spec-2.22 D12 — 9 NEW counter rows (real Tarjan + graph + injection). */
+	emit_row(rsinfo, "lmd", "wait_edge_count",
+			 fmt_int64((int64)cluster_lmd_wait_edge_count_get()));
+	emit_row(rsinfo, "lmd", "wait_edge_full_count",
+			 fmt_int64((int64)cluster_lmd_wait_edge_full_count_get()));
+	emit_row(rsinfo, "lmd", "graph_generation",
+			 fmt_int64((int64)cluster_lmd_graph_generation_get()));
+	emit_row(rsinfo, "lmd", "tarjan_scan_count",
+			 fmt_int64((int64)cluster_lmd_tarjan_scan_count_get()));
+	emit_row(rsinfo, "lmd", "cycle_detected_count",
+			 fmt_int64((int64)cluster_lmd_cycle_detected_count_get()));
+	emit_row(rsinfo, "lmd", "victim_cancel_sent_count",
+			 fmt_int64((int64)cluster_lmd_victim_cancel_sent_count_get()));
+	emit_row(rsinfo, "lmd", "revalidate_fail_count",
+			 fmt_int64((int64)cluster_lmd_revalidate_fail_count_get()));
+	emit_row(rsinfo, "lmd", "cross_node_victim_pending_count",
+			 fmt_int64((int64)cluster_lmd_cross_node_victim_pending_count_get()));
+	emit_row(rsinfo, "lmd", "inject_call_count",
+			 fmt_int64((int64)cluster_lmd_inject_call_count_get()));
 }
 
 
