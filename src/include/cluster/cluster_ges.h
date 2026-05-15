@@ -259,6 +259,36 @@ typedef struct GesReplyPayload {
 
 StaticAssertDecl(sizeof(GesReplyPayload) == 48, "GesReplyPayload wire ABI 48-byte lock");
 
+
+/*
+ * spec-2.21 D8 NEW:GES request/release send-and-wait helpers.
+ *
+ *	cluster_ges_send_request_and_wait():S4 remote master path 调用,
+ *	  send GES_REQUEST(opcode=ACQUIRE)→ block 在 ConditionVariable
+ *	  等 GES_REPLY(GRANT / REJECT)→ 返回 reject_reason(0=GRANT)。
+ *	  timeout_ms 0 表示 dontwait(立即 ConditionalLock 语义)。
+ *
+ *	cluster_ges_send_release_and_wait():S6 normal release 调用,
+ *	  send GES_RELEASE → bounded ACK wait(no retransmit;spec-2.23 BAST
+ *	  配套补 retry/retransmit)。返回 0 = ACK OK,non-zero = timeout/error。
+ *
+ *	返回 0 即成功;非 0 = GesRejectReason 枚举(timeout / conflict /
+ *	  deadlock_pending / cancel)。
+ *
+ *	stub semantics for spec-2.21:本 spec 仅 wire send call site + counter;
+ *	真 send/reply pipeline ship 仍 LMS local-handle(D8 minimal grant);
+ *	远端 master pipeline 推 spec-2.23 BAST 配套 ship。
+ */
+extern uint32 cluster_ges_send_request_and_wait(const struct ClusterResId *resid,
+												uint32 lockmode,
+												const struct ClusterGrdHolderId *holder,
+												uint64 request_id,
+												int timeout_ms);
+
+extern uint32 cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
+												const struct ClusterGrdHolderId *holder,
+												uint64 request_id);
+
 #endif /* !FRONTEND */
 
 #endif /* CLUSTER_GES_H */

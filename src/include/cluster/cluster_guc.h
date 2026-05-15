@@ -425,5 +425,30 @@ extern bool cluster_lmd_enabled;
  */
 extern bool cluster_lms_enabled;
 
+/*
+ * cluster.lock_acquire_cluster_path (spec-2.21 D2).
+ *
+ *	context: PGC_POSTMASTER
+ *	default: true
+ *
+ *	Emergency bypass — when false, all PG LockAcquireExtended calls skip
+ *	the cluster gate and use PG-native path only (even when cluster_enabled
+ *	and IsClusterLockTag are true).  Use only as P0 incident response;
+ *	production setting is true.
+ */
+extern bool cluster_lock_acquire_cluster_path;
+
+/*
+ * cluster.local_fast_path_enabled (spec-2.21 D2).
+ *
+ *	context: PGC_SIGHUP
+ *	default: true
+ *
+ *	When false, S3 local-fast-path 5-check is skipped and all cluster-
+ *	aware lock acquires take the remote-master path (perf degradation
+ *	~10x vs spec-1.23 baseline; for fault-injection / chaos testing).
+ */
+extern bool cluster_local_fast_path_enabled;
+
 
 #endif /* CLUSTER_GUC_H */

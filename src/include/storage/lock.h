@@ -438,6 +438,21 @@ typedef struct LOCALLOCK
 	LOCALLOCKOWNER *lockOwners; /* dynamically resizable array */
 	bool		holdsStrongLockCount;	/* bumped FastPathStrongRelationLocks */
 	bool		lockCleared;	/* we read all sinval msgs for lock */
+	/*
+	 * PGRAC: cluster-aware lock state — spec-2.21 D1 ABI extend.
+	 *
+	 * Modified by: SqlRush <sqlrush@gmail.com>
+	 * What changed: 3 cluster-aware private fields for exactly-once
+	 *               registration / release (HC9 grant-release 对称契约).
+	 * Why: spec-2.21 D2 LockRelease/LockReleaseAll/ResourceOwnerRelease
+	 *      hook must read cluster_registered to gate cluster_lock_release
+	 *      call; cluster_holder + cluster_request_id are S5 promote outputs
+	 *      threaded through to S6 release.  In-memory only, not persisted.
+	 * Spec: spec-2.21-pg-lockacquire-integration-2node-smoke.md (D1 / P2.2)
+	 */
+	bool		cluster_registered;	/* PGRAC: true iff S5 promote success;gates cluster_lock_release exactly-once */
+	uint64		cluster_request_id;	/* PGRAC: from ClusterLockAcquireRequest.request_id */
+	uint8		cluster_holder_raw[24];	/* PGRAC: ClusterGrdHolderId byte-image (avoids cluster header include here) */
 } LOCALLOCK;
 
 #define LOCALLOCK_LOCKMETHOD(llock) ((llock).tag.lock.locktag_lockmethodid)

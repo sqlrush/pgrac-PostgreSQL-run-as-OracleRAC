@@ -251,6 +251,20 @@ bool cluster_lmd_enabled = true;
  */
 bool cluster_lms_enabled = true;
 
+/*
+ * spec-2.21 D2:cluster.lock_acquire_cluster_path emergency bypass GUC.
+ * Default true; PGC_POSTMASTER context.  Set false only for P0 incident
+ * response to skip the cluster gate entirely (PG-native lock only).
+ */
+bool cluster_lock_acquire_cluster_path = true;
+
+/*
+ * spec-2.21 D2:cluster.local_fast_path_enabled toggle GUC.
+ * Default true; PGC_SIGHUP context.  Set false for fault-injection /
+ * chaos testing to force remote-master path on all acquires.
+ */
+bool cluster_local_fast_path_enabled = true;
+
 
 /*
  * Mapping from the cluster.interconnect_tier GUC enum string to the
@@ -1103,4 +1117,29 @@ cluster_init_guc(void)
 					 "restart required to flip ownership (HC1 fail-closed "
 					 "startup-time fallback;spec-2.18 §1.4 F1 deferred wording)。"),
 		&cluster_lms_enabled, true, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+
+	/* spec-2.21 D2:emergency bypass GUC */
+	DefineCustomBoolVariable(
+		"cluster.lock_acquire_cluster_path",
+		gettext_noop("Enable the cluster lock acquire gate path."),
+		gettext_noop("When true (default), PG LockAcquireExtended routes "
+					 "cluster-aware locks (LOCKTAG_ADVISORY xact-level) "
+					 "through the 7-step state machine.  When false, all "
+					 "locks skip the cluster gate and use PG-native path "
+					 "only — emergency bypass for P0 incidents.  "
+					 "PGC_POSTMASTER:restart required."),
+		&cluster_lock_acquire_cluster_path, true, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+
+	/* spec-2.21 D2:local-fast-path toggle GUC */
+	DefineCustomBoolVariable(
+		"cluster.local_fast_path_enabled",
+		gettext_noop("Enable the S3 local-fast-path 5-check (local master + "
+					 "no remote holder/waiter/convert + generation stable)."),
+		gettext_noop("When true (default), cluster lock acquires on resources "
+					 "mastered locally with no remote contention bypass the "
+					 "LMS work_queue.  When false, all acquires take the "
+					 "remote-master path — perf degradation ~10x vs "
+					 "spec-1.23 baseline; for fault-injection / chaos "
+					 "testing.  PGC_SIGHUP."),
+		&cluster_local_fast_path_enabled, true, PGC_SIGHUP, 0, NULL, NULL, NULL);
 }

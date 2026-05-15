@@ -68,8 +68,8 @@
 #ifndef CLUSTER_LOCK_ACQUIRE_H
 #define CLUSTER_LOCK_ACQUIRE_H
 
-#include "cluster/cluster_grd.h" /* ClusterResId */
-#include "storage/lock.h"		 /* LOCKMODE */
+#include "cluster/cluster_grd.h" /* ClusterResId + ClusterGrdHolderId */
+#include "storage/lock.h"		 /* LOCKMODE / LOCKTAG */
 
 
 /*
@@ -85,6 +85,7 @@ typedef enum ClusterLockAcquireResult {
 	CLUSTER_LOCK_ACQUIRE_OK_CONVERTED = 1, /* S5 promote success(mode convert) */
 	CLUSTER_LOCK_ACQUIRE_PENDING = 2,	   /* S4 async wait — caller waits GES_REPLY */
 	CLUSTER_LOCK_ACQUIRE_OK_NATIVE = 3,	   /* cluster gate disabled; caller uses PG-native path */
+	CLUSTER_LOCK_ACQUIRE_NEED_PG_NATIVE_LOCK = 4, /* spec-2.21:S1-S4 reservation/grant 完成,caller(lock.c)调 PG-native LockAcquire + S5 promote */
 	CLUSTER_LOCK_ACQUIRE_FAIL_LMS_UNAVAILABLE = 10,	 /* S1 53R80 fail-closed */
 	CLUSTER_LOCK_ACQUIRE_FAIL_GRD_NOT_READY = 11,	 /* S2 cluster.grd_max_entries=0 */
 	CLUSTER_LOCK_ACQUIRE_FAIL_RESERVATION_FULL = 12, /* S3 GRD entry full / 53R71 */
@@ -107,12 +108,33 @@ typedef enum ClusterLockAcquireResult {
  */
 typedef struct ClusterLockAcquireRequest {
 	ClusterResId resid; /* 16B canonical wire-encoded ResId(spec-2.14 ship)*/
+	LOCKTAG locktag;	/* spec-2.21 D1:caller PG LOCKTAG for IsClusterLockTag predicate + identity validation */
 	LOCKMODE lockmode;	/* requested PG lock mode */
 	int lockmethod_id;	/* DEFAULT_LOCKMETHOD / SHORT_LOCKMETHOD / cluster-aware class */
 	bool dontwait;		/* true → S4 immediate ConditionalLock semantic(no wait)*/
+	bool sessionLock;	/* spec-2.21 D1:HC11 session advisory stays native;sessionLock=true 不进 cluster path */
+	ClusterGrdHolderId holder; /* spec-2.21 D1:S3 reservation pin / S5 promote / S6 release identity */
+	uint64 request_id;	/* spec-2.21 D1:per-acquire monotonic id;LOCALLOCK exactly-once registration key */
+	uint64 master_gen_snapshot; /* spec-2.21 P2.3:S3 acquire 时 snapshot,S5 revalidate fail → backout */
 	uint64
 		caller_local_start_ts_ms; /* spec-2.17 P2.2 deterministic 4-tuple — DESC = newer = youngest victim */
 } ClusterLockAcquireRequest;
+
+/*
+ * ClusterLockReleaseRequest — spec-2.21 D1:cluster_lock_release() input.
+ *
+ *	D2/D3 LockRelease / LockReleaseAll / ResourceOwnerReleaseInternal hook
+ *	填充此 struct + 调 cluster_lock_release()。LOCALLOCK->cluster_registered
+ *	gate exactly-once 调用(HC9 grant/release 对称契约)。
+ */
+typedef struct ClusterLockReleaseRequest {
+	LOCKTAG locktag;	/* identity */
+	LOCKMODE lockmode;
+	bool sessionLock;
+	ClusterGrdHolderId holder; /* from LOCALLOCK->cluster_holder */
+	uint64 request_id;		   /* from LOCALLOCK->cluster_request_id */
+	bool cluster_registered;   /* from LOCALLOCK->cluster_registered */
+} ClusterLockReleaseRequest;
 
 
 /*
@@ -198,10 +220,62 @@ cluster_lock_acquire_s7_cleanup(const ClusterLockAcquireRequest *req);
 
 
 /*
+ * spec-2.21 D1:cluster_lock_should_globalize — PG hot-path gate predicate
+ *	inline helper.  Returns true iff this lock should enter the cluster
+ *	7-step state machine instead of PG-native LockAcquire only.
+ *
+ *	MVP scope(spec-2.21 v0.3 frozen):仅 transaction-level LOCKTAG_ADVISORY
+ *	(per Q3 v1.1 + HC11 session advisory stays native)。
+ *
+ *	预期 cache-hot inline path ≤ 2 ns;static_inline 避免 function call。
+ */
+static inline bool
+cluster_lock_should_globalize(const LOCKTAG *locktag, LOCKMODE lockmode pg_attribute_unused(),
+							  bool sessionLock)
+{
+	if (locktag == NULL)
+		return false;
+	if (sessionLock)
+		return false;	/* HC11: session advisory stays native */
+	return (locktag->locktag_type == LOCKTAG_ADVISORY);
+}
+
+
+/*
+ * spec-2.21 D1:cluster_lock_release — normal release path entry.
+ *
+ *	D2 LockRelease / LockReleaseAll + D3 ResourceOwnerReleaseInternal(LOCKS)
+ *	hook 调此函数;LOCALLOCK->cluster_registered=true 且 nLocks==1 时调用,
+ *	exactly-once 契约 HC9。
+ */
+extern void cluster_lock_release(const ClusterLockReleaseRequest *req);
+
+
+/*
+ * spec-2.21 D4 P2.3:S5 promote with revalidate;失败 5-step backout 序列
+ *	(cancel reservation + ereport caller responsibility)。
+ *
+ *	master_gen_snapshot:S3 acquire 时 snapshot(写入 req->master_gen_snapshot)。
+ */
+extern ClusterLockAcquireResult
+cluster_lock_acquire_s5_promote(const ClusterLockAcquireRequest *req);
+
+
+/*
  * Read-only accessor — 7-step S1-S7 path counters(diagnostics only;
  *	不预设 production-granularity per spec-2.20 v0.4 frozen scope)。
  */
 extern uint64 cluster_lock_acquire_s1_entry_count(void);
 extern uint64 cluster_lock_acquire_s7_cleanup_count(void);
+
+/*
+ * spec-2.21 D4 P2.4:NEW dump_cluster_lock_acquire — 6 emit_row(s1_entry /
+ *	s3_reservation / s4_remote / s5_promote / s6_release / s7_cleanup)
+ *	供 030_acceptance L18 HC9 grant-release 对称 acceptance gate。
+ */
+extern void cluster_lock_acquire_dump(void (*emit_row)(void *cookie,
+													   const char *key,
+													   const char *value),
+									  void *cookie);
 
 #endif /* CLUSTER_LOCK_ACQUIRE_H */

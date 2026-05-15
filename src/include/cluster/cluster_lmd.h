@@ -300,6 +300,15 @@ extern bool cluster_lmd_is_ready(void);
 extern void cluster_lmd_submit_wait_edge(void);
 
 /*
+ * spec-2.21 D7:cluster_lmd_cancel_wait_edge — 对称 stub counter ++.
+ *
+ *	S7 cleanup / FAIL_* 路径调用对称 cancel(no-op except atomic counter);
+ *	real wait-edge removal 推 spec-2.22 LMD Tarjan(L107 forward-link)。
+ *	无 LMD shmem 时 no-op safe(spec-2.19 shmem may be NULL early init)。
+ */
+extern void cluster_lmd_cancel_wait_edge(void);
+
+/*
  * shmem region helpers — registered by cluster_init_shmem_module()
  * via the spec-1.3 region registry.
  */
