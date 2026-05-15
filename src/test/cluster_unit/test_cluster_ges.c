@@ -444,6 +444,7 @@ UT_TEST(test_ges_request_valid_payload_enqueues_work)
 	memset(&env, 0, sizeof(env));
 	env.source_node_id = 1;
 	env.epoch = 0;
+	env.payload_length = sizeof(GesRequestPayload);
 
 	memset(&req, 0, sizeof(req));
 	req.opcode = GES_REQ_OPCODE_REQUEST;
@@ -517,6 +518,7 @@ test_ges_bast_opcode_validates_as_target_local(void)
 	memset(&env, 0, sizeof(env));
 	env.source_node_id = 1; /* master */
 	env.epoch = 0;
+	env.payload_length = sizeof(GesRequestPayload);
 
 	memset(&req, 0, sizeof(req));
 	req.opcode = GES_REQ_OPCODE_BAST;
@@ -543,6 +545,7 @@ test_ges_bast_ack_opcode_validates_as_source_holder(void)
 	memset(&env, 0, sizeof(env));
 	env.source_node_id = 1; /* holder */
 	env.epoch = 0;
+	env.payload_length = sizeof(GesRequestPayload);
 
 	memset(&req, 0, sizeof(req));
 	req.opcode = GES_REQ_OPCODE_BAST_ACK;

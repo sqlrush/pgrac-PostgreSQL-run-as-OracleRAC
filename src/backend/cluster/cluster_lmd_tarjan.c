@@ -55,31 +55,6 @@
 
 
 /* ============================================================
- * Counters (file-static atomic — accessed via *_get accessors).
- * ============================================================ */
-
-static pg_atomic_uint64 tarjan_scan_count;
-static pg_atomic_uint64 cycle_detected_count;
-static pg_atomic_uint64 victim_cancel_sent_count;
-static pg_atomic_uint64 revalidate_fail_count;
-static pg_atomic_uint64 cross_node_victim_pending_count;
-static bool tarjan_counters_initialized = false;
-
-static void
-ensure_tarjan_counters_init(void)
-{
-	if (!tarjan_counters_initialized) {
-		pg_atomic_init_u64(&tarjan_scan_count, 0);
-		pg_atomic_init_u64(&cycle_detected_count, 0);
-		pg_atomic_init_u64(&victim_cancel_sent_count, 0);
-		pg_atomic_init_u64(&revalidate_fail_count, 0);
-		pg_atomic_init_u64(&cross_node_victim_pending_count, 0);
-		tarjan_counters_initialized = true;
-	}
-}
-
-
-/* ============================================================
  * Vertex compare (A4 deterministic youngest).
  *
  *	Ordering = youngest first DESC by:
@@ -127,9 +102,8 @@ vertex_youngest_first_cmp(const ClusterLmdVertex *a, const ClusterLmdVertex *b)
  *	cluster_lmd_tarjan_pick_victim:  walk cycle vertices,return
  *	  vertex with min vertex_youngest_first_cmp (== youngest).
  *
- *	cluster_lmd_tarjan_revalidate:  re-snapshot graph; verify cycle
- *	  vertices still all present as waiters in current snapshot;
- *	  return true if cycle is real.
+ *	cluster_lmd_tarjan_revalidate:  re-snapshot graph; verify that a real
+ *	  cycle over the same vertex set still exists in the current snapshot.
  * ============================================================ */
 
 /* internal: find vertex index in dedup list, returning -1 if not found */
@@ -342,42 +316,64 @@ bool
 cluster_lmd_tarjan_revalidate(const ClusterLmdVertex *cycle_vertices, int nvertices,
 							  uint64 snapshot_generation)
 {
-	uint64 cur_gen;
 	int max_edges = cluster_lmd_max_wait_edges;
 	ClusterLmdWaitEdge *fresh;
+	ClusterLmdWaitEdge *induced;
+	ClusterLmdVertex *fresh_cycle_vertices;
 	int n_fresh;
 	uint64 fresh_gen;
-	int found_count;
+	int n_induced = 0;
+	int fresh_cycle_count = 0;
+	int n_fresh_cycle_vertices;
+	bool valid = false;
 
 	if (nvertices <= 0)
 		return false;
-
-	cur_gen = cluster_lmd_graph_generation_get();
-	(void)cur_gen; /* gen may have moved — that's fine if cycle edges
-					 * still hold in fresh snapshot */
+	if (max_edges < 64)
+		max_edges = 64;
+	if (max_edges > 65536)
+		max_edges = 65536;
 
 	fresh = (ClusterLmdWaitEdge *)palloc(sizeof(ClusterLmdWaitEdge) * max_edges);
 	n_fresh = cluster_lmd_graph_snapshot_copy(fresh, max_edges, &fresh_gen);
+	(void)snapshot_generation;
 	(void)fresh_gen;
 
-	/* Verify every cycle vertex is still a waiter in fresh snapshot. */
-	found_count = 0;
-	for (int v = 0; v < nvertices; v++) {
-		for (int e = 0; e < n_fresh; e++) {
-			if (fresh[e].waiter.node_id == cycle_vertices[v].node_id
-				&& fresh[e].waiter.procno == cycle_vertices[v].procno
-				&& fresh[e].waiter.request_id == cycle_vertices[v].request_id
-				&& fresh[e].waiter.cluster_epoch == cycle_vertices[v].cluster_epoch) {
-				found_count++;
-				break;
+	/*
+	 * Revalidation must prove that a real cycle still exists among the same
+	 * vertex set.  "Each vertex is still waiting" is not enough: A->B/B->A
+	 * can become A->C/B->D and must not cancel either backend.
+	 */
+	induced = (ClusterLmdWaitEdge *)palloc(sizeof(ClusterLmdWaitEdge) * Max(n_fresh, 1));
+	for (int e = 0; e < n_fresh; e++) {
+		if (find_vertex_index(cycle_vertices, nvertices, &fresh[e].waiter) >= 0
+			&& find_vertex_index(cycle_vertices, nvertices, &fresh[e].blocker) >= 0)
+			induced[n_induced++] = fresh[e];
+	}
+
+	if (n_induced > 0) {
+		fresh_cycle_vertices = (ClusterLmdVertex *)palloc(sizeof(ClusterLmdVertex) * nvertices);
+		n_fresh_cycle_vertices = cluster_lmd_tarjan_scan_snapshot(
+			induced, n_induced, fresh_cycle_vertices, nvertices, &fresh_cycle_count);
+		if (fresh_cycle_count == 1 && n_fresh_cycle_vertices == nvertices) {
+			valid = true;
+			for (int v = 0; v < nvertices; v++) {
+				if (find_vertex_index(fresh_cycle_vertices, n_fresh_cycle_vertices,
+									  &cycle_vertices[v])
+					< 0) {
+					valid = false;
+					break;
+				}
 			}
 		}
+		pfree(fresh_cycle_vertices);
 	}
+	pfree(induced);
 	pfree(fresh);
 
-	if (found_count == nvertices)
+	if (valid)
 		return true;
-	pg_atomic_fetch_add_u64(&revalidate_fail_count, 1);
+	cluster_lmd_revalidate_fail_count_inc(1);
 	return false;
 }
 
@@ -417,8 +413,12 @@ cluster_lmd_tarjan_run_local_scan(void)
 	int idx;
 	int32 self_node;
 
-	ensure_tarjan_counters_init();
-	pg_atomic_fetch_add_u64(&tarjan_scan_count, 1);
+	if (max_edges < 64)
+		max_edges = 64;
+	if (max_edges > 65536)
+		max_edges = 65536;
+
+	cluster_lmd_tarjan_scan_count_inc(1);
 
 	snapshot = (ClusterLmdWaitEdge *)palloc(sizeof(ClusterLmdWaitEdge) * max_edges);
 	nedges = cluster_lmd_graph_snapshot_copy(snapshot, max_edges, &gen_at_snapshot);
@@ -437,7 +437,7 @@ cluster_lmd_tarjan_run_local_scan(void)
 		return;
 	}
 
-	pg_atomic_fetch_add_u64(&cycle_detected_count, cycle_count);
+	cluster_lmd_cycle_detected_count_inc(cycle_count);
 
 	/* Flat cycle vertices: SCC1 vertices, SCC2 vertices, ... — but we
 	 * don't track SCC boundaries explicitly.  For MVP: treat the entire
@@ -454,15 +454,15 @@ cluster_lmd_tarjan_run_local_scan(void)
 		if (cluster_lmd_tarjan_revalidate(&cycle_vertices[idx], scc_end - idx, gen_at_snapshot)) {
 			if (victim.node_id == self_node) {
 				/* D8 wire — set local backend cancel flag.  Implementation
-				 * forward-link:  cluster_lmd_signal_local_victim(procno). */
+					 * forward-link:  cluster_lmd_signal_local_victim(procno). */
 				extern void cluster_lmd_signal_local_victim(uint32 procno, uint64 request_id,
 															uint64 cluster_epoch);
 				cluster_lmd_signal_local_victim(victim.procno, victim.request_id,
 												victim.cluster_epoch);
-				pg_atomic_fetch_add_u64(&victim_cancel_sent_count, 1);
+				cluster_lmd_victim_cancel_sent_count_inc(1);
 			} else {
 				/* Cross-node victim — production forwarding 推 spec-2.23. */
-				pg_atomic_fetch_add_u64(&cross_node_victim_pending_count, 1);
+				cluster_lmd_cross_node_victim_pending_count_inc(1);
 				ereport(LOG, (errmsg("cluster LMD cross-node deadlock victim on node %d"
 									 " (procno=%u request_id=" UINT64_FORMAT ");"
 									 " cross-node cancel forwarding will be wired in spec-2.23",
@@ -482,46 +482,6 @@ void
 cluster_lmd_run_tarjan_scan_now(void)
 {
 	cluster_lmd_tarjan_run_local_scan();
-}
-
-
-/* ============================================================
- * Counter accessors — public API.
- * ============================================================ */
-
-uint64
-cluster_lmd_tarjan_scan_count_get(void)
-{
-	ensure_tarjan_counters_init();
-	return pg_atomic_read_u64(&tarjan_scan_count);
-}
-
-uint64
-cluster_lmd_cycle_detected_count_get(void)
-{
-	ensure_tarjan_counters_init();
-	return pg_atomic_read_u64(&cycle_detected_count);
-}
-
-uint64
-cluster_lmd_victim_cancel_sent_count_get(void)
-{
-	ensure_tarjan_counters_init();
-	return pg_atomic_read_u64(&victim_cancel_sent_count);
-}
-
-uint64
-cluster_lmd_revalidate_fail_count_get(void)
-{
-	ensure_tarjan_counters_init();
-	return pg_atomic_read_u64(&revalidate_fail_count);
-}
-
-uint64
-cluster_lmd_cross_node_victim_pending_count_get(void)
-{
-	ensure_tarjan_counters_init();
-	return pg_atomic_read_u64(&cross_node_victim_pending_count);
 }
 
 

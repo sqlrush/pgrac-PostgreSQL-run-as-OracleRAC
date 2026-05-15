@@ -9,11 +9,11 @@
  *	  ClusterLmdShmem daemon-state region, per L98 ownership).
  *
  *	  Vertex identity is the 4-tuple (node_id, procno, cluster_epoch,
- *	  request_id) per HC13.  HTAB internally indexes by
- *	  (node_id, procno, request_id) — a 16-byte slim key — but exposed
- *	  semantics walk full 40-byte vertex.  Sort metadata (xid,
- *	  local_start_ts_ms) is opaque to the graph layer;Tarjan picks
- *	  victims using sort metadata after snapshot copy.
+ *	  request_id) per HC13.  The HTAB key uses the full identity; this is
+ *	  required because procno + request_id can be reused after backend exit
+ *	  across epochs.  Sort metadata (xid, local_start_ts_ms) is opaque to
+ *	  the graph layer;Tarjan picks victims using sort metadata after
+ *	  snapshot copy.
  *
  *	  Cap surface:cluster.lmd_max_wait_edges GUC (default 1024).
  *	  Overflow fail-closed per HC12 (P1.2) — submit returns false;
@@ -54,17 +54,17 @@
 
 
 /* ============================================================
- * Slim HTAB key — 16 bytes.  Full vertex identity (40 bytes) stored in
- * the entry payload so callers always see complete identity (HC13).
+ * HTAB key — full vertex identity.  Sort metadata is deliberately excluded.
  * ============================================================ */
 
 typedef struct LmdEdgeKey {
 	int32 node_id;
 	uint32 procno;
+	uint64 cluster_epoch;
 	uint64 request_id;
 } LmdEdgeKey;
 
-StaticAssertDecl(sizeof(LmdEdgeKey) == 16, "LmdEdgeKey HTAB key ABI 16-byte lock");
+StaticAssertDecl(sizeof(LmdEdgeKey) == 24, "LmdEdgeKey HTAB key ABI 24-byte lock");
 
 typedef struct LmdEdgeEntry {
 	LmdEdgeKey key; /* HTAB key — must be first field */
@@ -83,6 +83,11 @@ typedef struct ClusterLmdGraphShared {
 	pg_atomic_uint64 edge_count; /* current edge count (cached) */
 	pg_atomic_uint64 wait_edge_full_count;
 	pg_atomic_uint64 inject_call_count;
+	pg_atomic_uint64 tarjan_scan_count;
+	pg_atomic_uint64 cycle_detected_count;
+	pg_atomic_uint64 victim_cancel_sent_count;
+	pg_atomic_uint64 revalidate_fail_count;
+	pg_atomic_uint64 cross_node_victim_pending_count;
 	int max_edges; /* snapshot of cluster.lmd_max_wait_edges at init */
 } ClusterLmdGraphShared;
 
@@ -138,6 +143,11 @@ cluster_lmd_graph_shmem_init(void)
 		pg_atomic_init_u64(&cluster_lmd_graph_state->edge_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->wait_edge_full_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->inject_call_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->tarjan_scan_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cycle_detected_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->victim_cancel_sent_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->revalidate_fail_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count, 0);
 		cluster_lmd_graph_state->max_edges = max_edges;
 	}
 
@@ -159,6 +169,7 @@ make_key(const ClusterLmdVertex *v, LmdEdgeKey *out)
 	memset(out, 0, sizeof(*out)); /* clear padding for HTAB binary compare */
 	out->node_id = v->node_id;
 	out->procno = v->procno;
+	out->cluster_epoch = v->cluster_epoch;
 	out->request_id = v->request_id;
 }
 
@@ -177,12 +188,22 @@ cluster_lmd_graph_add_edge(const ClusterLmdWaitEdge *edge)
 	/* Reject self-cycle (defensive — caller must check before).  See
 	 * TAP 109 L3 scenario. */
 	if (edge->waiter.node_id == edge->blocker.node_id && edge->waiter.procno == edge->blocker.procno
+		&& edge->waiter.cluster_epoch == edge->blocker.cluster_epoch
 		&& edge->waiter.request_id == edge->blocker.request_id)
 		return false;
 
 	make_key(&edge->waiter, &key);
 
 	LWLockAcquire(&cluster_lmd_graph_state->lwlock, LW_EXCLUSIVE);
+
+	entry = (LmdEdgeEntry *)hash_search(cluster_lmd_graph_htab, &key, HASH_FIND, NULL);
+	if (entry != NULL) {
+		entry->edge = *edge;
+		entry->edge.graph_generation
+			= pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->generation, 1);
+		LWLockRelease(&cluster_lmd_graph_state->lwlock);
+		return true;
+	}
 
 	cur_count = pg_atomic_read_u64(&cluster_lmd_graph_state->edge_count);
 	if (cur_count >= (uint64)cluster_lmd_graph_state->max_edges) {
@@ -299,6 +320,81 @@ cluster_lmd_inject_call_count_inc(void)
 {
 	if (cluster_lmd_graph_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->inject_call_count, 1);
+}
+
+uint64
+cluster_lmd_tarjan_scan_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->tarjan_scan_count);
+}
+
+uint64
+cluster_lmd_cycle_detected_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->cycle_detected_count);
+}
+
+uint64
+cluster_lmd_victim_cancel_sent_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->victim_cancel_sent_count);
+}
+
+uint64
+cluster_lmd_revalidate_fail_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->revalidate_fail_count);
+}
+
+uint64
+cluster_lmd_cross_node_victim_pending_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count);
+}
+
+void
+cluster_lmd_tarjan_scan_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->tarjan_scan_count, delta);
+}
+
+void
+cluster_lmd_cycle_detected_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->cycle_detected_count, delta);
+}
+
+void
+cluster_lmd_victim_cancel_sent_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->victim_cancel_sent_count, delta);
+}
+
+void
+cluster_lmd_revalidate_fail_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->revalidate_fail_count, delta);
+}
+
+void
+cluster_lmd_cross_node_victim_pending_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count, delta);
 }
 
 

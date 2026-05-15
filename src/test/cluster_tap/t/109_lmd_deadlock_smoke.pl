@@ -44,7 +44,7 @@ $node->init;
 $node->append_conf('postgresql.conf', qq{
 cluster.node_id = 0
 cluster.lmd_scan_interval_ms = 200
-cluster.lmd_max_wait_edges = 16
+cluster.lmd_max_wait_edges = 64
 });
 $node->start;
 
@@ -71,37 +71,48 @@ sub inject_edge {
 		qq{SELECT pg_cluster_lmd_inject_wait_edge($wnode, $wproc, $wreq, $bnode, $bproc, $breq)});
 }
 
-# Helper: trigger LMD scan synchronously.  Currently no SQL-level entry;
-# rely on cluster.lmd_scan_interval_ms = 200ms + sleep.
-sub wait_for_scan {
-	sleep 1;
+# Helper: wait until a counter advances beyond a previously read value.
+sub wait_counter_gt {
+	my ($n, $key, $before) = @_;
+	return $n->poll_query_until(
+		'postgres',
+		qq{SELECT (SELECT value::bigint FROM pg_cluster_state WHERE category = 'lmd' AND key = '$key') > $before});
+}
+
+# Helper: update an existing waiter edge to a unique sink so prior cycles do
+# not pollute later scenarios.  There is no SQL remove helper in this spec.
+sub break_edge {
+	my ($n, $wproc, $wreq, $sink) = @_;
+	inject_edge($n, 0, $wproc, $wreq, 0, $sink, 900000 + $sink);
 }
 
 
 # L1 — single-node 2-vertex cycle:  A waits on B, B waits on A.
-my $scans_before = read_counter($node, 'tarjan_scan_count');
+my $cycles_before = read_counter($node, 'cycle_detected_count');
 inject_edge($node, 0, 100, 1001, 0, 200, 2001);
 inject_edge($node, 0, 200, 2001, 0, 100, 1001);
-wait_for_scan();
+ok(wait_counter_gt($node, 'cycle_detected_count', $cycles_before),
+   'L1 scan observed cycle counter advance');
 my $cycles_after = read_counter($node, 'cycle_detected_count');
-ok($cycles_after > 0, "L1 single-node 2-vertex cycle detected (cycle_detected_count=$cycles_after)");
+ok($cycles_after > $cycles_before,
+   "L1 single-node 2-vertex cycle detected (cycle_detected_count=$cycles_after)");
 
 # Clean up L1 edges.
-$node->safe_psql('postgres', qq{
-DO \$\$ BEGIN
-	PERFORM pg_cluster_lmd_inject_wait_edge(0, 100, 1001, 0, 200, 2001);
-	PERFORM pg_cluster_lmd_inject_wait_edge(0, 200, 2001, 0, 100, 1001);
-END \$\$;
-});
+break_edge($node, 100, 1001, 10000);
+break_edge($node, 200, 2001, 10001);
 
 
 # L2 — no-cycle 3-vertex chain:  A→B→C, no back edge.
 my $cycles_before_L2 = read_counter($node, 'cycle_detected_count');
 inject_edge($node, 0, 300, 3001, 0, 400, 4001);
 inject_edge($node, 0, 400, 4001, 0, 500, 5001);
-wait_for_scan();
+my $scans_before_L2 = read_counter($node, 'tarjan_scan_count');
+ok(wait_counter_gt($node, 'tarjan_scan_count', $scans_before_L2),
+   'L2 scan tick observed');
 my $cycles_after_L2 = read_counter($node, 'cycle_detected_count');
 is($cycles_after_L2, $cycles_before_L2, 'L2 no-cycle 3-vertex chain — no new cycle detected');
+break_edge($node, 300, 3001, 10002);
+break_edge($node, 400, 4001, 10003);
 
 
 # L3 — self-cycle defensive:  add_edge rejects waiter == blocker.
@@ -114,10 +125,14 @@ my $cycles_before_L4 = read_counter($node, 'cycle_detected_count');
 inject_edge($node, 0, 700, 7001, 0, 800, 8001);
 inject_edge($node, 0, 800, 8001, 0, 900, 9001);
 inject_edge($node, 0, 900, 9001, 0, 700, 7001);
-wait_for_scan();
+ok(wait_counter_gt($node, 'cycle_detected_count', $cycles_before_L4),
+   'L4 scan observed cycle counter advance');
 my $cycles_after_L4 = read_counter($node, 'cycle_detected_count');
 ok($cycles_after_L4 > $cycles_before_L4,
    "L4 multi-hop 3-vertex cycle detected (delta=$cycles_after_L4 vs $cycles_before_L4)");
+break_edge($node, 700, 7001, 10004);
+break_edge($node, 800, 8001, 10005);
+break_edge($node, 900, 9001, 10006);
 
 
 # L5 — victim cancel sent.  Victim selected by youngest sort tuple;
@@ -128,30 +143,37 @@ ok($cycles_after_L4 > $cycles_before_L4,
 my $cancels_before = read_counter($node, 'victim_cancel_sent_count');
 inject_edge($node, 0, 1100, 11001, 0, 1200, 12001);
 inject_edge($node, 0, 1200, 12001, 0, 1100, 11001);
-wait_for_scan();
+ok(wait_counter_gt($node, 'victim_cancel_sent_count', $cancels_before),
+   'L5 scan observed victim cancel counter advance');
 my $cancels_after = read_counter($node, 'victim_cancel_sent_count');
-ok($cancels_after >= $cancels_before,
-   "L5 victim_cancel_sent_count non-regressing ($cancels_before → $cancels_after)");
+ok($cancels_after > $cancels_before,
+   "L5 victim_cancel_sent_count incremented ($cancels_before → $cancels_after)");
+break_edge($node, 1100, 11001, 10007);
+break_edge($node, 1200, 12001, 10008);
 
 
-# L6 — revalidate fail advisory:  inject edges, then immediately remove
-# before scan revalidates.  In the current MVP this race is tight (200ms
-# scan interval) — assert that revalidate_fail_count is non-negative.
-my $reval_before = read_counter($node, 'revalidate_fail_count');
-my $reval_after = read_counter($node, 'revalidate_fail_count');
-ok($reval_after >= $reval_before, "L6 revalidate_fail_count observable (advisory only)");
+# L6/L7 — broken cycle must not produce a stale false cancel.  This covers the
+# revalidate hardening path at TAP level without needing a race injection hook.
+my $cycles_before_L6 = read_counter($node, 'cycle_detected_count');
+my $cancels_before_L6 = read_counter($node, 'victim_cancel_sent_count');
+inject_edge($node, 0, 1300, 13001, 0, 1400, 14001);
+inject_edge($node, 0, 1400, 14001, 0, 1300, 13001);
+break_edge($node, 1300, 13001, 10009);
+break_edge($node, 1400, 14001, 10010);
+my $scans_before_L6 = read_counter($node, 'tarjan_scan_count');
+ok(wait_counter_gt($node, 'tarjan_scan_count', $scans_before_L6),
+   'L6 scan tick observed after cycle was broken');
+is(read_counter($node, 'cycle_detected_count'), $cycles_before_L6,
+   'L6 broken cycle not counted as a live cycle');
+is(read_counter($node, 'victim_cancel_sent_count'), $cancels_before_L6,
+   'L7 stale/broken cycle does not send victim cancel');
 
 
-# L7 — stale snapshot no-cancel:  same race window but verify the
-# counter never causes data loss (just counter bump if observed).
-ok(1, 'L7 stale snapshot guard semantics (covered by L6 advisory invariant)');
-
-
-# L8 — wait_edge_full HC12:  inject >cluster.lmd_max_wait_edges (16) and
+# L8 — wait_edge_full HC12:  inject >cluster.lmd_max_wait_edges (64) and
 # verify both the SRF returns false AND wait_edge_full_count increments.
 my $full_before = read_counter($node, 'wait_edge_full_count');
 my $any_rejected = 'f';
-for my $i (1..32) {
+for my $i (1..96) {
 	my $r = inject_edge($node, 0, 5000 + $i, 50000 + $i, 0, 6000 + $i, 60000 + $i);
 	$any_rejected = 't' if $r eq 'f';
 }

@@ -79,14 +79,14 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '24',
-   'L2 pg_cluster_shmem returns 23 rows (spec-2.19 LMD region included)');
+	   '24',
+	   'L2 pg_cluster_shmem returns 24 rows (spec-2.22 LMD graph region included)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_cluster_shmem}),
-   'pgrac cluster conf,pgrac cluster control,pgrac cluster cssd,pgrac cluster diag,pgrac cluster epoch,pgrac cluster fence,pgrac cluster ges,pgrac cluster grd,pgrac cluster grd outbound,pgrac cluster grd pending,pgrac cluster grd work queue,pgrac cluster lck,pgrac cluster lmd,pgrac cluster lmon,pgrac cluster lms,pgrac cluster pcm grd,pgrac cluster qvotec,pgrac cluster reconfig,pgrac cluster scn,pgrac cluster smgr,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
-   'L3 pg_cluster_shmem rows are exactly the 23 foundational regions (spec-2.19 LMD included)');
+   'pgrac cluster conf,pgrac cluster control,pgrac cluster cssd,pgrac cluster diag,pgrac cluster epoch,pgrac cluster fence,pgrac cluster ges,pgrac cluster grd,pgrac cluster grd outbound,pgrac cluster grd pending,pgrac cluster grd work queue,pgrac cluster lck,pgrac cluster lmd,pgrac cluster lmd graph,pgrac cluster lmon,pgrac cluster lms,pgrac cluster pcm grd,pgrac cluster qvotec,pgrac cluster reconfig,pgrac cluster scn,pgrac cluster smgr,pgrac cluster startup phase,pgrac cluster stats,pgrac cluster_ic_tier1',
+   'L3 pg_cluster_shmem rows are exactly the 24 foundational regions (spec-2.22 LMD graph included)');
 
 
 # ----------
@@ -135,7 +135,7 @@ is($node->safe_psql(
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'shmem' AND key = 'region_count'}),
    '24',
-   'L8 pg_cluster_state.shmem.region_count = 23 (spec-2.19 LMD included)');
+   'L8 pg_cluster_state.shmem.region_count = 24 (spec-2.22 LMD graph included)');
 
 is($node->safe_psql(
 		'postgres', q{
@@ -155,14 +155,14 @@ is($node->safe_psql(
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.bytes'}),
    '24',
-   'L10 pg_cluster_state.shmem has 23 region.<name>.bytes keys (one per region)');
+   'L10 pg_cluster_state.shmem has 24 region.<name>.bytes keys (one per region)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.owner'}),
    '24',
-   'L11 pg_cluster_state.shmem has 23 region.<name>.owner keys (one per region)');
+   'L11 pg_cluster_state.shmem has 24 region.<name>.owner keys (one per region)');
 
 
 # ----------
@@ -175,8 +175,8 @@ is($node->safe_psql(
 	  FROM pg_settings
 	 WHERE name = 'cluster.shmem_max_regions'
 }),
-   'integer|postmaster|64|23|256',
-   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [23,256] (spec-2.19 LMD bumps min_val 22→23)');
+   'integer|postmaster|64|24|256',
+   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [24,256] (spec-2.22 LMD graph bumps min_val 23→24)');
 
 is($node->safe_psql(
 		'postgres',
@@ -233,24 +233,24 @@ is($node->safe_psql(
 
 
 # ----------
-# L18: GUC max_regions=23 (boundary minimum) admits all baseline regions.
+# L18: GUC max_regions=24 (boundary minimum) admits all baseline regions.
 # ----------
 $node->stop;
-$node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 23\n");
+$node->append_conf('postgresql.conf', "cluster.shmem_max_regions = 24\n");
 $node->start;
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
    '24',
-   'L18 cluster.shmem_max_regions = 23 exactly admits the 23 baseline regions (lower bound match)');
+   'L18 cluster.shmem_max_regions = 24 exactly admits the 24 baseline regions (lower bound match)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'guc' AND key = 'cluster.shmem_max_regions'}),
    '24',
-   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 23');
+   'L19 pg_cluster_state.guc.cluster.shmem_max_regions reflects override = 24');
 
 $node->stop;
 

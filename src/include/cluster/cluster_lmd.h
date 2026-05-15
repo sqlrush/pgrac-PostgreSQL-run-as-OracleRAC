@@ -317,8 +317,9 @@ extern void cluster_lmd_cancel_wait_edge(void);
  *	selection only — xid may be InvalidTransactionId for advisory locks
  *	acquired before any write, autovacuum, parallel workers, etc.
  *
- *	HTAB index 可优化 by (node_id, procno, request_id);snapshot/Tarjan
- *	内部 vertex key 是完整 identity 4-tuple (P1.3 semantic).
+ *	HTAB index uses the complete 4-tuple.  Omitting cluster_epoch would
+ *	allow stale procno/request_id reuse to overwrite or remove a live wait
+ *	edge after backend slot reuse.
  * ============================================================ */
 
 typedef struct ClusterLmdVertex {
@@ -377,6 +378,13 @@ extern uint64 cluster_lmd_victim_cancel_sent_count_get(void);
 extern uint64 cluster_lmd_revalidate_fail_count_get(void);
 extern uint64 cluster_lmd_cross_node_victim_pending_count_get(void);
 extern uint64 cluster_lmd_inject_call_count_get(void);
+
+/* Counter increments — LMD graph shmem-owned, called by Tarjan worker. */
+extern void cluster_lmd_tarjan_scan_count_inc(uint64 delta);
+extern void cluster_lmd_cycle_detected_count_inc(uint64 delta);
+extern void cluster_lmd_victim_cancel_sent_count_inc(uint64 delta);
+extern void cluster_lmd_revalidate_fail_count_inc(uint64 delta);
+extern void cluster_lmd_cross_node_victim_pending_count_inc(uint64 delta);
 
 /* D16 test-only injection helper (also surfaced via SQL SRF). */
 extern bool cluster_lmd_inject_wait_edge(const ClusterLmdVertex *waiter,

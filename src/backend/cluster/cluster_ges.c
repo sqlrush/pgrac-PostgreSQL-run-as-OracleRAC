@@ -172,6 +172,7 @@ void
 cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 {
 	const GesRequestPayload *req;
+	uint32 opcode;
 	uint64 holder_epoch;
 	bool payload_node_must_be_source;
 
@@ -181,6 +182,66 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	pg_atomic_fetch_add_u64(&cluster_ges_state->request_defer_count, 1);
 
 	if (payload == NULL) {
+		cluster_grd_inc_ges_inbound_validation_fail();
+		return;
+	}
+	if (env->payload_length < sizeof(uint32)) {
+		cluster_grd_inc_ges_inbound_validation_fail();
+		return;
+	}
+
+	memcpy(&opcode, payload, sizeof(opcode));
+
+	/*
+	 * DEADLOCK_PROBE / DEADLOCK_REPORT use dedicated payload structs, not the
+	 * 48-byte GesRequestPayload.  Handle them before the generic request cast
+	 * so a short PROBE frame cannot be misparsed as holder metadata.
+	 */
+	if (opcode == GES_REQ_OPCODE_DEADLOCK_PROBE) {
+		char report_buf[sizeof(GesDeadlockReportHeader)];
+		Size report_len = sizeof(report_buf);
+		const GesDeadlockProbePayload *probe;
+		uint64 accepted_epoch;
+
+		if (env->payload_length != sizeof(GesDeadlockProbePayload)) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			return;
+		}
+		probe = (const GesDeadlockProbePayload *)payload;
+		accepted_epoch = cluster_epoch_get_current();
+		if (probe->coordinator_node_id != env->source_node_id || env->epoch != accepted_epoch
+			|| cluster_conf_lookup_node((int32)env->source_node_id) == NULL
+			|| !cluster_qvotec_in_quorum() || (int)env->source_node_id == cluster_node_id) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			return;
+		}
+		if (cluster_lmd_is_ready()) {
+			(void)cluster_ges_deadlock_probe_handler(probe, report_buf, &report_len);
+			return;
+		}
+		cluster_grd_inc_deadlock_probe_drop();
+		return;
+	}
+	if (opcode == GES_REQ_OPCODE_DEADLOCK_REPORT) {
+		const GesDeadlockReportHeader *report;
+		uint64 accepted_epoch;
+
+		if (env->payload_length < sizeof(GesDeadlockReportHeader)) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			return;
+		}
+		report = (const GesDeadlockReportHeader *)payload;
+		accepted_epoch = cluster_epoch_get_current();
+		if (report->responding_node_id != env->source_node_id || env->epoch != accepted_epoch
+			|| cluster_conf_lookup_node((int32)env->source_node_id) == NULL
+			|| !cluster_qvotec_in_quorum() || (int)env->source_node_id == cluster_node_id) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			return;
+		}
+		/* Collection/union Tarjan is deferred to the cross-node activation spec. */
+		return;
+	}
+	if (env->payload_length != sizeof(GesRequestPayload)) {
 		cluster_grd_inc_ges_inbound_validation_fail();
 		return;
 	}
@@ -214,47 +275,16 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	case GES_REQ_OPCODE_BAST_ACK:
 		cluster_grd_inc_bast_ack();
 		return;
-	case GES_REQ_OPCODE_DEADLOCK_PROBE:
-		/*
-		 * spec-2.19 Sprint A Step 3 D8 — LMD ownership gate.  HC4 exact
-		 * predicate (v0.3 codex P1.5):cluster_lmd_is_ready() returns true
-		 * iff state == CLUSTER_LMD_READY.  禁止 `state >= LMD_READY` 数值
-		 * 比较 (enum 不连续 DRAINING=3 / STOPPED=4 / DISABLED=5).
-		 *
-		 *   - LMD READY → submit_wait_edge consumes the probe (HC6 skeleton:
-		 *     ++lmd_edge_submission_count + ConditionVariableBroadcast; real
-		 *     wait-for graph maintenance + Tarjan defer spec-2.20+).
-		 *   - LMD not READY (DISABLED / NOT_STARTED / STARTING / DRAINING /
-		 *     STOPPED / CRASHED) → caller-side legacy drop (spec-2.17
-		 *     placeholder retained; cluster.lmd_enabled=off startup-time
-		 *     fallback path).  HC1 fail-closed for backend-facing call paths
-		 *     applies in spec-2.20+ when caller-side legacy is fully
-		 *     deprecated — inter-instance opcode handler here cannot
-		 *     ereport(ERROR) without crashing LMON.
-		 *
-		 * v0.2 P1.3 (53R81 backend-facing fail-closed):this opcode handler
-		 * is the inter-instance receiver path (probe arrives from another
-		 * node);53R81 ereport applies to backend-facing local API at the
-		 * lock acquisition path which lands in spec-2.20+ with the 7-step
-		 * state machine wire callsite.
-		 *
-		 * v0.3 P1.6 / HC6 skeleton 占位不等于假装工作:LMD does not save
-		 * the probe / does not maintain graph;only submission counter +
-		 * CV broadcast.  Real graph maintenance推 spec-2.20+ 同 spec ship
-		 * producer + consumer (L114 family).
-		 */
-		if (cluster_lmd_is_ready()) {
-			cluster_lmd_submit_wait_edge();
-			return;
-		}
-		cluster_grd_inc_deadlock_probe_drop();
-		return;
 	case GES_REQ_OPCODE_CANCEL_PENDING:
 		return;
 	case GES_REQ_OPCODE_REQUEST:
 	case GES_REQ_OPCODE_CONVERT:
 	case GES_REQ_OPCODE_RELEASE:
 		break;
+	case GES_REQ_OPCODE_DEADLOCK_PROBE:
+	case GES_REQ_OPCODE_DEADLOCK_REPORT:
+		cluster_grd_inc_ges_inbound_validation_fail();
+		return;
 	}
 
 	/* Phase 1 (handler):  enqueue into work_queue.  Grant decision runs
