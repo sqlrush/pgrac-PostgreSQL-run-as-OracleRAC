@@ -1228,6 +1228,11 @@ cluster_lmd_get_started_count(void)
 {
 	return 0;
 }
+TimestampTz
+cluster_lmd_get_ready_at(void)
+{
+	return 0;
+}
 uint64
 cluster_lmd_get_edge_submission_count(void)
 {
