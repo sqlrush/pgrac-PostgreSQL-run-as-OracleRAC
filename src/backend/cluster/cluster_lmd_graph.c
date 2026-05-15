@@ -118,13 +118,6 @@ cluster_lmd_graph_shmem_size(void)
 }
 
 void
-cluster_lmd_graph_shmem_request(void)
-{
-	/* spec-2.22 D5:uses built-in tranche LWTRANCHE_CLUSTER_LMD_GRAPH,
-	 * no named tranche needed (mirror spec-2.19 cluster_lmd pattern). */
-}
-
-void
 cluster_lmd_graph_shmem_init(void)
 {
 	bool found;

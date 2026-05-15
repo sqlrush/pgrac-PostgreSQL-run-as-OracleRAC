@@ -386,7 +386,6 @@ extern void cluster_lmd_inject_call_count_inc(void);
 
 /* spec-2.22 D4/D5 — graph shmem region API (registered via spec-1.3 registry). */
 extern Size cluster_lmd_graph_shmem_size(void);
-extern void cluster_lmd_graph_shmem_request(void);
 extern void cluster_lmd_graph_shmem_init(void);
 
 /* Graph low-level mutators (used by cluster_lmd_tarjan.c + D16 SRF). */

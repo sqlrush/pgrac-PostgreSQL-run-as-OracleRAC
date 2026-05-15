@@ -254,10 +254,6 @@ cluster_lmd_graph_shmem_size(void)
 }
 
 void
-cluster_lmd_graph_shmem_request(void)
-{}
-
-void
 cluster_lmd_graph_shmem_init(void)
 {}
 
