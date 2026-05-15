@@ -196,6 +196,8 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_CLUSTER_LMD_STARTUP,
 	WAIT_EVENT_CLUSTER_LMD_SCAN,
 	WAIT_EVENT_CLUSTER_LMD_IDLE,
+	/* spec-2.20 D12: 7-step caller-side S4 cross-node wait. */
+	WAIT_EVENT_CLUSTER_GES_S4_WAIT,
 };
 
 /* Compile-time assertion: array length must match the documented count. */

@@ -877,8 +877,16 @@ dump_lms(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "lms", "lms_started_count", fmt_int64((int64)cluster_lms_get_started_count()));
 	emit_row(rsinfo, "lms", "lms_work_drained_count",
 			 fmt_int64((int64)cluster_lms_get_work_drained_count()));
-	emit_row(rsinfo, "lms", "lms_decision_count",
-			 fmt_int64((int64)cluster_lms_get_decision_count()));
+	/*
+	 * spec-2.20 D10 — 3 NEW counter (grant/reject/convert) replacing
+	 * single lms_decision_count.  Mutually exclusive per decision.
+	 */
+	emit_row(rsinfo, "lms", "lms_decision_grant_count",
+			 fmt_int64((int64)cluster_lms_get_decision_grant_count()));
+	emit_row(rsinfo, "lms", "lms_decision_reject_count",
+			 fmt_int64((int64)cluster_lms_get_decision_reject_count()));
+	emit_row(rsinfo, "lms", "lms_decision_convert_count",
+			 fmt_int64((int64)cluster_lms_get_decision_convert_count()));
 	emit_row(rsinfo, "lms", "lms_drain_empty_count",
 			 fmt_int64((int64)cluster_lms_get_drain_empty_count()));
 	emit_row(rsinfo, "lms", "lms_error_count", fmt_int64((int64)cluster_lms_get_error_count()));

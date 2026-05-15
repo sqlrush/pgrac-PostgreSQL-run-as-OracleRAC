@@ -432,6 +432,13 @@ typedef enum {
 	WAIT_EVENT_CLUSTER_LMD_STARTUP,
 	WAIT_EVENT_CLUSTER_LMD_SCAN,
 	WAIT_EVENT_CLUSTER_LMD_IDLE,
+	/*
+	 * spec-2.20 D12 (v0.3 frozen): 7-step caller-side S4 cross-node wait.
+	 * Backend waits for remote master grant decision after S3 reservation +
+	 * GES_REQUEST send;wake on GES_REPLY arrival or timeout (53R70).
+	 * Local-master fast path (A1) does NOT enter S4_WAIT (no remote IPC).
+	 */
+	WAIT_EVENT_CLUSTER_GES_S4_WAIT,
 } WaitEventCluster;
 
 

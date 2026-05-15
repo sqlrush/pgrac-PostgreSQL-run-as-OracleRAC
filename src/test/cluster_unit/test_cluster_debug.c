@@ -1192,8 +1192,23 @@ cluster_lms_get_work_drained_count(void)
 {
 	return 0;
 }
+/*
+ * spec-2.20 D9 — 3 NEW LMS decision counter stubs (replacing single
+ * lms_decision_count).  Each grant body inc exactly one (mutually
+ * exclusive).
+ */
 uint64
-cluster_lms_get_decision_count(void)
+cluster_lms_get_decision_grant_count(void)
+{
+	return 0;
+}
+uint64
+cluster_lms_get_decision_reject_count(void)
+{
+	return 0;
+}
+uint64
+cluster_lms_get_decision_convert_count(void)
 {
 	return 0;
 }

@@ -155,7 +155,10 @@ cluster_lms_shmem_init(void)
 		pg_atomic_init_u64(&cluster_lms_state->lms_started_count, 0);
 		pg_atomic_init_u64(&cluster_lms_state->lms_ready_at_us, 0);
 		pg_atomic_init_u64(&cluster_lms_state->lms_work_drained_count, 0);
-		pg_atomic_init_u64(&cluster_lms_state->lms_decision_count, 0);
+		/* spec-2.20 D4 — 3 NEW counter (replacing single lms_decision_count). */
+		pg_atomic_init_u64(&cluster_lms_state->lms_decision_grant_count, 0);
+		pg_atomic_init_u64(&cluster_lms_state->lms_decision_reject_count, 0);
+		pg_atomic_init_u64(&cluster_lms_state->lms_decision_convert_count, 0);
 		pg_atomic_init_u64(&cluster_lms_state->lms_drain_empty_count, 0);
 		pg_atomic_init_u64(&cluster_lms_state->lms_error_count, 0);
 		ConditionVariableInit(&cluster_lms_state->cv);
@@ -365,12 +368,35 @@ cluster_lms_get_work_drained_count(void)
 	return pg_atomic_read_u64(&cluster_lms_state->lms_work_drained_count);
 }
 
+/*
+ * spec-2.20 D9 — 3 NEW decision counter accessors.
+ *
+ *	Replaces the single cluster_lms_get_decision_count() — each grant
+ *	decision body in LWLock window inc exactly one of grant/reject/convert.
+ *	dump_lms (D10) + pg_cluster_lms view (D11) reflect the 3 counters.
+ */
 uint64
-cluster_lms_get_decision_count(void)
+cluster_lms_get_decision_grant_count(void)
 {
 	if (cluster_lms_state == NULL)
 		return 0;
-	return pg_atomic_read_u64(&cluster_lms_state->lms_decision_count);
+	return pg_atomic_read_u64(&cluster_lms_state->lms_decision_grant_count);
+}
+
+uint64
+cluster_lms_get_decision_reject_count(void)
+{
+	if (cluster_lms_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lms_state->lms_decision_reject_count);
+}
+
+uint64
+cluster_lms_get_decision_convert_count(void)
+{
+	if (cluster_lms_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lms_state->lms_decision_convert_count);
 }
 
 uint64

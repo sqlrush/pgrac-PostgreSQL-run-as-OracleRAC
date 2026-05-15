@@ -510,6 +510,12 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 53R72    E    ERRCODE_CLUSTER_GES_DEADLOCK                                   cluster_ges_deadlock
 53R73    E    ERRCODE_CLUSTER_GES_CANCEL_PENDING                             cluster_ges_cancel_pending
 
+# spec-2.20 D12 (v0.3 frozen):  LMS unavailable fail-closed (mirror 53R81).
+# Raised by spec-2.20 7-step caller-side gate when cluster.lms_enabled=on
+# but cluster_lms_is_ready() returns false (LMS state != READY).
+# Caller naturally retries / rolls back (PG canonical retry pattern).
+53R80    E    ERRCODE_CLUSTER_LMS_UNAVAILABLE                                cluster_lms_unavailable
+
 # spec-2.19 D12:  LMD unavailable fail-closed (HC1 / v0.2 P1.3)
 # 53R81 fires when backend caller-side deadlock detection path needs LMD
 # ownership (cluster.lmd_enabled = on) but cluster_lmd_is_ready() returns

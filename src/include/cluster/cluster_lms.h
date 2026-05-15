@@ -135,7 +135,9 @@ typedef enum ClusterLmsState {
  *	  - lms_started_count       : LMS startup events (monotone)
  *	  - lms_ready_at_us         : TimestampTz of last READY transition
  *	  - lms_work_drained_count  : successful work_queue drain pumps
- *	  - lms_decision_count      : total grant decisions (skeleton stub)
+ *	  - lms_decision_grant_count    : grant decisions (spec-2.20 D4)
+ *	  - lms_decision_reject_count   : reject decisions (spec-2.20 D4)
+ *	  - lms_decision_convert_count  : convert decisions (spec-2.20 D4)
  *	  - lms_drain_empty_count   : drain pumps that found empty queue
  *	  - lms_error_count         : ereport-class errors (LMS-owned counter)
  */
@@ -156,7 +158,14 @@ typedef struct ClusterLmsSharedState {
 	pg_atomic_uint64 lms_started_count;
 	pg_atomic_uint64 lms_ready_at_us;
 	pg_atomic_uint64 lms_work_drained_count;
-	pg_atomic_uint64 lms_decision_count;
+	/*
+	 * spec-2.20 D4 (v0.3 frozen) — grant/reject/convert 3 NEW atomic counter
+	 * (spec-2.18 §1.4 F2 deferred 真激活 wire).  Each LMS grant decision body
+	 * in LWLock window inc exactly one of the 3 (mutually exclusive).
+	 */
+	pg_atomic_uint64 lms_decision_grant_count;
+	pg_atomic_uint64 lms_decision_reject_count;
+	pg_atomic_uint64 lms_decision_convert_count;
 	pg_atomic_uint64 lms_drain_empty_count;
 	pg_atomic_uint64 lms_error_count;
 } ClusterLmsSharedState;
@@ -205,7 +214,13 @@ extern TimestampTz cluster_lms_get_spawned_at(void);
 extern TimestampTz cluster_lms_get_ready_at(void);
 extern uint64 cluster_lms_get_started_count(void);
 extern uint64 cluster_lms_get_work_drained_count(void);
-extern uint64 cluster_lms_get_decision_count(void);
+/*
+ * spec-2.20 D9 — 3 NEW decision counter accessors (grant/reject/convert).
+ * Each grant decision body inc exactly one (mutually exclusive).
+ */
+extern uint64 cluster_lms_get_decision_grant_count(void);
+extern uint64 cluster_lms_get_decision_reject_count(void);
+extern uint64 cluster_lms_get_decision_convert_count(void);
 extern uint64 cluster_lms_get_drain_empty_count(void);
 extern uint64 cluster_lms_get_error_count(void);
 

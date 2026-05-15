@@ -267,7 +267,13 @@
  * 53R81 SQLSTATE cluster_lmd_unavailable;ClusterLmdShmem region +
  * LWTRANCHE_CLUSTER_LMD;LmdProcess AuxProcType + NUM_AUXILIARY_PROCS
  * 13 → 14.  catversion bump for catalog tooling. */
-#define CATALOG_VERSION_NO 202605310
+/* spec-2.20 D12 (2026-05-15):  7-step state machine + LMS grant + LMD
+ * Tarjan production wire.  Adds 3 NEW LMS counter (grant/reject/convert)
+ * + pg_cluster_lms view 3 NEW column;53R80 SQLSTATE cluster_lms_unavailable
+ * (mirror 53R81 LMD_UNAVAILABLE);LMD wait-for graph shmem region
+ * "pgrac cluster lmd graph";WAIT_EVENT_CLUSTER_GES_S4_WAIT.  catversion
+ * bump for catalog tooling. */
+#define CATALOG_VERSION_NO 202605320
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId
