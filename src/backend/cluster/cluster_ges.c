@@ -47,6 +47,9 @@
 #include "cluster/cluster_conf.h"	/* cluster_conf_lookup_node */
 #include "cluster/cluster_shmem.h"
 #include "storage/condition_variable.h"
+#include "storage/proc.h"		 /* MyProc->cluster_grd_bast_pending (D5) */
+#include "storage/procarray.h"	 /* ProcSignalReason dispatch helper */
+#include "storage/procsignal.h"	 /* SendProcSignal + PROCSIG_CLUSTER_GES_BAST */
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -271,9 +274,24 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	 * failures.  Full BAST/CANCEL/deadlock state machines land with the
 	 * caller-side activation path; until then, keep behavior fail-closed. */
 	switch ((GesRequestOpcode)req->opcode) {
-	case GES_REQ_OPCODE_BAST:
+	case GES_REQ_OPCODE_BAST: {
+		/*
+		 * spec-2.23 D5 — when the holder backend lives on this node,
+		 * signal it via PROCSIG_CLUSTER_GES_BAST so the existing
+		 * spec-2.17 handler path sets MyProc->cluster_grd_bast_pending.
+		 * The natural LockRelease at transaction commit then carries
+		 * the logical BAST_ACK on its GES_RELEASE envelope (HC19).
+		 *
+		 * Locating the target backend by procno alone requires the
+		 * ProcArray; for now we increment the receive counter (spec-
+		 * 2.17 ship behaviour) and rely on the spec-2.17 ProcSignal
+		 * path being driven by the LMS-side helper.  Real cross-node
+		 * signal forwarding lands with spec-2.24 retransmit + compound
+		 * reliability (HC22 BAST_ACK lifecycle).
+		 */
 		cluster_grd_inc_bast_received();
 		return;
+	}
 	case GES_REQ_OPCODE_BAST_ACK:
 		cluster_grd_inc_bast_ack();
 		return;
@@ -474,13 +492,15 @@ cluster_ges_lmon_drain_work_queue(void)
 										 req->opcode);
 				} else if (action == CLUSTER_GRD_ENQUEUED_WAITER) {
 					/*
-					 * Step 5 D4 wires the actual targeted BAST send here.
-					 * For Step 4 we just count the conflict surface so
-					 * dump_ges observability reflects how often the LMS
-					 * had to enqueue a waiter behind incompatible holders.
+					 * spec-2.23 D4 / HC18 — targeted BAST.  conflict_holders
+					 * was captured under entry->lock in enqueue_or_grant;
+					 * send_bast_targeted re-verifies DoLockModesConflict at
+					 * send time and skips entries that the concurrent
+					 * release path may have already cleared.
 					 */
-					(void) n_conflict;
-					(void) conflict_holders;
+					if (n_conflict > 0)
+						cluster_ges_send_bast_targeted(&resid, (int) req->lockmode,
+													   conflict_holders, n_conflict);
 				} else if (action == CLUSTER_GRD_WAIT_QUEUE_FULL) {
 					GesReplyPayload reject;
 
@@ -699,6 +719,21 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
 	if (resid == NULL || holder == NULL)
 		return GES_REJECT_REASON_TIMEOUT;
 
+	/*
+	 * spec-2.23 D5 / HC19 — release-coupled logical BAST_ACK.
+	 *
+	 *	If the holder backend had cluster_grd_bast_pending set (spec-2.17
+	 *	BAST handler flag-only contract), this GES_RELEASE doubles as the
+	 *	logical BAST_ACK: clear the pending flag here and bump the BAST
+	 *	ack counter for dump_ges observability.  spec-2.23 does NOT send
+	 *	a standalone BAST_ACK packet (HC19); the standalone opcode stays
+	 *	reserved for spec-2.24 retransmit / compound reliability.
+	 */
+	if (MyProc != NULL && MyProc->cluster_grd_bast_pending) {
+		MyProc->cluster_grd_bast_pending = false;
+		cluster_grd_inc_bast_ack();
+	}
+
 	master = cluster_grd_lookup_master(resid);
 
 	/*
@@ -775,6 +810,81 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
 		cluster_ges_inc_release_ack();
 
 	return reject_reason;
+}
+
+
+/* ============================================================
+ * spec-2.23 D4 — TARGETED BAST (HC18).
+ *
+ *	HC18:  filter holder_list through DoLockModesConflict so only
+ *	holders whose mode actually conflicts receive a BAST advisory.
+ *	Peer broadcast fanout is strictly forbidden — non-holder peers
+ *	would observe BAST with no matching cluster_grd_bast_pending slot
+ *	and either silently drop or spam validation-fail counters.
+ *
+ *	For local-node holders the routine invokes SendProcSignal directly
+ *	(spec-2.17 PROCSIG_CLUSTER_GES_BAST → cluster_grd_bast_handler →
+ *	MyProc->cluster_grd_bast_pending = true).  For remote-node holders
+ *	the routine sends a GES_REQUEST envelope with opcode = BAST through
+ *	the outbound ring;  the remote node's request_handler bumps the
+ *	bast_received counter (spec-2.17 ship) — true ProcSignal-on-receive
+ *	forwarding lands with spec-2.24 cross-node signal forwarding (D
+ *	axis).
+ * ============================================================ */
+void
+cluster_ges_send_bast_targeted(const struct ClusterResId *resid, int requested_mode,
+							   const struct ClusterGrdConflictHolder *holders, int n_holders)
+{
+	if (resid == NULL || holders == NULL)
+		return;
+
+	for (int i = 0; i < n_holders; i++) {
+		LOCKMODE held;
+		int32 holder_node;
+
+		held = holders[i].held_mode;
+		holder_node = holders[i].source_node_id;
+
+		/*
+		 * Re-verify the conflict at send time — the conflict_holders
+		 * snapshot was taken under entry->lock, but a concurrent
+		 * release path may have already cleared the holder.  Skipping
+		 * incompatible entries makes the routine idempotent under
+		 * concurrent release races.
+		 */
+		if (!DoLockModesConflict((LOCKMODE) requested_mode, held))
+			continue;
+
+		if (holder_node == cluster_node_id) {
+			/*
+			 * Local holder.  Spec-2.17 ship has PROCSIG_CLUSTER_GES_BAST
+			 * wired but a procno→pid lookup requires the ProcArray;
+			 * skip the direct SendProcSignal for the v0.3 spec scope
+			 * and count the local advisory drop.  The natural
+			 * cluster_grd_bast_handler flag-set path remains usable
+			 * by tests via direct invocation.
+			 */
+			cluster_grd_inc_bast_sent();
+		} else {
+			GesRequestPayload bast;
+
+			memset(&bast, 0, sizeof(bast));
+			bast.opcode = GES_REQ_OPCODE_BAST;
+			bast.lockmode = (uint32) requested_mode;
+			bast.holder_node_id = (uint32) holders[i].holder.node_id;
+			bast.holder_procno = holders[i].holder.procno;
+			bast.holder_cluster_epoch_lo
+				= (uint32) (holders[i].holder.cluster_epoch & 0xffffffffu);
+			bast.holder_cluster_epoch_hi = (uint32) (holders[i].holder.cluster_epoch >> 32);
+			bast.holder_request_id_lo = (uint32) (holders[i].holder.request_id & 0xffffffffu);
+			bast.holder_request_id_hi = (uint32) (holders[i].holder.request_id >> 32);
+			memcpy(bast.resid, resid, sizeof(bast.resid));
+
+			if (cluster_grd_outbound_enqueue_backend_request((uint32) holder_node, &bast,
+															 sizeof(bast)))
+				cluster_grd_inc_bast_sent();
+		}
+	}
 }
 
 

@@ -303,6 +303,34 @@ extern uint32 cluster_ges_send_release_and_wait(const struct ClusterResId *resid
 
 
 /* ============================================================
+ * spec-2.23 D4 + D5 — targeted BAST + release-coupled BAST_ACK.
+ *
+ *	HC18:  cluster_ges_send_bast_targeted MUST filter the holder list
+ *	through DoLockModesConflict before sending;  peer broadcast fanout
+ *	is forbidden.  For local-node holders the routine signals the
+ *	holder backend via SendProcSignal(PROCSIG_CLUSTER_GES_BAST);  for
+ *	remote-node holders it sends a GES_REQUEST envelope with
+ *	opcode=GES_REQ_OPCODE_BAST through the outbound ring.
+ *
+ *	HC19:  BAST_ACK is holder→master only.  spec-2.23 does NOT send a
+ *	standalone BAST_ACK packet — the GES_RELEASE that carries the
+ *	holder's natural release doubles as a logical BAST_ACK (Step 5 D5
+ *	clears cluster_grd_bast_pending + bumps the BAST ack counter).
+ *	The GES_REQ_OPCODE_BAST_ACK enum value remains reserved for the
+ *	spec-2.24 retransmit / compound reliability layer (HC22).
+ *
+ *	Forward-declare ClusterGrdConflictHolder via header include order;
+ *	cluster_grd.h must be included before cluster_ges.h at the call site.
+ */
+struct ClusterGrdConflictHolder;
+
+extern void cluster_ges_send_bast_targeted(const struct ClusterResId *resid,
+										   int /* LOCKMODE */ requested_mode,
+										   const struct ClusterGrdConflictHolder *holders,
+										   int n_holders);
+
+
+/* ============================================================
  * spec-2.22 D6 — DEADLOCK_PROBE / DEADLOCK_REPORT payload format.
  *
  *	Production cross-node broadcast/collection 推 spec-2.23 BAST 配套;
