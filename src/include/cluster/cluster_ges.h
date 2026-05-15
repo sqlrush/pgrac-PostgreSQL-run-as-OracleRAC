@@ -184,7 +184,8 @@ typedef enum GesRequestOpcode {
 	GES_REQ_OPCODE_BAST = 4,		   /* master → holder advisory notify */
 	GES_REQ_OPCODE_BAST_ACK = 5,	   /* holder → master after natural release */
 	GES_REQ_OPCODE_DEADLOCK_PROBE = 6, /* coordinator → all nodes probe req */
-	GES_REQ_OPCODE_CANCEL_PENDING = 7  /* backend → master cancel pending */
+	GES_REQ_OPCODE_CANCEL_PENDING = 7, /* backend → master cancel pending */
+	GES_REQ_OPCODE_DEADLOCK_REPORT = 8 /* spec-2.22 D6: probed node → coordinator (read-only graph snapshot) */
 } GesRequestOpcode;
 
 typedef enum GesReplyOpcode {
@@ -287,6 +288,62 @@ extern uint32 cluster_ges_send_request_and_wait(const struct ClusterResId *resid
 extern uint32 cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
 												const struct ClusterGrdHolderId *holder,
 												uint64 request_id);
+
+
+/* ============================================================
+ * spec-2.22 D6 — DEADLOCK_PROBE / DEADLOCK_REPORT payload format.
+ *
+ *	Production cross-node broadcast/collection 推 spec-2.23 BAST 配套;
+ *	本 spec ships:
+ *	  - payload struct definitions (wire ABI lock via StaticAssertDecl)
+ *	  - handler scaffold (PROBE → snapshot_copy → REPORT encode prep)
+ *	  - opcode = 6 (PROBE) / 8 (REPORT)
+ * ============================================================ */
+
+typedef struct GesDeadlockProbePayload {
+	uint32 opcode; /* = GES_REQ_OPCODE_DEADLOCK_PROBE (6) */
+	uint32 coordinator_node_id;
+	uint64 probe_id;
+	uint64 generation_snapshot; /* coordinator's graph gen at probe time */
+} GesDeadlockProbePayload;
+
+StaticAssertDecl(sizeof(GesDeadlockProbePayload) == 24,
+				 "GesDeadlockProbePayload wire ABI 24-byte lock");
+
+/*
+ * Header for variable-length REPORT.  Followed by nedges *
+ * sizeof(ClusterLmdWaitEdge) (96 bytes each) when nedges > 0.
+ *
+ *	HC15 read-only:  REPORT body MUST NOT mutate remote LMD state.
+ *	Handler scaffolding only collects own graph snapshot and prepares
+ *	REPORT for send.  Production send path 推 spec-2.23.
+ */
+typedef struct GesDeadlockReportHeader {
+	uint32 opcode; /* = GES_REQ_OPCODE_DEADLOCK_REPORT (8) */
+	uint32 responding_node_id;
+	uint64 probe_id;	   /* echo from PROBE */
+	uint64 graph_generation;
+	uint32 lmd_ready_state; /* mirror cluster_lmd_state enum */
+	uint32 nedges;
+	/* followed by nedges * ClusterLmdWaitEdge (96B each) */
+} GesDeadlockReportHeader;
+
+StaticAssertDecl(sizeof(GesDeadlockReportHeader) == 32,
+				 "GesDeadlockReportHeader wire ABI 32-byte lock");
+
+/*
+ * Handler scaffold — receives a PROBE payload, prepares a REPORT.
+ *
+ *	Returns 0 on success, non-zero on dispatch error.  Production send
+ *	uses the routed envelope (spec-2.13 ship);本 spec scope handler 内部
+ *	仅 snapshot_copy + encode REPORT 准备 send,实际 send 推 spec-2.23.
+ *
+ *	out_buf:  caller-provided buffer (header + edges);out_buflen 输入是
+ *	  buf 容量,输出是实际 encode 字节数.
+ */
+extern int cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe,
+											  void *out_buf,
+											  Size *inout_buflen);
 
 #endif /* !FRONTEND */
 

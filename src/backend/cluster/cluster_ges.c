@@ -46,9 +46,11 @@
 #include "cluster/cluster_conf.h"	/* cluster_conf_lookup_node */
 #include "cluster/cluster_shmem.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/shmem.h"
 #include "utils/elog.h"
+#include "utils/wait_event.h"
 
 
 /* ============================================================
@@ -446,5 +448,63 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid pg_attribute_
 
 	if (cluster_ges_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
+	return 0;
+}
+
+
+/* ============================================================
+ * spec-2.22 D6 — DEADLOCK_PROBE handler scaffold.
+ *
+ *	Coordinator (lowest active node_id LMD) broadcasts a PROBE;each
+ *	probed node's LMD handler runs this body to snapshot its own graph
+ *	and prepare a REPORT.  Production send (cluster_ges_send) wired in
+ *	spec-2.23 BAST 配套;本 spec ships handler + payload format only.
+ *
+ *	HC15 read-only:  this handler MUST NOT mutate remote state.  Only
+ *	snapshot the local graph via cluster_lmd_graph_snapshot_copy().
+ * ============================================================ */
+
+int
+cluster_ges_deadlock_probe_handler(const GesDeadlockProbePayload *probe,
+								   void *out_buf, Size *inout_buflen)
+{
+	GesDeadlockReportHeader *hdr;
+	Size header_size = sizeof(GesDeadlockReportHeader);
+	Size edges_size;
+	int max_edges;
+	int n_copied;
+	uint64 gen_at_snapshot;
+	ClusterLmdWaitEdge *edges_dst;
+
+	if (probe == NULL || out_buf == NULL || inout_buflen == NULL)
+		return -1;
+	if (probe->opcode != GES_REQ_OPCODE_DEADLOCK_PROBE)
+		return -2;
+	if (*inout_buflen < header_size)
+		return -3; /* not enough room for even a zero-edge REPORT */
+
+	pgstat_report_wait_start(PG_WAIT_EXTENSION | WAIT_EVENT_CLUSTER_LMD_PROBE);
+
+	max_edges = (int) ((*inout_buflen - header_size) / sizeof(ClusterLmdWaitEdge));
+	if (max_edges < 0)
+		max_edges = 0;
+
+	hdr = (GesDeadlockReportHeader *) out_buf;
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->opcode = GES_REQ_OPCODE_DEADLOCK_REPORT;
+	hdr->responding_node_id = (uint32) cluster_node_id;
+	hdr->probe_id = probe->probe_id;
+	hdr->lmd_ready_state = (uint32) cluster_lmd_is_ready();
+
+	edges_dst = (ClusterLmdWaitEdge *) ((char *) out_buf + header_size);
+	n_copied = cluster_lmd_graph_snapshot_copy(edges_dst, max_edges,
+											   &gen_at_snapshot);
+	hdr->nedges = (uint32) n_copied;
+	hdr->graph_generation = gen_at_snapshot;
+
+	edges_size = (Size) n_copied * sizeof(ClusterLmdWaitEdge);
+	*inout_buflen = header_size + edges_size;
+
+	pgstat_report_wait_end();
 	return 0;
 }
