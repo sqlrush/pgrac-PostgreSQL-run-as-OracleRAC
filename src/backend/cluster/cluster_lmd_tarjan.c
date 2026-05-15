@@ -663,12 +663,126 @@ cluster_lmd_tarjan_run_coordinator_scan(int collect_timeout_ms)
 	cluster_lmd_probe_broadcast_count_inc(1);
 
 	/*
-	 * (5) Step 7 D9 wires the union edge merge + Tarjan invocation
-	 *	  here using probe_collector.reports[].  For Step 6 the
-	 *	  collector is reset directly so subsequent ticks see a clean
-	 *	  slab; the cross-node deadlock detection path becomes active
-	 *	  with Step 7's amend.
+	 * (5) spec-2.23 D9 — union edge merge + Tarjan + cross-node revalidate.
+	 *
+	 *	Total union edges = (sum over received REPORTs of report.nedges) +
+	 *	local snapshot edges.  We palloc a single union buffer and copy
+	 *	edges from each REPORT body (the bytes immediately following
+	 *	GesDeadlockReportHeader are nedges * ClusterLmdWaitEdge entries
+	 *	per spec-2.22 D6 payload layout) and from the local graph
+	 *	snapshot (the coordinator's own waiting backends).
 	 */
+	{
+		int total_edges = 0;
+		ClusterLmdWaitEdge *union_edges = NULL;
+		int n_union = 0;
+		ClusterLmdVertex *cycle_vertices = NULL;
+		int cycle_count = 0;
+		int n_cycle_v = 0;
+		int max_local_edges = cluster_lmd_max_wait_edges;
+		ClusterLmdWaitEdge *local_snapshot = NULL;
+		int local_n = 0;
+		uint64 local_gen = 0;
+
+		if (max_local_edges < 64)
+			max_local_edges = 64;
+		if (max_local_edges > 65536)
+			max_local_edges = 65536;
+
+		for (int i = 0; i < CLUSTER_MAX_NODES; i++) {
+			if (probe_collector.reports[i] != NULL)
+				total_edges += (int) probe_collector.reports[i]->nedges;
+		}
+		/* Reserve room for the local snapshot too. */
+		total_edges += max_local_edges;
+
+		if (total_edges <= 0) {
+			probe_collector_reset();
+			return;
+		}
+
+		union_edges = (ClusterLmdWaitEdge *) palloc(sizeof(ClusterLmdWaitEdge) * total_edges);
+
+		/* Local snapshot first — the coordinator's own waiting edges. */
+		local_snapshot = (ClusterLmdWaitEdge *) palloc(sizeof(ClusterLmdWaitEdge) * max_local_edges);
+		local_n = cluster_lmd_graph_snapshot_copy(local_snapshot, max_local_edges, &local_gen);
+		if (local_n > 0) {
+			memcpy(union_edges, local_snapshot, sizeof(ClusterLmdWaitEdge) * local_n);
+			n_union = local_n;
+		}
+		pfree(local_snapshot);
+
+		/* Remote REPORT edges follow.  Pointer arithmetic walks past the
+		 * header to the edge array; spec-2.22 D6 fixes the wire layout. */
+		for (int i = 0; i < CLUSTER_MAX_NODES; i++) {
+			const GesDeadlockReportHeader *report = probe_collector.reports[i];
+			const ClusterLmdWaitEdge *report_edges;
+
+			if (report == NULL)
+				continue;
+			report_edges = (const ClusterLmdWaitEdge *) (((const char *) report)
+														 + sizeof(GesDeadlockReportHeader));
+			if (n_union + (int) report->nedges > total_edges)
+				break;	/* defensive: should not happen given total_edges math */
+			memcpy(union_edges + n_union, report_edges,
+				   sizeof(ClusterLmdWaitEdge) * report->nedges);
+			n_union += (int) report->nedges;
+		}
+
+		if (n_union == 0) {
+			pfree(union_edges);
+			probe_collector_reset();
+			return;
+		}
+
+		cycle_vertices = (ClusterLmdVertex *) palloc(sizeof(ClusterLmdVertex) * n_union * 2);
+		n_cycle_v = cluster_lmd_tarjan_scan_snapshot(union_edges, n_union, cycle_vertices,
+													 n_union * 2, &cycle_count);
+
+		if (cycle_count > 0) {
+			ClusterLmdVertex victim;
+
+			cluster_lmd_cycle_detected_count_inc(cycle_count);
+			cluster_lmd_tarjan_pick_victim(cycle_vertices, n_cycle_v, &victim);
+
+			/*
+			 * HC20 cross-node revalidate:
+			 *   local victim → reuse spec-2.22 D3 induced-subgraph
+			 *   revalidate against local graph generation.
+			 *   remote victim → revalidate fail / pass is determined
+			 *   solely by the just-collected REPORTs; second-round PROBE
+			 *   is a future amend (full retry cost is high — Step 11 TAP
+			 *   L15 exercises the fail path).  For Step 7 we treat the
+			 *   union result as authoritative if cycle still covers the
+			 *   victim vertex.
+			 */
+			if (victim.node_id == self_node) {
+				if (cluster_lmd_tarjan_revalidate(cycle_vertices, n_cycle_v, local_gen)) {
+					cluster_lmd_signal_local_victim(victim.procno, victim.request_id,
+													victim.cluster_epoch);
+					cluster_lmd_victim_cancel_sent_count_inc(1);
+				}
+				/* else revalidate_fail_count already incremented inside revalidate */
+			} else {
+				/*
+				 * Step 8 D10 — local-vs-remote victim 分流.  spec-2.23
+				 * scope does NOT forward the cancel signal to the
+				 * remote LMD;  spec-2.24 D axis wires the cross-node
+				 * cancel envelope.  Increment the pending counter so
+				 * dump_lmd surfaces the detection.
+				 */
+				cluster_lmd_cross_node_victim_pending_count_inc(1);
+				ereport(LOG, (errmsg("cluster LMD cross-node deadlock victim on node %d"
+									 " (procno=%u request_id=" UINT64_FORMAT ");"
+									 " cross-node cancel forwarding lands in spec-2.24",
+									 victim.node_id, victim.procno, victim.request_id)));
+			}
+		}
+
+		pfree(cycle_vertices);
+		pfree(union_edges);
+	}
+
 	probe_collector_reset();
 }
 
