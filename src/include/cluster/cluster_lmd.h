@@ -379,12 +379,24 @@ extern uint64 cluster_lmd_revalidate_fail_count_get(void);
 extern uint64 cluster_lmd_cross_node_victim_pending_count_get(void);
 extern uint64 cluster_lmd_inject_call_count_get(void);
 
+/* spec-2.23 D8 — coordinator probe counters. */
+extern uint64 cluster_lmd_probe_broadcast_count_get(void);
+extern uint64 cluster_lmd_probe_partial_count_get(void);
+
 /* Counter increments — LMD graph shmem-owned, called by Tarjan worker. */
 extern void cluster_lmd_tarjan_scan_count_inc(uint64 delta);
 extern void cluster_lmd_cycle_detected_count_inc(uint64 delta);
 extern void cluster_lmd_victim_cancel_sent_count_inc(uint64 delta);
 extern void cluster_lmd_revalidate_fail_count_inc(uint64 delta);
 extern void cluster_lmd_cross_node_victim_pending_count_inc(uint64 delta);
+extern void cluster_lmd_probe_broadcast_count_inc(uint64 delta);
+extern void cluster_lmd_probe_partial_count_inc(uint64 delta);
+
+/* spec-2.23 D8 — coordinator scan + REPORT collector entry points. */
+struct GesDeadlockReportHeader;
+extern void cluster_lmd_tarjan_run_coordinator_scan(int collect_timeout_ms);
+extern bool cluster_lmd_probe_collect_receive(const struct GesDeadlockReportHeader *report,
+											  Size report_len);
 
 /* D16 test-only injection helper (also surfaced via SQL SRF). */
 extern bool cluster_lmd_inject_wait_edge(const ClusterLmdVertex *waiter,

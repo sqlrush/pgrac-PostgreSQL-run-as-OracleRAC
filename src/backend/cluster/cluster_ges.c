@@ -38,7 +38,7 @@
 #include "cluster/cluster_ges_reply_wait.h" /* spec-2.23 D1 5-tuple wait HTAB */
 #include "cluster/cluster_grd.h"
 #include "cluster/cluster_grd_outbound.h"
-#include "cluster/cluster_lmd.h"
+#include "cluster/cluster_lmd.h" /* + spec-2.23 D8 probe collector receive */
 #include "cluster/cluster_lms.h"
 #include "cluster/cluster_grd_work_queue.h"
 #include "cluster/cluster_guc.h" /* cluster_node_id + cluster_ges_request_timeout_ms */
@@ -243,7 +243,13 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 			cluster_grd_inc_ges_inbound_validation_fail();
 			return;
 		}
-		/* Collection/union Tarjan is deferred to the cross-node activation spec. */
+		/*
+		 * spec-2.23 D8 — feed the coordinator's REPORT collector.  If the
+		 * probe_id doesn't match the current in-flight scan, the receive
+		 * helper returns false and we silently drop the late REPORT (HC8
+		 * partial OK contract — a future scan tick will retry).
+		 */
+		(void) cluster_lmd_probe_collect_receive(report, env->payload_length);
 		return;
 	}
 	if (env->payload_length != sizeof(GesRequestPayload)) {

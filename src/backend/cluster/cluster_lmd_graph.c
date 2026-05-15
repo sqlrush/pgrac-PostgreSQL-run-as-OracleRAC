@@ -88,6 +88,9 @@ typedef struct ClusterLmdGraphShared {
 	pg_atomic_uint64 victim_cancel_sent_count;
 	pg_atomic_uint64 revalidate_fail_count;
 	pg_atomic_uint64 cross_node_victim_pending_count;
+	/* spec-2.23 D8 counters — coordinator probe broadcast + partial REPORT. */
+	pg_atomic_uint64 probe_broadcast_count;
+	pg_atomic_uint64 probe_partial_count;
 	int max_edges; /* snapshot of cluster.lmd_max_wait_edges at init */
 } ClusterLmdGraphShared;
 
@@ -148,6 +151,8 @@ cluster_lmd_graph_shmem_init(void)
 		pg_atomic_init_u64(&cluster_lmd_graph_state->victim_cancel_sent_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->revalidate_fail_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->probe_broadcast_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->probe_partial_count, 0);
 		cluster_lmd_graph_state->max_edges = max_edges;
 	}
 
@@ -395,6 +400,36 @@ cluster_lmd_cross_node_victim_pending_count_inc(uint64 delta)
 {
 	if (cluster_lmd_graph_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count, delta);
+}
+
+uint64
+cluster_lmd_probe_broadcast_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->probe_broadcast_count);
+}
+
+uint64
+cluster_lmd_probe_partial_count_get(void)
+{
+	if (cluster_lmd_graph_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_lmd_graph_state->probe_partial_count);
+}
+
+void
+cluster_lmd_probe_broadcast_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->probe_broadcast_count, delta);
+}
+
+void
+cluster_lmd_probe_partial_count_inc(uint64 delta)
+{
+	if (cluster_lmd_graph_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->probe_partial_count, delta);
 }
 
 

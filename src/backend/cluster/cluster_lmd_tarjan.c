@@ -42,6 +42,10 @@
  */
 #include "postgres.h"
 
+#include "cluster/cluster_conf.h"			/* CLUSTER_MAX_NODES + active peers */
+#include "cluster/cluster_epoch.h"			/* cluster_epoch_get_current */
+#include "cluster/cluster_ges.h"			/* GesDeadlockProbePayload / Report */
+#include "cluster/cluster_grd_outbound.h"	/* cluster_grd_outbound_enqueue_backend_request */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_lmd.h"
 #include "miscadmin.h"
@@ -49,7 +53,10 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
+#include "storage/latch.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #include <limits.h>
 
@@ -482,6 +489,187 @@ void
 cluster_lmd_run_tarjan_scan_now(void)
 {
 	cluster_lmd_tarjan_run_local_scan();
+}
+
+
+/* ============================================================
+ * spec-2.23 D8 — cross-node DEADLOCK_PROBE coordinator scan + REPORT
+ * collector (file-static slab, single probe_id in-flight per scan tick).
+ *
+ *	FU-2 design:
+ *	  - LmdProbeCollector lives in this translation unit; only one
+ *	    in-flight probe_id at a time (the coordinator scan loop is
+ *	    single-threaded).
+ *	  - reports[] are palloc'd in TopMemoryContext when the REPORT
+ *	    handler matches probe_id; freed by probe_collect_reset (on
+ *	    timeout or after D9 union completes).
+ *	  - pg_memory_barrier() bridges the (single-reader-single-writer)
+ *	    pattern between the LMD scan loop and the REPORT receive
+ *	    handler — no LWLock needed.
+ *	  - HC8 partial REPORT acceptable: timeout sweep increments
+ *	    probe_partial_count and resets the collector for the next tick.
+ * ============================================================ */
+
+typedef struct LmdProbeCollector {
+	uint64				probe_id;	/* 0 = idle slot */
+	int32				n_expected;
+	int32				n_received;
+	TimestampTz			deadline;
+	GesDeadlockReportHeader *reports[CLUSTER_MAX_NODES];
+	Size				report_sizes[CLUSTER_MAX_NODES];
+} LmdProbeCollector;
+
+static LmdProbeCollector probe_collector; /* file-static, single in-flight */
+static uint64 probe_id_seq;
+
+/*
+ * Probe collector reset — releases any palloc'd REPORT buffers and
+ * clears the slab.  Safe to call from idle and from timeout sweep.
+ */
+static void
+probe_collector_reset(void)
+{
+	for (int i = 0; i < CLUSTER_MAX_NODES; i++) {
+		if (probe_collector.reports[i] != NULL) {
+			pfree(probe_collector.reports[i]);
+			probe_collector.reports[i] = NULL;
+			probe_collector.report_sizes[i] = 0;
+		}
+	}
+	probe_collector.probe_id = 0;
+	probe_collector.n_expected = 0;
+	probe_collector.n_received = 0;
+	probe_collector.deadline = 0;
+}
+
+/*
+ * Feed a received REPORT into the collector.  Called from the
+ * cluster_ges DEADLOCK_REPORT receive path.  Returns true if the
+ * REPORT was accepted (probe_id match + slot free); false otherwise
+ * (stale or duplicate — increment probe_partial_count externally).
+ */
+bool
+cluster_lmd_probe_collect_receive(const GesDeadlockReportHeader *report, Size report_len)
+{
+	int slot;
+
+	Assert(report != NULL);
+
+	if (probe_collector.probe_id == 0 || report->probe_id != probe_collector.probe_id)
+		return false;
+
+	/* Find first empty slot.  CLUSTER_MAX_NODES is small (128). */
+	for (slot = 0; slot < CLUSTER_MAX_NODES; slot++) {
+		if (probe_collector.reports[slot] == NULL)
+			break;
+	}
+	if (slot >= CLUSTER_MAX_NODES)
+		return false;
+
+	probe_collector.reports[slot]
+		= (GesDeadlockReportHeader *) MemoryContextAlloc(TopMemoryContext, report_len);
+	memcpy(probe_collector.reports[slot], report, report_len);
+	probe_collector.report_sizes[slot] = report_len;
+	pg_write_barrier();
+	probe_collector.n_received++;
+	return true;
+}
+
+/*
+ * Run the coordinator scan tick.  Called from LmdMain when this node is
+ * the elected coordinator (HC16 lowest active node_id).  Broadcasts
+ * DEADLOCK_PROBE to N-1 active peers, waits up to the partial-OK
+ * timeout, then hands the union-edge list to D9 (Step 7).
+ *
+ *	Step 6 ships the broadcast + collector wait + partial counter; the
+ *	D9 union Tarjan invocation lands in Step 7.  The current body
+ *	resets the collector at the end of the scan regardless of D9 outcome.
+ */
+void
+cluster_lmd_tarjan_run_coordinator_scan(int collect_timeout_ms)
+{
+	int32 self_node = get_self_node_id();
+	int n_peers = 0;
+	int32 peers[CLUSTER_MAX_NODES];
+	GesDeadlockProbePayload probe;
+	TimestampTz now;
+
+	if (collect_timeout_ms <= 0)
+		collect_timeout_ms = 3000;	/* spec default, Step 9 D11 introduces GUC */
+
+	/* (1) Build active-peer list (skip self).  Active-status comes from
+	 *	  cluster_conf_node_count() + the conf cache. */
+	{
+		int total = cluster_conf_node_count();
+		for (int i = 0; i < total && n_peers < CLUSTER_MAX_NODES; i++) {
+			/*
+			 * cluster_conf doesn't expose per-index node lookup as a
+			 * public API; iterate by node_id range 0..total-1 which is
+			 * the convention used by spec-2.x ship code.
+			 */
+			if (i == self_node)
+				continue;
+			peers[n_peers++] = i;
+		}
+	}
+
+	if (n_peers == 0)
+		return;	/* Single-node mode — no cross-node probe needed. */
+
+	/* (2) Reset any stale collector state from a prior interrupted tick. */
+	probe_collector_reset();
+	probe_collector.probe_id = ++probe_id_seq;
+	probe_collector.n_expected = n_peers;
+	probe_collector.n_received = 0;
+	now = GetCurrentTimestamp();
+	probe_collector.deadline = TimestampTzPlusMilliseconds(now, collect_timeout_ms);
+
+	/* (3) Build PROBE payload + broadcast to each active peer. */
+	memset(&probe, 0, sizeof(probe));
+	probe.opcode = GES_REQ_OPCODE_DEADLOCK_PROBE;
+	probe.coordinator_node_id = (uint32) self_node;
+	probe.probe_id = probe_collector.probe_id;
+	/*
+	 * generation_snapshot is informational for HC20 cross-node revalidate
+	 * (Step 7 D9 uses it for second-round PROBE generation comparison).
+	 * Step 6 ships 0 — Step 7 reads cluster_lmd_graph_state->generation
+	 * via the existing extern accessor.
+	 */
+	probe.generation_snapshot = 0;
+
+	for (int i = 0; i < n_peers; i++) {
+		(void) cluster_grd_outbound_enqueue_backend_request((uint32) peers[i], &probe,
+															sizeof(probe));
+	}
+
+	/*
+	 * (4) Poll-wait for REPORTs up to deadline.  WaitLatch with short
+	 *	  interrupt allows ProcessInterrupts to drive the receive path.
+	 *	  HC8: partial OK — break out of the wait loop once expected
+	 *	  count is reached OR deadline passes.
+	 */
+	while (probe_collector.n_received < probe_collector.n_expected) {
+		now = GetCurrentTimestamp();
+		if (now >= probe_collector.deadline) {
+			cluster_lmd_probe_partial_count_inc(1);
+			break;
+		}
+		CHECK_FOR_INTERRUPTS();
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 50,
+						 WAIT_EVENT_CLUSTER_LMD_PROBE);
+		ResetLatch(MyLatch);
+	}
+
+	cluster_lmd_probe_broadcast_count_inc(1);
+
+	/*
+	 * (5) Step 7 D9 wires the union edge merge + Tarjan invocation
+	 *	  here using probe_collector.reports[].  For Step 6 the
+	 *	  collector is reset directly so subsequent ticks see a clean
+	 *	  slab; the cross-node deadlock detection path becomes active
+	 *	  with Step 7's amend.
+	 */
+	probe_collector_reset();
 }
 
 
