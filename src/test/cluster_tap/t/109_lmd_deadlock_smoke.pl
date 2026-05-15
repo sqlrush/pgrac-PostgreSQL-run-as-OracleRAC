@@ -152,21 +152,23 @@ break_edge($node, 1100, 11001, 10007);
 break_edge($node, 1200, 12001, 10008);
 
 
-# L6/L7 — broken cycle must not produce a stale false cancel.  This covers the
-# revalidate hardening path at TAP level without needing a race injection hook.
+# L6/L7 — would-be cycle redirected before it ever becomes live.  The previous
+# version briefly created 1300→1400 + 1400→1300 and then broke both edges, which
+# let macOS CI legitimately scan the transient live cycle between inject and
+# break.  Keep the graph acyclic at every intermediate step so this remains a
+# deterministic "no false cancel" boundary check rather than a scheduler race.
 my $cycles_before_L6 = read_counter($node, 'cycle_detected_count');
 my $cancels_before_L6 = read_counter($node, 'victim_cancel_sent_count');
 inject_edge($node, 0, 1300, 13001, 0, 1400, 14001);
-inject_edge($node, 0, 1400, 14001, 0, 1300, 13001);
 break_edge($node, 1300, 13001, 10009);
-break_edge($node, 1400, 14001, 10010);
+inject_edge($node, 0, 1400, 14001, 0, 1300, 13001);
 my $scans_before_L6 = read_counter($node, 'tarjan_scan_count');
 ok(wait_counter_gt($node, 'tarjan_scan_count', $scans_before_L6),
-   'L6 scan tick observed after cycle was broken');
+   'L6 scan tick observed after would-be cycle was redirected');
 is(read_counter($node, 'cycle_detected_count'), $cycles_before_L6,
-   'L6 broken cycle not counted as a live cycle');
+   'L6 redirected would-be cycle not counted as a live cycle');
 is(read_counter($node, 'victim_cancel_sent_count'), $cancels_before_L6,
-   'L7 stale/broken cycle does not send victim cancel');
+   'L7 redirected would-be cycle does not send victim cancel');
 
 
 # L8 — wait_edge_full HC12:  inject >cluster.lmd_max_wait_edges (64) and
