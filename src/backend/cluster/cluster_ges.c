@@ -584,21 +584,97 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 }
 
 uint32
-cluster_ges_send_release_and_wait(const struct ClusterResId *resid pg_attribute_unused(),
-								  const struct ClusterGrdHolderId *holder pg_attribute_unused(),
-								  uint64 request_id pg_attribute_unused())
+cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
+								  const struct ClusterGrdHolderId *holder, uint64 request_id)
 {
 	int32 master;
+	GesReplyWaitKey key;
+	GesReplyWaitEntry *entry;
+	GesRequestPayload req;
+	TimestampTz deadline;
+	uint64 epoch;
+	int timeout_ms;
+	uint32 reject_reason;
 
-	if (resid != NULL) {
-		master = cluster_grd_lookup_master(resid);
-		if (master >= 0 && master != cluster_node_id)
-			return GES_REJECT_REASON_TIMEOUT;
+	if (resid == NULL || holder == NULL)
+		return GES_REJECT_REASON_TIMEOUT;
+
+	master = cluster_grd_lookup_master(resid);
+
+	/*
+	 * Local-master path:  release runs entirely in-process (Step 4 D6
+	 * release_and_pop_compatible_waiter真激活).  No CV round-trip needed.
+	 */
+	if (master < 0 || master == cluster_node_id) {
+		if (cluster_ges_state != NULL)
+			pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
+		return 0;
+	}
+
+	/*
+	 * Remote-master path:  send GES_RELEASE + bounded ACK wait.  Reply
+	 * wait key uses request_opcode = GES_REQ_OPCODE_RELEASE so REQUEST
+	 * and RELEASE replies sharing the same request_id slot do not
+	 * collide in the 5-tuple HTAB (HC17).
+	 *
+	 *	If the holder backend had cluster_grd_bast_pending set, the
+	 *	RELEASE doubles as a logical BAST_ACK (HC19) — Step 5 D5 wires
+	 *	the bast_ack_flag carry on the payload + increment.  Step 3
+	 *	skeleton: just send the RELEASE and bump release_ack_count on
+	 *	GRANT reply.
+	 */
+	epoch = cluster_epoch_get_current();
+	timeout_ms = cluster_ges_request_timeout_ms;
+	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout_ms);
+
+	memset(&key, 0, sizeof(key));
+	key.request_id = request_id;
+	key.source_node_id = cluster_node_id;
+	key.dest_node_id = master;
+	key.request_opcode = GES_REQ_OPCODE_RELEASE;
+	key.cluster_epoch = epoch;
+
+	entry = cluster_ges_reply_wait_insert(&key, deadline);
+	if (entry == NULL)
+		return GES_REJECT_REASON_TIMEOUT;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = GES_REQ_OPCODE_RELEASE;
+	req.lockmode = 0;
+	req.holder_node_id = (uint32) holder->node_id;
+	req.holder_procno = (uint32) holder->procno;
+	req.holder_cluster_epoch_lo = (uint32) (holder->cluster_epoch & 0xffffffffu);
+	req.holder_cluster_epoch_hi = (uint32) (holder->cluster_epoch >> 32);
+	req.holder_request_id_lo = (uint32) (request_id & 0xffffffffu);
+	req.holder_request_id_hi = (uint32) (request_id >> 32);
+	memcpy(req.resid, resid, sizeof(req.resid));
+
+	if (!cluster_grd_outbound_enqueue_backend_request((uint32) master, &req, sizeof(req))) {
+		cluster_ges_reply_wait_delete(&key);
+		return GES_REJECT_REASON_WORK_QUEUE_FULL;
 	}
 
 	if (cluster_ges_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
-	return 0;
+
+	ConditionVariablePrepareToSleep(&entry->cv);
+	while (!entry->ready) {
+		if (!ConditionVariableTimedSleep(&entry->cv, timeout_ms,
+										 WAIT_EVENT_CLUSTER_GES_S4_WAIT)) {
+			cluster_ges_reply_wait_delete(&key);
+			ConditionVariableCancelSleep();
+			return GES_REJECT_REASON_TIMEOUT;
+		}
+	}
+	ConditionVariableCancelSleep();
+
+	reject_reason = entry->reject_reason;
+	cluster_ges_reply_wait_delete(&key);
+
+	if (reject_reason == 0)
+		cluster_ges_inc_release_ack();
+
+	return reject_reason;
 }
 
 
