@@ -185,8 +185,8 @@ cluster_lmd_state_to_string(ClusterLmdState s)
 
 typedef struct LmdCancelQueueShmem {
 	slock_t lock;
-	uint32 head;	/* dequeue index */
-	uint32 tail;	/* enqueue index */
+	uint32 head; /* dequeue index */
+	uint32 tail; /* enqueue index */
 	ClusterLmdCancelItem items[CLUSTER_LMD_CANCEL_QUEUE_DEPTH];
 } LmdCancelQueueShmem;
 
@@ -219,11 +219,11 @@ cluster_lmd_shmem_init(void)
 	bool found;
 	char *base;
 
-	cluster_lmd_state = (ClusterLmdSharedState *)ShmemInitStruct(
-		"pgrac cluster lmd", cluster_lmd_shmem_size(), &found);
+	cluster_lmd_state = (ClusterLmdSharedState *)ShmemInitStruct("pgrac cluster lmd",
+																 cluster_lmd_shmem_size(), &found);
 
-	base = (char *) cluster_lmd_state;
-	lmd_cancel_queue = (LmdCancelQueueShmem *) (base + MAXALIGN(sizeof(ClusterLmdSharedState)));
+	base = (char *)cluster_lmd_state;
+	lmd_cancel_queue = (LmdCancelQueueShmem *)(base + MAXALIGN(sizeof(ClusterLmdSharedState)));
 
 	if (!found) {
 		memset(cluster_lmd_state, 0, sizeof(*cluster_lmd_state));
@@ -274,7 +274,7 @@ cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload, uin
 	bool ok = false;
 
 	if (lmd_cancel_queue == NULL || payload == NULL
-		|| payload_len > sizeof(((ClusterLmdCancelItem *) NULL)->payload))
+		|| payload_len > sizeof(((ClusterLmdCancelItem *)NULL)->payload))
 		return false;
 
 	SpinLockAcquire(&lmd_cancel_queue->lock);
@@ -302,15 +302,15 @@ cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload, uin
 static void
 cluster_lmd_dispatch_cancel_item(const ClusterLmdCancelItem *item)
 {
-	const GesRequestPayload *req = (const GesRequestPayload *) item->payload;
+	const GesRequestPayload *req = (const GesRequestPayload *)item->payload;
 	uint64 victim_epoch;
 	uint64 victim_request_id;
 	uint64 current_epoch;
 
-	victim_epoch = ((uint64) req->holder_cluster_epoch_lo)
-				   | (((uint64) req->holder_cluster_epoch_hi) << 32);
-	victim_request_id = ((uint64) req->holder_request_id_lo)
-						| (((uint64) req->holder_request_id_hi) << 32);
+	victim_epoch
+		= ((uint64)req->holder_cluster_epoch_lo) | (((uint64)req->holder_cluster_epoch_hi) << 32);
+	victim_request_id
+		= ((uint64)req->holder_request_id_lo) | (((uint64)req->holder_request_id_hi) << 32);
 
 	current_epoch = cluster_epoch_get_current();
 
@@ -367,14 +367,15 @@ cluster_lmd_run_periodic_cleanup_sweep(void)
 	now = GetCurrentTimestamp();
 	if (lmd_last_cleanup_sweep != 0
 		&& TimestampDifferenceExceeds(lmd_last_cleanup_sweep, now,
-									  cluster_lmd_cleanup_sweep_interval_ms) == false)
+									  cluster_lmd_cleanup_sweep_interval_ms)
+			   == false)
 		return; /* interval not elapsed */
 
 	lmd_last_cleanup_sweep = now;
 
 	swept = cluster_grd_sweep_local_stale_procnos();
 	if (swept > 0)
-		cluster_lmd_cleanup_lmd_sweep_count_inc((uint64) swept);
+		cluster_lmd_cleanup_lmd_sweep_count_inc((uint64)swept);
 }
 
 bool
@@ -388,8 +389,7 @@ cluster_lmd_cancel_queue_dequeue(ClusterLmdCancelItem *out)
 	SpinLockAcquire(&lmd_cancel_queue->lock);
 	if (lmd_cancel_queue->head != lmd_cancel_queue->tail) {
 		*out = lmd_cancel_queue->items[lmd_cancel_queue->head];
-		lmd_cancel_queue->head
-			= (lmd_cancel_queue->head + 1) % CLUSTER_LMD_CANCEL_QUEUE_DEPTH;
+		lmd_cancel_queue->head = (lmd_cancel_queue->head + 1) % CLUSTER_LMD_CANCEL_QUEUE_DEPTH;
 		ok = true;
 	}
 	SpinLockRelease(&lmd_cancel_queue->lock);

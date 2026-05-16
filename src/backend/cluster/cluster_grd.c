@@ -37,7 +37,7 @@
 #include "cluster/cluster_grd.h"
 #include "cluster/cluster_grd_outbound.h" /* cluster_grd_outbound_enqueue_cleanup_release (D10) */
 #include "cluster/cluster_lmd.h"		  /* spec-2.24 D10 cleanup_*_count_inc */
-#include "cluster/cluster_guc.h" /* cluster_node_id, cluster_grd_max_entries */
+#include "cluster/cluster_guc.h"		  /* cluster_node_id, cluster_grd_max_entries */
 #include "cluster/cluster_signal.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h" /* spec-2.16 D8 newly-dead bitmap diff */
@@ -1521,7 +1521,7 @@ cluster_grd_cleanup_on_node_dead(int32 dead_node_id)
 	 * at-most-once + concurrent cleanup safety + RELEASE enqueue.
 	 */
 	hash_seq_init(&status, cluster_grd_entry_htab);
-	while ((entry = (ClusterGrdEntry *) hash_seq_search(&status)) != NULL) {
+	while ((entry = (ClusterGrdEntry *)hash_seq_search(&status)) != NULL) {
 		swept += cluster_grd_entry_cleanup_guarded(entry, -1, dead_node_id);
 	}
 
@@ -1802,8 +1802,8 @@ cluster_grd_hashremove_if_still_empty(const ClusterResId *resid)
 		SpinLockAcquire(&entry->lock);
 		if (entry->ngranted == 0 && entry->nwaiters == 0 && entry->nconverts == 0) {
 			SpinLockRelease(&entry->lock);
-			(void) hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue,
-											   HASH_REMOVE, &found);
+			(void)hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue, HASH_REMOVE,
+											  &found);
 			pg_atomic_fetch_sub_u64(&cluster_grd_state->entry_current_count, 1);
 			removed = true;
 		} else {
@@ -1863,8 +1863,8 @@ cluster_grd_entry_cleanup_guarded(ClusterGrdEntry *entry, int dead_procno, int32
 	for (int i = entry->ngranted - 1; i >= 0; i--) {
 		bool match = false;
 
-		if (dead_procno >= 0 && entry->holders[i].node_id == (int32) cluster_node_id
-			&& entry->holders[i].procno == (uint32) dead_procno)
+		if (dead_procno >= 0 && entry->holders[i].node_id == (int32)cluster_node_id
+			&& entry->holders[i].procno == (uint32)dead_procno)
 			match = true;
 		if (dead_node_id >= 0 && entry->holders[i].node_id == dead_node_id)
 			match = true;
@@ -1887,8 +1887,8 @@ cluster_grd_entry_cleanup_guarded(ClusterGrdEntry *entry, int dead_procno, int32
 	for (int i = entry->nwaiters - 1; i >= 0; i--) {
 		bool match = false;
 
-		if (dead_procno >= 0 && entry->waiters[i].node_id == (int32) cluster_node_id
-			&& entry->waiters[i].procno == (uint32) dead_procno)
+		if (dead_procno >= 0 && entry->waiters[i].node_id == (int32)cluster_node_id
+			&& entry->waiters[i].procno == (uint32)dead_procno)
 			match = true;
 		if (dead_node_id >= 0 && entry->waiters[i].node_id == dead_node_id)
 			match = true;
@@ -1931,7 +1931,7 @@ cluster_grd_entry_cleanup_guarded(ClusterGrdEntry *entry, int dead_procno, int32
 	/* Enqueue cluster_grd_outbound_enqueue_cleanup_release per real removed
 	 * holder (out-of-lock; spec-2.16 D4 reserved pool nofail). */
 	for (int i = 0; i < n_release; i++) {
-		cluster_grd_outbound_enqueue_cleanup_release((uint32) release_master_nodes[i],
+		cluster_grd_outbound_enqueue_cleanup_release((uint32)release_master_nodes[i],
 													 release_payloads[i], 24);
 	}
 
@@ -1963,7 +1963,7 @@ cluster_grd_entries_cleanup_by_procno_guarded(int procno)
 		return 0;
 
 	hash_seq_init(&status, cluster_grd_entry_htab);
-	while ((entry = (ClusterGrdEntry *) hash_seq_search(&status)) != NULL) {
+	while ((entry = (ClusterGrdEntry *)hash_seq_search(&status)) != NULL) {
 		total += cluster_grd_entry_cleanup_guarded(entry, procno, -1);
 	}
 	return total;
@@ -1979,7 +1979,7 @@ cluster_grd_cleanup_on_backend_exit(int procno)
 
 	swept = cluster_grd_entries_cleanup_by_procno_guarded(procno);
 	if (swept > 0)
-		cluster_lmd_cleanup_on_backend_exit_count_inc((uint64) swept);
+		cluster_lmd_cleanup_on_backend_exit_count_inc((uint64)swept);
 }
 
 /*
@@ -2013,7 +2013,7 @@ cluster_grd_sweep_local_stale_procnos(void)
 	if (cluster_grd_entry_htab == NULL)
 		return 0;
 
-	alive = (uint8 *) palloc0((Size) n_alive_max);
+	alive = (uint8 *)palloc0((Size)n_alive_max);
 
 	/* Briefly snapshot ProcArray active pgprocno set. */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
@@ -2028,15 +2028,15 @@ cluster_grd_sweep_local_stale_procnos(void)
 	LWLockRelease(ProcArrayLock);
 
 	hash_seq_init(&status, cluster_grd_entry_htab);
-	while ((entry = (ClusterGrdEntry *) hash_seq_search(&status)) != NULL) {
-		uint32 stale_procno = (uint32) -1;
+	while ((entry = (ClusterGrdEntry *)hash_seq_search(&status)) != NULL) {
+		uint32 stale_procno = (uint32)-1;
 		uint32 i;
 
 		SpinLockAcquire(&entry->lock);
-		for (i = 0; i < (uint32) entry->ngranted; i++) {
-			if (entry->holders[i].node_id != (int32) cluster_node_id)
+		for (i = 0; i < (uint32)entry->ngranted; i++) {
+			if (entry->holders[i].node_id != (int32)cluster_node_id)
 				continue;
-			if (entry->holders[i].procno < (uint32) n_alive_max
+			if (entry->holders[i].procno < (uint32)n_alive_max
 				&& alive[entry->holders[i].procno] == 0) {
 				stale_procno = entry->holders[i].procno;
 				break;
@@ -2044,8 +2044,8 @@ cluster_grd_sweep_local_stale_procnos(void)
 		}
 		SpinLockRelease(&entry->lock);
 
-		if (stale_procno != (uint32) -1)
-			total += cluster_grd_entry_cleanup_guarded(entry, (int) stale_procno, -1);
+		if (stale_procno != (uint32)-1)
+			total += cluster_grd_entry_cleanup_guarded(entry, (int)stale_procno, -1);
 	}
 
 	pfree(alive);
@@ -2055,8 +2055,8 @@ cluster_grd_sweep_local_stale_procnos(void)
 void
 cluster_grd_cleanup_on_backend_exit_callback(int code, Datum arg)
 {
-	(void) code;
-	(void) arg;
+	(void)code;
+	(void)arg;
 	if (MyProc == NULL)
 		return;
 	cluster_grd_cleanup_on_backend_exit(MyProc->pgprocno);

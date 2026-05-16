@@ -74,7 +74,8 @@ typedef enum ClusterGrdOutboundOrigin {
 	CLUSTER_GRD_OUTBOUND_BACKEND_REQUEST = 1, /* backend pre-S4 GES_REQUEST */
 	CLUSTER_GRD_OUTBOUND_LMON_REPLY = 2,	  /* work_queue drain reply */
 	CLUSTER_GRD_OUTBOUND_CLEANUP_RELEASE = 3, /* LockReleaseAll / abort */
-	CLUSTER_GRD_OUTBOUND_LMD_CANCEL = 4		  /* spec-2.24 D4 — cross-node victim cancel forward (nofail reserved pool + dirty-list) */
+	CLUSTER_GRD_OUTBOUND_LMD_CANCEL
+	= 4 /* spec-2.24 D4 — cross-node victim cancel forward (nofail reserved pool + dirty-list) */
 } ClusterGrdOutboundOrigin;
 
 /*

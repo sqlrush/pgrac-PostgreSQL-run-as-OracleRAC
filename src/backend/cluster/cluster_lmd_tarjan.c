@@ -778,7 +778,7 @@ cluster_lmd_tarjan_run_coordinator_scan(int collect_timeout_ms)
 				 */
 				ClusterGrdHolderId victim_target;
 
-				victim_target.node_id = (uint32) victim.node_id;
+				victim_target.node_id = (uint32)victim.node_id;
 				victim_target.procno = victim.procno;
 				victim_target.cluster_epoch = victim.cluster_epoch;
 				victim_target.request_id = victim.request_id;

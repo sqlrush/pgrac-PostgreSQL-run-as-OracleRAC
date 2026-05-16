@@ -313,7 +313,7 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 		 *	performs HC24 4-tuple stale procno match and dispatches
 		 *	to cluster_lmd_signal_local_victim().
 		 */
-		if (req->holder_node_id != (uint32) cluster_node_id) {
+		if (req->holder_node_id != (uint32)cluster_node_id) {
 			cluster_grd_inc_ges_inbound_validation_fail();
 			return;
 		}
@@ -919,7 +919,8 @@ cluster_ges_send_bast_targeted(const struct ClusterResId *resid, int requested_m
  *	request path (loss → deadlock not resolved).
  * ============================================================ */
 void
-cluster_ges_send_cancel_pending(int32 victim_node_id, const struct ClusterGrdHolderId *victim_target)
+cluster_ges_send_cancel_pending(int32 victim_node_id,
+								const struct ClusterGrdHolderId *victim_target)
 {
 	GesRequestPayload payload;
 
@@ -929,15 +930,15 @@ cluster_ges_send_cancel_pending(int32 victim_node_id, const struct ClusterGrdHol
 	memset(&payload, 0, sizeof(payload));
 	payload.opcode = GES_REQ_OPCODE_CANCEL_PENDING;
 	payload.lockmode = 0; /* not used for CANCEL */
-	payload.holder_node_id = (uint32) victim_target->node_id;
+	payload.holder_node_id = (uint32)victim_target->node_id;
 	payload.holder_procno = victim_target->procno;
-	payload.holder_cluster_epoch_lo = (uint32) (victim_target->cluster_epoch & 0xffffffffu);
-	payload.holder_cluster_epoch_hi = (uint32) (victim_target->cluster_epoch >> 32);
-	payload.holder_request_id_lo = (uint32) (victim_target->request_id & 0xffffffffu);
-	payload.holder_request_id_hi = (uint32) (victim_target->request_id >> 32);
+	payload.holder_cluster_epoch_lo = (uint32)(victim_target->cluster_epoch & 0xffffffffu);
+	payload.holder_cluster_epoch_hi = (uint32)(victim_target->cluster_epoch >> 32);
+	payload.holder_request_id_lo = (uint32)(victim_target->request_id & 0xffffffffu);
+	payload.holder_request_id_hi = (uint32)(victim_target->request_id >> 32);
 	/* resid not used for CANCEL — left zero */
 
-	cluster_grd_outbound_enqueue_lmd_cancel((uint32) victim_node_id, &payload, sizeof(payload));
+	cluster_grd_outbound_enqueue_lmd_cancel((uint32)victim_node_id, &payload, sizeof(payload));
 	cluster_lmd_cross_node_victim_cancel_sent_count_inc(1);
 }
 

@@ -594,8 +594,8 @@ cluster_init_guc(void)
 					 "Remote-node death is handled separately by cssd dead-bitmap.  "
 					 "0 disables sweep (unrecommended outside benchmarking).  TAP "
 					 "may set 500ms for fast verify."),
-		&cluster_lmd_cleanup_sweep_interval_ms, 5000, 100, 60000, PGC_SIGHUP,
-		GUC_UNIT_MS, NULL, NULL, NULL);
+		&cluster_lmd_cleanup_sweep_interval_ms, 5000, 100, 60000, PGC_SIGHUP, GUC_UNIT_MS, NULL,
+		NULL, NULL);
 
 	/* spec-2.17 D11:  BAST retry GUC(Q11 v0.6 — 不 kill healthy holder). */
 	DefineCustomIntVariable("cluster.ges_bast_retry_interval_ms",

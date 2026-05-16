@@ -452,7 +452,7 @@ cluster_lmd_probe_partial_count_inc(uint64 delta)
 	{                                                                                              \
 		if (cluster_lmd_graph_state == NULL)                                                       \
 			return 0;                                                                              \
-		return pg_atomic_read_u64(&cluster_lmd_graph_state->field);                                 \
+		return pg_atomic_read_u64(&cluster_lmd_graph_state->field);                                \
 	}                                                                                              \
 	void cluster_lmd_##field##_inc(uint64 delta)                                                   \
 	{                                                                                              \
