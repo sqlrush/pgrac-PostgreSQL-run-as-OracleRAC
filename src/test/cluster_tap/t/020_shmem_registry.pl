@@ -134,8 +134,8 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'shmem' AND key = 'region_count'}),
-   '24',
-   'L8 pg_cluster_state.shmem.region_count = 24 (spec-2.22 LMD graph included)');
+   '25',
+   'L8 pg_cluster_state.shmem.region_count = 25 (spec-2.23 D1 ges reply wait region included)');
 
 is($node->safe_psql(
 		'postgres', q{
@@ -154,15 +154,15 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.bytes'}),
-   '24',
-   'L10 pg_cluster_state.shmem has 24 region.<name>.bytes keys (one per region)');
+   '25',
+   'L10 pg_cluster_state.shmem has 25 region.<name>.bytes keys (one per region)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='shmem' AND key LIKE 'region.%.owner'}),
-   '24',
-   'L11 pg_cluster_state.shmem has 24 region.<name>.owner keys (one per region)');
+   '25',
+   'L11 pg_cluster_state.shmem has 25 region.<name>.owner keys (one per region)');
 
 
 # ----------
@@ -175,8 +175,8 @@ is($node->safe_psql(
 	  FROM pg_settings
 	 WHERE name = 'cluster.shmem_max_regions'
 }),
-   'integer|postmaster|64|24|256',
-   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [24,256] (spec-2.22 LMD graph bumps min_val 23→24)');
+   'integer|postmaster|64|25|256',
+   'L12 cluster.shmem_max_regions: int / postmaster / default 64 / [25,256] (spec-2.23 D1 ges reply wait bumps min_val 24→25)');
 
 is($node->safe_psql(
 		'postgres',

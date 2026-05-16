@@ -166,8 +166,8 @@ SKIP: {
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_shmem}),
-   '24',
-   'L10 pg_cluster_shmem 22 rows (21 prior + 1 LMS region at spec-2.18)');
+   '25',
+   'L10 pg_cluster_shmem returns 25 rows (spec-2.23 D1 ges reply wait region included)');
 
 
 # ----------
@@ -182,14 +182,14 @@ is($node->safe_psql(
 
 
 # ----------
-# L12: pg_stat_cluster_wait_events still 58 rows (block format
+# L12: pg_stat_cluster_wait_events baseline (block format
 # is structure-only; no new wait events at stage 1.4).
 # ----------
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '71',
-   'L12 pg_stat_cluster_wait_events still 58 rows after 1.4');
+   '73',
+   'L12 pg_stat_cluster_wait_events returns 73 rows after spec-2.23 D12');
 
 
 $node->stop;

@@ -199,14 +199,14 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '71',
-   'L12b pg_stat_cluster_wait_events still 51 (1.5 adds no wait events)');
+   '73',
+   'L12b pg_stat_cluster_wait_events returns 73 rows after spec-2.23 D12');
 
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_cluster_shmem'),
-   '24',
-   'L12c pg_cluster_shmem 24 rows (spec-2.22 LMD graph region included)');
+   '25',
+   'L12c pg_cluster_shmem returns 25 rows (spec-2.23 D1 ges reply wait region included)');
 
 
 # ----------
