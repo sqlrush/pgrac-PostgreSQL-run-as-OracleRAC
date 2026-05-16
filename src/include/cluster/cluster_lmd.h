@@ -398,6 +398,51 @@ extern void cluster_lmd_tarjan_run_coordinator_scan(int collect_timeout_ms);
 extern bool cluster_lmd_probe_collect_receive(const struct GesDeadlockReportHeader *report,
 											  Size report_len);
 
+/* ============================================================
+ * spec-2.24 D2 — LMD-owned cancel queue (HC23).
+ *
+ *	Receives GES_REQ_OPCODE_CANCEL_PENDING items from cluster_ges
+ *	request_handler.  LMD daemon drains, performs HC24 4-tuple stale
+ *	procno match, and dispatches to cluster_lmd_signal_local_victim.
+ *
+ *	Bounded ring (CLUSTER_LMD_CANCEL_QUEUE_DEPTH = 256).  Enqueue full
+ *	returns false; handler increments cross_node_cancel_queue_full_count.
+ *	Independent from cluster_grd_work_queue (which is owned by GES grant
+ *	consumer LMS — never double-consumed per spec-2.18 Q2 boundary).
+ * ============================================================ */
+
+#define CLUSTER_LMD_CANCEL_QUEUE_DEPTH 256
+
+typedef struct ClusterLmdCancelItem {
+	uint32 source_node_id;	  /* sender of GES_REQ_OPCODE_CANCEL_PENDING */
+	uint16 payload_len;		  /* sizeof(GesRequestPayload) = 48 */
+	uint16 _reserved;
+	uint8 payload[48];		  /* GesRequestPayload byte-image */
+} ClusterLmdCancelItem;
+
+StaticAssertDecl(sizeof(ClusterLmdCancelItem) == 56, "ClusterLmdCancelItem 56-byte lock");
+
+extern Size cluster_lmd_cancel_queue_shmem_size(void);
+extern void cluster_lmd_cancel_queue_shmem_init(void);
+
+extern bool cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload,
+											 uint16 payload_len);
+extern bool cluster_lmd_cancel_queue_dequeue(ClusterLmdCancelItem *out);
+
+/* spec-2.24 D12 — NEW counters. */
+extern uint64 cluster_lmd_cross_node_victim_cancel_sent_count_get(void);
+extern uint64 cluster_lmd_cross_node_cancel_received_count_get(void);
+extern uint64 cluster_lmd_cross_node_cancel_queue_full_count_get(void);
+extern uint64 cluster_lmd_cleanup_on_backend_exit_count_get(void);
+extern uint64 cluster_lmd_cleanup_lmd_sweep_count_get(void);
+extern uint64 cluster_lmd_cleanup_skip_other_owner_count_get(void);
+extern void cluster_lmd_cross_node_victim_cancel_sent_count_inc(uint64 delta);
+extern void cluster_lmd_cross_node_cancel_received_count_inc(uint64 delta);
+extern void cluster_lmd_cross_node_cancel_queue_full_count_inc(uint64 delta);
+extern void cluster_lmd_cleanup_on_backend_exit_count_inc(uint64 delta);
+extern void cluster_lmd_cleanup_lmd_sweep_count_inc(uint64 delta);
+extern void cluster_lmd_cleanup_skip_other_owner_count_inc(uint64 delta);
+
 /* D16 test-only injection helper (also surfaced via SQL SRF). */
 extern bool cluster_lmd_inject_wait_edge(const ClusterLmdVertex *waiter,
 										 const ClusterLmdVertex *blocker);

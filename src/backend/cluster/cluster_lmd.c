@@ -170,19 +170,57 @@ cluster_lmd_state_to_string(ClusterLmdState s)
  * shmem region helpers (spec-1.3 registry-backed).
  * ============================================================ */
 
+/* ============================================================
+ * spec-2.24 D2 — LMD-owned bounded cancel queue (file-static).
+ *
+ *	Packed into the same "pgrac cluster lmd" shmem region per user
+ *	§1.3 constraint (no NEW region).  Layout:
+ *	  [ ClusterLmdSharedState ][ MAXALIGN pad ][ LmdCancelQueueShmem ]
+ *	`lmd_cancel_queue` pointer is set inside shmem_init pointing past
+ *	the state struct.
+ * ============================================================ */
+
+typedef struct LmdCancelQueueShmem {
+	slock_t lock;
+	uint32 head;	/* dequeue index */
+	uint32 tail;	/* enqueue index */
+	ClusterLmdCancelItem items[CLUSTER_LMD_CANCEL_QUEUE_DEPTH];
+} LmdCancelQueueShmem;
+
+static LmdCancelQueueShmem *lmd_cancel_queue = NULL;
+
+
 Size
 cluster_lmd_shmem_size(void)
 {
-	return MAXALIGN(sizeof(ClusterLmdSharedState));
+	Size sz = MAXALIGN(sizeof(ClusterLmdSharedState));
+	sz = add_size(sz, MAXALIGN(sizeof(LmdCancelQueueShmem)));
+	return sz;
+}
+
+Size
+cluster_lmd_cancel_queue_shmem_size(void)
+{
+	return MAXALIGN(sizeof(LmdCancelQueueShmem));
+}
+
+void
+cluster_lmd_cancel_queue_shmem_init(void)
+{
+	/* No-op — packed into cluster_lmd_shmem_init below. */
 }
 
 void
 cluster_lmd_shmem_init(void)
 {
 	bool found;
+	char *base;
 
 	cluster_lmd_state = (ClusterLmdSharedState *)ShmemInitStruct(
-		"pgrac cluster lmd", sizeof(ClusterLmdSharedState), &found);
+		"pgrac cluster lmd", cluster_lmd_shmem_size(), &found);
+
+	base = (char *) cluster_lmd_state;
+	lmd_cancel_queue = (LmdCancelQueueShmem *) (base + MAXALIGN(sizeof(ClusterLmdSharedState)));
 
 	if (!found) {
 		memset(cluster_lmd_state, 0, sizeof(*cluster_lmd_state));
@@ -207,7 +245,67 @@ cluster_lmd_shmem_init(void)
 		pg_atomic_init_u64(&cluster_lmd_state->lmd_idle_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_state->lmd_error_count, 0);
 		ConditionVariableInit(&cluster_lmd_state->cv);
+
+		/* spec-2.24 D2 — initialize cancel queue. */
+		SpinLockInit(&lmd_cancel_queue->lock);
+		lmd_cancel_queue->head = 0;
+		lmd_cancel_queue->tail = 0;
+		memset(lmd_cancel_queue->items, 0, sizeof(lmd_cancel_queue->items));
 	}
+}
+
+/* ============================================================
+ * spec-2.24 D2 — cancel queue producer / consumer API.
+ *
+ *	Producer:  cluster_ges_request_handler CANCEL_PENDING case (D1).
+ *	Consumer:  LMD daemon tick body (D5).
+ *
+ *	Bounded ring; head==tail means empty; (tail+1) % DEPTH == head means
+ *	full.  Slot count = DEPTH - 1 = 255 effective.
+ * ============================================================ */
+
+bool
+cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload, uint16 payload_len)
+{
+	uint32 next_tail;
+	bool ok = false;
+
+	if (lmd_cancel_queue == NULL || payload == NULL
+		|| payload_len > sizeof(((ClusterLmdCancelItem *) NULL)->payload))
+		return false;
+
+	SpinLockAcquire(&lmd_cancel_queue->lock);
+	next_tail = (lmd_cancel_queue->tail + 1) % CLUSTER_LMD_CANCEL_QUEUE_DEPTH;
+	if (next_tail != lmd_cancel_queue->head) {
+		ClusterLmdCancelItem *slot = &lmd_cancel_queue->items[lmd_cancel_queue->tail];
+
+		slot->source_node_id = source_node_id;
+		slot->payload_len = payload_len;
+		memcpy(slot->payload, payload, payload_len);
+		lmd_cancel_queue->tail = next_tail;
+		ok = true;
+	}
+	SpinLockRelease(&lmd_cancel_queue->lock);
+	return ok;
+}
+
+bool
+cluster_lmd_cancel_queue_dequeue(ClusterLmdCancelItem *out)
+{
+	bool ok = false;
+
+	if (lmd_cancel_queue == NULL || out == NULL)
+		return false;
+
+	SpinLockAcquire(&lmd_cancel_queue->lock);
+	if (lmd_cancel_queue->head != lmd_cancel_queue->tail) {
+		*out = lmd_cancel_queue->items[lmd_cancel_queue->head];
+		lmd_cancel_queue->head
+			= (lmd_cancel_queue->head + 1) % CLUSTER_LMD_CANCEL_QUEUE_DEPTH;
+		ok = true;
+	}
+	SpinLockRelease(&lmd_cancel_queue->lock);
+	return ok;
 }
 
 void

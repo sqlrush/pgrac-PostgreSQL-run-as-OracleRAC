@@ -91,6 +91,13 @@ typedef struct ClusterLmdGraphShared {
 	/* spec-2.23 D8 counters — coordinator probe broadcast + partial REPORT. */
 	pg_atomic_uint64 probe_broadcast_count;
 	pg_atomic_uint64 probe_partial_count;
+	/* spec-2.24 D12 counters — cross-node cancel forwarding + cleanup. */
+	pg_atomic_uint64 cross_node_victim_cancel_sent_count;
+	pg_atomic_uint64 cross_node_cancel_received_count;
+	pg_atomic_uint64 cross_node_cancel_queue_full_count;
+	pg_atomic_uint64 cleanup_on_backend_exit_count;
+	pg_atomic_uint64 cleanup_lmd_sweep_count;
+	pg_atomic_uint64 cleanup_skip_other_owner_count;
 	int max_edges; /* snapshot of cluster.lmd_max_wait_edges at init */
 } ClusterLmdGraphShared;
 
@@ -153,6 +160,13 @@ cluster_lmd_graph_shmem_init(void)
 		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_victim_pending_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->probe_broadcast_count, 0);
 		pg_atomic_init_u64(&cluster_lmd_graph_state->probe_partial_count, 0);
+		/* spec-2.24 D12 init. */
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_victim_cancel_sent_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_cancel_received_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cross_node_cancel_queue_full_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cleanup_on_backend_exit_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cleanup_lmd_sweep_count, 0);
+		pg_atomic_init_u64(&cluster_lmd_graph_state->cleanup_skip_other_owner_count, 0);
 		cluster_lmd_graph_state->max_edges = max_edges;
 	}
 
@@ -431,6 +445,29 @@ cluster_lmd_probe_partial_count_inc(uint64 delta)
 	if (cluster_lmd_graph_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->probe_partial_count, delta);
 }
+
+/* spec-2.24 D12 — 6 NEW counter accessors. */
+#define DEFINE_GET_INC(field)                                                                      \
+	uint64 cluster_lmd_##field##_get(void)                                                         \
+	{                                                                                              \
+		if (cluster_lmd_graph_state == NULL)                                                       \
+			return 0;                                                                              \
+		return pg_atomic_read_u64(&cluster_lmd_graph_state->field);                                 \
+	}                                                                                              \
+	void cluster_lmd_##field##_inc(uint64 delta)                                                   \
+	{                                                                                              \
+		if (cluster_lmd_graph_state != NULL)                                                       \
+			pg_atomic_fetch_add_u64(&cluster_lmd_graph_state->field, delta);                       \
+	}
+
+DEFINE_GET_INC(cross_node_victim_cancel_sent_count)
+DEFINE_GET_INC(cross_node_cancel_received_count)
+DEFINE_GET_INC(cross_node_cancel_queue_full_count)
+DEFINE_GET_INC(cleanup_on_backend_exit_count)
+DEFINE_GET_INC(cleanup_lmd_sweep_count)
+DEFINE_GET_INC(cleanup_skip_other_owner_count)
+
+#undef DEFINE_GET_INC
 
 
 /* ============================================================
