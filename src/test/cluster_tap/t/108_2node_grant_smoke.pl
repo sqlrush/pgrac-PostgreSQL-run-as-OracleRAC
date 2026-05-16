@@ -179,7 +179,7 @@ my $dump_rows = $node->safe_psql('postgres', q{
 	ORDER BY key
 });
 is($dump_rows,
-   "ges_reply_late_drop_count\nges_release_ack_count\nges_reply_wait_table_active",
+   "ges_release_ack_count\nges_reply_late_drop_count\nges_reply_wait_table_active",
    'L9 dump_ges exposes 3 new spec-2.23 D13 counters');
 
 # L10: reply_wait_table active count starts at 0 on a quiet single-node
