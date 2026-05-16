@@ -301,8 +301,28 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	case GES_REQ_OPCODE_BAST_ACK:
 		cluster_grd_inc_bast_ack();
 		return;
-	case GES_REQ_OPCODE_CANCEL_PENDING:
+	case GES_REQ_OPCODE_CANCEL_PENDING: {
+		/*
+		 * spec-2.24 D1 / HC23 — cross-node victim cancel forwarding.
+		 *
+		 *	5-项 inbound validation already done above (line 260).
+		 *	HC23 additional gate:  target_node_id == cluster_node_id
+		 *	(envelope source is the coordinator;  payload holder_id
+		 *	identifies the local victim target).  Then enqueue to
+		 *	LMD-owned cancel queue;  LMD daemon tick body (D5)
+		 *	performs HC24 4-tuple stale procno match and dispatches
+		 *	to cluster_lmd_signal_local_victim().
+		 */
+		if (req->holder_node_id != (uint32) cluster_node_id) {
+			cluster_grd_inc_ges_inbound_validation_fail();
+			return;
+		}
+		if (cluster_lmd_cancel_queue_enqueue(env->source_node_id, req, sizeof(*req)))
+			cluster_lmd_cross_node_cancel_received_count_inc(1);
+		else
+			cluster_lmd_cross_node_cancel_queue_full_count_inc(1);
 		return;
+	}
 	case GES_REQ_OPCODE_REQUEST:
 	case GES_REQ_OPCODE_CONVERT:
 	case GES_REQ_OPCODE_RELEASE:
@@ -886,6 +906,39 @@ cluster_ges_send_bast_targeted(const struct ClusterResId *resid, int requested_m
 				cluster_grd_inc_bast_sent();
 		}
 	}
+}
+
+
+/* ============================================================
+ * spec-2.24 D4 — cross-node victim cancel sender (HC23/HC24).
+ *
+ *	Reuses spec-2.17 GES_REQ_OPCODE_CANCEL_PENDING=7 enum + 48B
+ *	GesRequestPayload (holder_id 4-tuple carries victim target identity).
+ *	Routes through CLUSTER_GRD_OUTBOUND_LMD_CANCEL origin — reserved
+ *	pool + cleanup dirty-list nofail path;NOT silent-fail backend_
+ *	request path (loss → deadlock not resolved).
+ * ============================================================ */
+void
+cluster_ges_send_cancel_pending(int32 victim_node_id, const struct ClusterGrdHolderId *victim_target)
+{
+	GesRequestPayload payload;
+
+	if (victim_target == NULL || victim_node_id < 0)
+		return;
+
+	memset(&payload, 0, sizeof(payload));
+	payload.opcode = GES_REQ_OPCODE_CANCEL_PENDING;
+	payload.lockmode = 0; /* not used for CANCEL */
+	payload.holder_node_id = (uint32) victim_target->node_id;
+	payload.holder_procno = victim_target->procno;
+	payload.holder_cluster_epoch_lo = (uint32) (victim_target->cluster_epoch & 0xffffffffu);
+	payload.holder_cluster_epoch_hi = (uint32) (victim_target->cluster_epoch >> 32);
+	payload.holder_request_id_lo = (uint32) (victim_target->request_id & 0xffffffffu);
+	payload.holder_request_id_hi = (uint32) (victim_target->request_id >> 32);
+	/* resid not used for CANCEL — left zero */
+
+	cluster_grd_outbound_enqueue_lmd_cancel((uint32) victim_node_id, &payload, sizeof(payload));
+	cluster_lmd_cross_node_victim_cancel_sent_count_inc(1);
 }
 
 

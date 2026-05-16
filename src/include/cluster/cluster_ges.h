@@ -329,6 +329,17 @@ extern void cluster_ges_send_bast_targeted(const struct ClusterResId *resid,
 										   const struct ClusterGrdConflictHolder *holders,
 										   int n_holders);
 
+/*
+ * spec-2.24 D4 — cross-node victim cancel forwarding (HC23/HC24).
+ *
+ *	LMD coordinator (cluster_lmd_tarjan_run_coordinator_scan D3 wire)
+ *	calls this when cross-node deadlock cycle victim resides on a
+ *	remote node.  Routes via CLUSTER_GRD_OUTBOUND_LMD_CANCEL origin
+ *	(reserved pool + cleanup dirty-list nofail).
+ */
+extern void cluster_ges_send_cancel_pending(int32 victim_node_id,
+											const struct ClusterGrdHolderId *victim_target);
+
 
 /* ============================================================
  * spec-2.22 D6 — DEADLOCK_PROBE / DEADLOCK_REPORT payload format.

@@ -306,6 +306,31 @@ cluster_grd_outbound_enqueue_cleanup_release(uint32 dest_node_id, const void *pa
 	LWLockRelease(cluster_grd_outbound_lock);
 }
 
+/*
+ * spec-2.24 D4 — LMD coordinator cross-node victim cancel forwarding.
+ *
+ *	Reliability contract per spec-2.24 §1.4 example 2 — cancel forward
+ *	MUST NOT use the silent-fail backend_request path (loss → deadlock
+ *	not resolved).  Mirror CLEANUP_RELEASE semantics:  share main ring;
+ *	on full → cleanup dirty-list nofail.  cluster_grd_outbound origin
+ *	CLUSTER_GRD_OUTBOUND_LMD_CANCEL identifies the producer in pg_stat
+ *	rollups.
+ */
+void
+cluster_grd_outbound_enqueue_lmd_cancel(uint32 dest_node_id, const void *payload,
+									   uint16 payload_len)
+{
+	Assert(cluster_grd_outbound_state != NULL);
+
+	LWLockAcquire(cluster_grd_outbound_lock, LW_EXCLUSIVE);
+
+	if (!ring_push(PGRAC_IC_MSG_GES_REQUEST, CLUSTER_GRD_OUTBOUND_LMD_CANCEL, dest_node_id,
+				   payload, payload_len))
+		cleanup_dirty_push(dest_node_id, payload, payload_len);
+
+	LWLockRelease(cluster_grd_outbound_lock);
+}
+
 
 /* ============================================================
  * LMON-side consumer.

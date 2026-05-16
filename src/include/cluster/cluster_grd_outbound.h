@@ -73,7 +73,8 @@
 typedef enum ClusterGrdOutboundOrigin {
 	CLUSTER_GRD_OUTBOUND_BACKEND_REQUEST = 1, /* backend pre-S4 GES_REQUEST */
 	CLUSTER_GRD_OUTBOUND_LMON_REPLY = 2,	  /* work_queue drain reply */
-	CLUSTER_GRD_OUTBOUND_CLEANUP_RELEASE = 3  /* LockReleaseAll / abort */
+	CLUSTER_GRD_OUTBOUND_CLEANUP_RELEASE = 3, /* LockReleaseAll / abort */
+	CLUSTER_GRD_OUTBOUND_LMD_CANCEL = 4		  /* spec-2.24 D4 — cross-node victim cancel forward (nofail reserved pool + dirty-list) */
 } ClusterGrdOutboundOrigin;
 
 /*
@@ -151,6 +152,16 @@ extern void cluster_grd_outbound_enqueue_lmon_reply(uint32 dest_node_id, const v
 													uint16 payload_len);
 extern void cluster_grd_outbound_enqueue_cleanup_release(uint32 dest_node_id, const void *payload,
 														 uint16 payload_len);
+
+/*
+ *   enqueue_lmd_cancel:        spec-2.24 D4 — LMD coordinator cross-node
+ *                              victim cancel forwarding.  Ring full →
+ *                              cleanup dirty-list(complex reliable path,
+ *                              复用 cleanup_release pool 语义)+ counter
+ *                              ++ (NEVER returns false).
+ */
+extern void cluster_grd_outbound_enqueue_lmd_cancel(uint32 dest_node_id, const void *payload,
+													uint16 payload_len);
 
 /*
  * LMON-side consumer API (Step 3 D6 wires real drain).
