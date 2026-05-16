@@ -80,6 +80,9 @@
 
 #include <signal.h>
 
+#include "cluster/cluster_epoch.h"
+#include "cluster/cluster_ges.h"
+#include "cluster/cluster_grd.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_lmd.h"
 #include "cluster/cluster_shmem.h"
@@ -287,6 +290,53 @@ cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload, uin
 	}
 	SpinLockRelease(&lmd_cancel_queue->lock);
 	return ok;
+}
+
+/*
+ * spec-2.24 D5 — LMD cancel queue dispatch (HC24 stale procno 防御).
+ *
+ *	Called from LmdMain tick body.  Drains queue (bounded budget per
+ *	tick) + validates 4-tuple (node_id, procno, cluster_epoch,
+ *	request_id) before signaling local victim.
+ */
+static void
+cluster_lmd_dispatch_cancel_item(const ClusterLmdCancelItem *item)
+{
+	const GesRequestPayload *req = (const GesRequestPayload *) item->payload;
+	uint64 victim_epoch;
+	uint64 victim_request_id;
+	uint64 current_epoch;
+
+	victim_epoch = ((uint64) req->holder_cluster_epoch_lo)
+				   | (((uint64) req->holder_cluster_epoch_hi) << 32);
+	victim_request_id = ((uint64) req->holder_request_id_lo)
+						| (((uint64) req->holder_request_id_hi) << 32);
+
+	current_epoch = cluster_epoch_get_current();
+
+	/* HC24 — 4-tuple stale procno 防御:
+	 *   target_node already verified at D1 handler;
+	 *   cluster_epoch must match current (else procno may be recycled).
+	 *   cluster_lmd_signal_local_victim performs final PGPROC verify.
+	 */
+	if (victim_epoch != current_epoch) {
+		cluster_grd_inc_cleanup_skip_stale_cancel();
+		return;
+	}
+
+	cluster_lmd_signal_local_victim(req->holder_procno, victim_request_id, victim_epoch);
+}
+
+void
+cluster_lmd_drain_cancel_queue(void)
+{
+	ClusterLmdCancelItem item;
+	int drained = 0;
+
+	while (drained < 32 && cluster_lmd_cancel_queue_dequeue(&item)) {
+		cluster_lmd_dispatch_cancel_item(&item);
+		drained++;
+	}
 }
 
 bool
@@ -729,6 +779,8 @@ LmdMain(void)
 		 */
 		if (lmd_get_state() == CLUSTER_LMD_READY) {
 			cluster_lmd_tarjan_run_local_scan();
+			/* spec-2.24 D5 — drain cancel queue. */
+			cluster_lmd_drain_cancel_queue();
 		}
 
 		if (current_submission_count > seen_submission_count) {

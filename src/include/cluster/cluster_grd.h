@@ -168,6 +168,12 @@ typedef struct ClusterGrdShared {
 	pg_atomic_uint64 ges_reply_deferred_count;			/* v0.5 P1.1 reply dirty-list */
 	pg_atomic_uint64 ges_reply_dropped_count;			/* v0.6 L1.1 dirty-list full drop */
 
+	/* spec-2.24 D12 — cleanup_skip_stale_cancel(D5 4-tuple match fail).
+	 * Placed in cluster_grd_state instead of cluster_lmd_graph_state
+	 * because the increment site is in the cluster_grd CANCEL dispatch
+	 * helper(close to ges_inbound_validation_fail_count semantics). */
+	pg_atomic_uint64 cleanup_skip_stale_cancel_count;
+
 	/* spec-2.17 D12 — 6 BAST nofail counter(Q12 v0.6 rename:
 	 * sent / received / ack / retry / reject / stale_drop;timeout 拆 3). */
 	pg_atomic_uint64 ges_bast_sent_count;
@@ -480,6 +486,10 @@ extern uint64 cluster_grd_ngranted_promoted_count(void);
 extern uint64 cluster_grd_ges_work_queue_full_count(void);
 extern uint64 cluster_grd_ges_cleanup_deferred_count(void);
 extern uint64 cluster_grd_ges_inbound_validation_fail_count(void);
+
+/* spec-2.24 D5 — cleanup_skip_stale_cancel(4-tuple match fail in LMD CANCEL dispatch). */
+extern uint64 cluster_grd_cleanup_skip_stale_cancel_count(void);
+extern void cluster_grd_inc_cleanup_skip_stale_cancel(void);
 extern uint64 cluster_grd_ges_reply_deferred_count(void);
 extern uint64 cluster_grd_ges_reply_dropped_count(void);
 

@@ -428,6 +428,7 @@ extern void cluster_lmd_cancel_queue_shmem_init(void);
 extern bool cluster_lmd_cancel_queue_enqueue(uint32 source_node_id, const void *payload,
 											 uint16 payload_len);
 extern bool cluster_lmd_cancel_queue_dequeue(ClusterLmdCancelItem *out);
+extern void cluster_lmd_drain_cancel_queue(void);
 
 /* spec-2.24 D12 — NEW counters. */
 extern uint64 cluster_lmd_cross_node_victim_cancel_sent_count_get(void);

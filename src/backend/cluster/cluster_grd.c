@@ -252,6 +252,7 @@ cluster_grd_shmem_init(void)
 		pg_atomic_init_u64(&cluster_grd_state->ges_work_queue_full_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_cleanup_deferred_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_inbound_validation_fail_count, 0);
+		pg_atomic_init_u64(&cluster_grd_state->cleanup_skip_stale_cancel_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_deferred_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_dropped_count, 0);
 
@@ -968,6 +969,22 @@ cluster_grd_inc_ges_inbound_validation_fail(void)
 {
 	Assert(cluster_grd_state != NULL);
 	pg_atomic_fetch_add_u64(&cluster_grd_state->ges_inbound_validation_fail_count, 1);
+}
+
+/* spec-2.24 D5 — cleanup_skip_stale_cancel(4-tuple match fail in LMD dispatch). */
+void
+cluster_grd_inc_cleanup_skip_stale_cancel(void)
+{
+	if (cluster_grd_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_grd_state->cleanup_skip_stale_cancel_count, 1);
+}
+
+uint64
+cluster_grd_cleanup_skip_stale_cancel_count(void)
+{
+	if (cluster_grd_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_grd_state->cleanup_skip_stale_cancel_count);
 }
 
 void
