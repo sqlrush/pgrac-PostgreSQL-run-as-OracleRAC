@@ -35,6 +35,8 @@
 
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_grd.h"
+#include "cluster/cluster_grd_outbound.h" /* cluster_grd_outbound_enqueue_cleanup_release (D10) */
+#include "cluster/cluster_lmd.h"		  /* spec-2.24 D10 cleanup_*_count_inc */
 #include "cluster/cluster_guc.h" /* cluster_node_id, cluster_grd_max_entries */
 #include "cluster/cluster_signal.h"
 #include "cluster/cluster_shmem.h"
@@ -1795,14 +1797,214 @@ DEFINE_BAST_COUNTER(deadlock_chunk_oo_buffer_overflow, deadlock_chunk_oo_buffer_
  *   / backend self-abort.
  * ============================================================ */
 
+/*
+ * spec-2.24 D10 helper — HASH_REMOVE guarded by shard partition LWLock
+ * + re-lookup + verify-still-empty.  Returns true if removed (we are
+ * the at-most-once winner per HC26 I-cleanup-4);  false if another
+ * cleanup path already removed the entry or the entry is no longer
+ * empty (race lost — caller bumps skip counter).
+ */
+static bool
+cluster_grd_hashremove_if_still_empty(const ClusterResId *resid)
+{
+	uint32 hashvalue;
+	int shard_id;
+	bool found = false;
+	ClusterGrdEntry *entry;
+	bool removed = false;
+
+	if (cluster_grd_entry_htab == NULL)
+		return false;
+
+	hashvalue = cluster_grd_hash_resource(resid);
+	shard_id = cluster_grd_shard_for_hash(hashvalue);
+
+	LWLockAcquire(&cluster_grd_shard_locks[shard_id].lock, LW_EXCLUSIVE);
+
+	entry
+		= hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue, HASH_FIND, &found);
+	if (entry != NULL) {
+		SpinLockAcquire(&entry->lock);
+		if (entry->ngranted == 0 && entry->nwaiters == 0 && entry->nconverts == 0) {
+			SpinLockRelease(&entry->lock);
+			(void) hash_search_with_hash_value(cluster_grd_entry_htab, resid, hashvalue,
+											   HASH_REMOVE, &found);
+			pg_atomic_fetch_sub_u64(&cluster_grd_state->entry_current_count, 1);
+			removed = true;
+		} else {
+			SpinLockRelease(&entry->lock);
+		}
+	}
+
+	LWLockRelease(&cluster_grd_shard_locks[shard_id].lock);
+	return removed;
+}
+
+/*
+ * spec-2.24 D10 — idempotent generation-guarded cleanup primitive.
+ *
+ *	HC25-26 / I-cleanup-1..4 enforcement single source of truth.  All 3
+ *	cleanup paths converge here (HC27 dual-path convergence):
+ *	  - D6 on_proc_exit fast path → cluster_grd_cleanup_on_backend_exit
+ *	  - D8 LMD periodic safety net → cluster_lmd_periodic_cleanup_sweep
+ *	  - D9 cssd dead-node bitmap → cluster_grd_cleanup_on_node_dead
+ *
+ *	Semantics (user §3 invariants):
+ *	  I-cleanup-1 safe-to-call-multi:  re-entry NOT_FOUND no-op safe.
+ *	  I-cleanup-2 only-one-owner:  entry->lock serializes mutation; if
+ *	    a concurrent path already swept everything we look for, our
+ *	    inner loop finds no matching slot and removed remains 0.
+ *	  I-cleanup-3 NOT_FOUND no-op:  loop matches by 4-tuple of slot
+ *	    contents; absent → just continue, no error.
+ *	  I-cleanup-4 HASH_REMOVE at-most-once:  empty-entry HASH_REMOVE
+ *	    guarded by shard partition LWLock re-lookup + verify-still-
+ *	    empty + verify-generation-advanced;losing path increments
+ *	    cleanup_skip_other_owner_count.
+ *
+ *	dead_procno:  if >= 0, match slot.procno == dead_procno (local
+ *	  backend exit / SIGKILL).  Always combined with local node match
+ *	  (slot.node_id == cluster_node_id) — must NOT compare local
+ *	  ProcArray to remote holder procno per user codereview Change 4.
+ *	dead_node_id:  if >= 0, match slot.node_id == dead_node_id (peer
+ *	  node death from cssd dead-bitmap).
+ *
+ *	Returns number of slots removed across all 4 slot kinds.
+ */
+static int
+cluster_grd_entry_cleanup_guarded(ClusterGrdEntry *entry, int dead_procno, int32 dead_node_id)
+{
+	int removed = 0;
+	bool became_empty = false;
+	uint8 release_payloads[PGRAC_GRD_MAX_HOLDERS][24]; /* holder identity for release */
+	int32 release_master_nodes[PGRAC_GRD_MAX_HOLDERS];
+	int n_release = 0;
+	ClusterResId entry_resid;
+
+	Assert(entry != NULL);
+
+	SpinLockAcquire(&entry->lock);
+
+	/* HC26 I-cleanup-3 — each remove path matches by content; absent → continue. */
+	for (int i = entry->ngranted - 1; i >= 0; i--) {
+		bool match = false;
+
+		if (dead_procno >= 0 && entry->holders[i].node_id == (int32) cluster_node_id
+			&& entry->holders[i].procno == (uint32) dead_procno)
+			match = true;
+		if (dead_node_id >= 0 && entry->holders[i].node_id == dead_node_id)
+			match = true;
+		if (!match)
+			continue;
+
+		/* Stash holder identity for post-lock RELEASE enqueue. */
+		if (n_release < PGRAC_GRD_MAX_HOLDERS) {
+			memcpy(release_payloads[n_release], &entry->holders[i], 24);
+			release_master_nodes[n_release] = entry->holders[i].node_id;
+			n_release++;
+		}
+
+		if (i < entry->ngranted - 1)
+			entry->holders[i] = entry->holders[entry->ngranted - 1];
+		memset(&entry->holders[entry->ngranted - 1], 0, sizeof(ClusterGrdHolder));
+		entry->ngranted--;
+		removed++;
+	}
+	for (int i = entry->nwaiters - 1; i >= 0; i--) {
+		bool match = false;
+
+		if (dead_procno >= 0 && entry->waiters[i].node_id == (int32) cluster_node_id
+			&& entry->waiters[i].procno == (uint32) dead_procno)
+			match = true;
+		if (dead_node_id >= 0 && entry->waiters[i].node_id == dead_node_id)
+			match = true;
+		if (!match)
+			continue;
+
+		if (i < entry->nwaiters - 1)
+			entry->waiters[i] = entry->waiters[entry->nwaiters - 1];
+		memset(&entry->waiters[entry->nwaiters - 1], 0, sizeof(ClusterGrdWaiter));
+		entry->nwaiters--;
+		removed++;
+	}
+	for (int i = entry->nconverts - 1; i >= 0; i--) {
+		bool match = false;
+
+		if (dead_node_id >= 0 && entry->converts[i].node_id == dead_node_id)
+			match = true;
+		if (!match)
+			continue;
+
+		if (i < entry->nconverts - 1)
+			entry->converts[i] = entry->converts[entry->nconverts - 1];
+		memset(&entry->converts[entry->nconverts - 1], 0, sizeof(ClusterGrdConvert));
+		entry->nconverts--;
+		removed++;
+	}
+
+	/* HC25 — bump generation if any mutation; serves as ABA marker for
+	 * concurrent cleanup detection (other paths see new generation and
+	 * recheck before HASH_REMOVE). */
+	if (removed > 0)
+		entry->generation++;
+
+	became_empty = (entry->ngranted == 0 && entry->nwaiters == 0 && entry->nconverts == 0);
+
+	memcpy(&entry_resid, &entry->resid, sizeof(entry_resid));
+
+	SpinLockRelease(&entry->lock);
+
+	/* Enqueue cluster_grd_outbound_enqueue_cleanup_release per real removed
+	 * holder (out-of-lock; spec-2.16 D4 reserved pool nofail). */
+	for (int i = 0; i < n_release; i++) {
+		cluster_grd_outbound_enqueue_cleanup_release((uint32) release_master_nodes[i],
+													 release_payloads[i], 24);
+	}
+
+	/* HC26 I-cleanup-4 — HASH_REMOVE at-most-once per entry lifetime.
+	 * Re-acquire shard partition LWLock + re-lookup resid + verify still
+	 * empty; the losing path (race with another cleanup that already
+	 * removed) increments skip counter. */
+	if (became_empty) {
+		bool removed_ok = cluster_grd_hashremove_if_still_empty(&entry_resid);
+		if (!removed_ok)
+			cluster_lmd_cleanup_skip_other_owner_count_inc(1);
+	}
+
+	return removed;
+}
+
+/*
+ * Entry-by-procno sweep.  Iterates GRD HTAB; for each entry, invokes
+ * D10 guarded primitive.  Returns total slots removed.
+ */
+static int
+cluster_grd_entries_cleanup_by_procno_guarded(int procno)
+{
+	HASH_SEQ_STATUS status;
+	ClusterGrdEntry *entry;
+	int total = 0;
+
+	if (cluster_grd_entry_htab == NULL || procno < 0)
+		return 0;
+
+	hash_seq_init(&status, cluster_grd_entry_htab);
+	while ((entry = (ClusterGrdEntry *) hash_seq_search(&status)) != NULL) {
+		total += cluster_grd_entry_cleanup_guarded(entry, procno, -1);
+	}
+	return total;
+}
+
 void
 cluster_grd_cleanup_on_backend_exit(int procno)
 {
-	/* Checkpoint skeleton only.  Do not clear MyProc flags here: clearing
-	 * BAST/CANCEL state without walking GRD entries can hide protocol work.
-	 * The real implementation must sweep holders/waiters/converts for procno
-	 * under the same entry-lock discipline as cleanup_on_node_dead(). */
-	(void)procno;
+	int swept;
+
+	if (procno < 0)
+		return; /* I-cleanup-1 — re-entry safe */
+
+	swept = cluster_grd_entries_cleanup_by_procno_guarded(procno);
+	if (swept > 0)
+		cluster_lmd_cleanup_on_backend_exit_count_inc((uint64) swept);
 }
 
 
