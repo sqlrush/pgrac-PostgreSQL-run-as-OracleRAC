@@ -348,22 +348,53 @@ TimestampDifferenceExceeds(int64 a pg_attribute_unused(), int64 b pg_attribute_u
 {
 	return 0;
 }
-Size add_size(Size a, Size b) { return a + b; }
-uint64 cluster_epoch_get_current(void) { return 0; }
-void cluster_grd_inc_cleanup_skip_stale_cancel(void) {}
-int cluster_grd_sweep_local_stale_procnos(void) { return 0; }
-void cluster_lmd_cleanup_lmd_sweep_count_inc(uint64 d pg_attribute_unused()) {}
-void cluster_lmd_cleanup_on_backend_exit_count_inc(uint64 d pg_attribute_unused()) {}
-void cluster_lmd_cleanup_skip_other_owner_count_inc(uint64 d pg_attribute_unused()) {}
+Size
+add_size(Size a, Size b)
+{
+	return a + b;
+}
+uint64
+cluster_epoch_get_current(void)
+{
+	return 0;
+}
+void
+cluster_grd_inc_cleanup_skip_stale_cancel(void)
+{}
+int
+cluster_grd_sweep_local_stale_procnos(void)
+{
+	return 0;
+}
+void
+cluster_lmd_cleanup_lmd_sweep_count_inc(uint64 d pg_attribute_unused())
+{}
+void
+cluster_lmd_cleanup_on_backend_exit_count_inc(uint64 d pg_attribute_unused())
+{}
+void
+cluster_lmd_cleanup_skip_other_owner_count_inc(uint64 d pg_attribute_unused())
+{}
 int cluster_lmd_cleanup_sweep_interval_ms = 5000;
-void cluster_lmd_signal_local_victim(uint32 a pg_attribute_unused(),
-									 uint64 b pg_attribute_unused(),
-									 uint64 c pg_attribute_unused()) {}
-void cluster_lmd_cross_node_cancel_queue_full_count_inc(uint64 d pg_attribute_unused()) {}
-void cluster_lmd_cross_node_cancel_received_count_inc(uint64 d pg_attribute_unused()) {}
-void cluster_lmd_cross_node_victim_cancel_sent_count_inc(uint64 d pg_attribute_unused()) {}
-int s_lock(volatile slock_t *l pg_attribute_unused(), const char *f pg_attribute_unused(),
-		   int n pg_attribute_unused(), const char *fn pg_attribute_unused()) { return 0; }
+void
+cluster_lmd_signal_local_victim(uint32 a pg_attribute_unused(), uint64 b pg_attribute_unused(),
+								uint64 c pg_attribute_unused())
+{}
+void
+cluster_lmd_cross_node_cancel_queue_full_count_inc(uint64 d pg_attribute_unused())
+{}
+void
+cluster_lmd_cross_node_cancel_received_count_inc(uint64 d pg_attribute_unused())
+{}
+void
+cluster_lmd_cross_node_victim_cancel_sent_count_inc(uint64 d pg_attribute_unused())
+{}
+int
+s_lock(volatile slock_t *l pg_attribute_unused(), const char *f pg_attribute_unused(),
+	   int n pg_attribute_unused(), const char *fn pg_attribute_unused())
+{
+	return 0;
+}
 
 
 /* ============================================================
