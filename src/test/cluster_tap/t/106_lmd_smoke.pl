@@ -20,8 +20,9 @@
 #	    L7: L122 alphabetic order — pg_cluster_state ORDER BY category
 #	        emits 'lmd' between 'lck' and 'lmon' (actual psql output
 #	        verify;**禁止凭字典直觉 sed** — ASCII `d` 0x64 < `o` 0x6F)
-#	    L8: dump_lmd contributes 18 rows under category='lmd'
-#	        (spec-2.19 daemon rows + spec-2.22 graph/Tarjan rows)
+#	    L8: dump_lmd contributes 24 rows under category='lmd'
+#	        (spec-2.19 daemon rows + spec-2.22 graph/Tarjan rows + spec-
+#	        2.24 D + cleanup rows)
 #	        in pg_cluster_state
 #	    L9: pg_cluster_lmd view explicit column count = 10
 #	        (regression防御 against view schema drift)
@@ -168,15 +169,15 @@ is($cat_order, 'lck,lmd,lmon,lms',
 
 
 # ----------
-# L8:  dump_lmd contributes 18 rows under category='lmd' in
+# L8:  dump_lmd contributes 24 rows under category='lmd' in
 # pg_cluster_state:
 #   - spec-2.19 daemon state surface: state + ready_at_us + 5 counters
 #   - spec-2.22 graph/Tarjan surface: 9 graph/deadlock rows
 # ----------
 my $lmd_rows = $node->safe_psql('postgres',
 	q{SELECT count(*) FROM pg_cluster_state WHERE category='lmd'});
-is($lmd_rows, '18',
-   "L8 dump_lmd emits 18 rows under category='lmd' (daemon + graph/Tarjan/probe surface)");
+is($lmd_rows, '24',
+   "L8 dump_lmd emits 24 rows under category='lmd' (daemon + graph/Tarjan/probe + spec-2.24 cancel/cleanup surface)");
 
 
 # ----------

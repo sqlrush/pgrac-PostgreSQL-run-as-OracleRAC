@@ -267,18 +267,17 @@
  * 53R81 SQLSTATE cluster_lmd_unavailable;ClusterLmdShmem region +
  * LWTRANCHE_CLUSTER_LMD;LmdProcess AuxProcType + NUM_AUXILIARY_PROCS
  * 13 → 14.  catversion bump for catalog tooling. */
-/* spec-2.23 D18 (2026-05-16):  cross-node GES grant + targeted BAST +
- * cross-node deadlock probe/report MVP.  Adds 5-tuple reply wait HTAB
- * (cluster_ges_reply_wait shmem region + LWLock tranche);  GesReply-
- * Payload ABI bump 48B → 52B (NEW reply_for_opcode field, FU-5);  3
- * NEW ges counters (reply_wait_table_active / reply_late_drop /
- * release_ack);  2 NEW LMD counters (probe_broadcast / probe_partial);
- * 2 NEW wait events (ClusterGesReplyWait + ClusterLmdProbeCollect);  2
- * NEW GUCs (cluster.lmd_probe_collect_timeout_ms +
- * cluster.ges_reply_wait_max_entries);  ClusterGrdWaiter struct
- * extended with full reply identity.  catversion bump for catalog
- * tooling. */
-#define CATALOG_VERSION_NO 202605340
+/* spec-2.24 D18 (2026-05-16):  cross-node victim cancel forwarding +
+ * cleanup_on_backend_exit GRD sweep.  Adds 6 NEW lmd counters (cancel_
+ * sent / cancel_received / cancel_queue_full / cleanup_on_backend_exit
+ * / cleanup_lmd_sweep / cleanup_skip_other_owner) + 1 NEW grd counter
+ * (cleanup_skip_stale_cancel);  NEW outbound origin CLUSTER_GRD_
+ * OUTBOUND_LMD_CANCEL=4 (reserved pool nofail);  NEW LMD-owned bounded
+ * cancel queue packed into existing 'pgrac cluster lmd' region (no new
+ * shmem region per spec §1.3);  on_proc_exit hook for cleanup_on_
+ * backend_exit;  1 NEW GUC cluster.lmd_cleanup_sweep_interval_ms.
+ * catversion bump for catalog tooling. */
+#define CATALOG_VERSION_NO 202605350
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId

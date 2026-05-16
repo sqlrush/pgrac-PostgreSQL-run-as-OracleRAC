@@ -1346,6 +1346,42 @@ cluster_lmd_probe_partial_count_get(void)
 {
 	return 0;
 }
+/* spec-2.24 D13 stub audit — 6 NEW lmd counters + 1 NEW grd counter. */
+uint64
+cluster_lmd_cross_node_victim_cancel_sent_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cross_node_cancel_received_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cross_node_cancel_queue_full_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cleanup_on_backend_exit_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cleanup_lmd_sweep_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_lmd_cleanup_skip_other_owner_count_get(void)
+{
+	return 0;
+}
+uint64
+cluster_grd_cleanup_skip_stale_cancel_count(void)
+{
+	return 0;
+}
 
 UT_TEST(test_debug_links_against_pgstat_module)
 {

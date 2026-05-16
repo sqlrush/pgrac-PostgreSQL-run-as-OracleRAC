@@ -349,6 +349,23 @@ cluster_grd_outbound_enqueue_backend_request(uint32 d pg_attribute_unused(),
 	return true;
 }
 
+/* spec-2.24 D14 stub audit. */
+void
+cluster_grd_outbound_enqueue_lmd_cancel(uint32 d pg_attribute_unused(),
+									   const void *p pg_attribute_unused(),
+									   uint16 l pg_attribute_unused())
+{}
+bool
+cluster_lmd_cancel_queue_enqueue(uint32 s pg_attribute_unused(),
+								 const void *p pg_attribute_unused(),
+								 uint16 l pg_attribute_unused())
+{
+	return true;
+}
+void cluster_lmd_cross_node_cancel_queue_full_count_inc(uint64 d pg_attribute_unused()) {}
+void cluster_lmd_cross_node_cancel_received_count_inc(uint64 d pg_attribute_unused()) {}
+void cluster_lmd_cross_node_victim_cancel_sent_count_inc(uint64 d pg_attribute_unused()) {}
+
 void
 cluster_grd_inc_bast_sent(void)
 {}

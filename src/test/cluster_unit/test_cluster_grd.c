@@ -379,6 +379,27 @@ s_lock(volatile slock_t *lock pg_attribute_unused(), const char *file pg_attribu
 	return 0;
 }
 
+/* spec-2.24 D14/D16 stub audit. */
+void
+cluster_grd_outbound_enqueue_cleanup_release(uint32 d pg_attribute_unused(),
+											 const void *p pg_attribute_unused(),
+											 uint16 l pg_attribute_unused())
+{}
+void cluster_lmd_cleanup_on_backend_exit_count_inc(uint64 d pg_attribute_unused()) {}
+void cluster_lmd_cleanup_skip_other_owner_count_inc(uint64 d pg_attribute_unused()) {}
+
+/* PG runtime stubs needed by D8 cluster_grd_sweep_local_stale_procnos. */
+LWLockPadded *MainLWLockArray = NULL;
+int MaxBackends = 100;
+typedef struct PROC_HDR_STUB {
+	void *allProcs;
+	int allProcCount;
+} PROC_HDR_STUB;
+static PROC_HDR_STUB stub_proc_global = { NULL, 0 };
+void *ProcGlobal = &stub_proc_global;
+void *palloc0(Size sz) { static char buf[256]; (void)sz; memset(buf, 0, sizeof(buf)); return buf; }
+void pfree(void *p pg_attribute_unused()) {}
+
 /* spec-2.15 D11: shmem add_size stub.  cluster_grd_shmem_size() wraps
  * add_size() for the entry HTAB component; standalone harness never
  * allocates >0 bytes for the entry HTAB (cluster.grd_max_entries=0),
