@@ -1428,6 +1428,16 @@ void
 cluster_grd_inc_relation_object_cluster_path(void)
 {}
 
+/* spec-2.26 D5 R10 stub audit — TRANSACTION gate hit counter. */
+uint64
+cluster_grd_transaction_cluster_path_count(void)
+{
+	return 0;
+}
+void
+cluster_grd_inc_transaction_cluster_path(void)
+{}
+
 UT_TEST(test_debug_links_against_pgstat_module)
 {
 	UT_ASSERT_NOT_NULL((void *)cluster_pgstat_get_count);

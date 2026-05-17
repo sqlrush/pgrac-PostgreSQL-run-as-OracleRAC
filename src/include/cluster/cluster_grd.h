@@ -181,6 +181,15 @@ typedef struct ClusterGrdShared {
 	 * either of the two NEW LOCKTAG types.  Surfaced via dump_grd. */
 	pg_atomic_uint64 relation_object_cluster_path_count;
 
+	/* spec-2.26 D5 — should_globalize gate hit count for LOCKTAG_
+	 * TRANSACTION path (HC39 / HC47 branches).  Bumped on every
+	 * successful gate-true return from XactLockTable* code paths
+	 * (auto-acquired by every write xact via XactLockTableInsert,
+	 * by waiters via XactLockTableWait, etc.).  Mutually exclusive
+	 * with relation_object_cluster_path_count (different LOCKTAG
+	 * type).  Surfaced via dump_grd (40th row after spec-2.25). */
+	pg_atomic_uint64 transaction_cluster_path_count;
+
 	/* spec-2.17 D12 — 6 BAST nofail counter(Q12 v0.6 rename:
 	 * sent / received / ack / retry / reject / stale_drop;timeout 拆 3). */
 	pg_atomic_uint64 ges_bast_sent_count;
@@ -510,6 +519,10 @@ extern uint64 cluster_grd_cleanup_skip_stale_cancel_count(void);
 /* spec-2.25 D13 — RELATION + OBJECT cluster gate hit counter (HC23..HC27). */
 extern void cluster_grd_inc_relation_object_cluster_path(void);
 extern uint64 cluster_grd_relation_object_cluster_path_count(void);
+
+/* spec-2.26 D5 — TRANSACTION cluster gate hit counter (HC39 / HC47). */
+extern void cluster_grd_inc_transaction_cluster_path(void);
+extern uint64 cluster_grd_transaction_cluster_path_count(void);
 extern void cluster_grd_inc_cleanup_skip_stale_cancel(void);
 extern uint64 cluster_grd_ges_reply_deferred_count(void);
 extern uint64 cluster_grd_ges_reply_dropped_count(void);

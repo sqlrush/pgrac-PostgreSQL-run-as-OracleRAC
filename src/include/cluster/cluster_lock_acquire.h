@@ -68,9 +68,11 @@
 #ifndef CLUSTER_LOCK_ACQUIRE_H
 #define CLUSTER_LOCK_ACQUIRE_H
 
-#include "access/transam.h"		 /* FirstNormalObjectId for HC24/HC27 */
-#include "cluster/cluster_grd.h" /* ClusterResId + ClusterGrdHolderId */
-#include "storage/lock.h"		 /* LOCKMODE / LOCKTAG / ShareUpdateExclusiveLock */
+#include "access/transam.h"		  /* FirstNormalObjectId for HC24/HC27 */
+#include "cluster/cluster_conf.h" /* CLUSTER_MAX_NODES for HC47 */
+#include "cluster/cluster_grd.h"  /* ClusterResId + ClusterGrdHolderId */
+#include "cluster/cluster_guc.h"  /* cluster_node_id extern for HC47 */
+#include "storage/lock.h"		  /* LOCKMODE / LOCKTAG / ShareUpdateExclusiveLock */
 
 
 /*
@@ -284,11 +286,32 @@ cluster_lock_should_globalize(const LOCKTAG *locktag, LOCKMODE lockmode, bool se
 			return false;
 		return true;
 
+	case LOCKTAG_TRANSACTION:
+		/* spec-2.26 NEW — HC39 exact mode filter.
+		 *
+		 *	PG XactLockTable* paths use only ShareLock (5 — waiter via
+		 *	XactLockTableWait) and ExclusiveLock (7 — owner via
+		 *	XactLockTableInsert).  All other modes are defensively
+		 *	rejected.  Do NOT use `lockmode >= ShareLock` because that
+		 *	would unnecessarily admit ShareRowExclusive (6) /
+		 *	AccessExclusive (8) which PG never takes on TRANSACTION
+		 *	locktag (and were misordered as ShareLock=4 in v0.1).
+		 *
+		 *	HC47 invalid cluster_node_id fail-closed — at startup /
+		 *	single-node configurations cluster_node_id may still be -1
+		 *	(uninitialized).  Casting (-1) to uint32 yields 0xFFFFFFFF
+		 *	which corrupts ClusterResId.field2 on the wire (silent
+		 *	wrong-master).  Must check range before encoding identity.
+		 */
+		if (cluster_node_id < 0 || cluster_node_id >= CLUSTER_MAX_NODES)
+			return false; /* HC47 fail-closed: invalid origin node id */
+		return lockmode == ShareLock || lockmode == ExclusiveLock;
+
 	default:
-		/* HC28 — TRANSACTION / PAGE / TUPLE / RELATION_EXTEND /
-			 * VIRTUALTRANSACTION / SPECULATIVE_TOKEN / APPLY_TRANSACTION /
-			 * USERLOCK 永远 PG-native;  TRANSACTION 推 spec-2.26 + AD-012
-			 * cluster-aware xid encoding. */
+		/* HC28 — PAGE / TUPLE / RELATION_EXTEND / VIRTUALTRANSACTION /
+			 * SPECULATIVE_TOKEN / APPLY_TRANSACTION / USERLOCK 永远 PG-native;
+			 * AD-012 例外 10 完整 vision(allocator subspace + visibility
+			 * fork + pg_xact remote)推 spec-2.27+ / Cache Fusion(spec-2.28+). */
 		return false;
 	}
 }

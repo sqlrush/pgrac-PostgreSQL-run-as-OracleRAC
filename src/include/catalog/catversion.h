@@ -267,20 +267,20 @@
  * 53R81 SQLSTATE cluster_lmd_unavailable;ClusterLmdShmem region +
  * LWTRANCHE_CLUSTER_LMD;LmdProcess AuxProcType + NUM_AUXILIARY_PROCS
  * 13 → 14.  catversion bump for catalog tooling. */
-/* spec-2.25 D12 (2026-05-16):  Lock class expansion RELATION + OBJECT +
- * per-node native-lock probe protocol.  Extends cluster_lock_should_globalize
- * to cover LOCKTAG_RELATION + LOCKTAG_OBJECT (lockmode >= SUEX, oid >=
- * FirstNormalObjectId, relpersistence != 't').  Adds NEW GES opcode pair
- * NATIVE_LOCK_PROBE=9 / NATIVE_LOCK_PROBE_REPLY=10 (32B payloads, dedicated
- * dispatch path); NEW outbound origin CLUSTER_GRD_OUTBOUND_LMS_NATIVE_
- * PROBE=5; NEW SQLSTATE 53R83 ERRCODE_CLUSTER_NATIVE_LOCK_PROBE_TIMEOUT;
- * NEW 2 wait events ClusterLmsNativeProbeWait + ClusterNativeProbeReply
- * Wait (COUNT 73 -> 75);  NEW 3 GUC lms_native_lock_probe_max_inflight /
- * retry_interval_ms / retry_budget;  NEW 7 lms counter + 1 grd counter;
- * per-shard LMS probe collector slot array (128B × 64 max) embedded in
- * existing 'pgrac cluster lms' shmem region.  catversion bump for catalog
- * tooling. */
-#define CATALOG_VERSION_NO 202605360
+/* spec-2.26 D6 (2026-05-17):  LOCKTAG_TRANSACTION cluster gate + xid
+ * wrapper (AD-012 例外 10 分阶段第一步).  Extends cluster_lock_should_globalize
+ * to cover LOCKTAG_TRANSACTION (lockmode == ShareLock || ExclusiveLock,
+ * cluster_node_id in [0, CLUSTER_MAX_NODES)).  ClusterResId encode adds
+ * LOCKTAG_TRANSACTION branch — field1=local_xid + field2=origin_node_id
+ * (cluster_node_id wrapper), preserving 16B wire ABI from spec-2.14.
+ * PG TransactionId allocator NOT changed (HC41); visibility path NOT
+ * forked (HC42); pg_xact remote NOT shipped (HC42).  HC43 cluster_epoch
+ * NOT in resource key (relies on HC44 cleanup_on_node_dead complete).
+ * NEW 1 grd counter transaction_cluster_path_count; dump_grd 39 -> 40
+ * emit_row; PG XactLockTable* paths automatically routed via existing
+ * spec-2.21 LockAcquireExtended hook (no PGRAC hook addition).  No new
+ * GUC / wait event / SQLSTATE.  catversion bump for catalog tooling. */
+#define CATALOG_VERSION_NO 202605370
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId

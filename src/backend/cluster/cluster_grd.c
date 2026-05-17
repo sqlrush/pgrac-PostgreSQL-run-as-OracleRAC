@@ -258,6 +258,8 @@ cluster_grd_shmem_init(void)
 		pg_atomic_init_u64(&cluster_grd_state->cleanup_skip_stale_cancel_count, 0);
 		/* spec-2.25 D13 — RELATION + OBJECT cluster gate hit counter. */
 		pg_atomic_init_u64(&cluster_grd_state->relation_object_cluster_path_count, 0);
+		/* spec-2.26 D5 — TRANSACTION cluster gate hit counter. */
+		pg_atomic_init_u64(&cluster_grd_state->transaction_cluster_path_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_deferred_count, 0);
 		pg_atomic_init_u64(&cluster_grd_state->ges_reply_dropped_count, 0);
 
@@ -362,6 +364,38 @@ cluster_grd_resid_encode(const LOCKTAG *src, ClusterResId *dst)
 	dst->type = src->locktag_type;
 	dst->lockmethodid = src->locktag_lockmethodid;
 
+	/*
+	 * spec-2.26 D2 / HC40 — LOCKTAG_TRANSACTION origin wrapper.
+	 *
+	 *	PG SET_LOCKTAG_TRANSACTION leaves field2/3/4 zero (only field1
+	 *	carries the local TransactionId).  Cluster wrapper overlays
+	 *	field2 = cluster_node_id (origin_node_id) for cross-instance
+	 *	GES routing while preserving field1 unchanged.  Other GES /
+	 *	GRD layers (holder identity, envelope epoch validation) supply
+	 *	the remaining stale-defence dimensions (HC43 / HC44).
+	 *
+	 *	HC47 caller contract: cluster_lock_should_globalize must have
+	 *	rejected invalid cluster_node_id ranges before reaching this
+	 *	encoder.  Assert in debug for defense in depth; production
+	 *	leaves the (LOCKTAG-native) field2 = 0 unchanged on Assert miss
+	 *	to avoid silently writing 0xFFFFFFFF to the wire (R11).
+	 */
+	if (src->locktag_type == LOCKTAG_TRANSACTION) {
+		Assert(src->locktag_field2 == 0);
+		Assert(src->locktag_field3 == 0);
+		Assert(src->locktag_field4 == 0);
+		/* Always clear the PG-native padding fields before overlaying the
+		 * origin.  This keeps the encoder defensive even if a future caller
+		 * bypasses the gate with a malformed TRANSACTION locktag. */
+		dst->field2 = 0;
+		dst->field3 = 0;
+		dst->field4 = 0;
+		if (cluster_node_id >= 0 && cluster_node_id < CLUSTER_MAX_NODES)
+			dst->field2 = (uint32)cluster_node_id;
+		/* else leave origin_node_id = 0 — caller gate is expected to have
+		 * prevented us reaching here, but never write an out-of-range id. */
+	}
+
 	/* v0.4 P1.1:  increment observability counter on every encode. */
 	if (cluster_grd_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_grd_state->resid_encode_count, 1);
@@ -382,6 +416,16 @@ cluster_grd_resid_decode(const ClusterResId *src, LOCKTAG *dst)
 	dst->locktag_field4 = src->field4;
 	dst->locktag_type = src->type;
 	dst->locktag_lockmethodid = src->lockmethodid;
+
+	/*
+	 * spec-2.26 D2 / HC40 — TRANSACTION reverse decode must NOT
+	 * propagate origin_node_id back into PG-native LOCKTAG.field2.
+	 * PG SET_LOCKTAG_TRANSACTION layout has field2 = 0 invariant;
+	 * any downstream call comparing the decoded LOCKTAG against a
+	 * freshly-built PG LOCKTAG would mis-match if we left field2 = N.
+	 */
+	if (src->type == LOCKTAG_TRANSACTION)
+		dst->locktag_field2 = 0;
 }
 
 
@@ -1006,6 +1050,22 @@ cluster_grd_relation_object_cluster_path_count(void)
 	if (cluster_grd_state == NULL)
 		return 0;
 	return pg_atomic_read_u64(&cluster_grd_state->relation_object_cluster_path_count);
+}
+
+/* spec-2.26 D5 — TRANSACTION cluster gate hit counter accessor. */
+void
+cluster_grd_inc_transaction_cluster_path(void)
+{
+	if (cluster_grd_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_grd_state->transaction_cluster_path_count, 1);
+}
+
+uint64
+cluster_grd_transaction_cluster_path_count(void)
+{
+	if (cluster_grd_state == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_grd_state->transaction_cluster_path_count);
 }
 
 void

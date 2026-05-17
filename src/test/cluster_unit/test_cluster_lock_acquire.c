@@ -407,19 +407,111 @@ UT_TEST(test_7step_top_level_monotonic_forward_no_cleanup_on_success)
 }
 
 
+/* ============================================================
+ * spec-2.26 T-7step-N..N+2 — LOCKTAG_TRANSACTION gate + 7-step routing.
+ *
+ *	T-7step-N    cluster_lock_should_globalize exact mode + node-id gate.
+ *	T-7step-N+1  TRANSACTION path enters cluster path under valid
+ *	             cluster_node_id (no S7 cleanup invoked on success
+ *	             prefix; stub stack reaches FAIL_GRD_NOT_READY same
+ *	             as base T-7step regression — verifies entry routing
+ *	             reaches S3 reservation site without falling out at
+ *	             S1/S2 invariants).
+ *	T-7step-N+2  TRANSACTION release path accepts encoded identity.
+ * ============================================================ */
+
+UT_TEST(test_7step_transaction_should_globalize_gate)
+{
+	LOCKTAG tag;
+	int saved_node = cluster_node_id;
+
+	memset(&tag, 0, sizeof(tag));
+	tag.locktag_field1 = 0x12345;
+	tag.locktag_type = LOCKTAG_TRANSACTION;
+	tag.locktag_lockmethodid = 1;
+
+	cluster_node_id = 0;
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, AccessShareLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, RowShareLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, RowExclusiveLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ShareUpdateExclusiveLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ShareLock, false), true);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ShareRowExclusiveLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ExclusiveLock, false), true);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, AccessExclusiveLock, false), false);
+
+	cluster_node_id = -1;
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ShareLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ExclusiveLock, false), false);
+
+	cluster_node_id = CLUSTER_MAX_NODES;
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ShareLock, false), false);
+	UT_ASSERT_EQ(cluster_lock_should_globalize(&tag, ExclusiveLock, false), false);
+
+	cluster_node_id = saved_node;
+}
+
+UT_TEST(test_7step_transaction_locktag_path_routes_through_cluster)
+{
+	ClusterLockAcquireRequest req;
+	uint64 pre_s7 = cluster_lock_acquire_s7_cleanup_count();
+	int saved_node = cluster_node_id;
+	ClusterLockAcquireResult r;
+
+	cluster_node_id = 0;
+	memset(&req, 0, sizeof(req));
+	req.locktag.locktag_field1 = 0x12345; /* xid */
+	req.locktag.locktag_type = LOCKTAG_TRANSACTION;
+	req.locktag.locktag_lockmethodid = 1;
+	req.lockmode = ExclusiveLock; /* HC39 — owner take */
+	cluster_lms_enabled = true;
+
+	r = cluster_lock_acquire_seven_step(&req);
+	/* Stub stack reaches S3 reservation, which returns NOT_READY (no shmem
+	 * GRD entry table in standalone test).  pre-reservation fail — no S7
+	 * cleanup (matches base T-7step regression behavior; HC46 自动接入). */
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_LOCK_ACQUIRE_FAIL_GRD_NOT_READY);
+	UT_ASSERT_EQ(cluster_lock_acquire_s7_cleanup_count(), pre_s7);
+
+	cluster_node_id = saved_node;
+}
+
+UT_TEST(test_7step_transaction_locktag_release_path_safe)
+{
+	ClusterLockReleaseRequest req;
+	int saved_node = cluster_node_id;
+
+	cluster_node_id = 0;
+	memset(&req, 0, sizeof(req));
+	req.locktag.locktag_field1 = 0x12345;
+	req.locktag.locktag_type = LOCKTAG_TRANSACTION;
+	req.locktag.locktag_lockmethodid = 1;
+	req.lockmode = ExclusiveLock;
+
+	/* cluster_lock_release in standalone harness should not crash on
+	 * TRANSACTION resid even when stubs return NOT_FOUND for release-by-id. */
+	cluster_lock_release(&req);
+
+	cluster_node_id = saved_node;
+}
+
+
 UT_DEFINE_GLOBALS();
 
 
 int
 main(int argc pg_attribute_unused(), char **const argv pg_attribute_unused())
 {
-	UT_PLAN(5);
+	UT_PLAN(8);
 
 	UT_RUN(test_7step_api_surface_linkable_and_initial_counters_zero);
 	UT_RUN(test_7step_s1_hc1_fail_closed);
 	UT_RUN(test_7step_individual_steps_null_req_internal);
 	UT_RUN(test_7step_top_level_null_req_s7_cleanup_invoked);
 	UT_RUN(test_7step_top_level_monotonic_forward_no_cleanup_on_success);
+	UT_RUN(test_7step_transaction_should_globalize_gate);
+	UT_RUN(test_7step_transaction_locktag_path_routes_through_cluster);
+	UT_RUN(test_7step_transaction_locktag_release_path_safe);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

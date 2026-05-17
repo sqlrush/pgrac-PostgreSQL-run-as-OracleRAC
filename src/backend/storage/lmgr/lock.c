@@ -897,6 +897,12 @@ LockAcquireExtended(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock,
 		if (locktag->locktag_type == LOCKTAG_RELATION
 			|| locktag->locktag_type == LOCKTAG_OBJECT)
 			cluster_grd_inc_relation_object_cluster_path();
+		/* spec-2.26 D3 / D5 — TRANSACTION cluster gate hit counter
+		 * (HC39 / HC47).  Mutually exclusive with relation_object above
+		 * (different LOCKTAG types).  Bumped on every successful gate
+		 * pass for XactLockTable* paths. */
+		if (locktag->locktag_type == LOCKTAG_TRANSACTION)
+			cluster_grd_inc_transaction_cluster_path();
 
 		cluster_req.locktag = *locktag;
 		cluster_req.lockmode = lockmode;

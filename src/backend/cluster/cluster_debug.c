@@ -835,6 +835,9 @@ dump_grd(ReturnSetInfo *rsinfo)
 	/* spec-2.25 D13 — RELATION + OBJECT cluster gate hit (HC23..HC27). */
 	emit_row(rsinfo, "grd", "grd_relation_object_cluster_path_count",
 			 fmt_int64((int64)cluster_grd_relation_object_cluster_path_count()));
+	/* spec-2.26 D5 — TRANSACTION cluster gate hit (HC39 / HC47). */
+	emit_row(rsinfo, "grd", "grd_transaction_cluster_path_count",
+			 fmt_int64((int64)cluster_grd_transaction_cluster_path_count()));
 	emit_row(rsinfo, "grd", "grd_outbound_ring_depth",
 			 fmt_int32((int32)cluster_grd_outbound_ring_depth()));
 	emit_row(rsinfo, "grd", "grd_outbound_reply_dirty_depth",

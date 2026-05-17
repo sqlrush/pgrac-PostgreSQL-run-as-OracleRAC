@@ -231,6 +231,7 @@ int cluster_grd_max_entries = 0;
 
 static int fake_grd_htab_token;
 static int fake_grd_htab_count;
+static int fake_grd_htab_seq_index;
 static Size fake_grd_entrysize;
 static union {
 	uint64 force_align;
@@ -241,6 +242,7 @@ static void
 reset_fake_grd_htab(void)
 {
 	fake_grd_htab_count = 0;
+	fake_grd_htab_seq_index = 0;
 	fake_grd_entrysize = 0;
 	memset(&fake_grd_htab_entries, 0, sizeof(fake_grd_htab_entries));
 }
@@ -290,6 +292,16 @@ hash_search_with_hash_value(HTAB *hashp pg_attribute_unused(),
 		char *entry = fake_grd_htab_entries.data[i];
 
 		if (memcmp(entry, keyPtr, sizeof(ClusterResId)) == 0) {
+			if (action == HASH_REMOVE) {
+				if (foundPtr != NULL)
+					*foundPtr = true;
+				if (i < fake_grd_htab_count - 1)
+					memcpy(fake_grd_htab_entries.data[i],
+						   fake_grd_htab_entries.data[fake_grd_htab_count - 1], fake_grd_entrysize);
+				memset(fake_grd_htab_entries.data[fake_grd_htab_count - 1], 0, fake_grd_entrysize);
+				fake_grd_htab_count--;
+				return entry;
+			}
 			if (foundPtr != NULL)
 				*foundPtr = true;
 			return entry;
@@ -319,12 +331,16 @@ hash_search_with_hash_value(HTAB *hashp pg_attribute_unused(),
 
 void
 hash_seq_init(HASH_SEQ_STATUS *status pg_attribute_unused(), HTAB *hashp pg_attribute_unused())
-{}
+{
+	fake_grd_htab_seq_index = 0;
+}
 
 void *
 hash_seq_search(HASH_SEQ_STATUS *status pg_attribute_unused())
 {
-	return NULL;
+	if (fake_grd_htab_seq_index >= fake_grd_htab_count)
+		return NULL;
+	return fake_grd_htab_entries.data[fake_grd_htab_seq_index++];
 }
 
 Size
@@ -816,7 +832,7 @@ UT_TEST(test_grd_hash_source_unification)
 	src.locktag_field2 = 0xabcdef01;
 	src.locktag_field3 = 0xfeedface;
 	src.locktag_field4 = 0x4242;
-	src.locktag_type = LOCKTAG_TRANSACTION;
+	src.locktag_type = LOCKTAG_RELATION;
 	src.locktag_lockmethodid = 1;
 
 	cluster_grd_resid_encode(&src, &resid);
@@ -826,6 +842,159 @@ UT_TEST(test_grd_hash_source_unification)
 	shard_b = cluster_grd_shard_for_resource(&resid);
 
 	UT_ASSERT_EQ(shard_a, shard_b);
+}
+
+/* ============================================================
+ * spec-2.26 T-grd-N..N+2 — LOCKTAG_TRANSACTION ClusterResId wrapper +
+ * cleanup tests.
+ *
+ *	T-grd-N    (encode/decode round-trip)  — HC40 invariant
+ *	T-grd-N+1  (encoder invalid node defense) — HC47
+ *	T-grd-N+2  (cleanup_on_node_dead TRANSACTION entries) — HC44
+ * ============================================================ */
+
+UT_TEST(test_grd_resid_encode_transaction_roundtrip)
+{
+	/* spec-2.26 T-grd-N — HC40 round-trip invariant for LOCKTAG_TRANSACTION.
+	 *
+	 *  16-node × multi-xid boundary matrix.  Each iteration encodes a
+	 *  PG-style LOCKTAG_TRANSACTION (field1 = xid, field2/3/4 = 0) plus
+	 *  origin_node_id supplied through the local cluster_node_id global
+	 *  (which the encoder substitutes into ClusterResId.field2 for the
+	 *  TRANSACTION case per HC40).  The decoded LOCKTAG must restore
+	 *  field2 = 0 (HC40 reverse contract: do not propagate origin back). */
+	const uint32 xids[] = { 1u, 100u, 0x80000000u, 0xFFFFFFFFu };
+	const size_t nxids = sizeof(xids) / sizeof(xids[0]);
+	int saved_node = cluster_node_id;
+	int32 n;
+	size_t i;
+
+	for (n = 0; n < 16; n++) {
+		cluster_node_id = n;
+		for (i = 0; i < nxids; i++) {
+			LOCKTAG src;
+			ClusterResId resid;
+			LOCKTAG decoded;
+
+			memset(&src, 0, sizeof(src));
+			src.locktag_field1 = xids[i];
+			src.locktag_type = LOCKTAG_TRANSACTION;
+			src.locktag_lockmethodid = 1; /* DEFAULT_LOCKMETHOD */
+
+			cluster_grd_resid_encode(&src, &resid);
+
+			UT_ASSERT_EQ((int)resid.field1, (int)xids[i]);
+			UT_ASSERT_EQ((int)resid.field2, n); /* HC40 wrapper */
+			UT_ASSERT_EQ((int)resid.field3, 0);
+			UT_ASSERT_EQ((int)resid.field4, 0);
+			UT_ASSERT_EQ((int)resid.type, (int)LOCKTAG_TRANSACTION);
+			UT_ASSERT_EQ((int)resid.lockmethodid, 1);
+
+			cluster_grd_resid_decode(&resid, &decoded);
+			UT_ASSERT_EQ((int)decoded.locktag_field1, (int)xids[i]);
+			UT_ASSERT_EQ((int)decoded.locktag_field2, 0); /* HC40 reverse: no propagate */
+			UT_ASSERT_EQ((int)decoded.locktag_field3, 0);
+			UT_ASSERT_EQ((int)decoded.locktag_field4, 0);
+			UT_ASSERT_EQ((int)decoded.locktag_type, (int)LOCKTAG_TRANSACTION);
+			UT_ASSERT_EQ((int)decoded.locktag_lockmethodid, 1);
+		}
+	}
+
+	cluster_node_id = saved_node;
+}
+
+UT_TEST(test_grd_resid_encode_transaction_invalid_node_fail_closed)
+{
+	/* spec-2.26 T-grd-N+1 — HC47 invalid cluster_node_id defence.
+	 *
+	 *	When cluster_node_id is -1 (bootstrap / uninitialized) or out of
+	 *	range, cluster_grd_resid_encode MUST NOT silently cast -1 to
+	 *	0xFFFFFFFF and write it to ClusterResId.field2 (R11 silent wrong-
+	 *	master risk).  The encoder leaves field2 at the LOCKTAG-native
+	 *	value (0 for TRANSACTION) — the caller-side gate
+	 *	(cluster_lock_should_globalize) is the contractual fail-closed
+	 *	point; this test exercises encoder defense-in-depth. */
+	int saved_node = cluster_node_id;
+	LOCKTAG src;
+	ClusterResId resid;
+
+	memset(&src, 0, sizeof(src));
+	src.locktag_field1 = 42;
+	src.locktag_type = LOCKTAG_TRANSACTION;
+	src.locktag_lockmethodid = 1;
+
+	cluster_node_id = -1;
+	cluster_grd_resid_encode(&src, &resid);
+	UT_ASSERT_EQ((int)resid.field1, 42);
+	UT_ASSERT_NE((int)resid.field2, -1);			  /* not silent cast */
+	UT_ASSERT_NE((int)resid.field2, (int)0xFFFFFFFF); /* HC47 defence */
+	UT_ASSERT_EQ((int)resid.field2, 0);
+
+	cluster_node_id = 9999; /* out of range */
+	cluster_grd_resid_encode(&src, &resid);
+	UT_ASSERT_EQ((int)resid.field2, 0); /* HC47 defence */
+
+	cluster_node_id = saved_node;
+}
+
+UT_TEST(test_grd_transaction_cleanup_on_node_dead_removes_entry)
+{
+	/* spec-2.26 T-grd-N+2 — HC44 cleanup_on_node_dead must remove
+	 * TRANSACTION-class holders, waiters, and reservations owned by a
+	 * dead origin node.  The fake HTAB now supports hash_seq_search and
+	 * HASH_REMOVE so this is a true cleanup behavior test, not a link
+	 * surface placeholder. */
+	int saved_node = cluster_node_id;
+	LOCKTAG src;
+	ClusterResId resid;
+	ClusterGrdEntry *entry = NULL;
+	ClusterGrdEntry *after = (ClusterGrdEntry *)0xdeadbeef;
+	ClusterGrdHolderId dead_holder;
+	ClusterGrdEntryResult r;
+
+	reset_fake_grd_htab();
+	cluster_grd_max_entries = 4;
+
+	memset(&src, 0, sizeof(src));
+	src.locktag_field1 = 4242;
+	src.locktag_type = LOCKTAG_TRANSACTION;
+	src.locktag_lockmethodid = 1;
+
+	cluster_node_id = 5; /* origin node encoded into ClusterResId.field2 */
+	cluster_grd_resid_encode(&src, &resid);
+	cluster_node_id = 0; /* local cleanup executor */
+
+	cluster_grd_shmem_init();
+	r = cluster_grd_entry_lookup_or_create(&resid, true, &entry);
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_NOT_NULL(entry);
+	UT_ASSERT_EQ(cluster_grd_entry_count(), 1);
+
+	memset(&dead_holder, 0, sizeof(dead_holder));
+	dead_holder.node_id = 5;
+	dead_holder.procno = 17;
+	dead_holder.cluster_epoch = 11;
+	dead_holder.request_id = 100;
+
+	UT_ASSERT_EQ((int)cluster_grd_entry_grant_holder(entry, &dead_holder, ExclusiveLock),
+				 (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_EQ((int)cluster_grd_entry_add_waiter(entry, &dead_holder, ShareLock),
+				 (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_EQ((int)cluster_grd_reservation_create(entry, &dead_holder, ShareLock),
+				 (int)CLUSTER_GRD_ENTRY_OK);
+	UT_ASSERT_EQ(cluster_grd_entry_has_remote_holder(entry, 0), true);
+	UT_ASSERT_EQ(cluster_grd_entry_has_pending_waiter(entry), true);
+
+	cluster_grd_cleanup_on_node_dead(5);
+
+	r = cluster_grd_entry_lookup_or_create(&resid, false, &after);
+	UT_ASSERT_EQ((int)r, (int)CLUSTER_GRD_ENTRY_NOT_FOUND);
+	UT_ASSERT_EQ((void *)after, (void *)NULL);
+	UT_ASSERT_EQ(cluster_grd_entry_count(), 0);
+
+	cluster_grd_max_entries = 0;
+	cluster_node_id = saved_node;
+	reset_fake_grd_htab();
 }
 
 UT_TEST(test_grd_entry_existing_hit_survives_soft_cap)
@@ -879,7 +1048,7 @@ int
  * other cluster_unit binaries; argv is intentionally unused. */
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(13);
+	UT_PLAN(16);
 
 	UT_RUN(test_grd_clusterresid_size_16);
 	UT_RUN(test_grd_resid_encode_decode_roundtrip);
@@ -895,6 +1064,12 @@ main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 	UT_RUN(test_grd_named_tranche_describe_only);
 	UT_RUN(test_grd_entry_release_no_op_safe);
 	UT_RUN(test_grd_hash_source_unification);
+
+	/* spec-2.26 T-grd-N..N+2 */
+	UT_RUN(test_grd_resid_encode_transaction_roundtrip);
+	UT_RUN(test_grd_resid_encode_transaction_invalid_node_fail_closed);
+	UT_RUN(test_grd_transaction_cleanup_on_node_dead_removes_entry);
+
 	UT_RUN(test_grd_entry_existing_hit_survives_soft_cap);
 
 	UT_DONE();

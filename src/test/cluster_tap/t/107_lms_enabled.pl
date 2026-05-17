@@ -229,6 +229,102 @@ my $post_l18 = _grd_path_count();
 cmp_ok($post_l18, '>', $pre_l18,
 	'L18 CREATE/DROP TYPE (OBJECT user oid + AccessExclusive) — gate true, counter advances');
 
+# ============================================================
+# spec-2.26 D9 L19-L21:  LOCKTAG_TRANSACTION cluster gate regression
+# (HC39 ShareLock/ExclusiveLock + HC46 PG XactLockTable* auto-routing
+#  + HC48 top-level release via LockReleaseAll vs subxact XactLockTableDelete).
+#
+# Helper to read the new spec-2.26 transaction counter; mirrors
+# _grd_path_count which reads relation_object_cluster_path_count.
+# ============================================================
+sub _grd_transaction_count
+{
+	return $node_gate->safe_psql(
+		'postgres',
+		q{SELECT value::int FROM pg_cluster_state
+		   WHERE category='grd' AND key='grd_transaction_cluster_path_count'});
+}
+
+# L19: top-level COMMIT — main xid TRANSACTION lock auto-acquired by
+# AssignTransactionId / XactLockTableInsert (ExclusiveLock owner take);
+# release via LockReleaseAll at xact end (HC48 — NOT XactLockTableDelete).
+my $pre_l19 = _grd_transaction_count();
+$node_gate->safe_psql('postgres', q{
+	BEGIN;
+	CREATE TABLE pgrac_l19_t (id int);
+	INSERT INTO pgrac_l19_t VALUES (1);
+	COMMIT;
+});
+my $post_l19 = _grd_transaction_count();
+cmp_ok($post_l19, '>', $pre_l19,
+	'L19 top-level write xact (BEGIN/INSERT/COMMIT) — XactLockTableInsert auto-acquires TRANSACTION lock, counter advances');
+
+# L20: true concurrent waiter — backend B waits on backend A's row-locking
+# xact, which drives XactLockTableWait(ShareLock) on A's xid.  Backend B
+# first assigns its own xid so the counter snapshot excludes B's owner
+# ExclusiveLock; the later increment belongs to the wait path.
+my $holder = $node_gate->background_psql('postgres', timeout => 30);
+my $waiter = $node_gate->background_psql('postgres', timeout => 30, on_error_stop => 0);
+
+$holder->query_until(qr/l20_holder_ready/, q{
+	BEGIN;
+	UPDATE pgrac_l19_t SET id = 10 WHERE id = 1;
+	\echo l20_holder_ready
+});
+
+my $waiter_pid = $waiter->query_safe(q{
+	BEGIN;
+	SELECT pg_backend_pid();
+});
+chomp $waiter_pid;
+
+$waiter->query_until(qr/l20_waiter_has_xid/, q{
+	SELECT txid_current();
+	\echo l20_waiter_has_xid
+});
+
+my $pre_l20 = _grd_transaction_count();
+$waiter->query_until(qr/l20_waiter_started/, q{
+	\echo l20_waiter_started
+	SELECT id FROM pgrac_l19_t WHERE id = 1 FOR UPDATE;
+	\echo l20_waiter_done
+});
+
+ok($node_gate->poll_query_until(
+		'postgres',
+		qq{SELECT wait_event_type = 'Lock' AND wait_event = 'transactionid'
+		     FROM pg_stat_activity
+		    WHERE pid = $waiter_pid},
+		't'),
+   'L20 waiter backend is blocked on transactionid lock (XactLockTableWait path)');
+
+my $post_l20 = _grd_transaction_count();
+cmp_ok($post_l20, '>', $pre_l20,
+	'L20 concurrent row-lock waiter — XactLockTableWait ShareLock routes through TRANSACTION gate');
+
+$holder->query_safe(q{COMMIT;});
+$waiter->query_until(qr/l20_waiter_done/, q{});
+$waiter->quit;
+$holder->quit;
+
+# L21: subtransaction rollback path — top-level xid is assigned before the
+# snapshot; the SAVEPOINT write assigns a subxid and ROLLBACK TO SAVEPOINT
+# exercises the XactLockTableDelete(subxid) release path.
+my $pre_l21 = _grd_transaction_count();
+$node_gate->safe_psql('postgres', q{
+	BEGIN;
+	SELECT txid_current();
+	SAVEPOINT pgrac_l21_sp;
+	INSERT INTO pgrac_l19_t VALUES (3);
+	ROLLBACK TO SAVEPOINT pgrac_l21_sp;
+	COMMIT;
+});
+my $post_l21 = _grd_transaction_count();
+cmp_ok($post_l21, '>', $pre_l21,
+	'L21 SAVEPOINT rollback — subxid TRANSACTION lock acquired and released via XactLockTableDelete');
+
+$node_gate->safe_psql('postgres', q{DROP TABLE IF EXISTS pgrac_l19_t});
+
 $node_gate->stop;
 
 done_testing();
