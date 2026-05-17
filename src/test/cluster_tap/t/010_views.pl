@@ -51,7 +51,7 @@ $node->start;
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
 	'75',
-	'pg_stat_cluster_wait_events returns 75 rows (spec-2.23 GES reply/LMD probe events included)');
+	'pg_stat_cluster_wait_events returns 75 rows (spec-2.25 native-lock probe events included)');
 
 
 # ----------
