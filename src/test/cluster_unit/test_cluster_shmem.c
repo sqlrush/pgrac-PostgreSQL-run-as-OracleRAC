@@ -150,6 +150,23 @@ DefineCustomBoolVariable(const char *name pg_attribute_unused(),
 	 * stage 1.2 for cluster.smgr_user_relations. */
 }
 
+/* spec-2.27 D4 stubs — GUC_check_errcode + GUC_check_errdetail macro deps. */
+char *GUC_check_errdetail_string = NULL;
+
+void
+GUC_check_errcode(int sqlerrcode pg_attribute_unused())
+{}
+
+void
+pre_format_elog_string(int errnum pg_attribute_unused(), const char *domain pg_attribute_unused())
+{}
+
+char *
+format_elog_string(const char *fmt pg_attribute_unused(), ...)
+{
+	return NULL;
+}
+
 /* Forward decl to silence -Wmissing-prototypes (stage 0.19). */
 extern void cluster_conf_shmem_init(void);
 extern Size cluster_conf_shmem_size(void);
@@ -471,6 +488,16 @@ cluster_lms_shmem_register(void)
 void cluster_lmd_shmem_register(void);
 void
 cluster_lmd_shmem_register(void)
+{}
+
+/* spec-2.27 D2 stub: cluster_ges_dedup shmem region. */
+void cluster_ges_dedup_shmem_register(void);
+void cluster_ges_dedup_shmem_request(void);
+void
+cluster_ges_dedup_shmem_register(void)
+{}
+void
+cluster_ges_dedup_shmem_request(void)
 {}
 
 

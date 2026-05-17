@@ -412,15 +412,16 @@ extern bool cluster_lmd_probe_collect_receive(const struct GesDeadlockReportHead
  * ============================================================ */
 
 #define CLUSTER_LMD_CANCEL_QUEUE_DEPTH 256
+#define CLUSTER_LMD_CANCEL_PAYLOAD_BYTES 64
 
 typedef struct ClusterLmdCancelItem {
 	uint32 source_node_id; /* sender of GES_REQ_OPCODE_CANCEL_PENDING */
-	uint16 payload_len;	   /* sizeof(GesRequestPayload) = 48 */
+	uint16 payload_len;	   /* GesRequestPayload byte-image length */
 	uint16 _reserved;
-	uint8 payload[48]; /* GesRequestPayload byte-image */
+	uint8 payload[CLUSTER_LMD_CANCEL_PAYLOAD_BYTES];
 } ClusterLmdCancelItem;
 
-StaticAssertDecl(sizeof(ClusterLmdCancelItem) == 56, "ClusterLmdCancelItem 56-byte lock");
+StaticAssertDecl(sizeof(ClusterLmdCancelItem) == 72, "ClusterLmdCancelItem 72-byte lock");
 
 extern Size cluster_lmd_cancel_queue_shmem_size(void);
 extern void cluster_lmd_cancel_queue_shmem_init(void);

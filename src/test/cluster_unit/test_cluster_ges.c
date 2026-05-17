@@ -431,6 +431,37 @@ cluster_lms_native_probe_recv_reply(uint64 probe_id pg_attribute_unused(),
 	stub_native_probe_recv_calls++;
 }
 
+/* spec-2.27 D2 / D7 R10 stub audit. */
+int cluster_ges_retransmit_max_attempts = 5;
+int cluster_ges_dedup_max_entries = 8192;
+
+uint64
+cluster_lms_get_shard_master_generation(void)
+{
+	return 0;
+}
+
+void
+cluster_lms_inc_priority_starvation_observed(void)
+{}
+
+int /* ClusterGesDedupLookupStatus */
+cluster_ges_dedup_lookup_or_register(const void *key pg_attribute_unused(),
+									 uint8 *reply_out pg_attribute_unused(),
+									 uint16 reply_buf_len pg_attribute_unused(),
+									 uint16 *reply_len_out pg_attribute_unused())
+{
+	if (reply_len_out)
+		*reply_len_out = 0;
+	return 0; /* CLUSTER_GES_DEDUP_MISS_REGISTERED */
+}
+
+void
+cluster_ges_dedup_record_reply(const void *key pg_attribute_unused(),
+							   const uint8 *reply pg_attribute_unused(),
+							   uint16 reply_len pg_attribute_unused())
+{}
+
 bool
 cluster_lms_native_probe_required(const struct ClusterResId *resid pg_attribute_unused(),
 								  int lockmode pg_attribute_unused())
@@ -442,7 +473,8 @@ bool
 cluster_lms_native_probe_schedule_grant(
 	const struct ClusterResId *resid pg_attribute_unused(), int lockmode pg_attribute_unused(),
 	const struct ClusterGrdHolderId *requester pg_attribute_unused(),
-	int32 source_node_id pg_attribute_unused(), uint32 request_opcode pg_attribute_unused())
+	int32 source_node_id pg_attribute_unused(), uint32 request_opcode pg_attribute_unused(),
+	uint64 shard_master_generation pg_attribute_unused())
 {
 	return false;
 }
@@ -502,6 +534,7 @@ cluster_grd_entry_enqueue_or_grant(const struct ClusterResId *r pg_attribute_unu
 								   const struct ClusterGrdHolderId *h pg_attribute_unused(),
 								   int32 src pg_attribute_unused(),
 								   uint64 req_id pg_attribute_unused(),
+								   uint64 shard_master_generation pg_attribute_unused(),
 								   uint32 op pg_attribute_unused(), int mode pg_attribute_unused(),
 								   struct ClusterGrdConflictHolder *out pg_attribute_unused(),
 								   int *nout pg_attribute_unused())

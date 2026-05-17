@@ -690,6 +690,7 @@ typedef struct ClusterGrdWaiterIdentity {
 	ClusterGrdHolderId holder;
 	int32 source_node_id;
 	uint64 request_id;
+	uint64 shard_master_generation;
 	uint32 request_opcode;
 	LOCKMODE mode;
 } ClusterGrdWaiterIdentity;
@@ -724,8 +725,9 @@ typedef enum ClusterGrdGrantAction {
  */
 extern ClusterGrdGrantAction cluster_grd_entry_enqueue_or_grant(
 	const ClusterResId *resid, const ClusterGrdHolderId *holder, int32 source_node_id,
-	uint64 request_id, uint32 request_opcode, int /* LOCKMODE */ lockmode,
-	ClusterGrdConflictHolder *conflict_holders_out, int *n_conflict_out);
+	uint64 request_id, uint64 shard_master_generation, uint32 request_opcode,
+	int /* LOCKMODE */ lockmode, ClusterGrdConflictHolder *conflict_holders_out,
+	int *n_conflict_out);
 
 /*
  * Release a holder + pop the first FIFO-compatible waiter.

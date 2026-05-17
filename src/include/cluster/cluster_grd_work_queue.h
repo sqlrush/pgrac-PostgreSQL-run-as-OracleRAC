@@ -53,12 +53,12 @@
  * grant decision (lookup entry → check conflict → enqueue reply).
  *
  *   source_node_id:  envelope source (validated == payload.holder.node_id)
- *   payload:         GesRequestPayload byte image (48B)
+ *   payload:         GesRequestPayload byte image (56B)
  */
 typedef struct ClusterGrdWorkItem {
 	uint32 source_node_id;
 	uint16 payload_len;
-	uint8 payload[64]; /* GES_REQUEST payload (48B + 16B pad) */
+	uint8 payload[64]; /* GES_REQUEST payload (56B + 8B pad) */
 } ClusterGrdWorkItem;
 
 StaticAssertDecl(sizeof(ClusterGrdWorkItem) == 72, "ClusterGrdWorkItem ABI lock");

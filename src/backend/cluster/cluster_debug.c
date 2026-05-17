@@ -916,6 +916,10 @@ dump_lms(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_lms_get_native_probe_retry_count()));
 	emit_row(rsinfo, "lms", "native_probe_timeout_count",
 			 fmt_int64((int64)cluster_lms_get_native_probe_timeout_count()));
+	/* spec-2.27 D7 / HC54 — priority starvation observability (NOT sent
+	 * on wire;  reserved opcode 11 awaits spec-2.28+ integrated receiver). */
+	emit_row(rsinfo, "lms", "priority_starvation_observed_count",
+			 fmt_int64((int64)cluster_lms_get_priority_starvation_observed_count()));
 }
 
 /*

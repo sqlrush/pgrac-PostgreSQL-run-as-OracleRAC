@@ -166,7 +166,8 @@ extern bool cluster_lms_native_probe_wait_clear(const ClusterResId *resid, LOCKM
 												int timeout_ms);
 extern bool cluster_lms_native_probe_schedule_grant(const ClusterResId *resid, LOCKMODE lockmode,
 													const ClusterGrdHolderId *requester,
-													int32 source_node_id, uint32 request_opcode);
+													int32 source_node_id, uint32 request_opcode,
+													uint64 shard_master_generation);
 
 /* ============================================================
  * GUC defaults — actual values bound in cluster_guc.c (D9).

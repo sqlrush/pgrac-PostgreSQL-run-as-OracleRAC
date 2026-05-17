@@ -1258,6 +1258,12 @@ cluster_lms_get_native_probe_timeout_count(void)
 {
 	return 0;
 }
+/* spec-2.27 D7 R10 stub audit — priority starvation observability counter. */
+uint64
+cluster_lms_get_priority_starvation_observed_count(void)
+{
+	return 0;
+}
 const char *
 cluster_lms_state_to_string(int s pg_attribute_unused())
 {

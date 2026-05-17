@@ -215,6 +215,10 @@ extern int cluster_lms_native_lock_probe_max_inflight;
 extern int cluster_lms_native_lock_probe_retry_interval_ms;
 extern int cluster_lms_native_lock_probe_retry_budget;
 
+/* spec-2.27 D4 NEW: GES retransmit + dedup HTAB tunables. */
+extern int cluster_ges_retransmit_max_attempts;
+extern int cluster_ges_dedup_max_entries;
+
 /* spec-2.17 NEW GUCs(v0.6 frozen baseline). */
 extern int cluster_ges_bast_retry_interval_ms;		  /* D11 */
 extern int cluster_ges_bast_max_retries;			  /* D11 */

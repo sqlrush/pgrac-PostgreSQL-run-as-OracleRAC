@@ -38,7 +38,8 @@
 #include "cluster/cluster_ges_reply_wait.h" /* spec-2.23 D1 5-tuple wait HTAB */
 #include "cluster/cluster_grd.h"
 #include "cluster/cluster_grd_outbound.h"
-#include "cluster/cluster_lmd.h" /* + spec-2.23 D8 probe collector receive */
+#include "cluster/cluster_lmd.h"	   /* + spec-2.23 D8 probe collector receive */
+#include "cluster/cluster_ges_dedup.h" /* spec-2.27 D2 / D3 — retransmit dedup */
 #include "cluster/cluster_lms.h"
 #include "cluster/cluster_native_lock_probe.h" /* spec-2.25 D5 — probe protocol handlers */
 #include "cluster/cluster_grd_work_queue.h"
@@ -64,6 +65,73 @@
  * ============================================================ */
 
 static ClusterGesSharedState *cluster_ges_state = NULL;
+
+static inline uint64
+ges_request_holder_epoch(const GesRequestPayload *req)
+{
+	return ((uint64)req->holder_cluster_epoch_lo) | (((uint64)req->holder_cluster_epoch_hi) << 32);
+}
+
+static inline uint64
+ges_request_holder_request_id(const GesRequestPayload *req)
+{
+	return ((uint64)req->holder_request_id_lo) | (((uint64)req->holder_request_id_hi) << 32);
+}
+
+static inline uint64
+ges_request_shard_master_generation(const GesRequestPayload *req)
+{
+	return ((uint64)req->shard_master_generation_lo)
+		   | (((uint64)req->shard_master_generation_hi) << 32);
+}
+
+static inline bool
+ges_request_uses_dedup(uint32 opcode)
+{
+	return opcode == GES_REQ_OPCODE_REQUEST || opcode == GES_REQ_OPCODE_CONVERT
+		   || opcode == GES_REQ_OPCODE_RELEASE;
+}
+
+static void
+ges_record_dedup_reply(uint32 source_node_id, uint32 opcode, uint64 request_id,
+					   uint64 cluster_epoch, uint64 shard_master_generation,
+					   const GesReplyPayload *reply)
+{
+	ClusterGesDedupKey key;
+
+	if (!ges_request_uses_dedup(opcode) || reply == NULL)
+		return;
+
+	memset(&key, 0, sizeof(key));
+	key.origin_node_id = source_node_id;
+	key.opcode = opcode;
+	key.request_id = request_id;
+	key.cluster_epoch = cluster_epoch;
+	key.shard_master_generation = shard_master_generation;
+	cluster_ges_dedup_record_reply(&key, (const uint8 *)reply, sizeof(*reply));
+}
+
+static void
+ges_record_dedup_reply_for_request(uint32 source_node_id, const GesRequestPayload *req,
+								   const GesReplyPayload *reply)
+{
+	if (req == NULL)
+		return;
+	ges_record_dedup_reply(source_node_id, req->opcode, ges_request_holder_request_id(req),
+						   ges_request_holder_epoch(req), ges_request_shard_master_generation(req),
+						   reply);
+}
+
+static void
+ges_record_dedup_reply_for_waiter(const ClusterGrdWaiterIdentity *waiter,
+								  const GesReplyPayload *reply)
+{
+	if (waiter == NULL)
+		return;
+	ges_record_dedup_reply((uint32)waiter->source_node_id, waiter->request_opcode,
+						   waiter->request_id, waiter->holder.cluster_epoch,
+						   waiter->shard_master_generation, reply);
+}
 
 
 /* ============================================================
@@ -200,7 +268,7 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 
 	/*
 	 * DEADLOCK_PROBE / DEADLOCK_REPORT use dedicated payload structs, not the
-	 * 48-byte GesRequestPayload.  Handle them before the generic request cast
+	 * GesRequestPayload.  Handle them before the generic request cast
 	 * so a short PROBE frame cannot be misparsed as holder metadata.
 	 */
 	if (opcode == GES_REQ_OPCODE_DEADLOCK_PROBE) {
@@ -256,7 +324,7 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	/*
 	 * PGRAC: spec-2.25 D6 / HC33 — NATIVE_LOCK_PROBE (opcode 9) & REPLY (opcode
 	 * 10) use dedicated 32B payload structs.  Like DEADLOCK_PROBE/REPORT, they
-	 * bypass the generic 48B GesRequestPayload validator.  Both opcodes carry
+	 * bypass the generic GesRequestPayload validator.  Both opcodes carry
 	 * bespoke source/target validation per HC33:
 	 *
 	 *	NATIVE_LOCK_PROBE request:
@@ -405,14 +473,95 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 	case GES_REQ_OPCODE_DEADLOCK_REPORT:
 	case GES_REQ_OPCODE_NATIVE_LOCK_PROBE:
 	case GES_REQ_OPCODE_NATIVE_LOCK_PROBE_REPLY:
+	case GES_REQ_OPCODE_PRIORITY_BOOST:
 		/*
-		 * spec-2.25 D6:  these opcodes use dedicated payload structs +
+			 * spec-2.25 D6:  these opcodes use dedicated payload structs +
 		 * early dispatch path above (line 205-/256-).  Reaching the
 		 * GesRequestPayload switch means a request-sized envelope carried
 		 * a non-request opcode — fail closed.
 		 */
 		cluster_grd_inc_ges_inbound_validation_fail();
 		return;
+	}
+
+	/*
+	 * spec-2.27 D3 / HC51 / HC52 — receiver-side dedup pre-lookup.
+	 *
+	 *	Only REQUEST / CONVERT / RELEASE share the work_queue path and are
+	 *	candidates for retransmit on the caller side (BAST advisory stays
+	 *	best-effort per HC85;  CANCEL_PENDING / DEADLOCK_* use dedicated
+	 *	dispatch).  CONVERT is included defensively even though MVP retry
+	 *	loop only retransmits REQUEST + RELEASE; future spec-2.28+ may
+	 *	extend retransmit to CONVERT, and dedup is idempotent for any
+	 *	registered key.
+	 *
+	 *	5-tuple key constructed from holder + opcode + payload-carried
+	 *	shard_master_generation.  IN_FLIGHT_DUPLICATE -> drop silently
+	 *	(caller will keep waiting; the original work_queue entry will
+	 *	complete and cache the reply).  CACHED_REPLY -> resend cached
+	 *	GesReplyPayload via lmon_reply outbound, skip work_queue.  FULL ->
+	 *	REJECT_BUSY fail-closed.  MISS_REGISTERED -> proceed to enqueue.
+	 */
+	if (req->opcode == GES_REQ_OPCODE_REQUEST || req->opcode == GES_REQ_OPCODE_CONVERT
+		|| req->opcode == GES_REQ_OPCODE_RELEASE) {
+		ClusterGesDedupKey dkey;
+		uint8 dreply_buf[sizeof(GesReplyPayload)];
+		uint16 dreply_len = 0;
+		ClusterGesDedupLookupStatus dstatus;
+		uint64 holder_request_id;
+
+		holder_request_id = ges_request_holder_request_id(req);
+
+		memset(&dkey, 0, sizeof(dkey));
+		dkey.origin_node_id = (uint32)env->source_node_id;
+		dkey.opcode = req->opcode;
+		dkey.request_id = holder_request_id;
+		dkey.cluster_epoch = holder_epoch;
+		dkey.shard_master_generation = ges_request_shard_master_generation(req);
+
+		dstatus = cluster_ges_dedup_lookup_or_register(&dkey, dreply_buf, sizeof(dreply_buf),
+													   &dreply_len);
+		switch (dstatus) {
+		case CLUSTER_GES_DEDUP_IN_FLIGHT_DUPLICATE:
+			/* Original request still being processed — drop the retransmit. */
+			return;
+
+		case CLUSTER_GES_DEDUP_CACHED_REPLY:
+			/* Resend cached reply via lmon_reply outbound; no work_queue. */
+			if (dreply_len > 0)
+				cluster_grd_outbound_enqueue_lmon_reply(env->source_node_id, dreply_buf,
+														(uint16)dreply_len);
+			return;
+
+		case CLUSTER_GES_DEDUP_STALE_REPROCESS:
+			/* Treated as fresh request by lookup (entry re-registered).  Fall
+			 * through to work_queue enqueue. */
+			break;
+
+		case CLUSTER_GES_DEDUP_FULL: {
+			GesReplyPayload reject;
+			memset(&reject, 0, sizeof(reject));
+			reject.opcode = GES_REPLY_OPCODE_REJECT;
+			reject.reply_for_opcode = req->opcode;
+			reject.reject_reason = GES_REJECT_REASON_WORK_QUEUE_FULL;
+			reject.holder_node_id = req->holder_node_id;
+			reject.holder_procno = req->holder_procno;
+			reject.holder_cluster_epoch_lo = req->holder_cluster_epoch_lo;
+			reject.holder_cluster_epoch_hi = req->holder_cluster_epoch_hi;
+			reject.holder_request_id_lo = req->holder_request_id_lo;
+			reject.holder_request_id_hi = req->holder_request_id_hi;
+			memcpy(reject.resid, req->resid, sizeof(reject.resid));
+			cluster_grd_outbound_enqueue_lmon_reply(env->source_node_id, &reject, sizeof(reject));
+			return;
+		}
+
+		case CLUSTER_GES_DEDUP_MISS_REGISTERED:
+		default:
+			/* Fresh entry registered.  Every drain path that emits a reply
+			 * records the exact GesReplyPayload before enqueueing it, so later
+			 * retransmits hit CACHED_REPLY instead of IN_FLIGHT_DUPLICATE. */
+			break;
+		}
 	}
 
 	/* Phase 1 (handler):  enqueue into work_queue.  Grant decision runs
@@ -437,6 +586,7 @@ cluster_ges_request_handler(const ClusterICEnvelope *env, const void *payload)
 		reject.holder_request_id_lo = req->holder_request_id_lo;
 		reject.holder_request_id_hi = req->holder_request_id_hi;
 		memcpy(reject.resid, req->resid, sizeof(reject.resid));
+		ges_record_dedup_reply_for_request(env->source_node_id, req, &reject);
 		cluster_grd_outbound_enqueue_lmon_reply(env->source_node_id, &reject, sizeof(reject));
 		return;
 	}
@@ -522,7 +672,7 @@ cluster_ges_reply_handler(const ClusterICEnvelope *env, const void *payload)
  */
 static void
 ges_send_grant_reply(int32 dest_node_id, const ClusterGrdHolderId *holder,
-					 const ClusterResId *resid, uint32 request_opcode)
+					 const ClusterResId *resid, uint32 request_opcode, GesReplyPayload *reply_out)
 {
 	GesReplyPayload reply;
 
@@ -537,6 +687,8 @@ ges_send_grant_reply(int32 dest_node_id, const ClusterGrdHolderId *holder,
 	reply.holder_request_id_lo = (uint32)(holder->request_id & 0xffffffffu);
 	reply.holder_request_id_hi = (uint32)(holder->request_id >> 32);
 	memcpy(reply.resid, resid, sizeof(reply.resid));
+	if (reply_out != NULL)
+		*reply_out = reply;
 	cluster_grd_outbound_enqueue_lmon_reply((uint32)dest_node_id, &reply, sizeof(reply));
 }
 
@@ -562,10 +714,8 @@ cluster_ges_lmon_drain_work_queue(void)
 
 		req = (const GesRequestPayload *)item.payload;
 
-		holder_epoch = ((uint64)req->holder_cluster_epoch_lo)
-					   | (((uint64)req->holder_cluster_epoch_hi) << 32);
-		holder_request_id
-			= ((uint64)req->holder_request_id_lo) | (((uint64)req->holder_request_id_hi) << 32);
+		holder_epoch = ges_request_holder_epoch(req);
+		holder_request_id = ges_request_holder_request_id(req);
 
 		holder.node_id = req->holder_node_id;
 		holder.procno = req->holder_procno;
@@ -591,14 +741,15 @@ cluster_ges_lmon_drain_work_queue(void)
 			ClusterGrdGrantAction action;
 
 			action = cluster_grd_entry_enqueue_or_grant(
-				&resid, &holder, (int32)item.source_node_id, holder_request_id, req->opcode,
-				(int)req->lockmode, conflict_holders, &n_conflict);
+				&resid, &holder, (int32)item.source_node_id, holder_request_id,
+				ges_request_shard_master_generation(req), req->opcode, (int)req->lockmode,
+				conflict_holders, &n_conflict);
 
 			if (action == CLUSTER_GRD_GRANT_NOW) {
 				if (cluster_lms_native_probe_required(&resid, (LOCKMODE)req->lockmode)) {
 					if (!cluster_lms_native_probe_schedule_grant(
 							&resid, (LOCKMODE)req->lockmode, &holder, (int32)item.source_node_id,
-							req->opcode)) {
+							req->opcode, ges_request_shard_master_generation(req))) {
 						GesReplyPayload reject;
 
 						(void)cluster_grd_release_holder_by_id(&resid, &holder);
@@ -613,11 +764,16 @@ cluster_ges_lmon_drain_work_queue(void)
 						reject.holder_request_id_lo = req->holder_request_id_lo;
 						reject.holder_request_id_hi = req->holder_request_id_hi;
 						memcpy(reject.resid, req->resid, sizeof(reject.resid));
+						ges_record_dedup_reply_for_request((uint32)item.source_node_id, req,
+														   &reject);
 						cluster_grd_outbound_enqueue_lmon_reply(item.source_node_id, &reject,
 																sizeof(reject));
 					}
 				} else {
-					ges_send_grant_reply((int32)item.source_node_id, &holder, &resid, req->opcode);
+					GesReplyPayload reply;
+					ges_send_grant_reply((int32)item.source_node_id, &holder, &resid, req->opcode,
+										 &reply);
+					ges_record_dedup_reply_for_request((uint32)item.source_node_id, req, &reply);
 				}
 			} else if (action == CLUSTER_GRD_ENQUEUED_WAITER) {
 				/*
@@ -644,6 +800,7 @@ cluster_ges_lmon_drain_work_queue(void)
 				reject.holder_request_id_lo = req->holder_request_id_lo;
 				reject.holder_request_id_hi = req->holder_request_id_hi;
 				memcpy(reject.resid, req->resid, sizeof(reject.resid));
+				ges_record_dedup_reply_for_request((uint32)item.source_node_id, req, &reject);
 				cluster_grd_outbound_enqueue_lmon_reply(item.source_node_id, &reject,
 														sizeof(reject));
 			}
@@ -663,11 +820,18 @@ cluster_ges_lmon_drain_work_queue(void)
 				&resid, &holder, granted, lengthof(granted));
 
 			/* Reply GRANT to the original releaser (acks the RELEASE). */
-			ges_send_grant_reply((int32)item.source_node_id, &holder, &resid, req->opcode);
+			{
+				GesReplyPayload reply;
+				ges_send_grant_reply((int32)item.source_node_id, &holder, &resid, req->opcode,
+									 &reply);
+				ges_record_dedup_reply_for_request((uint32)item.source_node_id, req, &reply);
+			}
 
 			for (int i = 0; i < n_granted; i++) {
+				GesReplyPayload reply;
 				ges_send_grant_reply(granted[i].source_node_id, &granted[i].holder, &resid,
-									 granted[i].request_opcode);
+									 granted[i].request_opcode, &reply);
+				ges_record_dedup_reply_for_waiter(&granted[i], &reply);
 			}
 			break;
 		}
@@ -737,8 +901,14 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 	GesRequestPayload req;
 	TimestampTz deadline;
 	uint64 epoch;
+	uint64 master_gen;
 	int effective_timeout_ms;
 	uint32 reject_reason;
+	int attempt;
+	int backoff_ms;
+	int max_attempts;
+	bool perpetual;
+	bool warned_starvation;
 
 	if (resid == NULL || holder == NULL)
 		return GES_REJECT_REASON_TIMEOUT;
@@ -758,15 +928,32 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 	}
 
 	/*
-	 * Remote-master path:  build reply wait entry (HC17 5-tuple) BEFORE
-	 * sending the request so the reply handler cannot race past the
-	 * waiter.  Then send via outbound queue; sleep on CV up to the
-	 * effective timeout; delete entry on wake or timeout (HC17:
-	 * unconditional delete prevents late reply matching a recycled slot).
+	 * spec-2.27 D3 — Remote-master path with retransmit + dedup.
+	 *
+	 *	Sample shard_master_generation ONCE up front so all retransmits in
+	 *	this acquire cycle carry the same value (the LMS receiver dedup
+	 *	HTAB keys are stable across the retransmit loop).
+	 *
+	 *	timeout_ms semantics (HC53):
+	 *	  -1  → perpetual wait;  no absolute deadline;  retransmit forever.
+	 *	   0  → use cluster.ges_request_timeout_ms.
+	 *	  >0  → caller-supplied finite timeout.
+	 *
+	 *	cluster.ges_retransmit_max_attempts (HC52):
+	 *	  finite mode:  abort with 53R70 after attempts exhausted.
+	 *	  perpetual:    warning threshold only (priority starvation observability).
 	 */
 	epoch = cluster_epoch_get_current();
-	effective_timeout_ms = timeout_ms > 0 ? timeout_ms : cluster_ges_request_timeout_ms;
-	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), effective_timeout_ms);
+	master_gen = cluster_lms_get_shard_master_generation();
+	max_attempts = cluster_ges_retransmit_max_attempts;
+	perpetual = (timeout_ms == -1) || (timeout_ms == 0 && cluster_ges_request_timeout_ms == -1);
+	if (perpetual) {
+		effective_timeout_ms = -1;
+		deadline = 0;
+	} else {
+		effective_timeout_ms = timeout_ms > 0 ? timeout_ms : cluster_ges_request_timeout_ms;
+		deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), effective_timeout_ms);
+	}
 
 	memset(&key, 0, sizeof(key));
 	key.request_id = request_id;
@@ -785,7 +972,7 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 		return GES_REJECT_REASON_TIMEOUT;
 	}
 
-	/* Build wire payload. */
+	/* Build wire payload (constant across retransmits). */
 	memset(&req, 0, sizeof(req));
 	req.opcode = GES_REQ_OPCODE_REQUEST;
 	req.lockmode = lockmode;
@@ -796,6 +983,10 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 	req.holder_request_id_lo = (uint32)(request_id & 0xffffffffu);
 	req.holder_request_id_hi = (uint32)(request_id >> 32);
 	memcpy(req.resid, resid, sizeof(req.resid));
+	/* spec-2.27 D2 — composite shard_master_generation in wire (5-tuple
+	 * dedup key at receiver). */
+	req.shard_master_generation_lo = (uint32)(master_gen & 0xffffffffu);
+	req.shard_master_generation_hi = (uint32)(master_gen >> 32);
 
 	if (!cluster_grd_outbound_enqueue_backend_request((uint32)master, &req, sizeof(req))) {
 		/* Outbound ring full — fail closed.  Caller may retry. */
@@ -806,21 +997,84 @@ cluster_ges_send_request_and_wait(const struct ClusterResId *resid, uint32 lockm
 	if (cluster_ges_state != NULL)
 		pg_atomic_fetch_add_u64(&cluster_ges_state->request_defer_count, 1);
 
-	/*
-	 * Wait for reply via CV.  Reuse WAIT_EVENT_CLUSTER_GES_S4_WAIT
-	 * (spec-2.20 ship);  spec-2.23 D12 (Step 9) introduces a dedicated
-	 * WAIT_EVENT_CLUSTER_GES_REPLY_WAIT and the wait-event name swap is
-	 * a 1-line edit at that step.
-	 */
+	attempt = 0;
+	backoff_ms = 100;
+	warned_starvation = false;
+
 	ConditionVariablePrepareToSleep(&entry->cv);
 	while (!entry->ready) {
-		if (!ConditionVariableTimedSleep(&entry->cv, effective_timeout_ms,
-										 WAIT_EVENT_CLUSTER_GES_REPLY_WAIT)) {
-			/* HC17:  timeout MUST unconditionally delete entry. */
+		int sleep_ms;
+		long remaining_ms;
+
+		if (perpetual) {
+			sleep_ms = backoff_ms;
+		} else {
+			TimestampTz now = GetCurrentTimestamp();
+			if (now >= deadline) {
+				cluster_ges_reply_wait_delete(&key);
+				ConditionVariableCancelSleep();
+				return GES_REJECT_REASON_TIMEOUT;
+			}
+			remaining_ms = (long)((deadline - now) / 1000);
+			if (remaining_ms <= 0)
+				remaining_ms = 1;
+			sleep_ms = backoff_ms;
+			if ((long)sleep_ms > remaining_ms)
+				sleep_ms = (int)remaining_ms;
+		}
+
+		if (ConditionVariableTimedSleep(&entry->cv, sleep_ms, WAIT_EVENT_CLUSTER_GES_REPLY_WAIT)) {
+			/* CV signaled — re-check loop predicate. */
+			continue;
+		}
+
+		/* Sleep timed out without wake — check budget then retransmit. */
+		attempt++;
+
+		if (max_attempts <= 0) {
+			/* Retransmit disabled: keep waiting until the normal deadline. */
+			backoff_ms = backoff_ms < 1600 ? backoff_ms * 2 : 1600;
+			continue;
+		}
+
+		if (!perpetual && max_attempts > 0 && attempt > max_attempts) {
 			cluster_ges_reply_wait_delete(&key);
 			ConditionVariableCancelSleep();
 			return GES_REJECT_REASON_TIMEOUT;
 		}
+
+		/* HC54 priority starvation observability — fire when half the
+		 * retransmit budget is consumed (perpetual mode treats this as a
+		 * one-shot WARNING per acquire cycle; finite mode also bumps the
+		 * counter but bounded by max_attempts).  No wire message — bumps
+		 * a local LMS counter; reserved opcode 11 stays unused (HC54). */
+		if (!warned_starvation && max_attempts > 0 && attempt >= ((max_attempts + 1) / 2)) {
+			cluster_lms_inc_priority_starvation_observed();
+			ereport(DEBUG1,
+					(errmsg_internal("cluster_ges_send_request_and_wait priority starvation "
+									 "observed (request_id=" UINT64_FORMAT " dest=%d attempt=%d)",
+									 request_id, master, attempt)));
+			if (max_attempts > 0 && attempt >= ((max_attempts * 3) / 4)) {
+				ereport(WARNING,
+						(errmsg("cluster GES retransmit budget 3/4 consumed; possible starvation"),
+						 errhint("Consider raising cluster.ges_request_timeout_ms or "
+								 "cluster.ges_retransmit_max_attempts, or scaling LMS.")));
+				warned_starvation = true;
+			}
+		}
+
+		/* Re-enqueue request — receiver dedup HTAB suppresses double-grant. */
+		if (!cluster_grd_outbound_enqueue_backend_request((uint32)master, &req, sizeof(req))) {
+			cluster_ges_reply_wait_delete(&key);
+			ConditionVariableCancelSleep();
+			return GES_REJECT_REASON_WORK_QUEUE_FULL;
+		}
+		if (cluster_ges_state != NULL)
+			pg_atomic_fetch_add_u64(&cluster_ges_state->request_defer_count, 1);
+
+		/* Exponential backoff capped at 1600ms (also matches caller wait
+		 * tick used by perpetual mode). */
+		backoff_ms = backoff_ms < 1600 ? backoff_ms * 2 : 1600;
 	}
 	ConditionVariableCancelSleep();
 
@@ -841,7 +1095,6 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
 	GesRequestPayload req;
 	TimestampTz deadline;
 	uint64 epoch;
-	int timeout_ms;
 	uint32 reject_reason;
 
 	if (resid == NULL || holder == NULL)
@@ -887,48 +1140,115 @@ cluster_ges_send_release_and_wait(const struct ClusterResId *resid,
 	 *	GRANT reply.
 	 */
 	epoch = cluster_epoch_get_current();
-	timeout_ms = cluster_ges_request_timeout_ms;
-	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout_ms);
+	/* spec-2.27 D3 — retransmit + dedup on RELEASE.  Sample
+	 * shard_master_generation once; perpetual timeout supported. */
+	{
+		uint64 master_gen = cluster_lms_get_shard_master_generation();
+		int max_attempts = cluster_ges_retransmit_max_attempts;
+		bool perpetual = (cluster_ges_request_timeout_ms == -1);
+		int effective_timeout_ms;
+		int attempt = 0;
+		int backoff_ms = 100;
+		bool warned_starvation = false;
 
-	memset(&key, 0, sizeof(key));
-	key.request_id = request_id;
-	key.source_node_id = cluster_node_id;
-	key.dest_node_id = master;
-	key.request_opcode = GES_REQ_OPCODE_RELEASE;
-	key.cluster_epoch = epoch;
-
-	entry = cluster_ges_reply_wait_insert(&key, deadline);
-	if (entry == NULL)
-		return GES_REJECT_REASON_TIMEOUT;
-
-	memset(&req, 0, sizeof(req));
-	req.opcode = GES_REQ_OPCODE_RELEASE;
-	req.lockmode = 0;
-	req.holder_node_id = (uint32)holder->node_id;
-	req.holder_procno = (uint32)holder->procno;
-	req.holder_cluster_epoch_lo = (uint32)(holder->cluster_epoch & 0xffffffffu);
-	req.holder_cluster_epoch_hi = (uint32)(holder->cluster_epoch >> 32);
-	req.holder_request_id_lo = (uint32)(request_id & 0xffffffffu);
-	req.holder_request_id_hi = (uint32)(request_id >> 32);
-	memcpy(req.resid, resid, sizeof(req.resid));
-
-	if (!cluster_grd_outbound_enqueue_backend_request((uint32)master, &req, sizeof(req))) {
-		cluster_ges_reply_wait_delete(&key);
-		return GES_REJECT_REASON_WORK_QUEUE_FULL;
-	}
-
-	if (cluster_ges_state != NULL)
-		pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
-
-	ConditionVariablePrepareToSleep(&entry->cv);
-	while (!entry->ready) {
-		if (!ConditionVariableTimedSleep(&entry->cv, timeout_ms, WAIT_EVENT_CLUSTER_GES_S4_WAIT)) {
-			cluster_ges_reply_wait_delete(&key);
-			ConditionVariableCancelSleep();
-			return GES_REJECT_REASON_TIMEOUT;
+		if (perpetual) {
+			effective_timeout_ms = -1;
+			deadline = 0;
+		} else {
+			effective_timeout_ms = cluster_ges_request_timeout_ms;
+			deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), effective_timeout_ms);
 		}
+		memset(&key, 0, sizeof(key));
+		key.request_id = request_id;
+		key.source_node_id = cluster_node_id;
+		key.dest_node_id = master;
+		key.request_opcode = GES_REQ_OPCODE_RELEASE;
+		key.cluster_epoch = epoch;
+
+		entry = cluster_ges_reply_wait_insert(&key, deadline);
+		if (entry == NULL)
+			return GES_REJECT_REASON_TIMEOUT;
+
+		memset(&req, 0, sizeof(req));
+		req.opcode = GES_REQ_OPCODE_RELEASE;
+		req.lockmode = 0;
+		req.holder_node_id = (uint32)holder->node_id;
+		req.holder_procno = (uint32)holder->procno;
+		req.holder_cluster_epoch_lo = (uint32)(holder->cluster_epoch & 0xffffffffu);
+		req.holder_cluster_epoch_hi = (uint32)(holder->cluster_epoch >> 32);
+		req.holder_request_id_lo = (uint32)(request_id & 0xffffffffu);
+		req.holder_request_id_hi = (uint32)(request_id >> 32);
+		memcpy(req.resid, resid, sizeof(req.resid));
+		req.shard_master_generation_lo = (uint32)(master_gen & 0xffffffffu);
+		req.shard_master_generation_hi = (uint32)(master_gen >> 32);
+
+		if (!cluster_grd_outbound_enqueue_backend_request((uint32)master, &req, sizeof(req))) {
+			cluster_ges_reply_wait_delete(&key);
+			return GES_REJECT_REASON_WORK_QUEUE_FULL;
+		}
+
+		if (cluster_ges_state != NULL)
+			pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
+
+		ConditionVariablePrepareToSleep(&entry->cv);
+		while (!entry->ready) {
+			int sleep_ms;
+			long remaining_ms;
+
+			if (perpetual) {
+				sleep_ms = backoff_ms;
+			} else {
+				TimestampTz now = GetCurrentTimestamp();
+				if (now >= deadline) {
+					cluster_ges_reply_wait_delete(&key);
+					ConditionVariableCancelSleep();
+					return GES_REJECT_REASON_TIMEOUT;
+				}
+				remaining_ms = (long)((deadline - now) / 1000);
+				if (remaining_ms <= 0)
+					remaining_ms = 1;
+				sleep_ms = backoff_ms;
+				if ((long)sleep_ms > remaining_ms)
+					sleep_ms = (int)remaining_ms;
+			}
+
+			if (ConditionVariableTimedSleep(&entry->cv, sleep_ms,
+											WAIT_EVENT_CLUSTER_GES_REPLY_WAIT))
+				continue;
+
+			attempt++;
+			if (max_attempts <= 0) {
+				backoff_ms = backoff_ms < 1600 ? backoff_ms * 2 : 1600;
+				continue;
+			}
+			if (!perpetual && max_attempts > 0 && attempt > max_attempts) {
+				cluster_ges_reply_wait_delete(&key);
+				ConditionVariableCancelSleep();
+				return GES_REJECT_REASON_TIMEOUT;
+			}
+
+			if (!warned_starvation && max_attempts > 0 && attempt >= ((max_attempts + 1) / 2)) {
+				cluster_lms_inc_priority_starvation_observed();
+				if (max_attempts > 0 && attempt >= ((max_attempts * 3) / 4)) {
+					ereport(WARNING, (errmsg("cluster GES release retransmit budget 3/4 consumed"),
+									  errhint("Possible LMS starvation;  raise "
+											  "cluster.ges_request_timeout_ms or scale LMS.")));
+					warned_starvation = true;
+				}
+			}
+
+			if (!cluster_grd_outbound_enqueue_backend_request((uint32)master, &req, sizeof(req))) {
+				cluster_ges_reply_wait_delete(&key);
+				ConditionVariableCancelSleep();
+				return GES_REJECT_REASON_WORK_QUEUE_FULL;
+			}
+			if (cluster_ges_state != NULL)
+				pg_atomic_fetch_add_u64(&cluster_ges_state->reply_defer_count, 1);
+
+			backoff_ms = backoff_ms < 1600 ? backoff_ms * 2 : 1600;
+		}
+		ConditionVariableCancelSleep();
 	}
-	ConditionVariableCancelSleep();
 
 	reject_reason = entry->reject_reason;
 	cluster_ges_reply_wait_delete(&key);
@@ -1017,7 +1337,7 @@ cluster_ges_send_bast_targeted(const struct ClusterResId *resid, int requested_m
 /* ============================================================
  * spec-2.24 D4 — cross-node victim cancel sender (HC23/HC24).
  *
- *	Reuses spec-2.17 GES_REQ_OPCODE_CANCEL_PENDING=7 enum + 48B
+ *	Reuses spec-2.17 GES_REQ_OPCODE_CANCEL_PENDING=7 enum + GesRequestPayload
  *	GesRequestPayload (holder_id 4-tuple carries victim target identity).
  *	Routes through CLUSTER_GRD_OUTBOUND_LMD_CANCEL origin — reserved
  *	pool + cleanup dirty-list nofail path;NOT silent-fail backend_

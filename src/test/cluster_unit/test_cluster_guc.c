@@ -135,6 +135,26 @@ DefineCustomBoolVariable(const char *name pg_attribute_unused(),
 	 * Added at stage 1.2 for cluster.smgr_user_relations. */
 }
 
+/* spec-2.27 D4 stubs — GUC_check_errcode / GUC_check_errdetail macro
+ * dependencies (pre_format_elog_string + format_elog_string +
+ * GUC_check_errdetail_string global) so cluster_guc.o links standalone
+ * even though check_hooks are never invoked in this unit test. */
+char *GUC_check_errdetail_string = NULL;
+
+void
+GUC_check_errcode(int sqlerrcode pg_attribute_unused())
+{}
+
+void
+pre_format_elog_string(int errnum pg_attribute_unused(), const char *domain pg_attribute_unused())
+{}
+
+char *
+format_elog_string(const char *fmt pg_attribute_unused(), ...)
+{
+	return NULL;
+}
+
 /*
  * cluster_init_guc references cluster_injection_assign_hook (from
  * cluster_inject.o) when registering cluster.injection_points (stage 0.27).

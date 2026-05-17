@@ -75,6 +75,10 @@ int cluster_lms_native_lock_probe_max_inflight = 8;		   /* per-shard slot capaci
 int cluster_lms_native_lock_probe_retry_interval_ms = 500; /* retry poll cadence */
 int cluster_lms_native_lock_probe_retry_budget = 60;	   /* ~30s @ 500ms before 53R83 */
 
+/* spec-2.27 D4 — GES retransmit + dedup HTAB tunables (HC51 / HC52 / HC53). */
+int cluster_ges_retransmit_max_attempts = 5; /* finite default; 0 = disabled */
+int cluster_ges_dedup_max_entries = 8192;	 /* LMS-owned HTAB cap */
+
 /* spec-2.17 NEW GUCs(v0.6 frozen baseline). */
 int cluster_ges_bast_retry_interval_ms = 10000;	   /* D11 */
 int cluster_ges_bast_max_retries = 3;			   /* D11 */
@@ -337,6 +341,52 @@ static const struct config_enum_entry cluster_shared_storage_backend_options[]
  *	cluster_unit and cluster_tap should grow tests for the new GUC in
  *	the same commit.
  */
+/*
+ * spec-2.27 D4 / HC53 — cross-GUC invariant double-direction check_hook.
+ *
+ *	cluster.ges_request_timeout_ms = -1 (perpetual wait) is only safe when
+ *	retransmit is also enabled (otherwise reply-drop strands the waiter).
+ *	Reject either direction that would break the invariant:
+ *
+ *	  (a) SET cluster.ges_request_timeout_ms = -1
+ *	      while cluster.ges_retransmit_max_attempts == 0
+ *	      → ERROR invalid_parameter_value, value unchanged.
+ *
+ *	  (b) SET cluster.ges_retransmit_max_attempts = 0
+ *	      while current cluster.ges_request_timeout_ms == -1
+ *	      → ERROR, value unchanged.
+ */
+static bool
+cluster_ges_request_timeout_ms_check_hook(int *newval, void **extra, GucSource source)
+{
+	(void)extra;
+	(void)source;
+	if (*newval == -1 && cluster_ges_retransmit_max_attempts <= 0) {
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		GUC_check_errdetail("cluster.ges_request_timeout_ms = -1 (perpetual wait) requires "
+							"cluster.ges_retransmit_max_attempts > 0 so dropped replies are "
+							"retransmitted.  Current cluster.ges_retransmit_max_attempts = %d.",
+							cluster_ges_retransmit_max_attempts);
+		return false;
+	}
+	return true;
+}
+
+static bool
+cluster_ges_retransmit_max_attempts_check_hook(int *newval, void **extra, GucSource source)
+{
+	(void)extra;
+	(void)source;
+	if (*newval == 0 && cluster_ges_request_timeout_ms == -1) {
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		GUC_check_errdetail("cluster.ges_retransmit_max_attempts = 0 is incompatible with "
+							"cluster.ges_request_timeout_ms = -1 (perpetual wait).  Reset "
+							"cluster.ges_request_timeout_ms to a finite value first.");
+		return false;
+	}
+	return true;
+}
+
 void
 cluster_init_guc(void)
 {
@@ -474,8 +524,8 @@ cluster_init_guc(void)
 	 * cluster.shmem_max_regions (spec-1.3): capacity of the cluster shmem
 	 * region registry.  Default 64 covers the stage 1.3 baseline plus the
 	 * reserved regions planned in cluster-shmem-design.md §3.2 with a wide
-	 * safety margin.  Range [25, 256] -- 25 is the minimum to fit the
-	 * spec-2.23 baseline after adding the GES reply wait region.  256 is the
+	 * safety margin.  Range [26, 256] -- 26 is the minimum to fit the
+	 * spec-2.27 baseline after adding the GES dedup region.  256 is the
 	 * upper engineering bound (raise via source-code change if more are
 	 * needed).  PGC_POSTMASTER because the registry array is palloc'd once
 	 * at postmaster init from this value.  Min was raised 8 -> 16 in
@@ -490,7 +540,7 @@ cluster_init_guc(void)
 										 "registers one region.  Raise if FATAL on startup with "
 										 "errcode 53400 \"cluster shmem registry capacity "
 										 "exceeded\"."),
-							&cluster_shmem_max_regions, 64, 25, 256,
+							&cluster_shmem_max_regions, 64, 26, 256,
 							PGC_POSTMASTER, /* registry array is palloc'd once at init */
 							0,				/* flags */
 							NULL,			/* check_hook */
@@ -558,15 +608,41 @@ cluster_init_guc(void)
 	 *     ges_request_timeout_ms : min(lock_timeout, ges_request_timeout_ms)
 	 *   per v0.5 P1.5 (cluster_ges_effective_timeout_ms helper).
 	 */
-	DefineCustomIntVariable("cluster.ges_request_timeout_ms",
-							gettext_noop("Timeout for cross-node GES grant request (ms)."),
-							gettext_noop("Range [1, 600000] (1ms - 10min).  Default 60000.  "
-										 "Backend waits this long for grant reply before "
-										 "rolling back via GES_RELEASE.  PG lock_timeout=0 "
-										 "(disabled) does NOT short-circuit this — backend "
-										 "uses ges_request_timeout_ms when lock_timeout=0."),
-							&cluster_ges_request_timeout_ms, 60000, 1, 600000, PGC_USERSET,
-							GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_request_timeout_ms",
+		gettext_noop("Timeout for cross-node GES grant request (ms)."),
+		gettext_noop("Range [-1, 600000] (1ms - 10min;  -1 = perpetual wait).  Default 60000.  "
+					 "Backend waits this long for grant reply before rolling back via "
+					 "GES_RELEASE.  PG lock_timeout=0 (disabled) does NOT short-circuit "
+					 "this — backend uses ges_request_timeout_ms when lock_timeout=0.  "
+					 "spec-2.27 HC53:  setting -1 (perpetual wait) requires "
+					 "cluster.ges_retransmit_max_attempts > 0 so dropped replies are "
+					 "retransmitted;  attempts to set -1 with retransmit=0 are rejected."),
+		&cluster_ges_request_timeout_ms, 60000, -1, 600000, PGC_USERSET, GUC_UNIT_MS,
+		cluster_ges_request_timeout_ms_check_hook, NULL, NULL);
+
+	/* spec-2.27 D4 NEW — GES retransmit + dedup HTAB tunables (HC51..HC53). */
+	DefineCustomIntVariable(
+		"cluster.ges_retransmit_max_attempts",
+		gettext_noop("Maximum GES REQUEST/RELEASE retransmit attempts before fail-closed."),
+		gettext_noop("Range [0, 50].  Default 5 (≈ 3.1s of exponential backoff: "
+					 "100/200/400/800/1600 ms).  0 disables retransmit entirely (spec-2.26 "
+					 "behaviour).  In perpetual-wait mode (cluster.ges_request_timeout_ms = -1) "
+					 "this becomes a starvation-warning threshold:  retransmit continues "
+					 "indefinitely but priority_starvation_observed_count + WARNING fire at "
+					 "the half / three-quarter marks.  HC53 invariant:  cannot set to 0 while "
+					 "cluster.ges_request_timeout_ms = -1."),
+		&cluster_ges_retransmit_max_attempts, 5, 0, 50, PGC_SIGHUP, 0,
+		cluster_ges_retransmit_max_attempts_check_hook, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.ges_dedup_max_entries",
+		gettext_noop("LMS-owned GES retransmit dedup HTAB capacity (entries)."),
+		gettext_noop("Range [256, 1048576].  Default 8192.  Receiver-side dedup HTAB lives in "
+					 "shmem and survives LMS process restart (stale entries swept by "
+					 "lms_restart_generation bump).  Cap reached → REJECT_BUSY fail-closed; "
+					 "**never evict in-flight entries** (HC51 — eviction would re-introduce "
+					 "double-grant risk).  PGC_POSTMASTER — sized at startup."),
+		&cluster_ges_dedup_max_entries, 8192, 256, 1048576, PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
 	/* spec-2.23 D11 NEW:  coordinator REPORT collect deadline. */
 	DefineCustomIntVariable("cluster.lmd_probe_collect_timeout_ms",

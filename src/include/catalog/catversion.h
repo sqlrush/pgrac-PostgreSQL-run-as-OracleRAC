@@ -267,20 +267,21 @@
  * 53R81 SQLSTATE cluster_lmd_unavailable;ClusterLmdShmem region +
  * LWTRANCHE_CLUSTER_LMD;LmdProcess AuxProcType + NUM_AUXILIARY_PROCS
  * 13 → 14.  catversion bump for catalog tooling. */
-/* spec-2.26 D6 (2026-05-17):  LOCKTAG_TRANSACTION cluster gate + xid
- * wrapper (AD-012 例外 10 分阶段第一步).  Extends cluster_lock_should_globalize
- * to cover LOCKTAG_TRANSACTION (lockmode == ShareLock || ExclusiveLock,
- * cluster_node_id in [0, CLUSTER_MAX_NODES)).  ClusterResId encode adds
- * LOCKTAG_TRANSACTION branch — field1=local_xid + field2=origin_node_id
- * (cluster_node_id wrapper), preserving 16B wire ABI from spec-2.14.
- * PG TransactionId allocator NOT changed (HC41); visibility path NOT
- * forked (HC42); pg_xact remote NOT shipped (HC42).  HC43 cluster_epoch
- * NOT in resource key (relies on HC44 cleanup_on_node_dead complete).
- * NEW 1 grd counter transaction_cluster_path_count; dump_grd 39 -> 40
- * emit_row; PG XactLockTable* paths automatically routed via existing
- * spec-2.21 LockAcquireExtended hook (no PGRAC hook addition).  No new
- * GUC / wait event / SQLSTATE.  catversion bump for catalog tooling. */
-#define CATALOG_VERSION_NO 202605370
+/* spec-2.27 D9 (2026-05-17):  GES reliability hardening — master
+ * generation + retransmit + perpetual wait gated.  GesRequestPayload wire
+ * ABI 48B -> 56B (NEW shard_master_generation field).  NEW reserved
+ * opcode GES_REQ_OPCODE_PRIORITY_BOOST = 11 + GesPriorityBoostPayload 32B
+ * (RESERVED, NOT SENT — wire-with-stub-receiver反模式 enforcement L107
+ * N+5).  NEW shmem region 'pgrac cluster ges dedup' (LMS-owned dedup
+ * HTAB, key = 5-tuple {origin_node_id, opcode, request_id, cluster_epoch,
+ * shard_master_generation}).  ClusterLmsNativeLockProbeSlot ABI 128B ->
+ * 256B (per-slot LWLockPadded spec-2.25 Hardening 候选 1 race fix).
+ * NEW 2 GUC cluster.ges_retransmit_max_attempts + cluster.ges_dedup_max_
+ * entries + cluster.ges_request_timeout_ms range expand [-1, 600000]
+ * (perpetual wait gated, default 60000 不变).  NEW LMS counter
+ * priority_starvation_observed_count + lms_restart_generation atomic.
+ * catversion bump for catalog tooling. */
+#define CATALOG_VERSION_NO 202605380
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId

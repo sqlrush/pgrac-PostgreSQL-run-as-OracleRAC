@@ -155,30 +155,39 @@ typedef enum ClusterLmsState {
 #define CLUSTER_LMS_NATIVE_LOCK_PROBE_MAX_SLOTS 64
 
 typedef struct ClusterLmsNativeLockProbeSlot {
-	pg_atomic_uint64 in_use; /* 0 = free, 1 = allocated (slot-level guard) */
-	uint64 probe_id;		 /* monotonic per-shard id (HC36 epoch) */
-	LOCKTAG locktag;		 /* 16B PG LOCKTAG (RELATION / OBJECT) */
-	LOCKMODE lockmode;		 /* 4B PG LOCKMODE */
-	int32 origin_node_id;	 /* local cluster_node_id at acquire */
-	int32 requester_procno;	 /* pgprocno of backend awaiting grant */
-	int32 _pad1;
-	ClusterGrdHolderId requester;	 /* HC32a exclude_holder identity */
-	ClusterResId resid;				 /* grant-on-clear target resource */
-	TimestampTz start_ts;			 /* dispatch timestamp */
-	int32 grant_source_node_id;		 /* reply destination for async grant */
-	uint32 request_opcode;			 /* original GesRequestOpcode */
-	uint32 retry_count;				 /* HC32 retry-poll counter */
-	uint32 expected_replies_bitmap;	 /* bit set per live peer (1 = need reply) */
-	uint32 received_replies_bitmap;	 /* bit set per received reply */
-	uint32 aggregated_status_packed; /* 2 bits per node × 16 max nodes */
-	uint32 final_status;			 /* sync waiter result; 0 clear,3 timeout */
-	bool grant_on_clear;			 /* async remote-master grant completion */
-	bool final_ready;				 /* sync waiter completion flag */
+	pg_atomic_uint64 in_use;		   /* 0 = free, 2 = initializing, 1 = active */
+	uint64 probe_id;				   /* monotonic per-shard id (HC36 epoch) */
+	LOCKTAG locktag;				   /* 16B PG LOCKTAG (RELATION / OBJECT) */
+	LOCKMODE lockmode;				   /* 4B PG LOCKMODE */
+	int32 origin_node_id;			   /* local cluster_node_id at acquire */
+	int32 requester_procno;			   /* pgprocno of backend awaiting grant */
+	uint32 shard_master_generation_lo; /* spec-2.27 dedup carry for async grants */
+	ClusterGrdHolderId requester;	   /* HC32a exclude_holder identity */
+	ClusterResId resid;				   /* grant-on-clear target resource */
+	TimestampTz start_ts;			   /* dispatch timestamp */
+	int32 grant_source_node_id;		   /* reply destination for async grant */
+	uint32 request_opcode;			   /* original GesRequestOpcode */
+	uint32 retry_count;				   /* HC32 retry-poll counter */
+	uint32 expected_replies_bitmap;	   /* bit set per live peer (1 = need reply) */
+	uint32 received_replies_bitmap;	   /* bit set per received reply */
+	uint32 aggregated_status_packed;   /* 2 bits per node × 16 max nodes */
+	uint32 final_status;			   /* sync waiter result; 0 clear,3 timeout */
+	bool grant_on_clear;			   /* async remote-master grant completion */
+	bool final_ready;				   /* sync waiter completion flag */
 	bool _pad2[2];
+	/* spec-2.27 D5 / HC55 — per-slot LWLock serializes mutation of
+	 * expected/received bitmaps + aggregated_status_packed across the
+	 * six concurrent paths (wait_clear backend, recv_reply handler,
+	 * aggregate_and_resolve, retry_tick, cleanup_on_node_dead,
+	 * cleanup_on_backend_exit).  LWLockPadded is PG's cache-aligned
+	 * wrapper sized to PG_CACHE_LINE_SIZE (128B on the current build).
+	 * Slot = 128B prefix + 128B LWLockPadded = 256B exactly. */
+	LWLockPadded lock;
 } ClusterLmsNativeLockProbeSlot;
 
-StaticAssertDecl(sizeof(ClusterLmsNativeLockProbeSlot) == 128,
-				 "ClusterLmsNativeLockProbeSlot ABI 128B lock");
+StaticAssertDecl(sizeof(ClusterLmsNativeLockProbeSlot) == 256,
+				 "ClusterLmsNativeLockProbeSlot ABI 256B lock (spec-2.27 D5 bump from 128B; "
+				 "LWLockPadded = PG_CACHE_LINE_SIZE = 128B on current build)");
 
 typedef struct ClusterLmsSharedState {
 	LWLock lwlock;				/* LWTRANCHE_CLUSTER_LMS guards non-atomic fields */
@@ -220,6 +229,26 @@ typedef struct ClusterLmsSharedState {
 	/* probe collector slot array + monotonic id allocator (HC36). */
 	pg_atomic_uint64 native_probe_next_id;
 	ClusterLmsNativeLockProbeSlot native_probe_slots[CLUSTER_LMS_NATIVE_LOCK_PROBE_MAX_SLOTS];
+
+	/* spec-2.27 HC49 / HC50 — shard master generation composite 64-bit.
+	 *
+	 *	lms_restart_generation:  LMS process spawn 时 bump(LmsMain entry
+	 *	  + IsUnderPostmaster && MyBackendType == B_LMS guard).  Provides
+	 *	  the LOW 32-bit half of shard_master_generation.
+	 *
+	 *	shard_master_generation = (cluster_epoch << 32) | lms_restart_generation
+	 *	derived dynamically by accessor;  not cached so any post-bump
+	 *	caller sees the fresh composite.
+	 */
+	pg_atomic_uint64 lms_restart_generation;
+
+	/* spec-2.27 D7 / HC54 — priority starvation observability counter.
+	 *
+	 *	Bumped locally on retry budget 1/2 (DEBUG1) and 3/4 (WARNING).
+	 *	**Never sent on wire** — reserved opcode GES_REQ_OPCODE_PRIORITY_
+	 *	BOOST = 11 awaits spec-2.28+ with PG core lock manager
+	 *	`LockWaitQueueInsertAtHead`改造 + integrated receiver. */
+	pg_atomic_uint64 priority_starvation_observed_count;
 } ClusterLmsSharedState;
 
 
@@ -284,6 +313,17 @@ extern uint64 cluster_lms_get_native_probe_aggregate_holder_conflict_count(void)
 extern uint64 cluster_lms_get_native_probe_aggregate_waiter_conflict_count(void);
 extern uint64 cluster_lms_get_native_probe_retry_count(void);
 extern uint64 cluster_lms_get_native_probe_timeout_count(void);
+
+/* spec-2.27 D1 / HC49 / HC50 — shard master generation composite + LMS
+ * restart generation accessors + bump hook(only LMS aux process main
+ * entry may bump;  guard inside the function). */
+extern uint64 cluster_lms_get_lms_restart_generation(void);
+extern uint64 cluster_lms_get_shard_master_generation(void);
+extern void cluster_lms_bump_restart_generation_at_main_entry(void);
+
+/* spec-2.27 D7 — priority starvation observability counter. */
+extern void cluster_lms_inc_priority_starvation_observed(void);
+extern uint64 cluster_lms_get_priority_starvation_observed_count(void);
 
 /*
  * State enum -> canonical lowercase string ("disabled", "not_started",

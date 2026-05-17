@@ -97,7 +97,7 @@ typedef enum ClusterGrdOutboundOrigin {
 #define PGRAC_GES_REPLY_DIRTY_BUDGET 64
 #define PGRAC_GES_CLEANUP_DIRTY_BUDGET 64
 
-/* Max payload bytes per ring slot.  GES_REQUEST/REPLY payload = 48B
+/* Max payload bytes per ring slot.  GES_REQUEST payload = 56B, GES_REPLY payload = 52B
  * (cluster_ges.h);  pad to 64B for cache-line alignment + forward compat. */
 #define PGRAC_GES_OUTBOUND_PAYLOAD_MAX 64
 

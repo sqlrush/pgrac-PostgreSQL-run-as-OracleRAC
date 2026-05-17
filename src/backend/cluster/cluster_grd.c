@@ -110,12 +110,13 @@ typedef struct ClusterGrdWaiter {
 	 * (node_id, mode, wait_start);  the procno/request_id/request_opcode
 	 * + source_node_id additions are NEW for spec-2.23.
 	 */
-	int32 node_id;		   /* legacy: equal to source_node_id; kept for binary compat */
-	int32 source_node_id;  /* node hosting the waiting backend */
-	uint32 procno;		   /* PG ProcNumber of the waiting backend */
-	uint64 cluster_epoch;  /* epoch at waiter enqueue time */
-	uint64 request_id;	   /* per-backend monotonic id (for 5-tuple reply key) */
-	uint32 request_opcode; /* GesRequestOpcode of the queued request */
+	int32 node_id;					/* legacy: equal to source_node_id; kept for binary compat */
+	int32 source_node_id;			/* node hosting the waiting backend */
+	uint32 procno;					/* PG ProcNumber of the waiting backend */
+	uint64 cluster_epoch;			/* epoch at waiter enqueue time */
+	uint64 request_id;				/* per-backend monotonic id (for 5-tuple reply key) */
+	uint64 shard_master_generation; /* spec-2.27 dedup key carry */
+	uint32 request_opcode;			/* GesRequestOpcode of the queued request */
 	LOCKMODE mode;
 	TimestampTz wait_start;
 } ClusterGrdWaiter;
@@ -1261,7 +1262,8 @@ cluster_grd_entry_promote_waiter(ClusterGrdEntry *entry, const ClusterGrdHolderI
 
 ClusterGrdGrantAction
 cluster_grd_entry_enqueue_or_grant(const ClusterResId *resid, const ClusterGrdHolderId *holder,
-								   int32 source_node_id, uint64 request_id, uint32 request_opcode,
+								   int32 source_node_id, uint64 request_id,
+								   uint64 shard_master_generation, uint32 request_opcode,
 								   int lockmode, ClusterGrdConflictHolder *conflict_holders_out,
 								   int *n_conflict_out)
 {
@@ -1340,6 +1342,7 @@ cluster_grd_entry_enqueue_or_grant(const ClusterResId *resid, const ClusterGrdHo
 	entry->waiters[slot].procno = holder->procno;
 	entry->waiters[slot].cluster_epoch = holder->cluster_epoch;
 	entry->waiters[slot].request_id = request_id;
+	entry->waiters[slot].shard_master_generation = shard_master_generation;
 	entry->waiters[slot].request_opcode = request_opcode;
 	entry->waiters[slot].mode = (LOCKMODE)lockmode;
 	entry->waiters[slot].wait_start = 0;
@@ -1424,6 +1427,8 @@ cluster_grd_entry_release_and_pop_compatible_waiter(const ClusterResId *resid,
 		granted_out[popped].holder.request_id = entry->waiters[chosen].request_id;
 		granted_out[popped].source_node_id = entry->waiters[chosen].source_node_id;
 		granted_out[popped].request_id = entry->waiters[chosen].request_id;
+		granted_out[popped].shard_master_generation
+			= entry->waiters[chosen].shard_master_generation;
 		granted_out[popped].request_opcode = entry->waiters[chosen].request_opcode;
 		granted_out[popped].mode = entry->waiters[chosen].mode;
 

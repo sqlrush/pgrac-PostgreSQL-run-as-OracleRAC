@@ -195,14 +195,26 @@ typedef enum GesRequestOpcode {
 	 *	cluster_native_lock_probe.h ClusterNativeLockProbeReply enum).
 	 *
 	 *	Uses dedicated payload structs (GesNativeLockProbePayload /
-	 *	GesNativeLockProbeReplyPayload) — not the 48-byte GesRequestPayload.
+	 *	GesNativeLockProbeReplyPayload) — not GesRequestPayload.
 	 *	Dispatched via early opcode fork in cluster_ges_request_handler
 	 *	(mirrors DEADLOCK_PROBE / DEADLOCK_REPORT pattern at line 205+).
 	 *	Main ges_validate_inbound opcode_max stays at CANCEL_PENDING (7);
 	 *	these two opcodes use bespoke validation per HC33.
 	 */
 	GES_REQ_OPCODE_NATIVE_LOCK_PROBE = 9,
-	GES_REQ_OPCODE_NATIVE_LOCK_PROBE_REPLY = 10
+	GES_REQ_OPCODE_NATIVE_LOCK_PROBE_REPLY = 10,
+	/*
+	 * spec-2.27 D8 / HC54 — reserved opcode for future fairness escalation.
+	 *
+	 *	**NOT SENT / NOT RECEIVED in this spec**.  The wire opcode and
+	 *	payload struct (GesPriorityBoostPayload below) are ABI-locked so
+	 *	a future spec-2.28+ that ships the real PG core lock manager
+	 *	`LockWaitQueueInsertAtHead`改造 can wire send + receiver in one
+	 *	commit — integrated, no stub.  Wiring this opcode without an
+	 *	integrated receiver would be a wire-with-stub-receiver反模式
+	 *	(L107 family N+5;  spec-2.27 brainstorm Q3 catch).
+	 */
+	GES_REQ_OPCODE_PRIORITY_BOOST = 11
 } GesRequestOpcode;
 
 typedef enum GesReplyOpcode {
@@ -232,7 +244,13 @@ struct ClusterGrdHolderId;
  *     [ 8, 32)  holder_id       24 bytes   (ClusterGrdHolderId)
  *     [32, 48)  resid           16 bytes   (ClusterResId)
  *
- *   Total: 48 bytes.  Aligned to 8.
+ *   Total: 56 bytes (spec-2.27 D2 / HC49 ABI bump from 48B — adds
+ *   shard_master_generation field for dedup HTAB 5-tuple key).  Aligned to 8.
+ *
+ *   shard_master_generation = (cluster_epoch << 32) | lms_restart_generation
+ *   composite supplied by the calling backend at REQUEST/RELEASE send time.
+ *   LMS receiver uses this as part of the dedup HTAB key (HC51) so retransmit
+ *   from a caller using an earlier generation is recognised as stale.
  */
 typedef struct GesRequestPayload {
 	uint32 opcode;	 /* GesRequestOpcode */
@@ -247,9 +265,16 @@ typedef struct GesRequestPayload {
 	uint32 holder_request_id_lo;
 	uint32 holder_request_id_hi;
 	uint32 resid[4]; /* ClusterResId byte-image (16B) */
+	/* spec-2.27 D2 / HC49 — composite shard_master_generation:
+	 *   HIGH 32-bit = cluster_epoch (reconfig events)
+	 *   LOW  32-bit = lms_restart_generation (LMS spawn events)
+	 * caller samples cluster_lms_get_shard_master_generation() at send time. */
+	uint32 shard_master_generation_lo;
+	uint32 shard_master_generation_hi;
 } GesRequestPayload;
 
-StaticAssertDecl(sizeof(GesRequestPayload) == 48, "GesRequestPayload wire ABI 48-byte lock");
+StaticAssertDecl(sizeof(GesRequestPayload) == 56,
+				 "GesRequestPayload wire ABI 56-byte lock (spec-2.27 D2 bump from 48B)");
 
 /*
  * GES reply payload (variant on GES_REPLY msg_type=5).
@@ -445,6 +470,32 @@ typedef struct GesNativeLockProbeReplyPayload {
 
 StaticAssertDecl(sizeof(GesNativeLockProbeReplyPayload) == 32,
 				 "GesNativeLockProbeReplyPayload wire ABI 32-byte lock");
+
+/* ============================================================
+ * spec-2.27 D8 / HC54 — RESERVED priority boost payload.
+ *
+ *	GES_REQ_OPCODE_PRIORITY_BOOST = 11 is reserved for future fairness
+ *	escalation;  the wire ABI is locked here so a future spec-2.28+ can
+ *	ship the integrated PG core lock manager改造 + send + receiver in a
+ *	single commit (no wire-with-stub-receiver反模式 — L107 family N+5).
+ *
+ *	**NOT SENT / NOT RECEIVED by spec-2.27 code paths**.  Any future
+ *	caller of cluster_grd_outbound_enqueue_* with opcode = 11 must come
+ *	in the same commit as a non-stub receiver registered with
+ *	`cluster_ges_request_handler`.
+ * ============================================================ */
+
+typedef struct GesPriorityBoostPayload {
+	uint32 opcode;	 /* = GES_REQ_OPCODE_PRIORITY_BOOST (11) */
+	uint32 lockmode; /* PG LOCKMODE the requester is waiting on */
+	uint64 request_id;
+	uint64 cluster_epoch;
+	uint64 shard_master_generation;
+} GesPriorityBoostPayload;
+
+StaticAssertDecl(
+	sizeof(GesPriorityBoostPayload) == 32,
+	"GesPriorityBoostPayload wire ABI 32-byte lock (RESERVED — NOT SENT in spec-2.27)");
 
 /*
  * spec-2.25 D6 / Step 1 — native-lock probe handler entry points.  Wire
