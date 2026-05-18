@@ -380,6 +380,24 @@ void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}
 
+/* PGRAC spec-2.32 D5 stubs:  cluster_pcm_lock.c now calls cluster_gcs
+ * helpers from each mutation entry point (master lookup branch).  Test
+ * fixture forces local path by returning cluster_node_id from lookup. */
+int
+cluster_gcs_lookup_master(BufferTag tag pg_attribute_unused())
+{
+	return cluster_node_id;
+}
+
+void
+cluster_gcs_send_transition_and_wait(BufferTag tag pg_attribute_unused(),
+									 PcmLockTransition trans pg_attribute_unused(),
+									 int master_node pg_attribute_unused())
+{
+	/* Unreachable when lookup returns self;  abort to catch test fixture bugs. */
+	abort();
+}
+
 /* ereport stubs — minimal enough to satisfy linker.  ereport(ERROR, ...)
  * path in cluster_pcm_lock.o would call errstart_cold + errfinish;  none
  * of the tests in this binary trigger that path. */

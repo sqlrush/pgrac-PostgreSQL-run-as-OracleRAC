@@ -335,6 +335,12 @@ void
 cluster_pcm_lock_module_init(void)
 {}
 
+/* Spec-2.32 D2 stub: cluster_init_shmem_module also calls
+ * cluster_gcs_module_init (cluster_gcs.c). */
+void
+cluster_gcs_module_init(void)
+{}
+
 
 /*
  * Spec-1.10.1 D1 F1 stub: cluster_init_shmem_module also calls

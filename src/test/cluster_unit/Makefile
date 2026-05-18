@@ -34,7 +34,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_ic_mock test_cluster_inject test_cluster_pgstat \
         test_cluster_debug test_cluster_shared_fs test_cluster_smgr \
         test_cluster_scn test_cluster_block_format test_cluster_itl_slot \
-        test_cluster_buffer_desc test_cluster_pcm_lock test_cluster_bufmgr_pcm_hook \
+        test_cluster_buffer_desc test_cluster_pcm_lock test_cluster_bufmgr_pcm_hook test_cluster_gcs_dispatch \
         test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision \
         test_cluster_xlog test_cluster_tt_slot test_cluster_undo_segment \
         test_cluster_epoch test_cluster_fence test_cluster_reconfig \
@@ -92,6 +92,7 @@ CLUSTER_LOCK_ACQUIRE_O = $(top_builddir)/src/backend/cluster/cluster_lock_acquir
 # the transition validator + counter accessors standalone (20 PG-runtime
 # deps stubbed in the test binary).
 CLUSTER_PCM_LOCK_O = $(top_builddir)/src/backend/cluster/cluster_pcm_lock.o
+CLUSTER_GCS_O = $(top_builddir)/src/backend/cluster/cluster_gcs.o
 
 # Most tests link only cluster_version.o.  test_cluster_guc /
 # test_cluster_shmem / test_cluster_signal / test_cluster_views /
@@ -507,5 +508,16 @@ test_cluster_bufmgr_pcm_hook: test_cluster_bufmgr_pcm_hook.c unit_test.h \
 		$(CLUSTER_VERSION_O) $(CLUSTER_PCM_LOCK_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_PCM_LOCK_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-2.32 D9: test_cluster_gcs_dispatch verifies GCS request protocol
+# skeleton invariants (msg_type enum 12/13, payload ABI lock, dispatch
+# handler symbols, observability accessors).  Link-surface coverage only;
+# behavioral coverage in cluster_tap t/110_gcs_loopback.pl.
+test_cluster_gcs_dispatch: test_cluster_gcs_dispatch.c unit_test.h \
+		$(CLUSTER_VERSION_O) $(CLUSTER_GCS_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_GCS_O) \
 		$(top_builddir)/src/common/libpgcommon_srv.a \
 		$(top_builddir)/src/port/libpgport_srv.a -o $@

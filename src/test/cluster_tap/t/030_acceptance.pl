@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'78', 'E1 pg_stat_cluster_wait_events returns 78 rows (spec-2.30 PCM wait events included)');
+	'79', 'E1 pg_stat_cluster_wait_events returns 79 rows (spec-2.30 PCM wait events included)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'78', 'E4 pg_stat_gcluster_wait_events returns 78 rows (single-node, spec-2.25 D12)');
+	'79', 'E4 pg_stat_gcluster_wait_events returns 79 rows (single-node, spec-2.25 D12)');
 
 
 # ============================================================
@@ -367,8 +367,8 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM pg_cluster_state}),
-	'block_format,buffer_format,cluster_cssd,cluster_stats,conf,diag,ges,grd,guc,ic,inject,lck,lmd,lmon,lms,pcm,pgstat,phase,scn,shared_fs,shmem',
-	'O2 pg_cluster_state has all 21 categories (20 prior + lmd spec-2.19)');
+	'block_format,buffer_format,cluster_cssd,cluster_stats,conf,diag,gcs,ges,grd,guc,ic,inject,lck,lmd,lmon,lms,pcm,pgstat,phase,scn,shared_fs,shmem',
+	'O2 pg_cluster_state has all 22 categories (gcs added in spec-2.32)');
 
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE value IS NULL}),

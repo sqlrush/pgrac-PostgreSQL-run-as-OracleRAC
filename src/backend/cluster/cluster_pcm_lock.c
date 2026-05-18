@@ -38,6 +38,7 @@
 #include "access/xlogdefs.h"
 #include "cluster/cluster_grd.h" /* PGRAC: spec-2.30 D1 — ClusterGrdHolderId 24B */
 #include "cluster/cluster_guc.h" /* PGRAC: spec-2.30 D3 — cluster_node_id */
+#include "cluster/cluster_gcs.h" /* PGRAC: spec-2.32 D5 — master lookup + send_transition_and_wait */
 #include "cluster/cluster_inject.h"
 #include "cluster/cluster_pcm_lock.h"
 #include "cluster/cluster_scn.h"
@@ -259,6 +260,7 @@ static struct GrdEntry *pcm_get_or_create_entry(BufferTag tag);
 static struct GrdEntry *pcm_find_entry(BufferTag tag);
 static void pcm_entry_lock_exclusive(struct GrdEntry *entry);
 static uint32 pcm_holder_bit(int holder_node_id);
+static PcmState pcm_transition_target(PcmLockTransition trans);
 
 
 /* ============================================================
@@ -310,6 +312,26 @@ cluster_pcm_transition_legal(PcmState from, PcmState to, PcmLockTransition trans
 		return from == PCM_STATE_S && to == PCM_STATE_X;
 	}
 	return false; /* unknown trans value */
+}
+
+static PcmState
+pcm_transition_target(PcmLockTransition trans)
+{
+	switch (trans) {
+	case PCM_TRANS_N_TO_S:
+	case PCM_TRANS_X_TO_S_DOWNGRADE:
+		return PCM_STATE_S;
+	case PCM_TRANS_N_TO_X:
+	case PCM_TRANS_S_TO_X_UPGRADE:
+	case PCM_TRANS_S_TO_X_CLEANOUT:
+		return PCM_STATE_X;
+	case PCM_TRANS_X_TO_N_DOWNGRADE:
+	case PCM_TRANS_X_TO_N_RELEASE:
+	case PCM_TRANS_S_TO_N_INVALIDATE:
+	case PCM_TRANS_S_TO_N_RELEASE:
+		return PCM_STATE_N;
+	}
+	return PCM_STATE_N;
 }
 
 
@@ -388,6 +410,91 @@ cluster_pcm_transition_apply(struct GrdEntry *entry, PcmLockTransition trans, in
 
 	entry->last_transition_at = GetCurrentTimestamp();
 	pg_atomic_fetch_add_u64(&entry->transition_count_local, 1);
+}
+
+/*
+ * Apply a GCS-requested PCM transition on the master side.
+ *
+ * Unlike the public local APIs, this helper returns false on state
+ * incompatibility so the GCS request handler can send a DENIED reply instead
+ * of raising ERROR and leaking the caller's reply wait.  Caller is the GCS
+ * request handler; sender-side code must not call this after a GRANTED reply.
+ */
+bool
+cluster_pcm_lock_apply_gcs_transition(BufferTag tag, PcmLockTransition trans, int holder_node_id)
+{
+	struct GrdEntry *entry;
+	PcmState cur;
+	PcmState target;
+	uint32 holder_bit;
+	bool broadcast_needed = false;
+
+	if (cluster_pcm_htab == NULL)
+		return false;
+	if (holder_node_id < 0 || holder_node_id >= 32)
+		return false;
+	if (trans < PCM_TRANS_N_TO_S || trans > PCM_TRANS_S_TO_X_CLEANOUT)
+		return false;
+	if (trans == PCM_TRANS_S_TO_X_CLEANOUT)
+		return false;
+
+	if (trans == PCM_TRANS_N_TO_S || trans == PCM_TRANS_N_TO_X)
+		entry = pcm_get_or_create_entry(tag);
+	else
+		entry = pcm_find_entry(tag);
+	if (entry == NULL)
+		return false;
+
+	holder_bit = pcm_holder_bit(holder_node_id);
+	target = pcm_transition_target(trans);
+
+	pcm_entry_lock_exclusive(entry);
+	cur = (PcmState)pg_atomic_read_u32(&entry->master_state);
+
+	if (!cluster_pcm_transition_legal(cur, target, trans)) {
+		LWLockRelease(&entry->entry_lock.lock);
+		return false;
+	}
+
+	switch (trans) {
+	case PCM_TRANS_N_TO_S:
+	case PCM_TRANS_N_TO_X:
+		break;
+	case PCM_TRANS_S_TO_X_UPGRADE:
+		if ((pg_atomic_read_u32(&entry->s_holders_bitmap) & holder_bit) == 0
+			|| (pg_atomic_read_u32(&entry->s_holders_bitmap) & ~holder_bit) != 0) {
+			LWLockRelease(&entry->entry_lock.lock);
+			return false;
+		}
+		break;
+	case PCM_TRANS_X_TO_S_DOWNGRADE:
+	case PCM_TRANS_X_TO_N_DOWNGRADE:
+	case PCM_TRANS_X_TO_N_RELEASE:
+		if (entry->x_holder_node != holder_node_id) {
+			LWLockRelease(&entry->entry_lock.lock);
+			return false;
+		}
+		break;
+	case PCM_TRANS_S_TO_N_INVALIDATE:
+	case PCM_TRANS_S_TO_N_RELEASE:
+		if ((pg_atomic_read_u32(&entry->s_holders_bitmap) & holder_bit) == 0) {
+			LWLockRelease(&entry->entry_lock.lock);
+			return false;
+		}
+		break;
+	case PCM_TRANS_S_TO_X_CLEANOUT:
+		LWLockRelease(&entry->entry_lock.lock);
+		return false;
+	}
+
+	cluster_pcm_transition_apply(entry, trans, holder_node_id);
+	if ((PcmState)pg_atomic_read_u32(&entry->master_state) == PCM_STATE_N)
+		broadcast_needed = true;
+	LWLockRelease(&entry->entry_lock.lock);
+
+	if (broadcast_needed)
+		ConditionVariableBroadcast(&entry->wait_cv);
+	return true;
 }
 
 
@@ -508,6 +615,24 @@ cluster_pcm_lock_acquire(BufferTag tag, PcmLockMode mode)
 						errmsg("cluster_pcm_lock_acquire: invalid mode %d (must be S=1 or X=2)",
 							   (int)mode)));
 
+	/*
+	 * PGRAC: spec-2.32 D5 — master lookup branch (HC72 production self
+	 * short-circuit / wire path test-only).  spec-2.32 placeholder lookup
+	 * always returns cluster_node_id in production; spec-2.33+ replaces
+	 * with real GRD master cache lookup.
+	 */
+	{
+		int master_node = cluster_gcs_lookup_master(tag);
+
+		if (master_node != cluster_node_id) {
+			PcmLockTransition trans
+				= (mode == PCM_LOCK_MODE_S) ? PCM_TRANS_N_TO_S : PCM_TRANS_N_TO_X;
+
+			cluster_gcs_send_transition_and_wait(tag, trans, master_node);
+			return; /* HC77: master applied transition; sender returns success */
+		}
+	}
+
 	holder_node = cluster_node_id;
 	if (holder_node < 0 || holder_node >= 32)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -605,6 +730,20 @@ cluster_pcm_lock_release(BufferTag tag)
 	if (cluster_pcm_htab == NULL)
 		PCM_STUB_DISABLED_PATH;
 
+	/*
+	 * PGRAC: spec-2.32 D5 — HC78 release must symmetrize wire if acquire
+	 * went through master.  master==self short-circuits to spec-2.31 local
+	 * path (HC72).
+	 */
+	{
+		int master_node = cluster_gcs_lookup_master(tag);
+
+		if (master_node != cluster_node_id) {
+			cluster_gcs_send_transition_and_wait(tag, PCM_TRANS_S_TO_N_RELEASE, master_node);
+			return;
+		}
+	}
+
 	holder_node = cluster_node_id;
 	if (holder_node < 0 || holder_node >= 32)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -693,6 +832,16 @@ cluster_pcm_lock_upgrade(BufferTag tag)
 	if (cluster_pcm_htab == NULL)
 		PCM_STUB_DISABLED_PATH;
 
+	/* PGRAC: spec-2.32 D5 — HC78 upgrade symmetric wire when master remote. */
+	{
+		int master_node = cluster_gcs_lookup_master(tag);
+
+		if (master_node != cluster_node_id) {
+			cluster_gcs_send_transition_and_wait(tag, PCM_TRANS_S_TO_X_UPGRADE, master_node);
+			return;
+		}
+	}
+
 	holder_node = cluster_node_id;
 	if (holder_node < 0 || holder_node >= 32)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -745,6 +894,32 @@ cluster_pcm_lock_downgrade(BufferTag tag, PcmLockMode target_mode, bool keep_pi)
 	if (cluster_pcm_htab == NULL)
 		PCM_STUB_DISABLED_PATH;
 
+	if (!((target_mode == PCM_LOCK_MODE_S && keep_pi)
+		  || (target_mode == PCM_LOCK_MODE_N && keep_pi)
+		  || (target_mode == PCM_LOCK_MODE_N && !keep_pi)))
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cluster_pcm_lock_downgrade: illegal target_mode=%d keep_pi=%d",
+							   (int)target_mode, keep_pi)));
+
+	/* PGRAC: spec-2.32 D5 — HC78 downgrade symmetric wire when master remote. */
+	{
+		int master_node = cluster_gcs_lookup_master(tag);
+
+		if (master_node != cluster_node_id) {
+			PcmLockTransition remote_trans;
+
+			if (target_mode == PCM_LOCK_MODE_S && keep_pi)
+				remote_trans = PCM_TRANS_X_TO_S_DOWNGRADE;
+			else if (target_mode == PCM_LOCK_MODE_N && keep_pi)
+				remote_trans = PCM_TRANS_X_TO_N_DOWNGRADE;
+			else
+				remote_trans = PCM_TRANS_X_TO_N_RELEASE;
+
+			cluster_gcs_send_transition_and_wait(tag, remote_trans, master_node);
+			return;
+		}
+	}
+
 	holder_node = cluster_node_id;
 	if (holder_node < 0 || holder_node >= 32)
 		ereport(ERROR,
@@ -788,12 +963,8 @@ cluster_pcm_lock_downgrade(BufferTag tag, PcmLockMode target_mode, bool keep_pi)
 		trans = PCM_TRANS_X_TO_N_DOWNGRADE;
 	else if (target_mode == PCM_LOCK_MODE_N && !keep_pi)
 		trans = PCM_TRANS_X_TO_N_RELEASE;
-	else {
-		LWLockRelease(&entry->entry_lock.lock);
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("cluster_pcm_lock_downgrade: illegal target_mode=%d keep_pi=%d",
-							   (int)target_mode, keep_pi)));
-	}
+	else
+		pg_unreachable();
 
 	if (!cluster_pcm_transition_legal(cur, (PcmState)target_mode, trans)) {
 		LWLockRelease(&entry->entry_lock.lock);

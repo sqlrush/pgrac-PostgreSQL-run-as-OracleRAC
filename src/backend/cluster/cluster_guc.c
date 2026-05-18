@@ -524,8 +524,8 @@ cluster_init_guc(void)
 	 * cluster.shmem_max_regions (spec-1.3): capacity of the cluster shmem
 	 * region registry.  Default 64 covers the stage 1.3 baseline plus the
 	 * reserved regions planned in cluster-shmem-design.md §3.2 with a wide
-	 * safety margin.  Range [26, 256] -- 26 is the minimum to fit the
-	 * spec-2.27 baseline after adding the GES dedup region.  256 is the
+	 * safety margin.  Range [27, 256] -- 27 is the minimum to fit the
+	 * spec-2.32 baseline after adding the GCS region.  256 is the
 	 * upper engineering bound (raise via source-code change if more are
 	 * needed).  PGC_POSTMASTER because the registry array is palloc'd once
 	 * at postmaster init from this value.  Min was raised 8 -> 16 in
@@ -540,7 +540,7 @@ cluster_init_guc(void)
 										 "registers one region.  Raise if FATAL on startup with "
 										 "errcode 53400 \"cluster shmem registry capacity "
 										 "exceeded\"."),
-							&cluster_shmem_max_regions, 64, 26, 256,
+							&cluster_shmem_max_regions, 64, 27, 256,
 							PGC_POSTMASTER, /* registry array is palloc'd once at init */
 							0,				/* flags */
 							NULL,			/* check_hook */

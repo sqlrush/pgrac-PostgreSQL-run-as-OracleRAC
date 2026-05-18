@@ -315,6 +315,11 @@ typedef enum {
 	 * content-lock hook contention path; DBA sees backend waiting on
 	 * 'ClusterPcmCompatibleStateWait' in pg_stat_activity. */
 	WAIT_EVENT_PCM_COMPATIBLE_STATE_WAIT,
+	/* PGRAC (spec-2.32 D7): sender waits on outstanding-slot CV for GCS
+	 * reply from master node after sending PGRAC_IC_MSG_GCS_REQUEST.
+	 * Classified under PG_WAIT_CLUSTER_PCM family (semantic: waiting for
+	 * PCM/GCS transition reply, not GES lock acquire). */
+	WAIT_EVENT_GCS_REPLY_WAIT,
 
 	/* Cluster: BufferShip (5 events) -- subsystem #5 */
 	WAIT_EVENT_BUFFER_SHIP_CR_BUILD = PG_WAIT_CLUSTER_BUFFERSHIP,

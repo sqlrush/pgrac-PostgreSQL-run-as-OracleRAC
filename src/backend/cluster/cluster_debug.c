@@ -94,6 +94,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_itl_slot.h"	   /* CLUSTER_ITL_* constants (stage 1.5) */
 #include "cluster/cluster_buffer_desc.h"   /* BufferType / PcmState enums (stage 1.6) */
 #include "cluster/cluster_pcm_lock.h"	   /* PCM state-machine API + grd helpers */
+#include "cluster/cluster_gcs.h"		   /* GCS request protocol surface (spec-2.32 D8) */
 #include "cluster/cluster_startup_phase.h" /* phase enum + accessors (stage 1.10) */
 #include "storage/bufpage.h"	   /* PG_PAGE_LAYOUT_VERSION, SizeOfPageHeaderData (stage 1.4) */
 #include "storage/buf_internals.h" /* BufferDesc layout (stage 1.6) */
@@ -1217,6 +1218,44 @@ dump_pcm(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_pcm_get_trans_s_to_x_cleanout_count()));
 }
 
+
+/* ============================================================
+ * dump_gcs -- GCS request protocol observability (spec-2.32 D8).
+ *
+ *	14 rows:  api_state + 2 lookup counters + 2 envelope counters + 2
+ *	reply counters + 4 byte/loop counters + 3 outstanding stats.
+ * ============================================================ */
+static void
+dump_gcs(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "gcs", "api_state", cluster_gcs_get_api_state());
+	emit_row(rsinfo, "gcs", "lookup_master_self_count",
+			 fmt_int64((int64)cluster_gcs_get_lookup_master_self_count()));
+	emit_row(rsinfo, "gcs", "lookup_master_remote_count",
+			 fmt_int64((int64)cluster_gcs_get_lookup_master_remote_count()));
+	emit_row(rsinfo, "gcs", "send_request_count",
+			 fmt_int64((int64)cluster_gcs_get_send_request_count()));
+	emit_row(rsinfo, "gcs", "handle_request_count",
+			 fmt_int64((int64)cluster_gcs_get_handle_request_count()));
+	emit_row(rsinfo, "gcs", "handle_reply_count",
+			 fmt_int64((int64)cluster_gcs_get_handle_reply_count()));
+	emit_row(rsinfo, "gcs", "reply_late_drop_count",
+			 fmt_int64((int64)cluster_gcs_get_reply_late_drop_count()));
+	emit_row(rsinfo, "gcs", "reply_timeout_count",
+			 fmt_int64((int64)cluster_gcs_get_reply_timeout_count()));
+	emit_row(rsinfo, "gcs", "encode_payload_bytes",
+			 fmt_int64((int64)cluster_gcs_get_encode_payload_bytes()));
+	emit_row(rsinfo, "gcs", "decode_payload_bytes",
+			 fmt_int64((int64)cluster_gcs_get_decode_payload_bytes()));
+	emit_row(rsinfo, "gcs", "dispatch_loop_iterations",
+			 fmt_int64((int64)cluster_gcs_get_dispatch_loop_iterations()));
+	emit_row(rsinfo, "gcs", "outstanding_count",
+			 fmt_int64((int64)cluster_gcs_get_outstanding_count()));
+	emit_row(rsinfo, "gcs", "max_outstanding", fmt_int64((int64)cluster_gcs_get_max_outstanding()));
+	emit_row(rsinfo, "gcs", "max_outstanding_per_backend",
+			 fmt_int32(MAX_OUTSTANDING_REQUESTS_PER_BACKEND));
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -1250,6 +1289,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_block_format(rsinfo);
 		dump_buffer_format(rsinfo);
 		dump_pcm(rsinfo);
+		dump_gcs(rsinfo);
 		dump_phase(rsinfo);
 		dump_lmon(rsinfo);
 		dump_lck(rsinfo);

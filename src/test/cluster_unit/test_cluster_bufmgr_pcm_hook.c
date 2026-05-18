@@ -271,6 +271,22 @@ void
 cluster_injection_run(const char *name pg_attribute_unused())
 {}
 
+/* PGRAC spec-2.32 D5 stubs:  cluster_pcm_lock.c calls cluster_gcs helpers
+ * from each mutation entry point.  Test fixture forces local path. */
+int
+cluster_gcs_lookup_master(BufferTag tag pg_attribute_unused())
+{
+	return cluster_node_id;
+}
+
+void
+cluster_gcs_send_transition_and_wait(BufferTag tag pg_attribute_unused(),
+									 PcmLockTransition trans pg_attribute_unused(),
+									 int master_node pg_attribute_unused())
+{
+	abort();
+}
+
 Size
 hash_estimate_size(long num_entries, Size entry_size)
 {

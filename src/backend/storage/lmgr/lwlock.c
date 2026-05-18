@@ -220,6 +220,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"ClusterGesReplyWait",
 	/* PGRAC LWTRANCHE_CLUSTER_PCM: spec-2.30 D4 per-entry GrdEntry lock */
 	"ClusterPcm",
+	/* PGRAC LWTRANCHE_CLUSTER_GCS: spec-2.32 D2 outstanding-request block lock */
+	"ClusterGcs",
 #endif
 };
 

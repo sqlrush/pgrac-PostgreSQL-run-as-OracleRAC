@@ -286,6 +286,74 @@ cluster_pcm_get_trans_s_to_x_cleanout_count(void)
 {
 	return 0;
 }
+
+/* PGRAC spec-2.32 D8 stub audit — 12 GCS accessor stubs + api_state. */
+uint64
+cluster_gcs_get_lookup_master_self_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_lookup_master_remote_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_send_request_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_handle_request_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_handle_reply_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_reply_late_drop_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_reply_timeout_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_encode_payload_bytes(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_decode_payload_bytes(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_dispatch_loop_iterations(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_outstanding_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_max_outstanding(void)
+{
+	return 0;
+}
+const char *
+cluster_gcs_get_api_state(void)
+{
+	return "stub";
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {

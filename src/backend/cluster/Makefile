@@ -54,6 +54,7 @@ OBJS = \
 	cluster_grd_pending.o \
 	cluster_grd_srf.o \
 	cluster_grd_work_queue.o \
+	cluster_gcs.o \
 	cluster_reconfig.o \
 	cluster_guc.o \
 	cluster_ic.o \

@@ -124,8 +124,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '78',
-   'L9 pg_stat_cluster_wait_events returns 78 rows after spec-2.30 D8');
+   '79',
+   'L9 pg_stat_cluster_wait_events returns 79 rows after spec-2.30 D8');
 
 
 # ----------
@@ -135,8 +135,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_cluster_shmem'),
-	   '26',
-	   'L10 pg_cluster_shmem returns 26 rows (spec-2.27 D2 ges dedup region included)');
+	   '27',
+	   'L10 pg_cluster_shmem returns 27 rows (spec-2.32 GCS region included)');
 
 
 # ----------
@@ -156,8 +156,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT category) FROM pg_cluster_state}),
-   '21',
-   'L12 pg_cluster_state has 21 distinct categories (20 prior + lmd spec-2.19)');
+   '22',
+   'L12 pg_cluster_state has 22 distinct categories (gcs added in spec-2.32)');
 
 
 # ----------
@@ -220,7 +220,7 @@ is($node->safe_psql('postgres',
 my $smoke_categories = $node->safe_psql(
 	'postgres',
 	q{SELECT count(DISTINCT category) FROM pg_cluster_state});
-is($smoke_categories, '21', 'L16 cluster_smoke surface integrates buffer_format + pcm + lmon + lck + diag + cluster_stats + scn + ges + grd + lmd (21 categories;spec-2.19 added lmd)');
+is($smoke_categories, '22', 'L16 cluster_smoke surface integrates buffer_format + pcm + gcs categories (22 categories;spec-2.32 added gcs)');
 
 
 # ----------

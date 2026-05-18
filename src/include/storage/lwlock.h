@@ -299,6 +299,10 @@ typedef enum BuiltinTrancheIds {
 	 * transition_apply MUST hold EXCLUSIVE;  HC61 forbids upgrade to a
 	 * per-shard / global lock granularity. */
 	LWTRANCHE_CLUSTER_PCM,
+	/* PGRAC (spec-2.32 D2): per-backend outstanding-request block lock in
+	 * cluster_gcs.c.  Guards reservation/release of MAX_OUTSTANDING_REQUESTS_PER_BACKEND
+	 * slots; per-backend granularity keeps contention surface tiny. */
+	LWTRANCHE_CLUSTER_GCS,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

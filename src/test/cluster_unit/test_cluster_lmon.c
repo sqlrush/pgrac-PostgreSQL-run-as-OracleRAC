@@ -354,6 +354,11 @@ void
 cluster_ic_register_msg_type(const ClusterICMsgTypeInfo *info pg_attribute_unused())
 {}
 
+/* spec-2.32 D4 stub:  cluster_lmon_shmem_init calls cluster_gcs_register_msg_types. */
+void
+cluster_gcs_register_msg_types(void)
+{}
+
 /* spec-2.2 D5 LMON drive references cluster_conf_lookup_node + cluster_node_id. */
 const struct ClusterNodeInfo *
 cluster_conf_lookup_node(int32 node_id pg_attribute_unused())
