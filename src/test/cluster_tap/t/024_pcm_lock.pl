@@ -1,17 +1,18 @@
 #-------------------------------------------------------------------------
 #
 # 024_pcm_lock.pl
-#    End-to-end regression for the stage-1.7 PCM lock framework
-#    scaffolding (cluster_pcm_lock.h/.c stub API + GrdEntry opaque
-#    typedef + cluster_pcm_grd shmem region + 4 inject points + 6 keys
-#    in pg_cluster_state.pcm category).
+#    End-to-end regression for the PCM lock framework surface.  This
+#    started as the stage-1.7 scaffolding test, but spec-2.30 activates
+#    the local PCM state machine and expands dump_pcm from the 6-row
+#    stub surface to the active 20-row diagnostic surface.
 #
 #    Verifies the SQL surface backed by spec-1.7 Deliverable 4 (pcm
 #    category) + Deliverable 5 (4 PCM inject points, registry 24->28)
 #    + Deliverable 6 (catversion not bumped, STAGE_STEP=7).
 #
-#    Q4 user 修订 2026-05-02: 6 keys total (added pcm_grd_allocated_
-#    bytes + pcm_api_state to the 4-key plan).
+#    spec-2.30 updates cluster.pcm_grd_max_entries default to -1
+#    (NBuffers) and reports pcm_api_state=active unless explicitly
+#    disabled with 0.
 #
 #    Q6 user 修订 2026-05-02: 4 inject points named with -pre/-entry
 #    consistently (cluster-pcm-release-pre, NOT cluster-pcm-release-post,
@@ -24,8 +25,8 @@
 #    invocation as SQL would require pg_proc.dat changes -> catversion
 #    bump (which 1.7 explicitly avoids).
 #
-#    Q4 user 提议的 "TAP 显式小值 (cluster.pcm_grd_max_entries=1024)"
-#    测试推到 Stage 2.X PCM spec (本 TAP 仅默认 GUC=0 路径).
+#    The explicit small-value startup path remains covered by restarting
+#    with cluster.pcm_grd_max_entries=16.
 #
 # IDENTIFICATION
 #    src/test/cluster_tap/t/024_pcm_lock.pl
@@ -54,49 +55,48 @@ $node->start;
 
 
 # ----------
-# L1: pg_cluster_state.pcm category has 6 keys (Q4 user 修订: added
-# pcm_grd_allocated_bytes + pcm_api_state to the 4-key plan).
+# L1: pg_cluster_state.pcm category has 20 keys after spec-2.30
+# activates the state-machine diagnostics.
 # ----------
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE category='pcm'}),
-   '6',
-   'L1 pg_cluster_state.pcm category has 6 keys (Q4 修订: max_entries / allocated_bytes / active_entries / mode_count / transition_count / api_state)');
+   '20',
+   'L1 pg_cluster_state.pcm category has 20 keys (spec-2.30 active PCM surface)');
 
 
 # ----------
-# L2: pcm_grd_max_entries = 0 (Q4 default GUC).
+# L2: pcm_grd_max_entries = -1 (spec-2.30 default = NBuffers).
 # ----------
 is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category='pcm' AND key='pcm_grd_max_entries'}),
-   '0',
-   'L2 pcm_grd_max_entries = 0 (Q4 default GUC; no GRD shmem allocated)');
+   '-1',
+   'L2 pcm_grd_max_entries = -1 (spec-2.30 default maps to NBuffers)');
 
 
 # ----------
-# L3: pcm_grd_allocated_bytes = 0 (Q4 修订加; GUC=0 -> 0 bytes) +
-# pcm_grd_active_entries = 0 (no entries written by stub).
+# L3: pcm_grd_allocated_bytes > 0 (default -1 allocates NBuffers-sized
+# PCM GRD) + pcm_grd_active_entries = 0 before any production caller
+# touches the state machine.
 # ----------
-is($node->safe_psql(
+ok($node->safe_psql(
 		'postgres',
-		q{SELECT value FROM pg_cluster_state
-		   WHERE category='pcm' AND key='pcm_grd_allocated_bytes'}),
-   '0',
-   'L3a pcm_grd_allocated_bytes = 0 (Q4 修订加; default GUC=0 -> 0 bytes shmem)');
+		q{SELECT value::int > 0 FROM pg_cluster_state
+		   WHERE category='pcm' AND key='pcm_grd_allocated_bytes'}) eq 't',
+   'L3a pcm_grd_allocated_bytes > 0 (default -1 allocates PCM GRD shmem)');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category='pcm' AND key='pcm_grd_active_entries'}),
    '0',
-   'L3b pcm_grd_active_entries = 0 (stub never writes to GRD)');
+   'L3b pcm_grd_active_entries = 0 before any production caller populates entries');
 
 
 # ----------
-# L4: pcm_lock_mode_count = 3 / pcm_transition_count = 9 / pcm_api_state = "stub"
-# (Q4 修订关键诊断字段：让 DBA 一眼看到 PCM 还在 stub 状态).
+# L4: pcm_lock_mode_count = 3 / pcm_transition_count = 9 / pcm_api_state = "active".
 # ----------
 is($node->safe_psql(
 		'postgres',
@@ -108,8 +108,8 @@ is($node->safe_psql(
 		    || '|' ||
 		         (SELECT value FROM pg_cluster_state
 		           WHERE category='pcm' AND key='pcm_api_state')}),
-   '3|9|stub',
-   'L4 pcm_lock_mode_count=3, pcm_transition_count=9, pcm_api_state=stub (Q4 修订关键诊断字段)');
+   '3|9|active',
+   'L4 pcm_lock_mode_count=3, pcm_transition_count=9, pcm_api_state=active');
 
 
 # ----------
@@ -213,14 +213,14 @@ is($smoke_categories, '21', 'L9 cluster_smoke surface integrates pcm + lmon + lc
 
 
 # ----------
-# L10: GUC cluster.pcm_grd_max_entries default 0 / range [0, 1048576] /
+# L10: GUC cluster.pcm_grd_max_entries default -1 / range [-1, 1048576] /
 # PGC_POSTMASTER (cannot be SET at runtime).
 # ----------
 is($node->safe_psql(
 		'postgres',
 		q{SHOW cluster.pcm_grd_max_entries}),
-   '0',
-   'L10a cluster.pcm_grd_max_entries default 0 (Q4 user 修订)');
+   '-1',
+   'L10a cluster.pcm_grd_max_entries default -1 (spec-2.30 default-on)');
 
 # PGC_POSTMASTER means SET at session level should fail.
 my $stderr_l10;
@@ -233,22 +233,21 @@ like($stderr_l10, qr/cannot be (changed|set)/i,
 
 
 # ----------
-# L11: cluster.pcm_grd_max_entries=16 non-default path (codex 1.7
-# review P1 修订 2026-05-02; spec-1.X-cluster-smgr-hardening §1.3.1
-# finding #1).  GUC help explicitly says users may set non-zero to
-# verify shmem pre-allocation startup stability; it's a user-visible
-# path that must be in CI.  Restart with GUC=16 and verify:
+# L11: cluster.pcm_grd_max_entries=16 non-default path.  spec-2.30 HC62
+# requires an explicit positive value to cover NBuffers, so this restart
+# also lowers shared_buffers to 128kB (16 buffers).  This keeps the old
+# small-capacity smoke test valid without weakening the production
+# fail-closed rule.
 #   - postmaster starts cleanly
 #   - pg_cluster_shmem.cluster_pcm_grd shows size_bytes > 0
 #   - pg_cluster_state.pcm.pcm_grd_allocated_bytes > 0
-#   - pg_cluster_state.pcm.pcm_grd_active_entries = 0 (stub never
-#     populates entries, only allocates the array)
-#   - stub APIs still ereport ERRCODE_FEATURE_NOT_SUPPORTED on call
-#     (verified via inject framework -- shmem allocation does not
-#     change stub behavior).
+#   - pg_cluster_state.pcm.pcm_grd_active_entries = 0 before production
+#     callers populate entries
+#   - pcm_api_state = active with a positive explicit capacity.
 # ----------
 $node->stop;
-$node->append_conf('postgresql.conf', "cluster.pcm_grd_max_entries = 16\n");
+$node->append_conf('postgresql.conf',
+	"shared_buffers = 128kB\n" . "cluster.pcm_grd_max_entries = 16\n");
 $node->start;
 
 is($node->safe_psql('postgres', 'SHOW cluster.pcm_grd_max_entries'),
@@ -272,14 +271,14 @@ is($node->safe_psql(
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'pcm' AND key = 'pcm_grd_active_entries'}),
    '0',
-   'L11d pcm_grd_active_entries still 0 (stub never populates entries)');
+   'L11d pcm_grd_active_entries still 0 before production callers populate entries');
 
 is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'pcm' AND key = 'pcm_api_state'}),
-   'stub',
-   'L11e pcm_api_state still "stub" (allocation does not activate state machine)');
+   'active',
+   'L11e pcm_api_state is "active" with explicit positive capacity');
 
 
 $node->stop;
