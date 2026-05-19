@@ -107,7 +107,7 @@ typedef enum GcsBlockReplyStatus {
 	GCS_BLOCK_REPLY_DENIED_EPOCH_STALE = 4,
 	GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL = 5,
 	GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER = 6,
-	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7	/* PGRAC: spec-2.34 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7 /* PGRAC: spec-2.34 D1 NEW;
 											 * HC96 transient — sender 走 retry
 											 * path 同 timeout 语义,budget 耗尽
 											 * 才 ereport 53R90 */

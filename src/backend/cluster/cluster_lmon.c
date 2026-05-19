@@ -61,7 +61,7 @@
 #include "cluster/cluster_gcs.h"	   /* cluster_gcs_register_msg_types (spec-2.32 D4) */
 #include "cluster/cluster_gcs_block.h" /* cluster_gcs_register_block_msg_types (spec-2.33 D4) */
 #include "cluster/cluster_gcs_block_dedup.h" /* cluster_gcs_block_dedup_sweep_expired (spec-2.34 D6) */
-#include "cluster/cluster_grd.h"	   /* cluster_grd_lmon_tick_dead_sweep (spec-2.16 D8) */
+#include "cluster/cluster_grd.h"			 /* cluster_grd_lmon_tick_dead_sweep (spec-2.16 D8) */
 #include "cluster/cluster_lms.h" /* cluster_lms_owns_grant (spec-2.18 Sprint A Step 3 D8 HC4) */
 #include "cluster/cluster_native_lock_probe.h"
 #include "cluster/cluster_grd_outbound.h"

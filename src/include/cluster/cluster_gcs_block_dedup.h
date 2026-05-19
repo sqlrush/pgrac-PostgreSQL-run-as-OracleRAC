@@ -47,9 +47,9 @@
 #define CLUSTER_GCS_BLOCK_DEDUP_H
 
 #include "c.h"
-#include "cluster/cluster_gcs_block.h"		/* GcsBlockReplyHeader / status */
-#include "datatype/timestamp.h"				/* TimestampTz */
-#include "storage/buf_internals.h"			/* BufferTag */
+#include "cluster/cluster_gcs_block.h" /* GcsBlockReplyHeader / status */
+#include "datatype/timestamp.h"		   /* TimestampTz */
+#include "storage/buf_internals.h"	   /* BufferTag */
 
 #ifdef USE_PGRAC_CLUSTER
 
@@ -67,17 +67,15 @@
  *	small (HTAB partition lock friendly) while still preventing
  *	backend_id reuse + request_id reset from silent replay.
  * ============================================================ */
-typedef struct GcsBlockDedupKey
-{
-	uint32		origin_node_id;
-	int32		requester_backend_id;
-	uint64		request_id;
-	uint64		cluster_epoch;
+typedef struct GcsBlockDedupKey {
+	uint32 origin_node_id;
+	int32 requester_backend_id;
+	uint64 request_id;
+	uint64 cluster_epoch;
 } GcsBlockDedupKey;
 
-StaticAssertDecl(sizeof(GcsBlockDedupKey) == 24,
-				 "spec-2.34 D2 GcsBlockDedupKey 24B "
-				 "(origin 4 + backend 4 + req 8 + epoch 8)");
+StaticAssertDecl(sizeof(GcsBlockDedupKey) == 24, "spec-2.34 D2 GcsBlockDedupKey 24B "
+												 "(origin 4 + backend 4 + req 8 + epoch 8)");
 
 
 /* ============================================================
@@ -111,17 +109,16 @@ StaticAssertDecl(sizeof(GcsBlockDedupKey) == 24,
  *	crashed mid-reply, network drop before reply install) are also
  *	garbage-collected.
  * ============================================================ */
-typedef struct GcsBlockDedupEntry
-{
-	GcsBlockDedupKey key;					/* 24B — HTAB key */
-	BufferTag	tag;						/* 20B — HC91 collision check */
-	uint8		transition_id;				/*  1B — HC91 collision check */
-	uint8		status;						/*  1B — GcsBlockReplyStatus */
-	uint8		_pad0[10];					/* 10B — explicit pad; header @ 56 */
-	GcsBlockReplyHeader reply_header;		/* 48B — full reply header (HC99) */
-	char		block_data[GCS_BLOCK_DATA_SIZE]; /* 8192B — full page payload */
-	TimestampTz completed_at_ts;			/*  8B — TTL sweep replied */
-	TimestampTz registered_at_ts;			/*  8B — TTL sweep in-flight */
+typedef struct GcsBlockDedupEntry {
+	GcsBlockDedupKey key;				  /* 24B — HTAB key */
+	BufferTag tag;						  /* 20B — HC91 collision check */
+	uint8 transition_id;				  /*  1B — HC91 collision check */
+	uint8 status;						  /*  1B — GcsBlockReplyStatus */
+	uint8 _pad0[10];					  /* 10B — explicit pad; header @ 56 */
+	GcsBlockReplyHeader reply_header;	  /* 48B — full reply header (HC99) */
+	char block_data[GCS_BLOCK_DATA_SIZE]; /* 8192B — full page payload */
+	TimestampTz completed_at_ts;		  /*  8B — TTL sweep replied */
+	TimestampTz registered_at_ts;		  /*  8B — TTL sweep in-flight */
 } GcsBlockDedupEntry;
 
 StaticAssertDecl(sizeof(GcsBlockDedupEntry) == 8312,
@@ -150,8 +147,7 @@ StaticAssertDecl(sizeof(GcsBlockDedupEntry) == 8312,
  *	                      DENIED_DEDUP_FULL (sender retries via
  *	                      HC96 transient path).
  * ============================================================ */
-typedef enum GcsBlockDedupResult
-{
+typedef enum GcsBlockDedupResult {
 	GCS_BLOCK_DEDUP_MISS_REGISTERED = 0,
 	GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE = 1,
 	GCS_BLOCK_DEDUP_CACHED_REPLY = 2,
@@ -177,10 +173,10 @@ typedef enum GcsBlockDedupResult
  *	as this function releases the dedup lock, so CACHED_REPLY must be
  *	replayed from the copied entry.
  */
-extern GcsBlockDedupResult cluster_gcs_block_dedup_lookup_or_register(
-	const GcsBlockDedupKey *key,
-	BufferTag tag, uint8 transition_id,
-	GcsBlockDedupEntry *cached_reply_out);
+extern GcsBlockDedupResult
+cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key, BufferTag tag,
+										   uint8 transition_id,
+										   GcsBlockDedupEntry *cached_reply_out);
 
 /*
  * Register the local backend cleanup hook.  This must be called from
@@ -197,11 +193,10 @@ extern void cluster_gcs_block_dedup_register_backend_exit_hook(void);
  *	block_data may be NULL for non-GRANTED status; the entry's block_data
  *	field is zero-filled in that case.
  */
-extern void cluster_gcs_block_dedup_install_reply(
-	const GcsBlockDedupKey *key,
-	GcsBlockReplyStatus status,
-	const GcsBlockReplyHeader *header,
-	const char *block_data);
+extern void cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key,
+												  GcsBlockReplyStatus status,
+												  const GcsBlockReplyHeader *header,
+												  const char *block_data);
 
 /* Remove a specific entry by key (rare path; mostly used by tests). */
 extern void cluster_gcs_block_dedup_remove(const GcsBlockDedupKey *key);
@@ -233,8 +228,8 @@ extern void cluster_gcs_block_dedup_sweep_expired(TimestampTz now);
  * backend exits on remote) is NOT handled here; those entries are
  * reclaimed by TTL or by cleanup_on_node_dead.
  */
-extern void cluster_gcs_block_dedup_cleanup_on_backend_exit(
-	uint32 origin_node_id, int32 backend_id);
+extern void cluster_gcs_block_dedup_cleanup_on_backend_exit(uint32 origin_node_id,
+															int32 backend_id);
 
 /*
  * cluster_gcs_block_dedup_cleanup_on_node_dead — called from spec-2.29

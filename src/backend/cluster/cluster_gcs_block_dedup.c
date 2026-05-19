@@ -54,14 +54,13 @@
  * Module-scope shmem state.
  * ============================================================ */
 
-typedef struct ClusterGcsBlockDedupShared
-{
-	LWLockPadded lock;					/* guards HTAB + entry_count */
-	pg_atomic_uint64 hit_count;			/* CACHED_REPLY paths */
-	pg_atomic_uint64 miss_count;		/* MISS_REGISTERED paths */
-	pg_atomic_uint64 collision_count;	/* HC91 VALIDATION_FAIL */
-	pg_atomic_uint64 full_count;		/* HC92 FULL */
-	pg_atomic_uint32 entry_count;		/* live in-flight + completed entries */
+typedef struct ClusterGcsBlockDedupShared {
+	LWLockPadded lock;				  /* guards HTAB + entry_count */
+	pg_atomic_uint64 hit_count;		  /* CACHED_REPLY paths */
+	pg_atomic_uint64 miss_count;	  /* MISS_REGISTERED paths */
+	pg_atomic_uint64 collision_count; /* HC91 VALIDATION_FAIL */
+	pg_atomic_uint64 full_count;	  /* HC92 FULL */
+	pg_atomic_uint32 entry_count;	  /* live in-flight + completed entries */
 } ClusterGcsBlockDedupShared;
 
 static ClusterGcsBlockDedupShared *cluster_gcs_block_dedup_shared = NULL;
@@ -76,12 +75,10 @@ static bool dedup_backend_exit_hook_registered = false;
 Size
 cluster_gcs_block_dedup_shmem_size(void)
 {
-	Size		sz;
-	int			cap;
+	Size sz;
+	int cap;
 
-	cap = cluster_gcs_block_dedup_max_entries > 0
-		? cluster_gcs_block_dedup_max_entries
-		: 1024;
+	cap = cluster_gcs_block_dedup_max_entries > 0 ? cluster_gcs_block_dedup_max_entries : 1024;
 
 	sz = MAXALIGN(sizeof(ClusterGcsBlockDedupShared));
 	sz = add_size(sz, hash_estimate_size(cap, sizeof(GcsBlockDedupEntry)));
@@ -91,18 +88,15 @@ cluster_gcs_block_dedup_shmem_size(void)
 void
 cluster_gcs_block_dedup_shmem_init(void)
 {
-	bool		found;
-	HASHCTL		info;
-	int			cap;
+	bool found;
+	HASHCTL info;
+	int cap;
 
-	cluster_gcs_block_dedup_shared = (ClusterGcsBlockDedupShared *)
-		ShmemInitStruct("pgrac cluster gcs block dedup",
-						MAXALIGN(sizeof(ClusterGcsBlockDedupShared)), &found);
+	cluster_gcs_block_dedup_shared = (ClusterGcsBlockDedupShared *)ShmemInitStruct(
+		"pgrac cluster gcs block dedup", MAXALIGN(sizeof(ClusterGcsBlockDedupShared)), &found);
 
-	if (!found)
-	{
-		memset(cluster_gcs_block_dedup_shared, 0,
-			   sizeof(*cluster_gcs_block_dedup_shared));
+	if (!found) {
+		memset(cluster_gcs_block_dedup_shared, 0, sizeof(*cluster_gcs_block_dedup_shared));
 		LWLockInitialize(&cluster_gcs_block_dedup_shared->lock.lock,
 						 LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP);
 		pg_atomic_init_u64(&cluster_gcs_block_dedup_shared->hit_count, 0);
@@ -112,17 +106,14 @@ cluster_gcs_block_dedup_shmem_init(void)
 		pg_atomic_init_u32(&cluster_gcs_block_dedup_shared->entry_count, 0);
 	}
 
-	cap = cluster_gcs_block_dedup_max_entries > 0
-		? cluster_gcs_block_dedup_max_entries
-		: 1024;
+	cap = cluster_gcs_block_dedup_max_entries > 0 ? cluster_gcs_block_dedup_max_entries : 1024;
 
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(GcsBlockDedupKey);
 	info.entrysize = sizeof(GcsBlockDedupEntry);
 
-	cluster_gcs_block_dedup_htab
-		= ShmemInitHash("pgrac cluster gcs block dedup htab",
-						cap, cap, &info, HASH_ELEM | HASH_BLOBS);
+	cluster_gcs_block_dedup_htab = ShmemInitHash("pgrac cluster gcs block dedup htab", cap, cap,
+												 &info, HASH_ELEM | HASH_BLOBS);
 }
 
 static const ClusterShmemRegion cluster_gcs_block_dedup_region = {
@@ -147,13 +138,11 @@ cluster_gcs_block_dedup_module_init(void)
  * ============================================================ */
 
 static void
-dedup_backend_exit_callback(int code pg_attribute_unused(),
-							Datum arg pg_attribute_unused())
+dedup_backend_exit_callback(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
 {
 	if (cluster_node_id < 0 || MyBackendId <= 0)
 		return;
-	cluster_gcs_block_dedup_cleanup_on_backend_exit((uint32) cluster_node_id,
-													(int32) MyBackendId);
+	cluster_gcs_block_dedup_cleanup_on_backend_exit((uint32)cluster_node_id, (int32)MyBackendId);
 }
 
 void
@@ -162,10 +151,10 @@ cluster_gcs_block_dedup_register_backend_exit_hook(void)
 	if (dedup_backend_exit_hook_registered)
 		return;
 	if (!IsUnderPostmaster)
-		return;					/* only meaningful in backends */
+		return; /* only meaningful in backends */
 	if (MyBackendId <= 0)
-		return;					/* auxiliary processes do not own backend ids */
-	before_shmem_exit(dedup_backend_exit_callback, (Datum) 0);
+		return; /* auxiliary processes do not own backend ids */
+	before_shmem_exit(dedup_backend_exit_callback, (Datum)0);
 	dedup_backend_exit_hook_registered = true;
 }
 
@@ -175,12 +164,12 @@ cluster_gcs_block_dedup_register_backend_exit_hook(void)
  * ============================================================ */
 
 GcsBlockDedupResult
-cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
-										   BufferTag tag, uint8 transition_id,
+cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key, BufferTag tag,
+										   uint8 transition_id,
 										   GcsBlockDedupEntry *cached_reply_out)
 {
 	GcsBlockDedupEntry *entry;
-	bool		found;
+	bool found;
 	GcsBlockDedupResult result;
 
 	Assert(key != NULL);
@@ -188,26 +177,22 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 		memset(cached_reply_out, 0, sizeof(*cached_reply_out));
 
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
-		return GCS_BLOCK_DEDUP_FULL;	/* not initialized; fail closed */
+		return GCS_BLOCK_DEDUP_FULL; /* not initialized; fail closed */
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 
-	entry = (GcsBlockDedupEntry *) hash_search(cluster_gcs_block_dedup_htab,
-											   key, HASH_FIND, &found);
+	entry = (GcsBlockDedupEntry *)hash_search(cluster_gcs_block_dedup_htab, key, HASH_FIND, &found);
 
-	if (found)
-	{
+	if (found) {
 		/* HC91 — entry value collision check */
 		if (memcmp(&entry->tag, &tag, sizeof(BufferTag)) != 0
-			|| entry->transition_id != transition_id)
-		{
+			|| entry->transition_id != transition_id) {
 			pg_atomic_fetch_add_u64(&cluster_gcs_block_dedup_shared->collision_count, 1);
 			LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 			return GCS_BLOCK_DEDUP_VALIDATION_FAIL;
 		}
 
-		if (entry->completed_at_ts == 0)
-		{
+		if (entry->completed_at_ts == 0) {
 			LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 			return GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE;
 		}
@@ -221,17 +206,16 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 
 	/* MISS path — insert new in-flight slot.  HASH_ENTER_NULL → may fail
 	 * with cap reached; convert to FULL fail-closed (HC92). */
-	entry = (GcsBlockDedupEntry *) hash_search(cluster_gcs_block_dedup_htab,
-											   key, HASH_ENTER_NULL, &found);
-	if (entry == NULL)
-	{
+	entry = (GcsBlockDedupEntry *)hash_search(cluster_gcs_block_dedup_htab, key, HASH_ENTER_NULL,
+											  &found);
+	if (entry == NULL) {
 		pg_atomic_fetch_add_u64(&cluster_gcs_block_dedup_shared->full_count, 1);
 		LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 		return GCS_BLOCK_DEDUP_FULL;
 	}
 
 	/* Reset entry to clean in-flight state. */
-	memset(((char *) entry) + sizeof(GcsBlockDedupKey), 0,
+	memset(((char *)entry) + sizeof(GcsBlockDedupKey), 0,
 		   sizeof(GcsBlockDedupEntry) - sizeof(GcsBlockDedupKey));
 	entry->tag = tag;
 	entry->transition_id = transition_id;
@@ -248,13 +232,11 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 }
 
 void
-cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key,
-									  GcsBlockReplyStatus status,
-									  const GcsBlockReplyHeader *header,
-									  const char *block_data)
+cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key, GcsBlockReplyStatus status,
+									  const GcsBlockReplyHeader *header, const char *block_data)
 {
 	GcsBlockDedupEntry *entry;
-	bool		found;
+	bool found;
 
 	Assert(key != NULL);
 	Assert(header != NULL);
@@ -264,10 +246,8 @@ cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key,
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 
-	entry = (GcsBlockDedupEntry *) hash_search(cluster_gcs_block_dedup_htab,
-											   key, HASH_FIND, &found);
-	if (!found)
-	{
+	entry = (GcsBlockDedupEntry *)hash_search(cluster_gcs_block_dedup_htab, key, HASH_FIND, &found);
+	if (!found) {
 		/* Entry got swept between MISS_REGISTERED and install_reply
 		 * (rare:  TTL sweep + reconfig race).  Drop silently — the
 		 * sender will eventually time out and retry. */
@@ -275,7 +255,7 @@ cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key,
 		return;
 	}
 
-	entry->status = (uint8) status;
+	entry->status = (uint8)status;
 	entry->reply_header = *header;
 	if (block_data != NULL && status == GCS_BLOCK_REPLY_GRANTED)
 		memcpy(entry->block_data, block_data, GCS_BLOCK_DATA_SIZE);
@@ -289,14 +269,14 @@ cluster_gcs_block_dedup_install_reply(const GcsBlockDedupKey *key,
 void
 cluster_gcs_block_dedup_remove(const GcsBlockDedupKey *key)
 {
-	bool		found;
+	bool found;
 
 	Assert(key != NULL);
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
 		return;
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
-	(void) hash_search(cluster_gcs_block_dedup_htab, key, HASH_REMOVE, &found);
+	(void)hash_search(cluster_gcs_block_dedup_htab, key, HASH_REMOVE, &found);
 	if (found)
 		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count, 1);
 	LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
@@ -318,23 +298,23 @@ cluster_gcs_block_dedup_remove(const GcsBlockDedupKey *key)
 static int64
 dedup_expiry_threshold_us(void)
 {
-	int64		initial_ms;
-	int			max_retries;
-	int64		total_backoff_ms;
+	int64 initial_ms;
+	int max_retries;
+	int64 total_backoff_ms;
 
 	initial_ms = cluster_gcs_block_retransmit_initial_backoff_ms > 0
-		? cluster_gcs_block_retransmit_initial_backoff_ms
-		: 100;
+					 ? cluster_gcs_block_retransmit_initial_backoff_ms
+					 : 100;
 	max_retries = cluster_gcs_block_retransmit_max_retries >= 0
-		? cluster_gcs_block_retransmit_max_retries
-		: 4;
+					  ? cluster_gcs_block_retransmit_max_retries
+					  : 4;
 
 	/* total = initial × (2^max_retries - 1);  pin small max_retries to
 	 * keep arithmetic in int64. */
 	if (max_retries > 30)
 		max_retries = 30;
-	total_backoff_ms = initial_ms * ((int64) ((1u << max_retries) - 1));
-	return total_backoff_ms * 1000 * 2;	/* × 2 safety margin (HC93) */
+	total_backoff_ms = initial_ms * ((int64)((1u << max_retries) - 1));
+	return total_backoff_ms * 1000 * 2; /* × 2 safety margin (HC93) */
 }
 
 void
@@ -342,8 +322,8 @@ cluster_gcs_block_dedup_sweep_expired(TimestampTz now)
 {
 	HASH_SEQ_STATUS seq;
 	GcsBlockDedupEntry *entry;
-	int64		threshold_us;
-	int			removed = 0;
+	int64 threshold_us;
+	int removed = 0;
 
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
 		return;
@@ -353,59 +333,48 @@ cluster_gcs_block_dedup_sweep_expired(TimestampTz now)
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 
 	hash_seq_init(&seq, cluster_gcs_block_dedup_htab);
-	while ((entry = (GcsBlockDedupEntry *) hash_seq_search(&seq)) != NULL)
-	{
+	while ((entry = (GcsBlockDedupEntry *)hash_seq_search(&seq)) != NULL) {
 		TimestampTz anchor;
-		int64		age_us;
+		int64 age_us;
 
-		anchor = entry->completed_at_ts != 0
-			? entry->completed_at_ts
-			: entry->registered_at_ts;
+		anchor = entry->completed_at_ts != 0 ? entry->completed_at_ts : entry->registered_at_ts;
 		if (anchor == 0)
 			continue;
 
-		age_us = (int64) (now - anchor);
-		if (age_us > threshold_us)
-		{
-			(void) hash_search(cluster_gcs_block_dedup_htab, &entry->key,
-							   HASH_REMOVE, NULL);
+		age_us = (int64)(now - anchor);
+		if (age_us > threshold_us) {
+			(void)hash_search(cluster_gcs_block_dedup_htab, &entry->key, HASH_REMOVE, NULL);
 			removed++;
 		}
 	}
 
 	if (removed > 0)
-		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count,
-								(uint32) removed);
+		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count, (uint32)removed);
 
 	LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 }
 
 void
-cluster_gcs_block_dedup_cleanup_on_backend_exit(uint32 origin_node_id,
-												int32 backend_id)
+cluster_gcs_block_dedup_cleanup_on_backend_exit(uint32 origin_node_id, int32 backend_id)
 {
 	HASH_SEQ_STATUS seq;
 	GcsBlockDedupEntry *entry;
-	int			removed = 0;
+	int removed = 0;
 
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
 		return;
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 	hash_seq_init(&seq, cluster_gcs_block_dedup_htab);
-	while ((entry = (GcsBlockDedupEntry *) hash_seq_search(&seq)) != NULL)
-	{
+	while ((entry = (GcsBlockDedupEntry *)hash_seq_search(&seq)) != NULL) {
 		if (entry->key.origin_node_id == origin_node_id
-			&& entry->key.requester_backend_id == backend_id)
-		{
-			(void) hash_search(cluster_gcs_block_dedup_htab, &entry->key,
-							   HASH_REMOVE, NULL);
+			&& entry->key.requester_backend_id == backend_id) {
+			(void)hash_search(cluster_gcs_block_dedup_htab, &entry->key, HASH_REMOVE, NULL);
 			removed++;
 		}
 	}
 	if (removed > 0)
-		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count,
-								(uint32) removed);
+		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count, (uint32)removed);
 	LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 }
 
@@ -414,25 +383,21 @@ cluster_gcs_block_dedup_cleanup_on_node_dead(uint32 node_id)
 {
 	HASH_SEQ_STATUS seq;
 	GcsBlockDedupEntry *entry;
-	int			removed = 0;
+	int removed = 0;
 
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
 		return;
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 	hash_seq_init(&seq, cluster_gcs_block_dedup_htab);
-	while ((entry = (GcsBlockDedupEntry *) hash_seq_search(&seq)) != NULL)
-	{
-		if (entry->key.origin_node_id == node_id)
-		{
-			(void) hash_search(cluster_gcs_block_dedup_htab, &entry->key,
-							   HASH_REMOVE, NULL);
+	while ((entry = (GcsBlockDedupEntry *)hash_seq_search(&seq)) != NULL) {
+		if (entry->key.origin_node_id == node_id) {
+			(void)hash_search(cluster_gcs_block_dedup_htab, &entry->key, HASH_REMOVE, NULL);
 			removed++;
 		}
 	}
 	if (removed > 0)
-		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count,
-								(uint32) removed);
+		pg_atomic_fetch_sub_u32(&cluster_gcs_block_dedup_shared->entry_count, (uint32)removed);
 	LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 }
 
@@ -445,41 +410,41 @@ uint64
 cluster_gcs_block_dedup_get_hit_count(void)
 {
 	return cluster_gcs_block_dedup_shared
-		? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->hit_count)
-		: 0;
+			   ? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->hit_count)
+			   : 0;
 }
 
 uint64
 cluster_gcs_block_dedup_get_miss_count(void)
 {
 	return cluster_gcs_block_dedup_shared
-		? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->miss_count)
-		: 0;
+			   ? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->miss_count)
+			   : 0;
 }
 
 uint64
 cluster_gcs_block_dedup_get_collision_count(void)
 {
 	return cluster_gcs_block_dedup_shared
-		? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->collision_count)
-		: 0;
+			   ? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->collision_count)
+			   : 0;
 }
 
 uint64
 cluster_gcs_block_dedup_get_full_count(void)
 {
 	return cluster_gcs_block_dedup_shared
-		? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->full_count)
-		: 0;
+			   ? pg_atomic_read_u64(&cluster_gcs_block_dedup_shared->full_count)
+			   : 0;
 }
 
 uint64
 cluster_gcs_block_dedup_get_in_flight_count(void)
 {
 	return cluster_gcs_block_dedup_shared
-		? (uint64) pg_atomic_read_u32(&cluster_gcs_block_dedup_shared->entry_count)
-		: 0;
+			   ? (uint64)pg_atomic_read_u32(&cluster_gcs_block_dedup_shared->entry_count)
+			   : 0;
 }
 
 
-#endif							/* USE_PGRAC_CLUSTER */
+#endif /* USE_PGRAC_CLUSTER */

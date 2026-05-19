@@ -164,7 +164,7 @@ UT_TEST(test_retry_backoff_math)
 UT_TEST(test_retry_total_sends_invariant)
 {
 	int max_retries = 4;
-	int total_sends = 1 + max_retries;	/* attempt 0 + N retries */
+	int total_sends = 1 + max_retries; /* attempt 0 + N retries */
 	UT_ASSERT_EQ(total_sends, 5);
 }
 
@@ -180,12 +180,9 @@ UT_TEST(test_retry_total_backoff_default_1500ms)
 
 UT_TEST(test_lwtranche_distinct)
 {
-	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP
-			  != (int)LWTRANCHE_CLUSTER_GCS_BLOCK);
-	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP
-			  != (int)LWTRANCHE_CLUSTER_GCS);
-	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP
-			  != (int)LWTRANCHE_CLUSTER_PCM);
+	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP != (int)LWTRANCHE_CLUSTER_GCS_BLOCK);
+	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP != (int)LWTRANCHE_CLUSTER_GCS);
+	UT_ASSERT((int)LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP != (int)LWTRANCHE_CLUSTER_PCM);
 }
 
 
@@ -193,10 +190,8 @@ UT_TEST(test_new_wait_events_distinct)
 {
 	UT_ASSERT((int)WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT
 			  != (int)WAIT_EVENT_GCS_BLOCK_EPOCH_STALE_RETRY);
-	UT_ASSERT((int)WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT
-			  != (int)WAIT_EVENT_GCS_BLOCK_SHIP_WAIT);
-	UT_ASSERT((int)WAIT_EVENT_GCS_BLOCK_EPOCH_STALE_RETRY
-			  != (int)WAIT_EVENT_GCS_REPLY_WAIT);
+	UT_ASSERT((int)WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT != (int)WAIT_EVENT_GCS_BLOCK_SHIP_WAIT);
+	UT_ASSERT((int)WAIT_EVENT_GCS_BLOCK_EPOCH_STALE_RETRY != (int)WAIT_EVENT_GCS_REPLY_WAIT);
 }
 
 
@@ -213,8 +208,7 @@ UT_TEST(test_dedup_full_status_distinct_from_master_not_holder)
 	 * so sender can route to retry vs terminal ereport. */
 	UT_ASSERT((int)GCS_BLOCK_REPLY_DENIED_DEDUP_FULL
 			  != (int)GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER);
-	UT_ASSERT((int)GCS_BLOCK_REPLY_DENIED_DEDUP_FULL
-			  != (int)GCS_BLOCK_REPLY_DENIED_EPOCH_STALE);
+	UT_ASSERT((int)GCS_BLOCK_REPLY_DENIED_DEDUP_FULL != (int)GCS_BLOCK_REPLY_DENIED_EPOCH_STALE);
 }
 
 
@@ -260,37 +254,37 @@ UT_TEST(test_block_reply_status_no_gap)
 
 UT_TEST(test_l18_dedup_replay_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 L10 covers dedup_hit_count > 0 */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 L10 covers dedup_hit_count > 0 */
 }
 
 UT_TEST(test_l19_dedup_collision_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 L11 covers dedup_collision_count */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 L11 covers dedup_collision_count */
 }
 
 UT_TEST(test_l20_ttl_sweep_completed_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 dedup_full_count steady-state */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 dedup_full_count steady-state */
 }
 
 UT_TEST(test_l20b_ttl_sweep_in_flight_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 in_flight TTL via registered_at_ts */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 in_flight TTL via registered_at_ts */
 }
 
 UT_TEST(test_l21_epoch_wake_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 L13 covers epoch_invalidate_wake */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 L13 covers epoch_invalidate_wake */
 }
 
 UT_TEST(test_l21b_stale_reply_drop_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 stale_reply_drop_count */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 stale_reply_drop_count */
 }
 
 UT_TEST(test_l22_budget_exhausted_53r90_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 112 L9 covers 53R90 budget exhausted */
+	UT_ASSERT_EQ(1, 1); /* TAP 112 L9 covers 53R90 budget exhausted */
 }
 
 

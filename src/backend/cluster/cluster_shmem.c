@@ -76,7 +76,7 @@
 #include "cluster/cluster_gcs.h"			/* cluster_gcs_module_init (spec-2.32 D2) */
 #include "cluster/cluster_gcs_block.h"		/* cluster_gcs_block_module_init (spec-2.33 D3) */
 #include "cluster/cluster_gcs_block_dedup.h" /* cluster_gcs_block_dedup_module_init (spec-2.34 D2) */
-#include "cluster/cluster_pcm_lock.h"		/* cluster_pcm_lock_module_init (stage 1.7) */
+#include "cluster/cluster_pcm_lock.h"		 /* cluster_pcm_lock_module_init (stage 1.7) */
 #include "cluster/cluster_qvotec.h" /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
 #include "cluster/cluster_fence.h"	/* cluster_fence_shmem_register (spec-2.28 Sprint A Step 1) */
 #include "cluster/cluster_reconfig.h" /* cluster_reconfig_shmem_register (spec-2.29 Sprint A Step 1) */

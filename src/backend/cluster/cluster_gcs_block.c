@@ -44,7 +44,7 @@
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_gcs.h"
 #include "cluster/cluster_gcs_block.h"
-#include "cluster/cluster_gcs_block_dedup.h"	/* spec-2.34 D1 — counter forward */
+#include "cluster/cluster_gcs_block_dedup.h" /* spec-2.34 D1 — counter forward */
 #include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
@@ -226,7 +226,7 @@ cluster_gcs_block_shmem_init(void)
 				slot->in_use = false;
 				slot->request_id = 0;
 				slot->reply_received = false;
-				slot->request_epoch = 0;	/* spec-2.34 HC100 */
+				slot->request_epoch = 0; /* spec-2.34 HC100 */
 				slot->expected_master_node = -1;
 				slot->stale = false;
 				ConditionVariableInit(&slot->reply_cv);
@@ -320,7 +320,7 @@ gcs_block_release_slot(ClusterGcsBlockOutstandingSlot *slot)
 	slot->request_id = 0;
 	slot->transition_id = 0;
 	slot->master_node = -1;
-	slot->request_epoch = 0;	/* spec-2.34 HC100 */
+	slot->request_epoch = 0; /* spec-2.34 HC100 */
 	slot->expected_master_node = -1;
 	slot->stale = false;
 	LWLockRelease(&blk->lock.lock);
@@ -397,18 +397,18 @@ gcs_block_install_block(BufferDesc *buf, const char *block_data, XLogRecPtr page
 static long
 gcs_block_backoff_ms_for_retry(int retry_attempt)
 {
-	long		base;
-	long		shift;
+	long base;
+	long shift;
 
 	if (retry_attempt < 1)
 		return 0;
 	base = cluster_gcs_block_retransmit_initial_backoff_ms > 0
-		? (long) cluster_gcs_block_retransmit_initial_backoff_ms
-		: 100L;
+			   ? (long)cluster_gcs_block_retransmit_initial_backoff_ms
+			   : 100L;
 	/* attempt 1 → ×1, attempt 2 → ×2, attempt 3 → ×4, attempt 4 → ×8 ... */
 	shift = retry_attempt - 1;
 	if (shift > 16)
-		shift = 16;				/* defend against pathological max_retries */
+		shift = 16; /* defend against pathological max_retries */
 	return base * (1L << shift);
 }
 
@@ -417,18 +417,18 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 										int master_node)
 {
 	ClusterGcsBlockOutstandingSlot *slot;
-	uint64		request_id = 0;
+	uint64 request_id = 0;
 	GcsBlockRequestPayload payload;
-	BufferTag	tag;
-	bool		granted = false;
-	bool		granted_storage_fallback = false;
-	bool		terminal_denied = false;
-	bool		retransmit_warning_emitted = false;
-	uint8		final_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
-	XLogRecPtr	final_page_lsn = InvalidXLogRecPtr;
-	int			retry_attempt;
-	int			max_retries;
-	int			current_master;
+	BufferTag tag;
+	bool granted = false;
+	bool granted_storage_fallback = false;
+	bool terminal_denied = false;
+	bool retransmit_warning_emitted = false;
+	uint8 final_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
+	XLogRecPtr final_page_lsn = InvalidXLogRecPtr;
+	int retry_attempt;
+	int max_retries;
+	int current_master;
 
 	if (buf == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
@@ -445,46 +445,40 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 	slot = gcs_block_reserve_slot(tag, (uint8)transition_id, current_master, &request_id);
 
 	max_retries = cluster_gcs_block_retransmit_max_retries >= 0
-		? cluster_gcs_block_retransmit_max_retries
-		: 4;
+					  ? cluster_gcs_block_retransmit_max_retries
+					  : 4;
 
 	PG_TRY();
 	{
-		for (retry_attempt = 0; retry_attempt <= max_retries; retry_attempt++)
-		{
+		for (retry_attempt = 0; retry_attempt <= max_retries; retry_attempt++) {
 			TimestampTz deadline;
-			bool		got_reply = false;
+			bool got_reply = false;
 
 			/* Apply backoff for retry attempts (not the initial send). */
-			if (retry_attempt > 0)
-			{
-				long		backoff_ms;
+			if (retry_attempt > 0) {
+				long backoff_ms;
 
 				backoff_ms = gcs_block_backoff_ms_for_retry(retry_attempt);
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->retransmit_attempt_count, 1);
-				(void) WaitLatch(MyLatch, WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-								 backoff_ms, WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT);
+				(void)WaitLatch(MyLatch, WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, backoff_ms,
+								WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT);
 				ResetLatch(MyLatch);
 
 				/* Budget 3/4 WARNING (mirrors spec-2.27 pattern).  Skip if
 				 * max_retries < 4 so the warning never appears under
 				 * disabled-retry configs. */
-				if (!retransmit_warning_emitted
-					&& max_retries >= 4
-					&& retry_attempt == max_retries - 1)
-				{
+				if (!retransmit_warning_emitted && max_retries >= 4
+					&& retry_attempt == max_retries - 1) {
 					ereport(WARNING,
 							(errcode(ERRCODE_WARNING),
 							 errmsg("cluster_gcs_block: retransmit budget 3/4 for tag "
 									"spc=%u db=%u relNumber=%u block=%u",
-									tag.spcOid, tag.dbOid,
-									(unsigned int) BufTagGetRelNumber(&tag),
-									(unsigned int) tag.blockNum),
+									tag.spcOid, tag.dbOid, (unsigned int)BufTagGetRelNumber(&tag),
+									(unsigned int)tag.blockNum),
 							 errhint("Consider raising cluster.gcs_block_retransmit_max_retries "
 									 "or investigating peer GCS responsiveness.")));
 					retransmit_warning_emitted = true;
 				}
-
 			}
 
 			/* Always rebuild payload with the current cluster_epoch so
@@ -494,8 +488,8 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			payload.epoch = cluster_epoch_get_current();
 			payload.tag = tag;
 			payload.sender_node = cluster_node_id;
-			payload.requester_backend_id = (int32) MyBackendId;	/* HC80 */
-			payload.transition_id = (uint8) transition_id;
+			payload.requester_backend_id = (int32)MyBackendId; /* HC80 */
+			payload.transition_id = (uint8)transition_id;
 
 			/* PGRAC: spec-2.34 HC100 — install the next attempt identity
 			 * and clear any previous reply in a single critical section.
@@ -519,33 +513,30 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			else
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->retransmit_send_count, 1);
 
-			if (!cluster_grd_outbound_enqueue_backend_msg(
-					PGRAC_IC_MSG_GCS_BLOCK_REQUEST, (uint32) current_master,
-					&payload, sizeof(payload)))
-				ereport(ERROR,
-						(errcode(ERRCODE_CONNECTION_FAILURE),
-						 errmsg("cluster_gcs_block: failed to enqueue "
-								"GCS_BLOCK_REQUEST to node %d",
-								current_master)));
+			if (!cluster_grd_outbound_enqueue_backend_msg(PGRAC_IC_MSG_GCS_BLOCK_REQUEST,
+														  (uint32)current_master, &payload,
+														  sizeof(payload)))
+				ereport(ERROR, (errcode(ERRCODE_CONNECTION_FAILURE),
+								errmsg("cluster_gcs_block: failed to enqueue "
+									   "GCS_BLOCK_REQUEST to node %d",
+									   current_master)));
 
 			deadline = GetCurrentTimestamp()
-				+ ((TimestampTz) cluster_gcs_reply_timeout_ms) * (TimestampTz) 1000;
+					   + ((TimestampTz)cluster_gcs_reply_timeout_ms) * (TimestampTz)1000;
 
 			ConditionVariablePrepareToSleep(&slot->reply_cv);
-			for (;;)
-			{
+			for (;;) {
 				TimestampTz now;
-				long		timeout_ms;
+				long timeout_ms;
 				ClusterGcsBlockBackendBlock *blk = gcs_block_my_block();
-				bool		have_reply;
-				bool		slot_stale;
+				bool have_reply;
+				bool slot_stale;
 
 				LWLockAcquire(&blk->lock.lock, LW_SHARED);
 				have_reply = slot->in_use && slot->reply_received;
 				slot_stale = slot->in_use && slot->stale;
 				LWLockRelease(&blk->lock.lock);
-				if (have_reply)
-				{
+				if (have_reply) {
 					got_reply = true;
 					break;
 				}
@@ -557,29 +548,26 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 					break;
 
 				now = GetCurrentTimestamp();
-				if (now >= deadline)
-				{
+				if (now >= deadline) {
 					pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_timeout_count, 1);
 					break;
 				}
-				timeout_ms = (long) ((deadline - now) / 1000);
+				timeout_ms = (long)((deadline - now) / 1000);
 				if (timeout_ms <= 0)
 					timeout_ms = 1;
-				(void) ConditionVariableTimedSleep(&slot->reply_cv, timeout_ms,
-												   WAIT_EVENT_GCS_BLOCK_SHIP_WAIT);
+				(void)ConditionVariableTimedSleep(&slot->reply_cv, timeout_ms,
+												  WAIT_EVENT_GCS_BLOCK_SHIP_WAIT);
 			}
 			ConditionVariableCancelSleep();
 
-			if (!got_reply)
-			{
+			if (!got_reply) {
 				/* timeout OR eager wake — retry within budget */
-				if (retry_attempt < max_retries)
-				{
+				if (retry_attempt < max_retries) {
 					/* If we were waken by eager hook (slot.stale), advance
 					 * the master via re-lookup so the next retry honors
 					 * the new epoch's hash placement (HC94). */
 					ClusterGcsBlockBackendBlock *blk = gcs_block_my_block();
-					bool		was_stale;
+					bool was_stale;
 
 					LWLockAcquire(&blk->lock.lock, LW_EXCLUSIVE);
 					was_stale = slot->stale;
@@ -594,15 +582,13 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			}
 
 			final_status = slot->reply_header.status;
-			final_page_lsn = (XLogRecPtr) slot->reply_header.page_lsn;
+			final_page_lsn = (XLogRecPtr)slot->reply_header.page_lsn;
 
-			if (final_status == GCS_BLOCK_REPLY_GRANTED)
-			{
-				uint32		expected = slot->reply_header.checksum;
-				uint32		got = gcs_block_compute_checksum(slot->reply_block_data);
+			if (final_status == GCS_BLOCK_REPLY_GRANTED) {
+				uint32 expected = slot->reply_header.checksum;
+				uint32 got = gcs_block_compute_checksum(slot->reply_block_data);
 
-				if (expected != got)
-				{
+				if (expected != got) {
 					pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_checksum_fail_count, 1);
 					final_status = GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL;
 					terminal_denied = true;
@@ -612,16 +598,14 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 				granted = true;
 				break;
 			}
-			if (final_status == GCS_BLOCK_REPLY_GRANTED_STORAGE_FALLBACK)
-			{
+			if (final_status == GCS_BLOCK_REPLY_GRANTED_STORAGE_FALLBACK) {
 				granted_storage_fallback = true;
 				break;
 			}
 
 			/* DENIED paths — decide terminal vs retryable. */
 			if (final_status == GCS_BLOCK_REPLY_DENIED_EPOCH_STALE
-				|| final_status == GCS_BLOCK_REPLY_DENIED_DEDUP_FULL)
-			{
+				|| final_status == GCS_BLOCK_REPLY_DENIED_DEDUP_FULL) {
 				/* HC94 + HC96 — retry within budget; re-lookup master so
 				 * deterministic hash mod-N reshuffle (post-reconfig) takes
 				 * effect on the next attempt. */
@@ -649,36 +633,30 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 	if (granted || granted_storage_fallback)
 		return;
 
-	if (terminal_denied)
-	{
-		switch ((GcsBlockReplyStatus) final_status)
-		{
-			case GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT:
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("cluster_gcs_block: master rejected transition_id=%d as illegal",
-								(int) transition_id)));
-				break;
-			case GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL:
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("cluster_gcs_block: received block failed CRC32C verify"),
-						 errhint("Possible wire-ABI drift or network corruption.")));
-				break;
-			case GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER:
-				pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_master_not_holder_count, 1);
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cluster_gcs_block: master does not hold tag and state != N"),
-						 errhint("Cross-node holder migration handling lands in spec-2.X+.")));
-				break;
-			case GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE:
-			default:
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cluster_gcs_block: transition denied (status=%d)",
-								(int) final_status)));
-				break;
+	if (terminal_denied) {
+		switch ((GcsBlockReplyStatus)final_status) {
+		case GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT:
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("cluster_gcs_block: master rejected transition_id=%d as illegal",
+								   (int)transition_id)));
+			break;
+		case GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL:
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("cluster_gcs_block: received block failed CRC32C verify"),
+							errhint("Possible wire-ABI drift or network corruption.")));
+			break;
+		case GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER:
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_master_not_holder_count, 1);
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("cluster_gcs_block: master does not hold tag and state != N"),
+							errhint("Cross-node holder migration handling lands in spec-2.X+.")));
+			break;
+		case GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE:
+		default:
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("cluster_gcs_block: transition denied (status=%d)",
+								   (int)final_status)));
+			break;
 		}
 	}
 
@@ -688,9 +666,8 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			(errcode(ERRCODE_CLUSTER_GCS_BLOCK_RETRANSMIT_EXHAUSTED),
 			 errmsg("cluster_gcs_block: retransmit budget exhausted after %d retries "
 					"for tag spc=%u db=%u relNumber=%u block=%u (last status=%d)",
-					max_retries, tag.spcOid, tag.dbOid,
-					(unsigned int) BufTagGetRelNumber(&tag),
-					(unsigned int) tag.blockNum, (int) final_status),
+					max_retries, tag.spcOid, tag.dbOid, (unsigned int)BufTagGetRelNumber(&tag),
+					(unsigned int)tag.blockNum, (int)final_status),
 			 errhint("Possible peer GCS unresponsiveness, network partition, or "
 					 "epoch reshuffle storm.  Inspect dump_gcs counters and "
 					 "consider raising cluster.gcs_block_retransmit_max_retries.")));
@@ -765,19 +742,18 @@ gcs_block_send_reply(int32 dest_node, const GcsBlockRequestPayload *req, GcsBloc
 static void
 gcs_block_resend_cached_reply(int32 dest_node, const GcsBlockDedupEntry *entry)
 {
-	uint32		total = (uint32) (sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
-	char	   *buf;
+	uint32 total = (uint32)(sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
+	char *buf;
 	GcsBlockReplyHeader *hdr;
 
-	buf = (char *) palloc0(total);
-	hdr = (GcsBlockReplyHeader *) buf;
+	buf = (char *)palloc0(total);
+	hdr = (GcsBlockReplyHeader *)buf;
 	*hdr = entry->reply_header;
 	if (entry->status == GCS_BLOCK_REPLY_GRANTED)
-		memcpy(buf + sizeof(GcsBlockReplyHeader), entry->block_data,
-			   GCS_BLOCK_DATA_SIZE);
+		memcpy(buf + sizeof(GcsBlockReplyHeader), entry->block_data, GCS_BLOCK_DATA_SIZE);
 	/* else: block_data already zeroed by palloc0 */
 
-	(void) cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY, dest_node, buf, total);
+	(void)cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY, dest_node, buf, total);
 	pfree(buf);
 }
 
@@ -804,15 +780,13 @@ gcs_block_resend_cached_reply(int32 dest_node, const GcsBlockDedupEntry *entry)
  *	dedup install should happen.
  */
 static bool
-gcs_block_produce_reply(const GcsBlockRequestPayload *req,
-						char *block_buf,
-						GcsBlockReplyStatus *out_status,
-						XLogRecPtr *out_page_lsn,
+gcs_block_produce_reply(const GcsBlockRequestPayload *req, char *block_buf,
+						GcsBlockReplyStatus *out_status, XLogRecPtr *out_page_lsn,
 						const char **out_block_payload)
 {
-	uint64		current_epoch;
+	uint64 current_epoch;
 	PcmLockMode state;
-	bool		found;
+	bool found;
 
 	*out_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
 	*out_page_lsn = InvalidXLogRecPtr;
@@ -820,8 +794,7 @@ gcs_block_produce_reply(const GcsBlockRequestPayload *req,
 
 	/* HC73 epoch freshness. */
 	current_epoch = cluster_epoch_get_current();
-	if (req->epoch < current_epoch)
-	{
+	if (req->epoch < current_epoch) {
 		*out_status = GCS_BLOCK_REPLY_DENIED_EPOCH_STALE;
 		return true;
 	}
@@ -833,8 +806,7 @@ gcs_block_produce_reply(const GcsBlockRequestPayload *req,
 	 * the real epoch matches.  Drives the HC94 lazy retry TAP surface.
 	 */
 	CLUSTER_INJECTION_POINT("cluster-gcs-block-force-epoch-stale-reply");
-	if (cluster_injection_should_skip("cluster-gcs-block-force-epoch-stale-reply"))
-	{
+	if (cluster_injection_should_skip("cluster-gcs-block-force-epoch-stale-reply")) {
 		*out_status = GCS_BLOCK_REPLY_DENIED_EPOCH_STALE;
 		return true;
 	}
@@ -850,12 +822,9 @@ gcs_block_produce_reply(const GcsBlockRequestPayload *req,
 	state = cluster_pcm_lock_query(req->tag);
 	found = cluster_bufmgr_probe_block_for_gcs(req->tag);
 
-	if (!found && state == PCM_LOCK_MODE_N)
-	{
-		if (!cluster_pcm_lock_apply_gcs_transition(req->tag,
-												   (PcmLockTransition) req->transition_id,
-												   req->sender_node))
-		{
+	if (!found && state == PCM_LOCK_MODE_N) {
+		if (!cluster_pcm_lock_apply_gcs_transition(req->tag, (PcmLockTransition)req->transition_id,
+												   req->sender_node)) {
 			*out_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
 			return true;
 		}
@@ -864,8 +833,7 @@ gcs_block_produce_reply(const GcsBlockRequestPayload *req,
 		return true;
 	}
 
-	if (!found)
-	{
+	if (!found) {
 		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_master_not_holder_count, 1);
 		*out_status = GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER;
 		return true;
@@ -876,18 +844,15 @@ gcs_block_produce_reply(const GcsBlockRequestPayload *req,
 	 * + HC89 single-retry revalidation.  Returns false if revalidation cannot
 	 * stabilize after one retry → DENIED_MASTER_NOT_HOLDER fail-closed.
 	 */
-	if (!cluster_bufmgr_copy_block_for_gcs(req->tag, out_page_lsn, block_buf))
-	{
+	if (!cluster_bufmgr_copy_block_for_gcs(req->tag, out_page_lsn, block_buf)) {
 		*out_status = GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER;
 		return true;
 	}
 	pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_wal_flush_before_ship_count, 1);
 
 	/* HC77: master-side is the single transition-apply owner. */
-	if (!cluster_pcm_lock_apply_gcs_transition(req->tag,
-											   (PcmLockTransition) req->transition_id,
-											   req->sender_node))
-	{
+	if (!cluster_pcm_lock_apply_gcs_transition(req->tag, (PcmLockTransition)req->transition_id,
+											   req->sender_node)) {
 		*out_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
 		return true;
 	}
@@ -922,70 +887,63 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	GcsBlockDedupKey key;
 	GcsBlockDedupEntry cached_entry;
 	GcsBlockDedupResult dr;
-	char		block_buf[GCS_BLOCK_DATA_SIZE];
+	char block_buf[GCS_BLOCK_DATA_SIZE];
 	GcsBlockReplyStatus status;
-	XLogRecPtr	page_lsn = InvalidXLogRecPtr;
+	XLogRecPtr page_lsn = InvalidXLogRecPtr;
 	const char *block_payload = NULL;
 
-	(void) env;
+	(void)env;
 
-	if (env == NULL || payload == NULL
-		|| env->payload_length != sizeof(GcsBlockRequestPayload))
+	if (env == NULL || payload == NULL || env->payload_length != sizeof(GcsBlockRequestPayload))
 		return;
 
-	req = (const GcsBlockRequestPayload *) payload;
+	req = (const GcsBlockRequestPayload *)payload;
 
 	/* HC75 range guard — out of range never enters dedup HTAB. */
-	if (req->transition_id < PCM_TRANS_N_TO_S
-		|| req->transition_id > PCM_TRANS_S_TO_X_CLEANOUT)
-	{
-		gcs_block_send_reply(req->sender_node, req,
-							 GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT,
+	if (req->transition_id < PCM_TRANS_N_TO_S || req->transition_id > PCM_TRANS_S_TO_X_CLEANOUT) {
+		gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT,
 							 InvalidXLogRecPtr, NULL);
 		return;
 	}
 
 	/* PGRAC: spec-2.34 D5 — dedup lookup_or_register (HC90 + HC91 + HC92). */
 	memset(&key, 0, sizeof(key));
-	key.origin_node_id = (uint32) req->sender_node;
+	key.origin_node_id = (uint32)req->sender_node;
 	key.requester_backend_id = req->requester_backend_id;
 	key.request_id = req->request_id;
 	key.cluster_epoch = req->epoch;
 	memset(&cached_entry, 0, sizeof(cached_entry));
 
-	dr = cluster_gcs_block_dedup_lookup_or_register(&key, req->tag,
-													req->transition_id, &cached_entry);
-	switch (dr)
-	{
-		case GCS_BLOCK_DEDUP_CACHED_REPLY:
-			gcs_block_resend_cached_reply(req->sender_node, &cached_entry);
-			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_reply_count, 1);
-			return;
+	dr = cluster_gcs_block_dedup_lookup_or_register(&key, req->tag, req->transition_id,
+													&cached_entry);
+	switch (dr) {
+	case GCS_BLOCK_DEDUP_CACHED_REPLY:
+		gcs_block_resend_cached_reply(req->sender_node, &cached_entry);
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_reply_count, 1);
+		return;
 
-		case GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE:
-			/* Original arrival is mid-processing;  it will broadcast the
+	case GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE:
+		/* Original arrival is mid-processing;  it will broadcast the
 			 * reply.  Drop this duplicate silently. */
-			return;
+		return;
 
-		case GCS_BLOCK_DEDUP_VALIDATION_FAIL:
-			gcs_block_send_reply(req->sender_node, req,
-								 GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT,
-								 InvalidXLogRecPtr, NULL);
-			return;
+	case GCS_BLOCK_DEDUP_VALIDATION_FAIL:
+		gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT,
+							 InvalidXLogRecPtr, NULL);
+		return;
 
-		case GCS_BLOCK_DEDUP_FULL:
-			gcs_block_send_reply(req->sender_node, req,
-								 GCS_BLOCK_REPLY_DENIED_DEDUP_FULL,
-								 InvalidXLogRecPtr, NULL);
-			return;
+	case GCS_BLOCK_DEDUP_FULL:
+		gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_DEDUP_FULL,
+							 InvalidXLogRecPtr, NULL);
+		return;
 
-		case GCS_BLOCK_DEDUP_MISS_REGISTERED:
-			/* fall through to produce + install + send. */
-			break;
+	case GCS_BLOCK_DEDUP_MISS_REGISTERED:
+		/* fall through to produce + install + send. */
+		break;
 	}
 
 	/* Produce the reply through the original master flow. */
-	(void) gcs_block_produce_reply(req, block_buf, &status, &page_lsn, &block_payload);
+	(void)gcs_block_produce_reply(req, block_buf, &status, &page_lsn, &block_payload);
 
 	/*
 	 * Build the canonical reply header ONCE so that the dedup install
@@ -999,36 +957,30 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	 * IN_FLIGHT_DUPLICATE.
 	 */
 	{
-		uint32		total = (uint32) (sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
-		char	   *buf;
+		uint32 total = (uint32)(sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
+		char *buf;
 		GcsBlockReplyHeader *hdr;
 
-		buf = (char *) palloc0(total);
-		hdr = (GcsBlockReplyHeader *) buf;
+		buf = (char *)palloc0(total);
+		hdr = (GcsBlockReplyHeader *)buf;
 		hdr->request_id = req->request_id;
-		hdr->page_lsn = (uint64) page_lsn;
+		hdr->page_lsn = (uint64)page_lsn;
 		hdr->epoch = cluster_epoch_get_current();
 		hdr->sender_node = cluster_node_id;
 		hdr->requester_backend_id = req->requester_backend_id;
 		hdr->transition_id = req->transition_id;
-		hdr->status = (uint8) status;
+		hdr->status = (uint8)status;
 
-		if (status == GCS_BLOCK_REPLY_GRANTED && block_payload != NULL)
-		{
+		if (status == GCS_BLOCK_REPLY_GRANTED && block_payload != NULL) {
 			memcpy(buf + sizeof(GcsBlockReplyHeader), block_payload, GCS_BLOCK_DATA_SIZE);
 			hdr->checksum = gcs_block_compute_checksum(block_payload);
-			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total,
-									GCS_BLOCK_DATA_SIZE);
-		}
-		else
-		{
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total, GCS_BLOCK_DATA_SIZE);
+		} else {
 			hdr->checksum = gcs_block_compute_checksum(buf + sizeof(GcsBlockReplyHeader));
 		}
 
-		cluster_gcs_block_dedup_install_reply(&key, status, hdr,
-											  status == GCS_BLOCK_REPLY_GRANTED
-											  ? block_payload
-											  : NULL);
+		cluster_gcs_block_dedup_install_reply(
+			&key, status, hdr, status == GCS_BLOCK_REPLY_GRANTED ? block_payload : NULL);
 
 		/*
 		 * spec-2.34 D17 — drop-reply injection.  When active with SKIP,
@@ -1040,15 +992,14 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 		 * retransmit_send_count + dedup_hit_count TAP surfaces.
 		 */
 		CLUSTER_INJECTION_POINT("cluster-gcs-block-drop-reply-before-send");
-		if (cluster_injection_should_skip("cluster-gcs-block-drop-reply-before-send"))
-		{
+		if (cluster_injection_should_skip("cluster-gcs-block-drop-reply-before-send")) {
 			pfree(buf);
 			return;
 		}
 
-		if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY,
-									 req->sender_node, buf, total)
-			== CLUSTER_IC_SEND_DONE && ClusterGcsBlock != NULL)
+		if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY, req->sender_node, buf, total)
+				== CLUSTER_IC_SEND_DONE
+			&& ClusterGcsBlock != NULL)
 			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_reply_count, 1);
 
 		pfree(buf);
@@ -1102,8 +1053,7 @@ cluster_gcs_handle_block_reply_envelope(const ClusterICEnvelope *env, const void
 			 * means this reply is from a previous attempt (epoch
 			 * advance reshuffle, master change, or transition
 			 * confusion) and must NOT install a stale block. */
-			if (hdr->epoch < slot->request_epoch
-				|| hdr->sender_node != slot->expected_master_node
+			if (hdr->epoch < slot->request_epoch || hdr->sender_node != slot->expected_master_node
 				|| hdr->transition_id != slot->transition_id) {
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->stale_reply_drop_count, 1);
 				LWLockRelease(&blk->lock.lock);
@@ -1234,8 +1184,7 @@ cluster_gcs_get_block_retransmit_exhausted_count(void)
 uint64
 cluster_gcs_get_block_epoch_invalidate_wake_count(void)
 {
-	return ClusterGcsBlock ?
-		pg_atomic_read_u64(&ClusterGcsBlock->epoch_invalidate_wake_count) : 0;
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->epoch_invalidate_wake_count) : 0;
 }
 
 uint64
@@ -1290,26 +1239,21 @@ cluster_gcs_get_block_dedup_full_count(void)
 void
 cluster_gcs_block_on_epoch_advance(uint64 new_epoch)
 {
-	int			b;
-	int			j;
+	int b;
+	int j;
 
 	if (gcs_block_backend_blocks == NULL || ClusterGcsBlock == NULL)
-		return;					/* not initialized — nothing to invalidate */
+		return; /* not initialized — nothing to invalidate */
 
-	for (b = 0; b < MaxBackends; b++)
-	{
+	for (b = 0; b < MaxBackends; b++) {
 		ClusterGcsBlockBackendBlock *blk = &gcs_block_backend_blocks[b];
 
 		LWLockAcquire(&blk->lock.lock, LW_EXCLUSIVE);
-		for (j = 0; j < MAX_OUTSTANDING_BLOCK_REQUESTS_PER_BACKEND; j++)
-		{
+		for (j = 0; j < MAX_OUTSTANDING_BLOCK_REQUESTS_PER_BACKEND; j++) {
 			ClusterGcsBlockOutstandingSlot *slot = &blk->slots[j];
 
-			if (slot->in_use
-				&& slot->request_epoch != 0
-				&& slot->request_epoch < new_epoch
-				&& !slot->stale)
-			{
+			if (slot->in_use && slot->request_epoch != 0 && slot->request_epoch < new_epoch
+				&& !slot->stale) {
 				slot->stale = true;
 				ConditionVariableBroadcast(&slot->reply_cv);
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->epoch_invalidate_wake_count, 1);

@@ -63,16 +63,16 @@
 #include "utils/timestamp.h"
 #include "utils/wait_event.h" /* WAIT_EVENT_CLUSTER_BGPROC_LMON_RECONFIG_TICK (D9) */
 
-#include "cluster/cluster_conf.h"	/* cluster_conf_lookup_node */
-#include "cluster/cluster_cssd.h"	/* cluster_cssd_get_peer_state, get_dead_generation */
-#include "cluster/cluster_elog.h"	/* cluster_node_id */
-#include "cluster/cluster_epoch.h"	/* advance + observe + set_changed_at_lsn */
-#include "cluster/cluster_gcs_block.h"	/* spec-2.34 D4 — eager epoch wake hook */
-#include "cluster/cluster_guc.h"	/* cluster_enabled */
-#include "cluster/cluster_inject.h" /* CLUSTER_INJECTION_POINT */
-#include "cluster/cluster_qvotec.h" /* cluster_qvotec_in_quorum */
-#include "cluster/cluster_shmem.h"	/* cluster_shmem_register_region */
-#include "cluster/cluster_signal.h" /* cluster_reconfig_start_pending */
+#include "cluster/cluster_conf.h"	   /* cluster_conf_lookup_node */
+#include "cluster/cluster_cssd.h"	   /* cluster_cssd_get_peer_state, get_dead_generation */
+#include "cluster/cluster_elog.h"	   /* cluster_node_id */
+#include "cluster/cluster_epoch.h"	   /* advance + observe + set_changed_at_lsn */
+#include "cluster/cluster_gcs_block.h" /* spec-2.34 D4 — eager epoch wake hook */
+#include "cluster/cluster_guc.h"	   /* cluster_enabled */
+#include "cluster/cluster_inject.h"	   /* CLUSTER_INJECTION_POINT */
+#include "cluster/cluster_qvotec.h"	   /* cluster_qvotec_in_quorum */
+#include "cluster/cluster_shmem.h"	   /* cluster_shmem_register_region */
+#include "cluster/cluster_signal.h"	   /* cluster_reconfig_start_pending */
 
 
 /*
