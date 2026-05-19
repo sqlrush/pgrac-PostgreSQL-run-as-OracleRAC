@@ -224,6 +224,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"ClusterGcs",
 	/* PGRAC LWTRANCHE_CLUSTER_GCS_BLOCK: spec-2.33 D3 block ship request lock */
 	"ClusterGcsBlock",
+	/* PGRAC LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP: spec-2.34 D2 */
+	"ClusterGcsBlockDedup",
 #endif
 };
 
