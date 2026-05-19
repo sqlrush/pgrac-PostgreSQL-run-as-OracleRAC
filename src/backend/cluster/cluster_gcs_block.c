@@ -441,6 +441,7 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 
 	tag = buf->tag;
 	current_master = master_node;
+	cluster_gcs_block_dedup_register_backend_exit_hook();
 	slot = gcs_block_reserve_slot(tag, (uint8)transition_id, current_master, &request_id);
 
 	max_retries = cluster_gcs_block_retransmit_max_retries >= 0
@@ -484,18 +485,6 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 					retransmit_warning_emitted = true;
 				}
 
-				/* On retry, mark reply_received=false so a stale late reply
-				 * arriving for a previous attempt does not satisfy this
-				 * iteration's wait.  Real HC100 stale-reply rejection at
-				 * reply-handler entry lands in Step 3. */
-				{
-					ClusterGcsBlockBackendBlock *blk = gcs_block_my_block();
-
-					LWLockAcquire(&blk->lock.lock, LW_EXCLUSIVE);
-					slot->reply_received = false;
-					memset(&slot->reply_header, 0, sizeof(slot->reply_header));
-					LWLockRelease(&blk->lock.lock);
-				}
 			}
 
 			/* Always rebuild payload with the current cluster_epoch so
@@ -508,16 +497,17 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			payload.requester_backend_id = (int32) MyBackendId;	/* HC80 */
 			payload.transition_id = (uint8) transition_id;
 
-			/* PGRAC: spec-2.34 HC100 — stamp expected reply identity into
-			 * the outstanding slot.  Reply handler validates hdr->epoch >=
-			 * slot.request_epoch && hdr->sender_node == slot.expected_master
-			 * && hdr->transition_id == slot.transition_id;  mismatch ⇒ drop
-			 * (stale_reply_drop_count++).  Stamp INSIDE the per-backend
-			 * lock so the reply handler sees a consistent tuple. */
+			/* PGRAC: spec-2.34 HC100 — install the next attempt identity
+			 * and clear any previous reply in a single critical section.
+			 * Splitting those steps lets a late old reply validate against
+			 * the old identity and survive into the new wait iteration. */
 			{
 				ClusterGcsBlockBackendBlock *blk = gcs_block_my_block();
 
 				LWLockAcquire(&blk->lock.lock, LW_EXCLUSIVE);
+				slot->reply_received = false;
+				memset(&slot->reply_header, 0, sizeof(slot->reply_header));
+				memset(slot->reply_block_data, 0, sizeof(slot->reply_block_data));
 				slot->request_epoch = payload.epoch;
 				slot->expected_master_node = current_master;
 				slot->stale = false;
@@ -930,7 +920,7 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 {
 	const GcsBlockRequestPayload *req;
 	GcsBlockDedupKey key;
-	GcsBlockDedupEntry *entry = NULL;
+	GcsBlockDedupEntry cached_entry;
 	GcsBlockDedupResult dr;
 	char		block_buf[GCS_BLOCK_DATA_SIZE];
 	GcsBlockReplyStatus status;
@@ -961,13 +951,14 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	key.requester_backend_id = req->requester_backend_id;
 	key.request_id = req->request_id;
 	key.cluster_epoch = req->epoch;
+	memset(&cached_entry, 0, sizeof(cached_entry));
 
 	dr = cluster_gcs_block_dedup_lookup_or_register(&key, req->tag,
-													req->transition_id, &entry);
+													req->transition_id, &cached_entry);
 	switch (dr)
 	{
 		case GCS_BLOCK_DEDUP_CACHED_REPLY:
-			gcs_block_resend_cached_reply(req->sender_node, entry);
+			gcs_block_resend_cached_reply(req->sender_node, &cached_entry);
 			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_reply_count, 1);
 			return;
 

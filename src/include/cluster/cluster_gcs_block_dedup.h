@@ -168,20 +168,26 @@ typedef enum GcsBlockDedupResult
  * cluster_gcs_block_dedup_lookup_or_register — atomically look up or
  * register a request key.  Returns one of GcsBlockDedupResult.
  *
- *	If MISS_REGISTERED, *out_entry points to the newly-inserted slot
- *	(in-flight; reply_header.status undefined; completed_at_ts == 0).
- *	If CACHED_REPLY, *out_entry points to the cached slot with valid
- *	reply_header + block_data ready to re-send.
- *	If IN_FLIGHT_DUPLICATE / VALIDATION_FAIL / FULL, *out_entry is NULL.
+ *	If MISS_REGISTERED, an in-flight slot has been inserted.
+ *	If CACHED_REPLY, cached_reply_out receives a by-value copy of the
+ *	cached slot with valid reply_header + block_data ready to re-send.
  *
- *	The returned pointer is valid only until the next HTAB mutation on
- *	the same partition;  caller must complete its action before releasing
- *	the dedup partition lock (api handles partition locking internally).
+ *	The API never returns an internal HTAB entry pointer.  TTL sweep,
+ *	node-dead cleanup, and backend-exit cleanup can remove entries as soon
+ *	as this function releases the dedup lock, so CACHED_REPLY must be
+ *	replayed from the copied entry.
  */
 extern GcsBlockDedupResult cluster_gcs_block_dedup_lookup_or_register(
 	const GcsBlockDedupKey *key,
 	BufferTag tag, uint8 transition_id,
-	GcsBlockDedupEntry **out_entry);
+	GcsBlockDedupEntry *cached_reply_out);
+
+/*
+ * Register the local backend cleanup hook.  This must be called from
+ * sender/backend context, not from the master-side GCS handler, because
+ * the handler may run in an auxiliary process without a backend id.
+ */
+extern void cluster_gcs_block_dedup_register_backend_exit_hook(void);
 
 /*
  * cluster_gcs_block_dedup_install_reply — populate the in-flight slot

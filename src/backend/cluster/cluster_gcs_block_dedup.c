@@ -142,8 +142,8 @@ cluster_gcs_block_dedup_module_init(void)
 
 
 /* ============================================================
- * Backend-exit hook registration (idempotent;  called by the GCS_BLOCK
- * master-side handler once per backend on first dedup interaction).
+ * Backend-exit hook registration (idempotent; called by the sender/backend
+ * path once per backend before it issues block requests).
  * ============================================================ */
 
 static void
@@ -156,13 +156,15 @@ dedup_backend_exit_callback(int code pg_attribute_unused(),
 													(int32) MyBackendId);
 }
 
-static void
-dedup_ensure_backend_exit_hook(void)
+void
+cluster_gcs_block_dedup_register_backend_exit_hook(void)
 {
 	if (dedup_backend_exit_hook_registered)
 		return;
 	if (!IsUnderPostmaster)
 		return;					/* only meaningful in backends */
+	if (MyBackendId <= 0)
+		return;					/* auxiliary processes do not own backend ids */
 	before_shmem_exit(dedup_backend_exit_callback, (Datum) 0);
 	dedup_backend_exit_hook_registered = true;
 }
@@ -175,20 +177,18 @@ dedup_ensure_backend_exit_hook(void)
 GcsBlockDedupResult
 cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 										   BufferTag tag, uint8 transition_id,
-										   GcsBlockDedupEntry **out_entry)
+										   GcsBlockDedupEntry *cached_reply_out)
 {
 	GcsBlockDedupEntry *entry;
 	bool		found;
 	GcsBlockDedupResult result;
 
 	Assert(key != NULL);
-	if (out_entry != NULL)
-		*out_entry = NULL;
+	if (cached_reply_out != NULL)
+		memset(cached_reply_out, 0, sizeof(*cached_reply_out));
 
 	if (cluster_gcs_block_dedup_shared == NULL || cluster_gcs_block_dedup_htab == NULL)
 		return GCS_BLOCK_DEDUP_FULL;	/* not initialized; fail closed */
-
-	dedup_ensure_backend_exit_hook();
 
 	LWLockAcquire(&cluster_gcs_block_dedup_shared->lock.lock, LW_EXCLUSIVE);
 
@@ -213,8 +213,8 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 		}
 
 		pg_atomic_fetch_add_u64(&cluster_gcs_block_dedup_shared->hit_count, 1);
-		if (out_entry != NULL)
-			*out_entry = entry;
+		if (cached_reply_out != NULL)
+			*cached_reply_out = *entry;
 		LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
 		return GCS_BLOCK_DEDUP_CACHED_REPLY;
 	}
@@ -241,8 +241,6 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key,
 
 	pg_atomic_fetch_add_u32(&cluster_gcs_block_dedup_shared->entry_count, 1);
 	pg_atomic_fetch_add_u64(&cluster_gcs_block_dedup_shared->miss_count, 1);
-	if (out_entry != NULL)
-		*out_entry = entry;
 	result = GCS_BLOCK_DEDUP_MISS_REGISTERED;
 
 	LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);
