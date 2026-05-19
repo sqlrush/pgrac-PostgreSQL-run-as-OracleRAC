@@ -172,7 +172,13 @@ for my $row (
 
 
 # ============================================================
-# L7: single-shot ship workload — retransmit_attempt_count = 0.
+# L7: single-shot local workload — retransmit_attempt_count = 0.
+#
+# Keep the data object on node0 only.  ClusterPair still has independent
+# catalogs at this stage; creating an identically named relation on node1 can
+# collide at the relfilenode/BufferTag layer and turn this retransmit surface
+# test into a cross-node catalog-sharing test, which belongs to later GCS/MVCC
+# specs.
 # ============================================================
 $pair->node0->safe_psql('postgres', q{
 	CREATE TABLE block_retx_t (id int PRIMARY KEY, val text);
@@ -181,7 +187,6 @@ $pair->node0->safe_psql('postgres', q{
 });
 
 $pair->node0->safe_psql('postgres', 'SELECT count(*) FROM block_retx_t');
-$pair->node1->safe_psql('postgres', 'SELECT count(*) FROM block_retx_t');
 
 my $retransmit_n0 = gcs_int($pair->node0, 'retransmit_attempt_count');
 my $retransmit_n1 = gcs_int($pair->node1, 'retransmit_attempt_count');

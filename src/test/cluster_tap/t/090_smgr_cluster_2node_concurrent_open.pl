@@ -85,6 +85,10 @@ sub active_relation_count
 		extra_conf => [
 			'cluster.shared_storage_backend = local',
 			'cluster.smgr_user_relations = on',
+			# This is a spec-2.7 smgr_cluster test.  Keep later Cache
+			# Fusion PCM/GCS hooks out of the 10k INSERT path so this TAP
+			# continues to verify only smgr invalidation behavior.
+			'cluster.pcm_grd_max_entries = 0',
 			'log_min_messages = debug3',
 		]);
 	$pair->start_pair;

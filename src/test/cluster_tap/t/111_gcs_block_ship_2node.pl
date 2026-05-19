@@ -8,8 +8,9 @@
 #
 #	  L1  ClusterPair startup — both postmasters healthy + tier1 connected
 #	  L2  fresh baseline gcs counters on both nodes (block_* counters = 0)
-#	  L3  pg_cluster_state.gcs category has 22 keys (14 spec-2.32 control
-#	       plane + 8 spec-2.33 block-ship data plane)
+#	  L3  pg_cluster_state.gcs category has 31 keys (14 spec-2.32 control
+#	       plane + 8 spec-2.33 block-ship data plane + 9 spec-2.34
+#	       reliability counters)
 #	  L4  4 NEW wait events registered in pg_stat_cluster_wait_events:
 #	       ClusterGCSBlockShipWait, ClusterGCSBlockRequestDispatch,
 #	       ClusterGCSBlockReplyDispatch, ClusterGCSBlockChecksumFail
@@ -26,7 +27,7 @@
 #	  L11 dump_gcs counters cross-node sum is internally consistent
 #	       (block_request_count A + B == block_reply_count A + B, when
 #	       the round-trip closes)
-#	  L12 catversion bumped to 202605400 (spec-2.33 D11)
+#	  L12 catversion lower-bound >= 202605410 (spec-2.34 D11)
 #
 # Spec: spec-2.33-gcs-block-shipping-substrate.md §4.2 (FROZEN v0.4)
 #
@@ -113,18 +114,19 @@ for my $node ($pair->node0, $pair->node1) {
 
 
 # ============================================================
-# L3: pg_cluster_state.gcs category has 22 keys (14 control + 8 data).
+# L3: pg_cluster_state.gcs category has 31 keys
+#	  (14 control + 8 data + 9 reliability counters).
 # ============================================================
 is($pair->node0->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE category='gcs'}),
-   '22',
-   'L3 node0 pg_cluster_state.gcs category has 22 keys');
+   '31',
+   'L3 node0 pg_cluster_state.gcs category has 31 keys');
 is($pair->node1->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE category='gcs'}),
-   '22',
-   'L3 node1 pg_cluster_state.gcs category has 22 keys');
+   '31',
+   'L3 node1 pg_cluster_state.gcs category has 31 keys');
 
 
 # ============================================================
@@ -246,13 +248,13 @@ ok($rep_total <= $req_total,
 
 
 # ============================================================
-# L12: catversion bumped to 202605400.
+# L12: catversion bumped at least to the spec-2.34 value.
 # ============================================================
 my $catver = $pair->node0->safe_psql(
 	'postgres',
 	q{SELECT catalog_version_no::bigint FROM pg_control_system()});
-is($catver, '202605400',
-	'L12 catversion = 202605400 (spec-2.33 D11)');
+cmp_ok($catver, '>=', 202605410,
+	'L12 catversion >= 202605410 (spec-2.34 D11)');
 
 
 done_testing();
