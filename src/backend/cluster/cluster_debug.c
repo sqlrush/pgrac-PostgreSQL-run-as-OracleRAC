@@ -1302,19 +1302,19 @@ dump_gcs(ReturnSetInfo *rsinfo)
 
 	/* PGRAC: spec-2.35 D13 — 7 NEW counter rows for CF 2-way protocol. */
 	emit_row(rsinfo, "gcs", "block_forward_sent_count",
-			 fmt_int64((int64) cluster_gcs_get_block_forward_sent_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_forward_sent_count()));
 	emit_row(rsinfo, "gcs", "block_forward_received_count",
-			 fmt_int64((int64) cluster_gcs_get_block_forward_received_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_forward_received_count()));
 	emit_row(rsinfo, "gcs", "block_from_holder_ship_count",
-			 fmt_int64((int64) cluster_gcs_get_block_from_holder_ship_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_from_holder_ship_count()));
 	emit_row(rsinfo, "gcs", "block_forward_holder_evicted_count",
-			 fmt_int64((int64) cluster_gcs_get_block_forward_holder_evicted_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_forward_holder_evicted_count()));
 	emit_row(rsinfo, "gcs", "s_holders_bitmap_redirect_count",
-			 fmt_int64((int64) cluster_gcs_get_block_s_holders_bitmap_redirect_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_s_holders_bitmap_redirect_count()));
 	emit_row(rsinfo, "gcs", "master_holder_lifecycle_count",
-			 fmt_int64((int64) cluster_gcs_get_block_master_holder_lifecycle_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_master_holder_lifecycle_count()));
 	emit_row(rsinfo, "gcs", "forward_replay_count",
-			 fmt_int64((int64) cluster_gcs_get_block_forward_replay_count()));
+			 fmt_int64((int64)cluster_gcs_get_block_forward_replay_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */
