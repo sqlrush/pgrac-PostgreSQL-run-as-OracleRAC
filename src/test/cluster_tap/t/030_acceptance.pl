@@ -297,7 +297,7 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 
 # ============================================================
-# §M  error injection 104 注入点 + 5 fault types (6 tests)
+# §M  error injection 106 注入点 + 5 fault types (6 tests)
 # ============================================================
 
 is($node->safe_psql('postgres',
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '208',
-	'M5 inject category has 104×2 = 208 sub-keys (.fault_type + .hits) after spec-2.34');
+	) eq '212',
+	'M5 inject category has 106×2 = 212 sub-keys (.fault_type + .hits) after spec-2.35');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');

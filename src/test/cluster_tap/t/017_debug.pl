@@ -123,15 +123,15 @@ is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.fault_type'}),
-	'104',
-	'all 104 injection points have a .fault_type entry under inject category after spec-2.34');
+	'106',
+	'all 106 injection points have a .fault_type entry under inject category after spec-2.35');
 
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.hits'}),
-	'104',
-	'all 104 injection points have a .hits entry under inject category after spec-2.34');
+	'106',
+	'all 106 injection points have a .hits entry under inject category after spec-2.35');
 
 
 # ----------
