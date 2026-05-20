@@ -1417,28 +1417,28 @@ cluster_init_guc(void)
 	 * PGRAC: spec-2.36 D8 — 3 NEW GUC for CF 3-way (X transfer +
 	 * reader starvation).
 	 */
-	DefineCustomIntVariable("cluster.gcs_block_invalidate_ack_timeout_ms",
-							gettext_noop("CF 3-way master deadline for a single INVALIDATE_ACK."),
-							gettext_noop("Master backend waits up to this many milliseconds for an "
-										 "INVALIDATE_ACK (msg_type 18) reply from a single S/X holder "
-										 "during 3-way broadcast.  Combined with cluster.gcs_block_"
-										 "retransmit_max_retries this bounds the worst-case 3-way "
-										 "transfer latency before sender sees DENIED_INVALIDATE_TIMEOUT "
-										 "→ 53R91.  HC116.  PGC_SUSET."),
-							&cluster_gcs_block_invalidate_ack_timeout_ms, 1500, 100, 60000,
-							PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("cluster.gcs_block_starvation_backoff_ms",
-							gettext_noop("S barrier reader backoff base for DENIED_PENDING_X retry."),
-							gettext_noop("Reader exponential backoff base in milliseconds for the "
-										 "HC117 S barrier retry loop.  Actual backoff = base × "
-										 "2^attempt.  HC117.  PGC_SUSET."),
-							&cluster_gcs_block_starvation_backoff_ms, 100, 1, 60000,
-							PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("cluster.gcs_block_starvation_max_retries",
-							gettext_noop("S barrier reader retry budget."),
-							gettext_noop("Reader DENIED_PENDING_X retry budget.  Budget exhausted → "
-										 "ereport(53R92);  upper-layer transaction may retry the "
-										 "whole statement.  HC117.  PGC_SUSET."),
-							&cluster_gcs_block_starvation_max_retries, 8, 0, 64,
-							PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.gcs_block_invalidate_ack_timeout_ms",
+		gettext_noop("CF 3-way master deadline for a single INVALIDATE_ACK."),
+		gettext_noop("Master backend waits up to this many milliseconds for an "
+					 "INVALIDATE_ACK (msg_type 18) reply from a single S/X holder "
+					 "during 3-way broadcast.  Combined with cluster.gcs_block_"
+					 "retransmit_max_retries this bounds the worst-case 3-way "
+					 "transfer latency before sender sees DENIED_INVALIDATE_TIMEOUT "
+					 "→ 53R91.  HC116.  PGC_SUSET."),
+		&cluster_gcs_block_invalidate_ack_timeout_ms, 1500, 100, 60000, PGC_SUSET, 0, NULL, NULL,
+		NULL);
+	DefineCustomIntVariable(
+		"cluster.gcs_block_starvation_backoff_ms",
+		gettext_noop("S barrier reader backoff base for DENIED_PENDING_X retry."),
+		gettext_noop("Reader exponential backoff base in milliseconds for the "
+					 "HC117 S barrier retry loop.  Actual backoff = base × "
+					 "2^attempt.  HC117.  PGC_SUSET."),
+		&cluster_gcs_block_starvation_backoff_ms, 100, 1, 60000, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable(
+		"cluster.gcs_block_starvation_max_retries", gettext_noop("S barrier reader retry budget."),
+		gettext_noop("Reader DENIED_PENDING_X retry budget.  Budget exhausted → "
+					 "ereport(53R92);  upper-layer transaction may retry the "
+					 "whole statement.  HC117.  PGC_SUSET."),
+		&cluster_gcs_block_starvation_max_retries, 8, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 }

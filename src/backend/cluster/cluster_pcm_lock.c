@@ -198,11 +198,11 @@ struct GrdEntry {
 	 *								advance on idle DB;  see Q7 rationale).
 	 * Cleared paths: (a) X grant install ack;  (b) reconfig epoch advance;
 	 * (c) HC124 LMON node-dead sweep when requester crashes. */
-	int32 pending_x_requester_node;			 /*  4B [ 88,  92) -1 = none */
-	int32 _pad_pending_x;					 /*  4B [ 92,  96) 8B align */
-	uint64 pending_x_since_lsn;				 /*  8B [ 96, 104) HC117 observability */
-	ConditionVariable wait_cv;				 /* spec-2.31 D1 v0.4 incompatible state wait */
-	LWLockPadded entry_lock;				 /*128B PG_CACHE_LINE_SIZE — must stay last */
+	int32 pending_x_requester_node; /*  4B [ 88,  92) -1 = none */
+	int32 _pad_pending_x;			/*  4B [ 92,  96) 8B align */
+	uint64 pending_x_since_lsn;		/*  8B [ 96, 104) HC117 observability */
+	ConditionVariable wait_cv;		/* spec-2.31 D1 v0.4 incompatible state wait */
+	LWLockPadded entry_lock;		/*128B PG_CACHE_LINE_SIZE — must stay last */
 };
 
 /*
@@ -471,8 +471,7 @@ cluster_pcm_lock_set_pending_x(BufferTag tag, int32 requester_node, uint64 curre
 
 	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
 	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
-	if (found && entry != NULL)
-	{
+	if (found && entry != NULL) {
 		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
 		entry->pending_x_requester_node = requester_node;
 		entry->pending_x_since_lsn = current_lsn;
@@ -492,8 +491,7 @@ cluster_pcm_lock_clear_pending_x(BufferTag tag)
 
 	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
 	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
-	if (found && entry != NULL)
-	{
+	if (found && entry != NULL) {
 		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
 		entry->pending_x_requester_node = -1;
 		entry->pending_x_since_lsn = 0;
@@ -552,8 +550,7 @@ cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node)
 
 	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
 	hash_seq_init(&scan, cluster_pcm_htab);
-	while ((entry = (struct GrdEntry *)hash_seq_search(&scan)) != NULL)
-	{
+	while ((entry = (struct GrdEntry *)hash_seq_search(&scan)) != NULL) {
 		/* Fast SHARED read first — most entries will not match. */
 		if (entry->pending_x_requester_node != dead_node)
 			continue;
@@ -562,8 +559,7 @@ cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node)
 		 * (X grant install ack / reconfig epoch advance) may have
 		 * cleared the field between our SHARED read and the
 		 * EXCLUSIVE acquire. */
-		if (entry->pending_x_requester_node == dead_node)
-		{
+		if (entry->pending_x_requester_node == dead_node) {
 			entry->pending_x_requester_node = -1;
 			entry->pending_x_since_lsn = 0;
 			cleared++;
@@ -1672,7 +1668,7 @@ pcm_get_or_create_entry(BufferTag tag)
 		pg_atomic_init_u32(&entry->s_holders_bitmap, 0);
 		pg_atomic_init_u32(&entry->pi_holders_bitmap, 0);
 		pg_atomic_init_u64(&entry->transition_count_local, 0);
-		entry->s_holder_refcount_local = 0;		/* PGRAC: spec-2.31 D1 v0.4 */
+		entry->s_holder_refcount_local = 0; /* PGRAC: spec-2.31 D1 v0.4 */
 		/* PGRAC: spec-2.36 D5 HC117 — S barrier fields default to "none". */
 		entry->pending_x_requester_node = -1;
 		entry->pending_x_since_lsn = 0;

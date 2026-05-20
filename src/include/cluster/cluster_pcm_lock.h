@@ -359,8 +359,7 @@ extern void cluster_pcm_lock_module_init(void);
  *     pending_x_requester_node matching the dead node.  Must
  *     be idempotent under concurrent X grant clear races.
  * ============================================================ */
-extern void cluster_pcm_lock_set_pending_x(BufferTag tag, int32 requester_node,
-										   uint64 current_lsn);
+extern void cluster_pcm_lock_set_pending_x(BufferTag tag, int32 requester_node, uint64 current_lsn);
 extern void cluster_pcm_lock_clear_pending_x(BufferTag tag);
 extern int32 cluster_pcm_lock_query_pending_x_requester(BufferTag tag);
 extern uint64 cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node);

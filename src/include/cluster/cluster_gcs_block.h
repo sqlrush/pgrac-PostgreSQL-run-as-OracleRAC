@@ -115,30 +115,30 @@ typedef enum GcsBlockReplyStatus {
 	GCS_BLOCK_REPLY_DENIED_EPOCH_STALE = 4,
 	GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL = 5,
 	GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER = 6,
-	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7,	/* PGRAC: spec-2.34 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7,		   /* PGRAC: spec-2.34 D1 NEW;
 											 * HC96 transient — sender 走 retry
 											 * path 同 timeout 语义,budget 耗尽
 											 * 才 ereport 53R90 */
-	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8,	/* PGRAC: spec-2.35 D1 NEW;
+	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8,	   /* PGRAC: spec-2.35 D1 NEW;
 												 * holder ships block directly to
 												 * original requester (2-way CF read
 												 * sharing).  Sender HC108
 												 * authorized chain validates that
 												 * hdr.forwarding_master_node ==
 												 * slot.expected_master_node. */
-	GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER = 9,	/* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER = 9,	   /* PGRAC: spec-2.36 D1 NEW;
 												 * X-flavored holder direct ship for
 												 * 3-way CF writer transfer.  HC115
 												 * + HC118 — same HC108 authorized
 												 * chain semantics as GRANTED_FROM_
 												 * HOLDER but maps to X transition. */
-	GCS_BLOCK_REPLY_DENIED_PENDING_X = 10,		/* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_PENDING_X = 10,		   /* PGRAC: spec-2.36 D1 NEW;
 												 * HC117 reader starvation guard —
 												 * N→S request denied because a
 												 * pending X requester is registered;
 												 * sender backs off + retries per
 												 * cluster.gcs_block_starvation_*. */
-	GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT = 11	/* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT = 11 /* PGRAC: spec-2.36 D1 NEW;
 													 * master could not collect all
 													 * S/X holder invalidate ACKs
 													 * within retransmit budget;
@@ -166,16 +166,15 @@ typedef enum GcsBlockReplyStatus {
  *     [ 48,  52) checksum                uint32  — HC83 CRC32C
  *     [ 52,  64) reserved_1[12]                  — pad to 64B
  * ============================================================ */
-typedef struct GcsBlockInvalidatePayload
-{
-	uint64 request_id;		/*  8B [  0,   8) */
-	uint64 epoch;			/*  8B [  8,  16) */
-	BufferTag tag;			/* 20B [ 16,  36) PG-fact */
-	int32 master_node;		/*  4B [ 36,  40) */
-	uint8 invalidating_for_x_node;	/*  1B [ 40,  41) HC117 */
-	uint8 reserved_0[7];	/*  7B [ 41,  48) */
-	uint32 checksum;		/*  4B [ 48,  52) HC83 CRC32C */
-	uint8 reserved_1[12];	/* 12B [ 52,  64) */
+typedef struct GcsBlockInvalidatePayload {
+	uint64 request_id;			   /*  8B [  0,   8) */
+	uint64 epoch;				   /*  8B [  8,  16) */
+	BufferTag tag;				   /* 20B [ 16,  36) PG-fact */
+	int32 master_node;			   /*  4B [ 36,  40) */
+	uint8 invalidating_for_x_node; /*  1B [ 40,  41) HC117 */
+	uint8 reserved_0[7];		   /*  7B [ 41,  48) */
+	uint32 checksum;			   /*  4B [ 48,  52) HC83 CRC32C */
+	uint8 reserved_1[12];		   /* 12B [ 52,  64) */
 } GcsBlockInvalidatePayload;
 
 /* ============================================================
@@ -192,16 +191,15 @@ typedef struct GcsBlockInvalidatePayload
  *   Layout (64B fixed; same offsets as request payload to keep header
  *   parsing symmetric):
  * ============================================================ */
-typedef struct GcsBlockInvalidateAckPayload
-{
-	uint64 request_id;		/*  8B [  0,   8) */
-	uint64 epoch;			/*  8B [  8,  16) */
-	BufferTag tag;			/* 20B [ 16,  36) PG-fact */
-	int32 sender_node;		/*  4B [ 36,  40) */
-	uint8 ack_status;		/*  1B [ 40,  41) 0/1/2 */
-	uint8 reserved_0[7];	/*  7B [ 41,  48) */
-	uint32 checksum;		/*  4B [ 48,  52) HC83 CRC32C */
-	uint8 reserved_1[12];	/* 12B [ 52,  64) */
+typedef struct GcsBlockInvalidateAckPayload {
+	uint64 request_id;	  /*  8B [  0,   8) */
+	uint64 epoch;		  /*  8B [  8,  16) */
+	BufferTag tag;		  /* 20B [ 16,  36) PG-fact */
+	int32 sender_node;	  /*  4B [ 36,  40) */
+	uint8 ack_status;	  /*  1B [ 40,  41) 0/1/2 */
+	uint8 reserved_0[7];  /*  7B [ 41,  48) */
+	uint32 checksum;	  /*  4B [ 48,  52) HC83 CRC32C */
+	uint8 reserved_1[12]; /* 12B [ 52,  64) */
 } GcsBlockInvalidateAckPayload;
 
 
@@ -380,7 +378,7 @@ StaticAssertDecl(GCS_BLOCK_DATA_SIZE == BLCKSZ,
  *	static there.  Declared here so cluster_gcs_block.c can call them and
  *	bufmgr.c sees a prototype for its definitions.
  * ============================================================ */
-#include "access/xlogdefs.h" /* XLogRecPtr */
+#include "access/xlogdefs.h"		  /* XLogRecPtr */
 #include "cluster/cluster_pcm_lock.h" /* PcmLockMode for invalidate helper */
 extern bool cluster_bufmgr_probe_block_for_gcs(BufferTag tag);
 extern bool cluster_bufmgr_copy_block_for_gcs(BufferTag tag, XLogRecPtr *out_page_lsn, char *dst);
