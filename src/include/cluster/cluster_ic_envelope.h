@@ -157,7 +157,7 @@ typedef enum ClusterICMsgType {
 	= 18 /* PGRAC: spec-2.36 D1 — CF 3-way holder→master invalidate ack (64B);
 		   * MUST be a distinct msg_type from INVALIDATE — request+ack are both
 		   * 64B fixed, cannot demux by payload length (codereview F1 P0). */
-	/* values 19..255 available for future sub-spec; never reuse 0..18 */
+		 /* values 19..255 available for future sub-spec; never reuse 0..18 */
 } ClusterICMsgType;
 
 
