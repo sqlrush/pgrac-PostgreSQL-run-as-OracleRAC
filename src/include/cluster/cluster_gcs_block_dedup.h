@@ -166,7 +166,13 @@ typedef enum GcsBlockDedupResult {
 	GCS_BLOCK_DEDUP_CACHED_REPLY = 2,
 	GCS_BLOCK_DEDUP_VALIDATION_FAIL = 3,
 	GCS_BLOCK_DEDUP_FULL = 4,
-	GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE = 5, /* HC113 spec-2.35 NEW */
+	GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE = 5,  /* HC113 spec-2.35 NEW */
+	GCS_BLOCK_DEDUP_INVALIDATE_IN_FLIGHT = 6, /* HC120 spec-2.36 NEW —
+												* X transfer broadcast invalidate
+												* phase in progress;  duplicate
+												* requests for the same X tag
+												* fall through to retransmit
+												* path rather than re-broadcast. */
 } GcsBlockDedupResult;
 
 

@@ -324,6 +324,34 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	 */
 	{ .name = "cluster-gcs-block-forward-master-side" },
 	{ .name = "cluster-gcs-block-evict-holder-before-ship" },
+	/*
+	 * spec-2.36 D16 — CF 3-way protocol fault injection.
+	 *
+	 *	cluster-gcs-block-invalidate-drop-broadcast:
+	 *	  Fires inside master broadcast loop.  SKIP makes the master drop
+	 *	  the INVALIDATE envelope for the current bitmap bit, exercising
+	 *	  HC116 retransmit budget + DENIED_INVALIDATE_TIMEOUT (53R91) path.
+	 *
+	 *	cluster-gcs-block-invalidate-stall-ack:
+	 *	  Fires inside holder-side INVALIDATE handler before ack.  SKIP
+	 *	  makes the holder never reply, driving master to wait until
+	 *	  cluster.gcs_block_invalidate_ack_timeout_ms then surface 53R91.
+	 *
+	 *	cluster-gcs-block-x-forward-master-side:
+	 *	  Fires inside master X-state decision branch.  SKIP makes the
+	 *	  master skip the X-state special path, falling through to the
+	 *	  original spec-2.33 master grant flow (TAP can verify the X
+	 *	  decision tree gate without sourcing a real X holder).
+	 *
+	 *	cluster-gcs-block-starvation-force-denied:
+	 *	  Fires inside master N→S handler.  SKIP forces DENIED_PENDING_X
+	 *	  reply unconditionally so TAP can drive reader backoff retry +
+	 *	  53R92 ERRCODE_CLUSTER_GCS_BLOCK_STARVATION_EXHAUSTED.
+	 */
+	{ .name = "cluster-gcs-block-invalidate-drop-broadcast" },
+	{ .name = "cluster-gcs-block-invalidate-stall-ack" },
+	{ .name = "cluster-gcs-block-x-forward-master-side" },
+	{ .name = "cluster-gcs-block-starvation-force-denied" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)

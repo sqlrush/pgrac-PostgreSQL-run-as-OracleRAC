@@ -34,7 +34,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_ic_mock test_cluster_inject test_cluster_pgstat \
         test_cluster_debug test_cluster_shared_fs test_cluster_smgr \
         test_cluster_scn test_cluster_block_format test_cluster_itl_slot \
-        test_cluster_buffer_desc test_cluster_pcm_lock test_cluster_bufmgr_pcm_hook test_cluster_gcs_dispatch test_cluster_gcs_block test_cluster_gcs_block_retransmit test_cluster_gcs_block_2way \
+        test_cluster_buffer_desc test_cluster_pcm_lock test_cluster_bufmgr_pcm_hook test_cluster_gcs_dispatch test_cluster_gcs_block test_cluster_gcs_block_retransmit test_cluster_gcs_block_2way test_cluster_gcs_block_3way \
         test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision \
         test_cluster_xlog test_cluster_tt_slot test_cluster_undo_segment \
         test_cluster_epoch test_cluster_fence test_cluster_reconfig \
@@ -552,6 +552,19 @@ test_cluster_gcs_block_retransmit: test_cluster_gcs_block_retransmit.c unit_test
 # return 5, helper round-trip).  Header-only;  behavioral coverage in
 # cluster_tap t/113.
 test_cluster_gcs_block_2way: test_cluster_gcs_block_2way.c unit_test.h \
+		$(CLUSTER_VERSION_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-2.36 D11/D12:  test_cluster_gcs_block_3way verifies CF 3-way
+# protocol compile-time invariants (msg_type 17/18, reply status 9/10/11,
+# GcsBlockInvalidate{,Ack}Payload 64B, GrdEntry sizeof 248, dedup state
+# INVALIDATE_IN_FLIGHT=6, S barrier helpers, broadcast decision tree
+# branches).  Header-only;  behavioral coverage in cluster_tap t/114
+# (2-node) + t/115 (3-node).
+test_cluster_gcs_block_3way: test_cluster_gcs_block_3way.c unit_test.h \
 		$(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \

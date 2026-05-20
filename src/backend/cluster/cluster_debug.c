@@ -1315,6 +1315,20 @@ dump_gcs(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_gcs_get_block_master_holder_lifecycle_count()));
 	emit_row(rsinfo, "gcs", "forward_replay_count",
 			 fmt_int64((int64)cluster_gcs_get_block_forward_replay_count()));
+
+	/* PGRAC: spec-2.36 D10 — 6 NEW counter rows for CF 3-way protocol. */
+	emit_row(rsinfo, "gcs", "block_invalidate_broadcast_count",
+			 fmt_int64((int64)cluster_gcs_get_block_invalidate_broadcast_count()));
+	emit_row(rsinfo, "gcs", "block_invalidate_ack_received_count",
+			 fmt_int64((int64)cluster_gcs_get_block_invalidate_ack_received_count()));
+	emit_row(rsinfo, "gcs", "block_invalidate_timeout_count",
+			 fmt_int64((int64)cluster_gcs_get_block_invalidate_timeout_count()));
+	emit_row(rsinfo, "gcs", "block_x_forward_sent_count",
+			 fmt_int64((int64)cluster_gcs_get_block_x_forward_sent_count()));
+	emit_row(rsinfo, "gcs", "block_x_granted_from_holder_count",
+			 fmt_int64((int64)cluster_gcs_get_block_x_granted_from_holder_count()));
+	emit_row(rsinfo, "gcs", "starvation_denied_pending_x_count",
+			 fmt_int64((int64)cluster_gcs_get_starvation_denied_pending_x_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */

@@ -1130,6 +1130,16 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	if (req->transition_id == PCM_TRANS_N_TO_S) {
 		int32 pending_x;
 
+		/* spec-2.36 D16 inject — force DENIED_PENDING_X for TAP coverage of
+		 * reader starvation backoff + 53R92 budget exhaustion. */
+		CLUSTER_INJECTION_POINT("cluster-gcs-block-starvation-force-denied");
+		if (cluster_injection_should_skip("cluster-gcs-block-starvation-force-denied")) {
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->starvation_denied_pending_x_count, 1);
+			gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_PENDING_X,
+								 InvalidXLogRecPtr, NULL);
+			return;
+		}
+
 		pending_x = cluster_pcm_lock_query_pending_x_requester(req->tag);
 		if (pending_x >= 0 && pending_x != req->sender_node) {
 			pg_atomic_fetch_add_u64(&ClusterGcsBlock->starvation_denied_pending_x_count, 1);

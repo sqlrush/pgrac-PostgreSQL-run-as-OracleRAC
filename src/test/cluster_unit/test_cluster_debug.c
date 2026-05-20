@@ -481,6 +481,38 @@ cluster_gcs_get_block_forward_replay_count(void)
 	return 0;
 }
 
+/* spec-2.36 D10 stubs: 6 NEW CF 3-way protocol counter accessors. */
+uint64
+cluster_gcs_get_block_invalidate_broadcast_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_block_invalidate_ack_received_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_block_invalidate_timeout_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_block_x_forward_sent_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_block_x_granted_from_holder_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_starvation_denied_pending_x_count(void)
+{
+	return 0;
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {
