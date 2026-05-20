@@ -147,6 +147,11 @@ typedef struct ClusterGcsBlockShared {
 	pg_atomic_uint64 block_x_forward_sent_count;		/* master X-state forward emitted */
 	pg_atomic_uint64 block_x_granted_from_holder_count; /* sender install X_GRANTED_FROM_HOLDER */
 	pg_atomic_uint64 starvation_denied_pending_x_count; /* N→S short-circuit by pending_x */
+	/* PGRAC: spec-2.37 D12 — 4 NEW counters for PI watermark + lost-write detection. */
+	pg_atomic_uint64 pi_watermark_advance_count; /* X→N/S downgrade caller advance ticks */
+	pg_atomic_uint64 pi_watermark_retire_count;	 /* tag lifecycle + durable-confirm retire */
+	pg_atomic_uint64 lost_write_detected_count;	 /* master direct OR holder forward detect */
+	pg_atomic_uint64 lost_write_avoid_count;	 /* durable-confirm retire avoided false-pos */
 	/* PGRAC: spec-2.36 D3 (HC116) — master broadcast invalidate slot.
 	 * At most one broadcast in-flight per master node (Q-D3 simplification —
 	 * cluster wide single-master serialization;  concurrent X requests on
@@ -263,6 +268,11 @@ cluster_gcs_block_shmem_init(void)
 		pg_atomic_init_u64(&ClusterGcsBlock->block_x_forward_sent_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->block_x_granted_from_holder_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->starvation_denied_pending_x_count, 0);
+		/* PGRAC: spec-2.37 D12 — 4 NEW counters init. */
+		pg_atomic_init_u64(&ClusterGcsBlock->pi_watermark_advance_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->pi_watermark_retire_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->lost_write_detected_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->lost_write_avoid_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->invalidate_broadcast_request_id, 0);
 		ClusterGcsBlock->invalidate_broadcast_epoch = 0;
 		memset(&ClusterGcsBlock->invalidate_broadcast_tag, 0,
@@ -772,6 +782,32 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 				break;
 			}
 
+			/* PGRAC: spec-2.37 D6 HC131 — lost-write detected at master direct
+			 * ship OR holder forward validate.  Terminal (don't retry — lost-
+			 * write is a data integrity issue, not a transient network event).
+			 * GUC cluster.gcs_block_lost_write_action selects ereport(53R93)
+			 * for production (default) or WARNING for staging/diagnostic. */
+			if (final_status == GCS_BLOCK_REPLY_DENIED_LOST_WRITE) {
+				terminal_denied = true;
+				if (cluster_gcs_block_lost_write_action == 0 /* ERROR */) {
+					ereport(ERROR, (errcode(ERRCODE_CLUSTER_LOST_WRITE_DETECTED),
+									errmsg("cluster_gcs_block: lost write detected on tag "
+										   "spc=%u db=%u rel=%u block=%u",
+										   tag.spcOid, tag.dbOid, tag.relNumber, tag.blockNum),
+									errhint("Shipped block.page_lsn is below the master "
+											"pi_watermark_lsn.  Inspect dump_gcs."
+											"lost_write_detected_count and cluster_pcm_grd "
+											"to identify the stale source.  HC131.")));
+				} else {
+					/* WARN action: do NOT ereport, business proceeds with the
+					 * (possibly stale) block — only safe for staging/diagnostic. */
+					ereport(WARNING, (errmsg("cluster_gcs_block: lost write detected on tag "
+											 "spc=%u db=%u rel=%u block=%u (action=warn)",
+											 tag.spcOid, tag.dbOid, tag.relNumber, tag.blockNum)));
+				}
+				break;
+			}
+
 			/*
 			 * spec-2.35 HC105 — DENIED_MASTER_NOT_HOLDER from holder forward
 			 * path is transient (holder evict race during forward); sender
@@ -1132,6 +1168,10 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 			fwd.requester_backend_id = req->requester_backend_id;
 			fwd.master_node = cluster_node_id;
 			fwd.transition_id = req->transition_id;
+			/* PGRAC: spec-2.37 D3 HC127 — stamp expected pi_watermark_lsn so
+			 * holder can validate copied page_lsn >= expected before ship. */
+			GcsBlockForwardPayloadSetExpectedPiWatermarkLsn(
+				&fwd, cluster_pcm_lock_pi_watermark_query(req->tag));
 
 			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, holder_node, &fwd,
 										 sizeof(fwd))
@@ -1250,6 +1290,9 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 				fwd.requester_backend_id = req->requester_backend_id;
 				fwd.master_node = cluster_node_id;
 				fwd.transition_id = req->transition_id;
+				/* PGRAC: spec-2.37 D3 HC127 — stamp expected pi_watermark_lsn. */
+				GcsBlockForwardPayloadSetExpectedPiWatermarkLsn(
+					&fwd, cluster_pcm_lock_pi_watermark_query(req->tag));
 
 				if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, x_holder, &fwd,
 											 sizeof(fwd))
@@ -1380,6 +1423,10 @@ x_path_skipped:
 			fwd.requester_backend_id = req->requester_backend_id;
 			fwd.master_node = cluster_node_id;
 			fwd.transition_id = req->transition_id;
+			/* PGRAC: spec-2.37 D3 HC127 — stamp expected pi_watermark_lsn so
+			 * holder can validate copied page_lsn >= expected before ship. */
+			GcsBlockForwardPayloadSetExpectedPiWatermarkLsn(
+				&fwd, cluster_pcm_lock_pi_watermark_query(req->tag));
 
 			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, holder_node, &fwd,
 										 sizeof(fwd))
@@ -1417,6 +1464,35 @@ x_path_skipped:
 	(void)gcs_block_produce_reply(req, block_buf, &status, &page_lsn, &block_payload);
 	if (req->transition_id == PCM_TRANS_N_TO_X || req->transition_id == PCM_TRANS_S_TO_X_UPGRADE)
 		cluster_pcm_lock_clear_pending_x(req->tag);
+
+	/* PGRAC: spec-2.37 D4 HC128 NEW — master direct ship 自校 lost-write.
+	 *
+	 *	If master is about to GRANT a block (status == GRANTED), verify that
+	 *	page_lsn >= pi_watermark_lsn(tag) before sending it on the wire.
+	 *	Failure means master itself was shipping a stale block (rare but
+	 *	indicates upstream WAL replay lag / split-brain scenario) — fail loud
+	 *	with DENIED_LOST_WRITE so sender ereport(53R93) HC131.
+	 *
+	 *	Why master self-check (not relying on sender): sender has no view of
+	 *	master's authoritative pi_watermark_lsn; only master can know.  HC128. */
+	if (status == GCS_BLOCK_REPLY_GRANTED) {
+		/* spec-2.37 D15 inject — force page_lsn=0 to simulate stale source. */
+		CLUSTER_INJECTION_POINT("cluster-gcs-block-stale-ship");
+		if (cluster_injection_should_skip("cluster-gcs-block-stale-ship"))
+			page_lsn = InvalidXLogRecPtr;
+
+		{
+			XLogRecPtr expected = cluster_pcm_lock_pi_watermark_query(req->tag);
+
+			if (!XLogRecPtrIsInvalid(expected) && (uint64)page_lsn < (uint64)expected) {
+				status = GCS_BLOCK_REPLY_DENIED_LOST_WRITE;
+				page_lsn = InvalidXLogRecPtr;
+				block_payload = NULL;
+				if (ClusterGcsBlock != NULL)
+					pg_atomic_fetch_add_u64(&ClusterGcsBlock->lost_write_detected_count, 1);
+			}
+		}
+	}
 
 	/*
 	 * Build the canonical reply header ONCE so that the dedup install
@@ -1641,14 +1717,27 @@ cluster_gcs_handle_block_forward_envelope(const ClusterICEnvelope *env, const vo
 	GcsBlockReplyHeaderSetForwardingMasterNode(hdr, fwd->master_node);
 
 	if (holder_ship_ok) {
-		memcpy(buf + sizeof(GcsBlockReplyHeader), block_buf, GCS_BLOCK_DATA_SIZE);
-		hdr->checksum = gcs_block_compute_checksum(block_buf);
-		hdr->status = (fwd->transition_id == PCM_TRANS_N_TO_X
-					   || fwd->transition_id == PCM_TRANS_S_TO_X_UPGRADE)
-						  ? (uint8)GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER
-						  : (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
-		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_from_holder_ship_count, 1);
-		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total, GCS_BLOCK_DATA_SIZE);
+		/* PGRAC: spec-2.37 D5 HC128 NEW — holder forward path validate
+		 * lost-write.  Master has stamped expected_pi_watermark_lsn into
+		 * the forward payload (HC127); after copying the block bytes,
+		 * verify copied page_lsn >= expected.  Failure → reply
+		 * DENIED_LOST_WRITE so sender ereport(53R93) HC131. */
+		XLogRecPtr expected = GcsBlockForwardPayloadGetExpectedPiWatermarkLsn(fwd);
+
+		if (!XLogRecPtrIsInvalid(expected) && (uint64)page_lsn < (uint64)expected) {
+			hdr->checksum = gcs_block_compute_checksum(buf + sizeof(GcsBlockReplyHeader));
+			hdr->status = (uint8)GCS_BLOCK_REPLY_DENIED_LOST_WRITE;
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->lost_write_detected_count, 1);
+		} else {
+			memcpy(buf + sizeof(GcsBlockReplyHeader), block_buf, GCS_BLOCK_DATA_SIZE);
+			hdr->checksum = gcs_block_compute_checksum(block_buf);
+			hdr->status = (fwd->transition_id == PCM_TRANS_N_TO_X
+						   || fwd->transition_id == PCM_TRANS_S_TO_X_UPGRADE)
+							  ? (uint8)GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER
+							  : (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_from_holder_ship_count, 1);
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total, GCS_BLOCK_DATA_SIZE);
+		}
 	} else {
 		/* HC105 evict race */
 		hdr->checksum = gcs_block_compute_checksum(buf + sizeof(GcsBlockReplyHeader));
@@ -1840,6 +1929,18 @@ cluster_gcs_handle_block_invalidate_envelope(const ClusterICEnvelope *env, const
 		PcmLockTransition trans = (pre_state == PCM_LOCK_MODE_X) ? PCM_TRANS_X_TO_N_DOWNGRADE
 																 : PCM_TRANS_S_TO_N_INVALIDATE;
 		(void)cluster_pcm_lock_apply_gcs_transition(inv->tag, trans, cluster_node_id);
+
+		/* PGRAC: spec-2.37 D7 HC126 NEW — advance local PI watermark with the
+		 * holder's last page_lsn before invalidation.  D7 caller-side advance
+		 * (PCM state machine stays IO-free).  Single-node loopback case advances
+		 * the local master GrdEntry directly;  multi-node case advances only the
+		 * holder-local HTAB (master-side advance requires cross-node propagation
+		 * which is deferred per spec Hardening appendix limitation登记). */
+		if (!XLogRecPtrIsInvalid(page_lsn)) {
+			cluster_pcm_lock_pi_watermark_advance(inv->tag, page_lsn);
+			if (ClusterGcsBlock != NULL)
+				pg_atomic_fetch_add_u64(&ClusterGcsBlock->pi_watermark_advance_count, 1);
+		}
 	} else {
 		ack_status = 2; /* race: not resident */
 	}
@@ -2134,6 +2235,31 @@ cluster_gcs_get_starvation_denied_pending_x_count(void)
 {
 	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->starvation_denied_pending_x_count)
 						   : 0;
+}
+
+/* PGRAC: spec-2.37 D12 — 4 NEW counter accessors for PI watermark + lost-write. */
+uint64
+cluster_gcs_get_pi_watermark_advance_count(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->pi_watermark_advance_count) : 0;
+}
+
+uint64
+cluster_gcs_get_pi_watermark_retire_count(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->pi_watermark_retire_count) : 0;
+}
+
+uint64
+cluster_gcs_get_lost_write_detected_count(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->lost_write_detected_count) : 0;
+}
+
+uint64
+cluster_gcs_get_lost_write_avoid_count(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->lost_write_avoid_count) : 0;
 }
 
 /* PGRAC: spec-2.35 D3 (HC110) — extern bump for master_holder lifecycle. */

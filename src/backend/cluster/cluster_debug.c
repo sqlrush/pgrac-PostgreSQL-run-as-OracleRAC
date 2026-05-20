@@ -1329,6 +1329,16 @@ dump_gcs(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_gcs_get_block_x_granted_from_holder_count()));
 	emit_row(rsinfo, "gcs", "starvation_denied_pending_x_count",
 			 fmt_int64((int64)cluster_gcs_get_starvation_denied_pending_x_count()));
+
+	/* PGRAC: spec-2.37 D12 — 4 NEW counter rows for PI watermark + lost-write. */
+	emit_row(rsinfo, "gcs", "pi_watermark_advance_count",
+			 fmt_int64((int64)cluster_gcs_get_pi_watermark_advance_count()));
+	emit_row(rsinfo, "gcs", "pi_watermark_retire_count",
+			 fmt_int64((int64)cluster_gcs_get_pi_watermark_retire_count()));
+	emit_row(rsinfo, "gcs", "lost_write_detected_count",
+			 fmt_int64((int64)cluster_gcs_get_lost_write_detected_count()));
+	emit_row(rsinfo, "gcs", "lost_write_avoid_count",
+			 fmt_int64((int64)cluster_gcs_get_lost_write_avoid_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */

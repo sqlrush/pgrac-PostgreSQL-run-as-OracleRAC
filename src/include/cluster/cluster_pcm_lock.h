@@ -368,6 +368,47 @@ extern uint64 cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node);
  * read.  Returns 0 if entry not present (treated as "no holders"). */
 extern uint32 cluster_pcm_lock_query_s_holders_bitmap(BufferTag tag);
 
+/* ============================================================
+ * PGRAC: spec-2.37 D2/D7/D8/D9 HC125-HC130 — PI watermark API.
+ *
+ *   pi_watermark_advance: D7 caller-side advance — caller (GCS/invalidate
+ *     handler) has already obtained the downgrading holder's page_lsn via
+ *     cluster_bufmgr_invalidate_block_for_gcs(..., &page_lsn) and now
+ *     records max-historical watermark on the master.  Monotone — never
+ *     regress.  Single field max model.
+ *   pi_watermark_query:   master direct ship + forward path use this to
+ *     populate GcsBlockForwardPayload.expected_pi_watermark_lsn_bytes[8]
+ *     and master-direct DENIED_LOST_WRITE check.
+ *   pi_watermark_retire_for_tag:        single-tag retire (test fixture).
+ *   pi_watermark_retire_for_relation_fork:  D8 — relation drop / relfilenode
+ *     change sweep (db, relNumber, fork) range.
+ *   pi_watermark_retire_for_truncate_range: D8 — relation truncate sweep
+ *     all entries whose tag.blockNum >= new_nblocks within (db, relNumber,
+ *     fork).
+ *   pi_watermark_retire_if_durable:     D9 HC130 part 2 — checkpointer/smgr
+ *     sync-complete path only.  Helper立 for unit test + future use;
+ *     production callsite defer to spec-2.38/Stage3 (PG has no per-block
+ *     durable-complete hook today).
+ *
+ *   HC130: retire is FORBIDDEN by epoch advance (reconfig is the scenario
+ *   most likely to involve stale sources;  clearing watermark there would
+ *   weaken detection).  Only tag lifecycle + durable-confirm retire.
+ * ============================================================ */
+#include "storage/relfilelocator.h" /* RelFileNumber */
+#include "common/relpath.h"			/* ForkNumber */
+extern void cluster_pcm_lock_pi_watermark_advance(BufferTag tag, XLogRecPtr page_lsn);
+extern XLogRecPtr cluster_pcm_lock_pi_watermark_query(BufferTag tag);
+extern void cluster_pcm_lock_pi_watermark_retire_for_tag(BufferTag tag);
+extern uint64 cluster_pcm_lock_pi_watermark_retire_for_relation_fork(Oid db_oid,
+																	 RelFileNumber rel_number,
+																	 ForkNumber fork_num);
+extern uint64 cluster_pcm_lock_pi_watermark_retire_for_truncate_range(Oid db_oid,
+																	  RelFileNumber rel_number,
+																	  ForkNumber fork_num,
+																	  BlockNumber new_nblocks);
+extern bool cluster_pcm_lock_pi_watermark_retire_if_durable(BufferTag tag,
+															XLogRecPtr written_page_lsn);
+
 
 #endif /* USE_PGRAC_CLUSTER */
 #endif /* CLUSTER_PCM_LOCK_H */

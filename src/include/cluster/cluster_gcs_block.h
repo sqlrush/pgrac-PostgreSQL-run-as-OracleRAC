@@ -115,34 +115,47 @@ typedef enum GcsBlockReplyStatus {
 	GCS_BLOCK_REPLY_DENIED_EPOCH_STALE = 4,
 	GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL = 5,
 	GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER = 6,
-	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7,		   /* PGRAC: spec-2.34 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7,			/* PGRAC: spec-2.34 D1 NEW;
 											 * HC96 transient — sender 走 retry
 											 * path 同 timeout 语义,budget 耗尽
 											 * 才 ereport 53R90 */
-	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8,	   /* PGRAC: spec-2.35 D1 NEW;
+	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8,		/* PGRAC: spec-2.35 D1 NEW;
 												 * holder ships block directly to
 												 * original requester (2-way CF read
 												 * sharing).  Sender HC108
 												 * authorized chain validates that
 												 * hdr.forwarding_master_node ==
 												 * slot.expected_master_node. */
-	GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER = 9,	   /* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER = 9,		/* PGRAC: spec-2.36 D1 NEW;
 												 * X-flavored holder direct ship for
 												 * 3-way CF writer transfer.  HC115
 												 * + HC118 — same HC108 authorized
 												 * chain semantics as GRANTED_FROM_
 												 * HOLDER but maps to X transition. */
-	GCS_BLOCK_REPLY_DENIED_PENDING_X = 10,		   /* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_PENDING_X = 10,			/* PGRAC: spec-2.36 D1 NEW;
 												 * HC117 reader starvation guard —
 												 * N→S request denied because a
 												 * pending X requester is registered;
 												 * sender backs off + retries per
 												 * cluster.gcs_block_starvation_*. */
-	GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT = 11 /* PGRAC: spec-2.36 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT = 11, /* PGRAC: spec-2.36 D1 NEW;
 													 * master could not collect all
 													 * S/X holder invalidate ACKs
 													 * within retransmit budget;
 													 * sender maps to 53R91. */
+	GCS_BLOCK_REPLY_DENIED_LOST_WRITE = 12			/* PGRAC: spec-2.37 D1 NEW;
+													 * master direct ship 自校 失败 OR
+													 * holder forward validate 失败:
+													 * shipped block.page_lsn <
+													 * GrdEntry.pi_watermark_lsn
+													 * (master) 或
+													 * GcsBlockForwardPayload.
+													 * expected_pi_watermark_lsn
+													 * (holder).  sender maps to 53R93
+													 * terminal denial (HC131) — not
+													 * retried because lost-write is a
+													 * data integrity issue that must
+													 * surface, not be papered over. */
 } GcsBlockReplyStatus;
 
 /* ============================================================
@@ -345,25 +358,75 @@ GcsBlockReplyHeaderSetForwardingMasterNode(GcsBlockReplyHeader *hdr, int32 node_
  *	                                      (holder copies into reply.
  *	                                      forwarding_master_node)
  *	  [ 48,  49) transition_id         -- PcmLockTransition (1..9)
- *	  [ 49,  64) reserved_0[15]        -- align + future fields
+ *	  [ 49,  57) expected_pi_watermark_lsn_bytes[8] -- spec-2.37 D3 HC127
+ *	                                      little-endian uint64;  master stamps
+ *	                                      pi_watermark_lsn(tag) so holder can
+ *	                                      validate copied page_lsn >= expected
+ *	                                      before shipping;  0 = no PI history
+ *	  [ 57,  64) reserved_0[7]         -- pad + future fields
+ *
+ *	HC109 pattern (same as GcsBlockReplyHeader.forwarding_master_node_bytes):
+ *	use uint8[8] + memcpy helpers to encode uint64 little-endian; never
+ *	declare `uint64 expected_pi_watermark_lsn` directly because struct
+ *	padding rules would silently expand sizeof past 64B (codereview F1 P0
+ *	defense pattern from spec-2.35).
  * ============================================================ */
 typedef struct GcsBlockForwardPayload {
-	uint64 request_id;			   /*  8B [  0,   8) */
-	uint64 epoch;				   /*  8B [  8,  16) */
-	BufferTag tag;				   /* 20B [ 16,  36) */
-	int32 original_requester_node; /*  4B [ 36,  40) */
-	int32 requester_backend_id;	   /*  4B [ 40,  44) */
-	int32 master_node;			   /*  4B [ 44,  48) */
-	uint8 transition_id;		   /*  1B [ 48,  49) */
-	uint8 reserved_0[15];		   /* 15B [ 49,  64) */
+	uint64 request_id;						  /*  8B [  0,   8) */
+	uint64 epoch;							  /*  8B [  8,  16) */
+	BufferTag tag;							  /* 20B [ 16,  36) */
+	int32 original_requester_node;			  /*  4B [ 36,  40) */
+	int32 requester_backend_id;				  /*  4B [ 40,  44) */
+	int32 master_node;						  /*  4B [ 44,  48) */
+	uint8 transition_id;					  /*  1B [ 48,  49) */
+	uint8 expected_pi_watermark_lsn_bytes[8]; /*  8B [ 49,  57) HC127 spec-2.37 D3 */
+	uint8 reserved_0[7];					  /*  7B [ 57,  64) */
 } GcsBlockForwardPayload;
 
 StaticAssertDecl(sizeof(GcsBlockForwardPayload) == 64,
-				 "spec-2.35 D2 GcsBlockForwardPayload wire ABI 64B "
-				 "(request_id 8 + epoch 8 + tag 20 + original_requester_node 4 + "
+				 "spec-2.35 D2 / spec-2.37 D3 GcsBlockForwardPayload wire ABI 64B "
+				 "(spec-2.35: request_id 8 + epoch 8 + tag 20 + original_requester_node 4 + "
 				 "requester_backend_id 4 + master_node 4 + transition_id 1 + "
-				 "reserved 15; 64B = natural 8-aligned struct size; same sizeof "
-				 "as GcsBlockRequestPayload but independent semantics; HC102)");
+				 "reserved 15;  spec-2.37 重解读 reserved 前 8B → "
+				 "expected_pi_watermark_lsn_bytes[8] @ offset 49 + reserved_0[7] @ offset 57;  "
+				 "sizeof 64B 不变 — same HC109 pattern as forwarding_master_node_bytes[4])");
+
+StaticAssertDecl(offsetof(GcsBlockForwardPayload, expected_pi_watermark_lsn_bytes) == 49,
+				 "spec-2.37 D3 HC127 — expected_pi_watermark_lsn_bytes[8] must land at "
+				 "offset 49 immediately after transition_id byte at offset 48");
+
+/* PGRAC: spec-2.37 D3 HC127 — uint64 little-endian helpers (mirror spec-2.35
+ * HC109 helper pattern for forwarding_master_node_bytes[4]). */
+static inline void
+GcsBlockForwardPayloadSetExpectedPiWatermarkLsn(GcsBlockForwardPayload *p, XLogRecPtr lsn)
+{
+	uint64 v = (uint64)lsn;
+
+	p->expected_pi_watermark_lsn_bytes[0] = (uint8)(v & 0xff);
+	p->expected_pi_watermark_lsn_bytes[1] = (uint8)((v >> 8) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[2] = (uint8)((v >> 16) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[3] = (uint8)((v >> 24) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[4] = (uint8)((v >> 32) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[5] = (uint8)((v >> 40) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[6] = (uint8)((v >> 48) & 0xff);
+	p->expected_pi_watermark_lsn_bytes[7] = (uint8)((v >> 56) & 0xff);
+}
+
+static inline XLogRecPtr
+GcsBlockForwardPayloadGetExpectedPiWatermarkLsn(const GcsBlockForwardPayload *p)
+{
+	uint64 v = 0;
+
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[0];
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[1] << 8;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[2] << 16;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[3] << 24;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[4] << 32;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[5] << 40;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[6] << 48;
+	v |= (uint64)p->expected_pi_watermark_lsn_bytes[7] << 56;
+	return (XLogRecPtr)v;
+}
 
 /* Compile-time assertion that block size matches PG BLCKSZ.  HC80. */
 StaticAssertDecl(GCS_BLOCK_DATA_SIZE == BLCKSZ,
@@ -535,6 +598,12 @@ extern uint64 cluster_gcs_get_block_invalidate_timeout_count(void);
 extern uint64 cluster_gcs_get_block_x_forward_sent_count(void);
 extern uint64 cluster_gcs_get_block_x_granted_from_holder_count(void);
 extern uint64 cluster_gcs_get_starvation_denied_pending_x_count(void);
+
+/* PGRAC: spec-2.37 D12 — 4 NEW counter accessors for PI watermark + lost-write. */
+extern uint64 cluster_gcs_get_pi_watermark_advance_count(void);
+extern uint64 cluster_gcs_get_pi_watermark_retire_count(void);
+extern uint64 cluster_gcs_get_lost_write_detected_count(void);
+extern uint64 cluster_gcs_get_lost_write_avoid_count(void);
 
 /*
  * PGRAC: spec-2.35 D3 (HC110) — counter bump invoked from cluster_pcm_

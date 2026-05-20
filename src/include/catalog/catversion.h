@@ -421,7 +421,40 @@
  *   block-x-forward-master-side + cluster-gcs-block-starvation-force-
  *   denied.  catversion bump for catalog tooling + wire ABI extension
  *   + GrdEntry sizeof bump. */
-#define CATALOG_VERSION_NO 202605430
+/* spec-2.37 D10 (2026-05-20):  PI simplified + lost-write detection
+ * (page_lsn watermark MVP).
+ * NEW GcsBlockReplyStatus value DENIED_LOST_WRITE=12 (enum 11→12);
+ *   master direct ship 自校 失败 OR holder forward validate 失败
+ *   都映射到这个 status,sender 走 HC131 terminal 53R93.
+ * GrdEntry layout extends 248→256 (+8B): new pi_watermark_lsn uint64
+ *   (InvalidXLogRecPtr=0 默认;single max-historical 模型 cover lost-
+ *   write detection;Path X MVP 用 page_lsn 而非 pd_block_scn,后者
+ *   真写入留独立 spec).  Inserted between pending_x_since_lsn and
+ *   wait_cv/entry_lock to keep LWLockPadded must-stay-last invariant.
+ * GcsBlockForwardPayload reserved_0[15] 重解读 (sizeof 64B 不变):
+ *   first 8B 重解读为 expected_pi_watermark_lsn_bytes[8] at offset 49
+ *   (little-endian uint64);剩余 7B 保留 reserved_0[7].  Same HC109
+ *   pattern as spec-2.35 forwarding_master_node_bytes[4].
+ * NEW HC125 (page_lsn = PI watermark MVP) + HC126 (single field max-
+ *   historical) + HC127 (forward path 携 expected) + HC128 (holder/
+ *   master validate before ship) + HC129 (DENIED_LOST_WRITE status) +
+ *   HC130 (retire only by tag lifecycle + storage durable-confirm,
+ *   forbidden by epoch advance) + HC131 (sender 仅映射 SQLSTATE).
+ * 0 NEW wait events (CLUSTER_WAIT_EVENTS_COUNT 保持 88;  lost-write
+ *   check 是非阻塞 uint64 比较,不是 waiting state).
+ * 1 NEW GUC:  cluster.gcs_block_lost_write_action enum {error,warn}
+ *   default error;  warn 仅 staging/diagnostic 用,production 必须 error.
+ * 1 NEW SQLSTATE:  53R93 cluster_lost_write_detected.
+ * 4 NEW counters exposed via dump_gcs (44→48 rows):
+ *   pi_watermark_advance_count / pi_watermark_retire_count /
+ *   lost_write_detected_count / lost_write_avoid_count.
+ * 2 NEW inject points (110→112):  cluster-gcs-block-stale-ship
+ *   (master direct ship 强制 page_lsn=0 模拟 stale source) +
+ *   cluster-gcs-block-force-pi-watermark (master 端强制 high pi_
+ *   watermark 用于 negative TAP).
+ * catversion bump for catalog tooling + wire ABI reserved 重解读 +
+ * GrdEntry sizeof bump + reply status extension. */
+#define CATALOG_VERSION_NO 202605440
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId

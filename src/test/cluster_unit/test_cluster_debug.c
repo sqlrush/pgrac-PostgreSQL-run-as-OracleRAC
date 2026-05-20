@@ -513,6 +513,28 @@ cluster_gcs_get_starvation_denied_pending_x_count(void)
 	return 0;
 }
 
+/* spec-2.37 D12 stubs: 4 NEW PI watermark + lost-write counter accessors. */
+uint64
+cluster_gcs_get_pi_watermark_advance_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_pi_watermark_retire_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_lost_write_detected_count(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_lost_write_avoid_count(void)
+{
+	return 0;
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {

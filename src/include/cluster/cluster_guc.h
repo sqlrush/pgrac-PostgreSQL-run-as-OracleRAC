@@ -552,5 +552,14 @@ extern int cluster_gcs_block_invalidate_ack_timeout_ms;
 extern int cluster_gcs_block_starvation_backoff_ms;
 extern int cluster_gcs_block_starvation_max_retries;
 
+/*
+ * PGRAC: spec-2.37 D11 — 1 NEW enum GUC for lost-write detection action.
+ *
+ *	cluster.gcs_block_lost_write_action — HC131:
+ *	  CLUSTER_GCS_LOST_WRITE_ACTION_ERROR=0 (default)
+ *	  CLUSTER_GCS_LOST_WRITE_ACTION_WARN=1 (staging/diagnostic)
+ */
+extern int cluster_gcs_block_lost_write_action;
+
 
 #endif /* CLUSTER_GUC_H */

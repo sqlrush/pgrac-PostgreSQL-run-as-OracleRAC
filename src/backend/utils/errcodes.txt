@@ -562,6 +562,15 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 # upper-layer transaction can retry or abort.
 53R92    E    ERRCODE_CLUSTER_GCS_BLOCK_STARVATION_EXHAUSTED                  cluster_gcs_block_starvation_exhausted
 
+# spec-2.37 D11 (HC129/HC131):  PI watermark + lost-write detection.
+# Master direct ship 自校 OR holder forward validate 发现 shipped block.
+# page_lsn < GrdEntry.pi_watermark_lsn (master) 或 GcsBlockForwardPayload.
+# expected_pi_watermark_lsn (holder),reply.status = DENIED_LOST_WRITE = 12.
+# Sender HC131 仅映射:无论 master 自校 OR holder 校 失败,sender 收到该
+# status → ereport(53R93) terminal denial.  Lost-write 是 data integrity
+# issue,不 retry 掩盖;business 必须重新读 or 上层 retry whole statement.
+53R93    E    ERRCODE_CLUSTER_LOST_WRITE_DETECTED                             cluster_lost_write_detected
+
 Section: Class 54 - Program Limit Exceeded
 
 # this is for wired-in limits, not resource exhaustion problems (class borrowed from DB2)

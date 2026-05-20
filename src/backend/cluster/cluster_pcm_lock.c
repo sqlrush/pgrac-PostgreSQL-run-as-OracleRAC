@@ -201,8 +201,31 @@ struct GrdEntry {
 	int32 pending_x_requester_node; /*  4B [ 88,  92) -1 = none */
 	int32 _pad_pending_x;			/*  4B [ 92,  96) 8B align */
 	uint64 pending_x_since_lsn;		/*  8B [ 96, 104) HC117 observability */
-	ConditionVariable wait_cv;		/* spec-2.31 D1 v0.4 incompatible state wait */
-	LWLockPadded entry_lock;		/*128B PG_CACHE_LINE_SIZE — must stay last */
+	/* PGRAC: spec-2.37 D2 HC125+HC126 NEW — single max-historical PI watermark.
+	 *
+	 *	pi_watermark_lsn:	max(holder_last_page_lsn) observed across all
+	 *						X→N / X→S downgrade events for this tag.
+	 *						InvalidXLogRecPtr(0) = no historical PI.
+	 *						Used by GCS block ship path to detect lost-write:
+	 *						- master direct ship: produce_reply 校 page_lsn ≥
+	 *						  pi_watermark_lsn, 失败 → DENIED_LOST_WRITE
+	 *						- forward path: master stamps expected into
+	 *						  GcsBlockForwardPayload.expected_pi_watermark_
+	 *						  lsn_bytes[8], holder copy 后校 同 condition.
+	 *
+	 *	Path X MVP: 用 page_lsn (PG-native, replay-correct) 而非 pd_block_scn
+	 *	(后者需 WAL record schema 扩展 + 每 AM redo 改写, defer 独立 spec).
+	 *
+	 *	Retire 路径 (HC130 — 永禁 epoch-tied):
+	 *	  (a) tag lifecycle: drop/truncate/relfilenode change 走 smgr hook
+	 *	  (b) durable-confirm: checkpointer/smgr sync-complete (defer 到
+	 *	      spec-2.38/Stage3, 本 spec 仅立 helper + counter, callsite 不 wire)
+	 *
+	 *	Inserted between pending_x_since_lsn and wait_cv to keep entry_lock
+	 *	must-stay-last (LWLockPadded PG_CACHE_LINE_SIZE alignment). */
+	uint64 pi_watermark_lsn;   /*  8B [104, 112) spec-2.37 D2 HC125+HC126 */
+	ConditionVariable wait_cv; /* spec-2.31 D1 v0.4 incompatible state wait */
+	LWLockPadded entry_lock;   /*128B PG_CACHE_LINE_SIZE — must stay last */
 };
 
 /*
@@ -222,11 +245,12 @@ struct GrdEntry {
  *	expected constant on this build platform, so silent layout drift
  *	(e.g. a future struct change in a dependency) cannot slip past CI.
  */
-StaticAssertDecl(sizeof(struct GrdEntry) == 248,
-				 "spec-2.36 D5 GrdEntry size 232 → 248 (added pending_x_requester_node 4B + "
-				 "_pad_pending_x 4B + pending_x_since_lsn 8B = +16B for HC117 S barrier);  "
-				 "spec-2.31 baseline was 232B;  amend this constant with Hardening appendix "
-				 "if a different platform produces a different size");
+StaticAssertDecl(sizeof(struct GrdEntry) == 256,
+				 "spec-2.37 D2 GrdEntry size 248 → 256 (added pi_watermark_lsn 8B for HC125 "
+				 "+ HC126 single max-historical PI watermark);  spec-2.36 baseline was 248B; "
+				 "field inserted between pending_x_since_lsn and wait_cv to keep entry_lock "
+				 "LWLockPadded must-stay-last invariant;  amend this constant with Hardening "
+				 "appendix if a different platform produces a different size");
 
 
 /*
@@ -569,6 +593,191 @@ cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node)
 	LWLockRelease(&ClusterPcm->htab_lock.lock);
 
 	return cleared;
+}
+
+
+/* ============================================================
+ * PGRAC: spec-2.37 D2/D7/D8/D9 HC125-HC130 — PI watermark helpers.
+ *
+ *	advance:	caller (GCS/invalidate handler) already obtained the
+ *				downgrading holder's page_lsn via cluster_bufmgr_
+ *				invalidate_block_for_gcs(..., &page_lsn) or equivalent
+ *				and now records max-historical watermark on the master.
+ *				Single field max — monotone advance, never regress.
+ *				D7 caller-side advance keeps cluster_pcm_transition_
+ *				apply IO-free (layering).
+ *	query:		master direct ship + master-side forward path use this
+ *				to populate GcsBlockForwardPayload.expected_pi_watermark_
+ *				lsn_bytes[8] (D3) and master-direct DENIED_LOST_WRITE
+ *				check (D4).
+ *	retire_for_tag:		single-tag retire (test fixture / unit test).
+ *	retire_for_relation_fork:	relation drop / relfilenode change —
+ *				sweep all entries whose tag matches (db, relNumber,
+ *				fork) range.
+ *	retire_for_truncate_range:	relation truncate — sweep all entries
+ *				whose tag.blockNum >= new_nblocks within (db, relNumber,
+ *				fork).
+ *	retire_if_durable:		HC130 part 2 — checkpointer/smgr sync-
+ *				complete path only.  D9 helper立 but callsite defer:
+ *				PG infrastructure does not currently expose a per-block
+ *				durable-complete hook; spec-2.38/Stage3 may add it.
+ *				For now this helper exists for unit test + future wire-
+ *				up; production retire path is exclusively D8 lifecycle.
+ * ============================================================ */
+
+void
+cluster_pcm_lock_pi_watermark_advance(BufferTag tag, XLogRecPtr page_lsn)
+{
+	struct GrdEntry *entry;
+	bool found;
+
+	if (cluster_pcm_htab == NULL || XLogRecPtrIsInvalid(page_lsn))
+		return;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL) {
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		/* Monotone advance — never regress.  HC126 single field max.
+		 * D12 counter pi_watermark_advance_count is bumped by GCS-side
+		 * caller (cluster_gcs_block.c) so the counter lives next to the
+		 * GCS shared state, not PCM module state. */
+		if ((uint64)page_lsn > entry->pi_watermark_lsn) {
+			entry->pi_watermark_lsn = (uint64)page_lsn;
+		}
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+}
+
+XLogRecPtr
+cluster_pcm_lock_pi_watermark_query(BufferTag tag)
+{
+	struct GrdEntry *entry;
+	bool found;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
+
+	if (cluster_pcm_htab == NULL)
+		return InvalidXLogRecPtr;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL)
+		lsn = (XLogRecPtr)entry->pi_watermark_lsn;
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return lsn;
+}
+
+void
+cluster_pcm_lock_pi_watermark_retire_for_tag(BufferTag tag)
+{
+	struct GrdEntry *entry;
+	bool found;
+
+	if (cluster_pcm_htab == NULL)
+		return;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL) {
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		entry->pi_watermark_lsn = InvalidXLogRecPtr;
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+}
+
+uint64
+cluster_pcm_lock_pi_watermark_retire_for_relation_fork(Oid db_oid, RelFileNumber rel_number,
+													   ForkNumber fork_num)
+{
+	HASH_SEQ_STATUS scan;
+	struct GrdEntry *entry;
+	uint64 cleared = 0;
+
+	if (cluster_pcm_htab == NULL)
+		return 0;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	hash_seq_init(&scan, cluster_pcm_htab);
+	while ((entry = (struct GrdEntry *)hash_seq_search(&scan)) != NULL) {
+		if (entry->tag.dbOid != db_oid || entry->tag.relNumber != rel_number
+			|| entry->tag.forkNum != fork_num)
+			continue;
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		if (entry->pi_watermark_lsn != InvalidXLogRecPtr) {
+			entry->pi_watermark_lsn = InvalidXLogRecPtr;
+			cleared++;
+		}
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return cleared;
+}
+
+uint64
+cluster_pcm_lock_pi_watermark_retire_for_truncate_range(Oid db_oid, RelFileNumber rel_number,
+														ForkNumber fork_num,
+														BlockNumber new_nblocks)
+{
+	HASH_SEQ_STATUS scan;
+	struct GrdEntry *entry;
+	uint64 cleared = 0;
+
+	if (cluster_pcm_htab == NULL)
+		return 0;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	hash_seq_init(&scan, cluster_pcm_htab);
+	while ((entry = (struct GrdEntry *)hash_seq_search(&scan)) != NULL) {
+		if (entry->tag.dbOid != db_oid || entry->tag.relNumber != rel_number
+			|| entry->tag.forkNum != fork_num)
+			continue;
+		if (entry->tag.blockNum < new_nblocks)
+			continue;
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		if (entry->pi_watermark_lsn != InvalidXLogRecPtr) {
+			entry->pi_watermark_lsn = InvalidXLogRecPtr;
+			cleared++;
+		}
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return cleared;
+}
+
+bool
+cluster_pcm_lock_pi_watermark_retire_if_durable(BufferTag tag, XLogRecPtr written_page_lsn)
+{
+	struct GrdEntry *entry;
+	bool found;
+	bool retired = false;
+
+	if (cluster_pcm_htab == NULL || XLogRecPtrIsInvalid(written_page_lsn))
+		return false;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL) {
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		/* HC130 part 2: only retire if the durable copy at storage layer
+		 * actually equals-or-exceeds the watermark.  Caller must guarantee
+		 * fsync/sync_complete has happened — there is no per-block durable-
+		 * complete hook in PG today, so production callsite is deferred to
+		 * spec-2.38/Stage3.  This helper exists for unit test + future use. */
+		if ((uint64)written_page_lsn >= entry->pi_watermark_lsn
+			&& entry->pi_watermark_lsn != InvalidXLogRecPtr) {
+			entry->pi_watermark_lsn = InvalidXLogRecPtr;
+			retired = true;
+		}
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return retired;
 }
 
 
@@ -1672,6 +1881,8 @@ pcm_get_or_create_entry(BufferTag tag)
 		/* PGRAC: spec-2.36 D5 HC117 — S barrier fields default to "none". */
 		entry->pending_x_requester_node = -1;
 		entry->pending_x_since_lsn = 0;
+		/* PGRAC: spec-2.37 D2 HC125+HC126 — PI watermark single field default 0. */
+		entry->pi_watermark_lsn = InvalidXLogRecPtr;
 		ConditionVariableInit(&entry->wait_cv); /* PGRAC: spec-2.31 D1 v0.4 */
 		LWLockInitialize(&entry->entry_lock.lock, LWTRANCHE_CLUSTER_PCM);
 	}

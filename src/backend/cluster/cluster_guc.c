@@ -325,6 +325,27 @@ int cluster_gcs_block_invalidate_ack_timeout_ms = 1500;
 int cluster_gcs_block_starvation_backoff_ms = 100;
 int cluster_gcs_block_starvation_max_retries = 8;
 
+/*
+ * PGRAC: spec-2.37 D11 — 1 NEW enum GUC for lost-write detection action.
+ *
+ *   cluster_gcs_block_lost_write_action (HC131):
+ *     CLUSTER_GCS_LOST_WRITE_ACTION_ERROR (default,production)
+ *       — sender ereport(53R93) terminal,统计 lost_write_detected_count++.
+ *     CLUSTER_GCS_LOST_WRITE_ACTION_WARN (staging/diagnostic only)
+ *       — sender 不 ereport,只 WARNING log + counter;不打断业务但 silent
+ *         corruption 风险 — 仅用于 fault injection / TAP edge case 测试.
+ */
+typedef enum {
+	CLUSTER_GCS_LOST_WRITE_ACTION_ERROR = 0,
+	CLUSTER_GCS_LOST_WRITE_ACTION_WARN = 1
+} ClusterGcsLostWriteAction;
+int cluster_gcs_block_lost_write_action = CLUSTER_GCS_LOST_WRITE_ACTION_ERROR;
+
+static const struct config_enum_entry cluster_gcs_block_lost_write_action_options[]
+	= { { "error", CLUSTER_GCS_LOST_WRITE_ACTION_ERROR, false },
+		{ "warn", CLUSTER_GCS_LOST_WRITE_ACTION_WARN, false },
+		{ NULL, 0, false } };
+
 
 /*
  * Mapping from the cluster.interconnect_tier GUC enum string to the
@@ -1441,4 +1462,16 @@ cluster_init_guc(void)
 					 "ereport(53R92);  upper-layer transaction may retry the "
 					 "whole statement.  HC117.  PGC_SUSET."),
 		&cluster_gcs_block_starvation_max_retries, 8, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
+
+	/*
+	 * PGRAC: spec-2.37 D11 — 1 NEW enum GUC for lost-write detection action.
+	 */
+	DefineCustomEnumVariable(
+		"cluster.gcs_block_lost_write_action",
+		gettext_noop("Action when GCS block ship triggers lost-write detection."),
+		gettext_noop("error (default, production): sender ereport(53R93) terminal denial.  "
+					 "warn (staging / diagnostic only): WARNING log + counter, business "
+					 "not interrupted but silent corruption risk.  HC131.  PGC_SUSET."),
+		&cluster_gcs_block_lost_write_action, CLUSTER_GCS_LOST_WRITE_ACTION_ERROR,
+		cluster_gcs_block_lost_write_action_options, PGC_SUSET, 0, NULL, NULL, NULL);
 }
