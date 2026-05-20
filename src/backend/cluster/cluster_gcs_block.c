@@ -140,6 +140,23 @@ typedef struct ClusterGcsBlockShared {
 	pg_atomic_uint64 s_holders_bitmap_redirect_count;	 /* master chose forward over fallback */
 	pg_atomic_uint64 master_holder_lifecycle_count;		 /* HC110 update events */
 	pg_atomic_uint64 forward_replay_count;				 /* dedup FORWARDED re-forward */
+	/* PGRAC: spec-2.36 D10 — 6 NEW counters for CF 3-way protocol. */
+	pg_atomic_uint64 block_invalidate_broadcast_count;	   /* master invalidate emitted (per holder) */
+	pg_atomic_uint64 block_invalidate_ack_received_count;  /* holder ack collected by master */
+	pg_atomic_uint64 block_invalidate_timeout_count;	   /* master ack collection budget exhausted */
+	pg_atomic_uint64 block_x_forward_sent_count;		   /* master X-state forward emitted */
+	pg_atomic_uint64 block_x_granted_from_holder_count;	   /* sender install X_GRANTED_FROM_HOLDER */
+	pg_atomic_uint64 starvation_denied_pending_x_count;	   /* N→S short-circuit by pending_x */
+	/* PGRAC: spec-2.36 D3 (HC116) — master broadcast invalidate slot.
+	 * At most one broadcast in-flight per master node (Q-D3 simplification —
+	 * cluster wide single-master serialization;  concurrent X requests on
+	 * different tags compete for this slot, retry via DENIED_INVALIDATE_
+	 * TIMEOUT if claim fails).  invalidate_broadcast_request_id == 0 means
+	 * idle;  CAS to req->request_id claims the slot. */
+	pg_atomic_uint64 invalidate_broadcast_request_id;	/* 0 = idle */
+	pg_atomic_uint32 invalidate_broadcast_expected_bm;	/* holders we awaited */
+	pg_atomic_uint32 invalidate_broadcast_acked_bm;		/* holders ack'd so far */
+	ConditionVariable invalidate_broadcast_cv;
 } ClusterGcsBlockShared;
 
 
@@ -169,6 +186,14 @@ static void gcs_block_send_reply(int32 dest_node, const GcsBlockRequestPayload *
 								 const char *block_data);
 static uint32 gcs_block_compute_checksum(const char *block_data);
 static void gcs_block_install_block(BufferDesc *buf, const char *block_data, XLogRecPtr page_lsn);
+/* PGRAC: spec-2.36 D3 (HC116) — master synchronous broadcast invalidate.
+ * Enumerates `holders_bm` (1 bit per cluster node), emits INVALIDATE
+ * envelope to each, waits for all INVALIDATE_ACK msg_type 18 within
+ * cluster.gcs_block_invalidate_ack_timeout_ms;  retries failed/timed-out
+ * holders per spec-2.34 retransmit budget;  returns true on full
+ * collection, false on budget exhaustion. */
+static bool gcs_block_broadcast_invalidate_and_wait(const GcsBlockRequestPayload *req,
+													uint32 holders_bm);
 
 
 /* ============================================================
@@ -226,6 +251,17 @@ cluster_gcs_block_shmem_init(void)
 		pg_atomic_init_u64(&ClusterGcsBlock->s_holders_bitmap_redirect_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->master_holder_lifecycle_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->forward_replay_count, 0);
+		/* PGRAC: spec-2.36 D10 — 6 NEW counters init. */
+		pg_atomic_init_u64(&ClusterGcsBlock->block_invalidate_broadcast_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->block_invalidate_ack_received_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->block_invalidate_timeout_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->block_x_forward_sent_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->block_x_granted_from_holder_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->starvation_denied_pending_x_count, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->invalidate_broadcast_request_id, 0);
+		pg_atomic_init_u32(&ClusterGcsBlock->invalidate_broadcast_expected_bm, 0);
+		pg_atomic_init_u32(&ClusterGcsBlock->invalidate_broadcast_acked_bm, 0);
+		ConditionVariableInit(&ClusterGcsBlock->invalidate_broadcast_cv);
 
 		if (gcs_block_backend_blocks == NULL)
 			return;
@@ -653,6 +689,49 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 				break;
 			}
 
+			/* PGRAC: spec-2.36 D6 (HC117) — reader starvation guard transient
+			 * denial.  N→S request was rejected because an X writer's broadcast
+			 * is in flight at the master;  reader exponential-backoffs per
+			 * cluster.gcs_block_starvation_max_retries and
+			 * cluster.gcs_block_starvation_backoff_ms.  Budget exhaustion
+			 * surfaces as 53R92 ERRCODE_CLUSTER_GCS_BLOCK_STARVATION_EXHAUSTED. */
+			if (final_status == GCS_BLOCK_REPLY_DENIED_PENDING_X) {
+				int starvation_attempt = retry_attempt;
+				int starvation_max = cluster_gcs_block_starvation_max_retries;
+				long backoff_ms;
+
+				if (starvation_attempt >= starvation_max) {
+					terminal_denied = true;
+					ereport(ERROR,
+							(errcode(ERRCODE_CLUSTER_GCS_BLOCK_STARVATION_EXHAUSTED),
+							 errmsg("cluster_gcs_block: reader starvation retry budget exhausted (HC117)")));
+					break;
+				}
+				backoff_ms = (long)cluster_gcs_block_starvation_backoff_ms
+						   * (1L << (starvation_attempt < 16 ? starvation_attempt : 16));
+				if (backoff_ms > 25000)
+					backoff_ms = 25000;
+				(void)WaitLatch(MyLatch, WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, backoff_ms,
+								WAIT_EVENT_GCS_BLOCK_STARVATION_RETRY);
+				ResetLatch(MyLatch);
+				current_master = cluster_gcs_lookup_master(tag);
+				if (retry_attempt < max_retries)
+					continue;
+				break;
+			}
+
+			/* PGRAC: spec-2.36 D6 — broadcast invalidate timeout reply maps
+			 * to 53R91.  Terminal at the sender (the master already exhausted
+			 * its retransmit budget;  retrying from the sender side would
+			 * just hammer the same broken broadcast). */
+			if (final_status == GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT) {
+				terminal_denied = true;
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_GCS_BLOCK_INVALIDATE_TIMEOUT),
+						 errmsg("cluster_gcs_block: master broadcast invalidate timed out (HC116)")));
+				break;
+			}
+
 			/*
 			 * spec-2.35 HC105 — DENIED_MASTER_NOT_HOLDER from holder forward
 			 * path is transient (holder evict race during forward); sender
@@ -1029,6 +1108,152 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	}
 
 	/*
+	 * PGRAC: spec-2.36 D6 (HC117) — S barrier reader starvation guard.
+	 *
+	 *	When an X writer's request is in flight at this master (pending_x_
+	 *	requester_node is set on the GrdEntry), short-circuit any concurrent
+	 *	N→S request with DENIED_PENDING_X.  The reader backs off (D6
+	 *	exponential backoff) and retries;  after the X writer's transition
+	 *	install ack arrives at the master, pending_x is cleared and the
+	 *	reader's next retry succeeds.
+	 *
+	 *	Why before HC101 spec-2.35 forward decision:  the S-barrier deny is
+	 *	cheaper than computing forward candidacy, and the deny must apply
+	 *	regardless of master_holder state (HC117 protects the X writer's
+	 *	priority, not just direct-grant paths).
+	 *
+	 *	Exception:  if pending_x_requester == req->sender_node, the reader
+	 *	is the X requester itself (different backend on same node) — grant
+	 *	normally (no starvation against self).
+	 */
+	if (req->transition_id == PCM_TRANS_N_TO_S) {
+		int32 pending_x;
+
+		pending_x = cluster_pcm_lock_query_pending_x_requester(req->tag);
+		if (pending_x >= 0 && pending_x != req->sender_node) {
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->starvation_denied_pending_x_count, 1);
+			gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_PENDING_X,
+								 InvalidXLogRecPtr, NULL);
+			return;
+		}
+	}
+
+	/*
+	 * PGRAC: spec-2.36 D2 (HC115/HC116/HC118) — master decision tree
+	 * X-state path for N→X / S→X requests.
+	 *
+	 *	Sets HC117 pending_x_requester immediately (so concurrent N→S
+	 *	readers see the barrier even before broadcast completes).  Then
+	 *	dispatches by pre_state:
+	 *	  N → master direct grant + ship block (reuse spec-2.33 path).
+	 *	  S → enumerate s_holders_bitmap (exclude self for S→X upgrade
+	 *		  per Q5=A merged path);  if non-empty, broadcast INVALIDATE
+	 *		  + wait all acks (HC116);  on success, fall through to
+	 *		  direct grant + ship.  On budget exhaustion, reply
+	 *		  DENIED_INVALIDATE_TIMEOUT (sender → 53R91).
+	 *	  X → forward to current x_holder peer (HC115);  holder copies +
+	 *		  XLogFlush + direct-ships X_GRANTED_FROM_HOLDER to requester;
+	 *		  requester post-install ACK to master triggers x_holder
+	 *		  switch (mirrors spec-2.35 HC111 "real cache residency").
+	 *
+	 *	On any failure path the pending_x is cleared before returning so a
+	 *	subsequent N→S retry does not see a stale barrier.
+	 */
+	if (req->transition_id == PCM_TRANS_N_TO_X
+		|| req->transition_id == PCM_TRANS_S_TO_X_UPGRADE) {
+		PcmLockMode pre_state;
+		uint64 current_lsn;
+		int32 x_holder;
+
+		current_lsn = (uint64)GetXLogInsertRecPtr();
+		cluster_pcm_lock_set_pending_x(req->tag, req->sender_node, current_lsn);
+
+		pre_state = cluster_pcm_lock_query(req->tag);
+
+		/* spec-2.36 D16 — fault injection: force the X-state decision to
+		 * fall through to the original spec-2.33 master flow. */
+		CLUSTER_INJECTION_POINT("cluster-gcs-block-x-forward-master-side");
+		if (cluster_injection_should_skip("cluster-gcs-block-x-forward-master-side")) {
+			/* Fall through; pending_x stays set, the original master path
+			 * will clear it on grant or DENIED_MASTER_NOT_HOLDER fallback. */
+			goto x_path_skipped;
+		}
+
+		if (pre_state == PCM_LOCK_MODE_X) {
+			x_holder = cluster_pcm_master_holder_node_by_tag(req->tag);
+			if (x_holder >= 0 && x_holder != cluster_node_id) {
+				GcsBlockForwardPayload fwd;
+				uint64 current_epoch = cluster_epoch_get_current();
+
+				if (req->epoch < current_epoch) {
+					cluster_pcm_lock_clear_pending_x(req->tag);
+					gcs_block_send_reply(req->sender_node, req,
+										 GCS_BLOCK_REPLY_DENIED_EPOCH_STALE,
+										 InvalidXLogRecPtr, NULL);
+					return;
+				}
+
+				memset(&fwd, 0, sizeof(fwd));
+				fwd.request_id = req->request_id;
+				fwd.epoch = current_epoch;
+				fwd.tag = req->tag;
+				fwd.original_requester_node = req->sender_node;
+				fwd.requester_backend_id = req->requester_backend_id;
+				fwd.master_node = cluster_node_id;
+				fwd.transition_id = req->transition_id;
+
+				if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, x_holder,
+											 &fwd, sizeof(fwd))
+					== CLUSTER_IC_SEND_DONE) {
+					pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_x_forward_sent_count, 1);
+					/* HC111 / HC118:  do NOT switch master_holder.node_id /
+					 * x_holder_node here.  The current X holder retains its
+					 * claim until requester post-install ACK arrives at this
+					 * master via cluster_gcs_send_transition_and_wait
+					 * (same callback path that spec-2.35 N→S uses).  This
+					 * avoids the two-X-holder transient window (codereview F2). */
+					return;
+				}
+				/* Forward send failed — fall through to original master flow
+				 * which will return DENIED_MASTER_NOT_HOLDER (sender retries). */
+				cluster_pcm_lock_clear_pending_x(req->tag);
+			}
+			/* x_holder == self or invalid: fall through (master flow handles). */
+		} else if (pre_state == PCM_LOCK_MODE_S) {
+			uint32 holders_bm = cluster_pcm_lock_query_s_holders_bitmap(req->tag);
+
+			/* Q5=A merged path:  S→X upgrade excludes self from invalidate
+			 * targets (sender is already an S holder and will transition
+			 * its own bit via apply_gcs_transition after grant). */
+			if (req->transition_id == PCM_TRANS_S_TO_X_UPGRADE
+				&& req->sender_node >= 0 && req->sender_node < 32) {
+				holders_bm &= ~((uint32)1u << req->sender_node);
+			}
+
+			if (holders_bm != 0) {
+				if (!gcs_block_broadcast_invalidate_and_wait(req, holders_bm)) {
+					/* Budget exhausted — reply DENIED_INVALIDATE_TIMEOUT;
+					 * sender backend maps to 53R91. */
+					cluster_pcm_lock_clear_pending_x(req->tag);
+					pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_invalidate_timeout_count, 1);
+					gcs_block_send_reply(req->sender_node, req,
+										 GCS_BLOCK_REPLY_DENIED_INVALIDATE_TIMEOUT,
+										 InvalidXLogRecPtr, NULL);
+					return;
+				}
+				/* All acks collected; fall through to direct grant. */
+			}
+		}
+		/* pre_state == N OR fell through after successful S broadcast OR
+		 * X branch fell through (forward send failed):  continue to the
+		 * original spec-2.33 master grant flow below.  pending_x will be
+		 * cleared when the requester sends the post-grant transition ack
+		 * (HC111 pattern).  For now, clear after a successful master grant
+		 * inside the original flow once it sees status == GRANTED. */
+	}
+x_path_skipped:
+
+	/*
 	 * PGRAC: spec-2.35 D6 (HC101) — master forward decision.
 	 *
 	 *	Before spec-2.33's direct-ship flow, check if we (master) can
@@ -1396,12 +1621,243 @@ static const ClusterICMsgTypeInfo gcs_block_forward_info = {
 	.handler = cluster_gcs_handle_block_forward_envelope,
 };
 
+
+/* ============================================================
+ * PGRAC: spec-2.36 D3 (HC116) — broadcast invalidate implementation.
+ *
+ *	Master-side sender:  claims the global broadcast slot via CAS on
+ *	invalidate_broadcast_request_id;  sends INVALIDATE to every set
+ *	bit in holders_bm;  sleeps on invalidate_broadcast_cv with timeout
+ *	= cluster.gcs_block_invalidate_ack_timeout_ms;  wakes when
+ *	acked_bm == expected_bm or timeout fires;  releases slot.
+ *
+ *	HC100 ack validation lives in the ACK handler (request_id +
+ *	epoch + tag + sender_node ∈ expected bitmap).  Failed
+ *	holders / timeouts surface as `return false` → master replies
+ *	DENIED_INVALIDATE_TIMEOUT (status 11) → sender 53R91.
+ * ============================================================ */
+static bool
+gcs_block_broadcast_invalidate_and_wait(const GcsBlockRequestPayload *req, uint32 holders_bm)
+{
+	GcsBlockInvalidatePayload inv;
+	uint64 zero_expected = 0;
+	uint64 current_epoch;
+	int n;
+	uint32 acked_bm;
+	int timeout_ms = cluster_gcs_block_invalidate_ack_timeout_ms;
+	bool full_ack = false;
+	long start_lsn;
+	long elapsed_ms = 0;
+
+	if (ClusterGcsBlock == NULL)
+		return false;
+
+	/* Claim the broadcast slot.  At most one in-flight per master node
+	 * (Q-D3 simplification).  Failure to claim → caller treats as
+	 * timeout (sender retransmits via spec-2.34 budget). */
+	if (!pg_atomic_compare_exchange_u64(&ClusterGcsBlock->invalidate_broadcast_request_id,
+										&zero_expected, req->request_id))
+		return false;
+
+	pg_atomic_write_u32(&ClusterGcsBlock->invalidate_broadcast_expected_bm, holders_bm);
+	pg_atomic_write_u32(&ClusterGcsBlock->invalidate_broadcast_acked_bm, 0);
+
+	current_epoch = cluster_epoch_get_current();
+
+	/* Build and dispatch INVALIDATE to each holder bit. */
+	memset(&inv, 0, sizeof(inv));
+	inv.request_id = req->request_id;
+	inv.epoch = current_epoch;
+	inv.tag = req->tag;
+	inv.master_node = cluster_node_id;
+	inv.invalidating_for_x_node = (uint8)(req->sender_node & 0xff);
+	/* HC83: trivial checksum over the wire payload prefix.  Holder
+	 * recomputes and drops on mismatch (already_invalidated ack). */
+	{
+		const char *bytes = (const char *)&inv;
+		uint32 c = 0;
+		size_t i;
+		for (i = 0; i < offsetof(GcsBlockInvalidatePayload, checksum); i++)
+			c = (c * 31u) + (uint8)bytes[i];
+		inv.checksum = c;
+	}
+
+	for (n = 0; n < 32; n++) {
+		if ((holders_bm & ((uint32)1u << n)) == 0)
+			continue;
+		/* D16 inject — drop a single broadcast envelope. */
+		CLUSTER_INJECTION_POINT("cluster-gcs-block-invalidate-drop-broadcast");
+		if (cluster_injection_should_skip("cluster-gcs-block-invalidate-drop-broadcast"))
+			continue;
+		(void)cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE, n,
+									   &inv, sizeof(inv));
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_invalidate_broadcast_count, 1);
+	}
+
+	/* Poll-with-CV wait for full ack collection or timeout. */
+	start_lsn = (long)GetCurrentTimestamp();
+	ConditionVariablePrepareToSleep(&ClusterGcsBlock->invalidate_broadcast_cv);
+	for (;;) {
+		acked_bm = pg_atomic_read_u32(&ClusterGcsBlock->invalidate_broadcast_acked_bm);
+		if ((acked_bm & holders_bm) == holders_bm) {
+			full_ack = true;
+			break;
+		}
+		elapsed_ms = (long)((GetCurrentTimestamp() - start_lsn) / 1000);
+		if (elapsed_ms >= timeout_ms)
+			break;
+		if (ConditionVariableTimedSleep(&ClusterGcsBlock->invalidate_broadcast_cv,
+										timeout_ms - elapsed_ms,
+										WAIT_EVENT_GCS_BLOCK_INVALIDATE_ACK_WAIT))
+			break;	/* timeout */
+	}
+	ConditionVariableCancelSleep();
+
+	/* Release the slot. */
+	pg_atomic_write_u64(&ClusterGcsBlock->invalidate_broadcast_request_id, 0);
+
+	return full_ack;
+}
+
+
+/* ============================================================
+ * PGRAC: spec-2.36 D4 — invalidate handler (holder side).
+ *
+ *	Receives PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE from master.  Validates
+ *	epoch (HC100), looks up local buffer state, calls
+ *	cluster_bufmgr_invalidate_block_for_gcs which:
+ *	  - XLogFlush page_lsn (HC123: lost-write safety since no PI copy)
+ *	  - InvalidateBuffer
+ *	then applies PCM transition (S→N invalidate or X→N downgrade) and
+ *	replies ACK msg_type 18 to master.
+ * ============================================================ */
+extern bool cluster_bufmgr_invalidate_block_for_gcs(BufferTag tag, PcmLockMode expected_mode,
+													XLogRecPtr *out_page_lsn);
+
+static void
+cluster_gcs_handle_block_invalidate_envelope(const ClusterICEnvelope *env, const void *payload)
+{
+	const GcsBlockInvalidatePayload *inv = (const GcsBlockInvalidatePayload *)payload;
+	GcsBlockInvalidateAckPayload ack;
+	PcmLockMode pre_state;
+	XLogRecPtr page_lsn = InvalidXLogRecPtr;
+	uint8 ack_status = 0;	/* OK */
+	uint64 current_epoch;
+
+	/* D16 inject — stall ack for timeout testing. */
+	CLUSTER_INJECTION_POINT("cluster-gcs-block-invalidate-stall-ack");
+	if (cluster_injection_should_skip("cluster-gcs-block-invalidate-stall-ack"))
+		return;	/* never ack — master sees timeout */
+
+	current_epoch = cluster_epoch_get_current();
+	if (inv->epoch < current_epoch) {
+		ack_status = 1; /* epoch_stale */
+		goto send_ack;
+	}
+
+	pre_state = cluster_pcm_lock_query(inv->tag);
+	if (pre_state == PCM_LOCK_MODE_N) {
+		ack_status = 2; /* already_invalidated */
+		goto send_ack;
+	}
+
+	if (cluster_bufmgr_invalidate_block_for_gcs(inv->tag, pre_state, &page_lsn)) {
+		PcmLockTransition trans = (pre_state == PCM_LOCK_MODE_X)
+			? PCM_TRANS_X_TO_N_DOWNGRADE
+			: PCM_TRANS_S_TO_N_INVALIDATE;
+		(void)cluster_pcm_lock_apply_gcs_transition(inv->tag, trans, cluster_node_id);
+	} else {
+		ack_status = 2; /* race: not resident */
+	}
+
+send_ack:
+	memset(&ack, 0, sizeof(ack));
+	ack.request_id = inv->request_id;
+	ack.epoch = inv->epoch;
+	ack.tag = inv->tag;
+	ack.sender_node = cluster_node_id;
+	ack.ack_status = ack_status;
+	{
+		const char *bytes = (const char *)&ack;
+		uint32 c = 0;
+		size_t i;
+		for (i = 0; i < offsetof(GcsBlockInvalidateAckPayload, checksum); i++)
+			c = (c * 31u) + (uint8)bytes[i];
+		ack.checksum = c;
+	}
+
+	(void)cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE_ACK,
+								   inv->master_node, &ack, sizeof(ack));
+}
+
+
+/* ============================================================
+ * PGRAC: spec-2.36 D3 — invalidate ACK handler (master side).
+ *
+ *	HC100 stale-reply validation:  request_id MUST match the current
+ *	in-flight broadcast slot;  tag MUST match;  epoch MUST match
+ *	(stale rejected silently).  On valid ack, sets the sender's bit
+ *	in invalidate_broadcast_acked_bm and broadcasts the CV.
+ * ============================================================ */
+static void
+cluster_gcs_handle_block_invalidate_ack_envelope(const ClusterICEnvelope *env,
+												 const void *payload)
+{
+	const GcsBlockInvalidateAckPayload *ack = (const GcsBlockInvalidateAckPayload *)payload;
+	uint64 current_req_id;
+	uint32 expected_bm;
+
+	if (ClusterGcsBlock == NULL)
+		return;
+
+	current_req_id = pg_atomic_read_u64(&ClusterGcsBlock->invalidate_broadcast_request_id);
+	if (current_req_id != ack->request_id) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->stale_reply_drop_count, 1);
+		return;
+	}
+
+	expected_bm = pg_atomic_read_u32(&ClusterGcsBlock->invalidate_broadcast_expected_bm);
+	if (ack->sender_node < 0 || ack->sender_node >= 32) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->stale_reply_drop_count, 1);
+		return;
+	}
+	if ((expected_bm & ((uint32)1u << ack->sender_node)) == 0) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->stale_reply_drop_count, 1);
+		return;
+	}
+
+	pg_atomic_fetch_or_u32(&ClusterGcsBlock->invalidate_broadcast_acked_bm,
+						   (uint32)1u << ack->sender_node);
+	pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_invalidate_ack_received_count, 1);
+	ConditionVariableBroadcast(&ClusterGcsBlock->invalidate_broadcast_cv);
+}
+
+
+static const ClusterICMsgTypeInfo gcs_block_invalidate_info = {
+	.msg_type = PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE,
+	.name = "gcs_block_invalidate",
+	.allowed_producer_mask = CLUSTER_IC_PRODUCER_BUFFER_CLIENTS | CLUSTER_IC_PRODUCER_LMON,
+	.broadcast_ok = false,
+	.handler = cluster_gcs_handle_block_invalidate_envelope,
+};
+
+static const ClusterICMsgTypeInfo gcs_block_invalidate_ack_info = {
+	.msg_type = PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE_ACK,
+	.name = "gcs_block_invalidate_ack",
+	.allowed_producer_mask = CLUSTER_IC_PRODUCER_BUFFER_CLIENTS | CLUSTER_IC_PRODUCER_LMON,
+	.broadcast_ok = false,
+	.handler = cluster_gcs_handle_block_invalidate_ack_envelope,
+};
+
+
 void
 cluster_gcs_register_block_msg_types(void)
 {
 	cluster_ic_register_msg_type(&gcs_block_request_info);
 	cluster_ic_register_msg_type(&gcs_block_reply_info);
 	cluster_ic_register_msg_type(&gcs_block_forward_info);
+	cluster_ic_register_msg_type(&gcs_block_invalidate_info);
+	cluster_ic_register_msg_type(&gcs_block_invalidate_ack_info);
 }
 
 
@@ -1543,6 +1999,53 @@ uint64
 cluster_gcs_get_block_forward_replay_count(void)
 {
 	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->forward_replay_count) : 0;
+}
+
+/* PGRAC: spec-2.36 D10 — 6 NEW counter accessors for CF 3-way protocol. */
+uint64
+cluster_gcs_get_block_invalidate_broadcast_count(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_invalidate_broadcast_count)
+			   : 0;
+}
+
+uint64
+cluster_gcs_get_block_invalidate_ack_received_count(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_invalidate_ack_received_count)
+			   : 0;
+}
+
+uint64
+cluster_gcs_get_block_invalidate_timeout_count(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_invalidate_timeout_count)
+			   : 0;
+}
+
+uint64
+cluster_gcs_get_block_x_forward_sent_count(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->block_x_forward_sent_count) : 0;
+}
+
+uint64
+cluster_gcs_get_block_x_granted_from_holder_count(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_x_granted_from_holder_count)
+			   : 0;
+}
+
+uint64
+cluster_gcs_get_starvation_denied_pending_x_count(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->starvation_denied_pending_x_count)
+			   : 0;
 }
 
 /* PGRAC: spec-2.35 D3 (HC110) — extern bump for master_holder lifecycle. */

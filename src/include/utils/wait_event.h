@@ -341,6 +341,16 @@ typedef enum {
 	 * (HC94 lazy retry annotation). */
 	WAIT_EVENT_GCS_BLOCK_RETRANSMIT_WAIT,
 	WAIT_EVENT_GCS_BLOCK_EPOCH_STALE_RETRY,
+	/* PGRAC (spec-2.36 D8 NEW 3 wait events; CF 3-way protocol).
+	 * GCS_BLOCK_INVALIDATE_BROADCAST — master backend sleep while
+	 * enumerating holders + dispatching INVALIDATE envelopes.
+	 * GCS_BLOCK_INVALIDATE_ACK_WAIT — master backend ConditionVariable
+	 * sleep waiting for INVALIDATE_ACK from all holders in bitmap.
+	 * GCS_BLOCK_STARVATION_RETRY — reader backend sleep between
+	 * DENIED_PENDING_X retry attempts (S barrier backoff). */
+	WAIT_EVENT_GCS_BLOCK_INVALIDATE_BROADCAST,
+	WAIT_EVENT_GCS_BLOCK_INVALIDATE_ACK_WAIT,
+	WAIT_EVENT_GCS_BLOCK_STARVATION_RETRY,
 
 	/* Cluster: BufferShip (5 events) -- subsystem #5 */
 	WAIT_EVENT_BUFFER_SHIP_CR_BUILD = PG_WAIT_CLUSTER_BUFFERSHIP,

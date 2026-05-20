@@ -150,8 +150,14 @@ typedef enum ClusterICMsgType {
 	PGRAC_IC_MSG_GCS_BLOCK_REPLY
 	= 15, /* PGRAC: spec-2.33 D1 — Cache Fusion block ship reply wire (8KB payload) */
 	PGRAC_IC_MSG_GCS_BLOCK_FORWARD
-	= 16 /* PGRAC: spec-2.35 D1 — Cache Fusion 2-way master→holder forward wire (64B) */
-		 /* values 17..255 available for future sub-spec; never reuse 0..16 */
+	= 16, /* PGRAC: spec-2.35 D1 — Cache Fusion 2-way master→holder forward wire (64B) */
+	PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE
+	= 17, /* PGRAC: spec-2.36 D1 — CF 3-way master→S/X holder invalidate request (64B) */
+	PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE_ACK
+	= 18  /* PGRAC: spec-2.36 D1 — CF 3-way holder→master invalidate ack (64B);
+		   * MUST be a distinct msg_type from INVALIDATE — request+ack are both
+		   * 64B fixed, cannot demux by payload length (codereview F1 P0). */
+		  /* values 19..255 available for future sub-spec; never reuse 0..18 */
 } ClusterICMsgType;
 
 

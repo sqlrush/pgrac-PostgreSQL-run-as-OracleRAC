@@ -46,11 +46,11 @@ $node->start;
 
 
 # ----------
-# Total row count: 85 (spec-2.33 83 + spec-2.34 +2 reliability hardening).
+# Total row count: 88 (spec-2.34 85 + spec-2.36 +3 reliability hardening).
 # ----------
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'85',
+	'88',
 	'pg_stat_cluster_wait_events returns 85 rows (spec-2.34 +2 reliability hardening)');
 
 
@@ -69,7 +69,7 @@ is($node->safe_psql('postgres',
 # ----------
 my %expected = (
 	'Cluster: GES' => 5,
-	'Cluster: PCM' => 16,
+	'Cluster: PCM' => 19,
 	'Cluster: BufferShip' => 5,
 	'Cluster: SCN' => 4,
 	'Cluster: Reconfig' => 5,

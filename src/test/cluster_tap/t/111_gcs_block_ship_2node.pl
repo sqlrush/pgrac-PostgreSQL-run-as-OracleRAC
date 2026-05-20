@@ -14,7 +14,7 @@
 #	  L4  4 NEW wait events registered in pg_stat_cluster_wait_events:
 #	       ClusterGCSBlockShipWait, ClusterGCSBlockRequestDispatch,
 #	       ClusterGCSBlockReplyDispatch, ClusterGCSBlockChecksumFail
-#	  L5  CLUSTER_WAIT_EVENTS_COUNT = 85 (spec-2.34 +2 after spec-2.33)
+#	  L5  CLUSTER_WAIT_EVENTS_COUNT = 88 (spec-2.36 +2 after spec-2.33)
 #	  L6  cluster.gcs_reply_timeout_ms GUC visible + default 5000 +
 #	       PGC_SUSET context
 #	  L7  pg_cluster_ic_msg_types registry has gcs_block_request +
@@ -153,7 +153,7 @@ for my $we_name (
 is($pair->node0->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '85',
+   '88',
    'L5 total cluster wait event count = 85 (spec-2.33 83 + spec-2.34 2 NEW)');
 
 

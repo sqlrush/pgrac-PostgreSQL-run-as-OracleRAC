@@ -6114,4 +6114,78 @@ cluster_bufmgr_copy_block_for_gcs(BufferTag tag, XLogRecPtr *out_page_lsn, char 
 	cluster_bufmgr_unpin_for_gcs(buf);
 	return stable;
 }
+
+/* ========================================================================
+ * PGRAC MODIFICATIONS by SqlRush — spec-2.36 D4 (HC118 / HC123).
+ *
+ *   cluster_bufmgr_invalidate_block_for_gcs(tag, expected_mode, *out_page_lsn)
+ *   — by-tag invalidate wrapper called from the holder-side invalidate
+ *   handler in cluster_gcs_block.c.  InvalidateBuffer is a static helper
+ *   inside this file (bufmgr.c), so the cluster/ subdirectory cannot
+ *   call it directly;  this wrapper exposes a controlled entrypoint:
+ *
+ *     1. Partition lookup by tag.
+ *     2. Header lock + tag recheck + BM_VALID gate.
+ *     3. XLogFlush(page_lsn) when BM_DIRTY (HC123 invariant — lost-
+ *        write safety since spec-2.36 ships no PI buffer copy).
+ *     4. InvalidateBuffer to drop the local copy (best-effort).
+ *
+ *   `expected_mode` is advisory.
+ * ======================================================================== */
+bool
+cluster_bufmgr_invalidate_block_for_gcs(BufferTag tag, PcmLockMode expected_mode,
+										XLogRecPtr *out_page_lsn)
+{
+	uint32		hashcode;
+	LWLock	   *partition_lock;
+	int			buf_id;
+	BufferDesc *buf;
+	uint32		buf_state;
+	XLogRecPtr	page_lsn = InvalidXLogRecPtr;
+	bool		was_dirty = false;
+
+	(void) expected_mode;
+
+	if (out_page_lsn != NULL)
+		*out_page_lsn = InvalidXLogRecPtr;
+
+	hashcode = BufTableHashCode(&tag);
+	partition_lock = BufMappingPartitionLock(hashcode);
+
+	LWLockAcquire(partition_lock, LW_SHARED);
+	buf_id = BufTableLookup(&tag, hashcode);
+	if (buf_id < 0)
+	{
+		LWLockRelease(partition_lock);
+		return false;
+	}
+	buf = GetBufferDescriptor(buf_id);
+
+	buf_state = LockBufHdr(buf);
+	if (!BufferTagsEqual(&buf->tag, &tag) || (buf_state & BM_VALID) == 0)
+	{
+		UnlockBufHdr(buf, buf_state);
+		LWLockRelease(partition_lock);
+		return false;
+	}
+	was_dirty = (buf_state & BM_DIRTY) != 0;
+	{
+		Page		page = (Page) BufHdrGetBlock(buf);
+
+		page_lsn = PageGetLSN(page);
+	}
+	UnlockBufHdr(buf, buf_state);
+	LWLockRelease(partition_lock);
+
+	if (out_page_lsn != NULL)
+		*out_page_lsn = page_lsn;
+
+	if (was_dirty && !XLogRecPtrIsInvalid(page_lsn))
+		XLogFlush(page_lsn);
+
+	InvalidateBuffer(buf);
+
+	return true;
+}
+
 #endif							/* USE_PGRAC_CLUSTER */

@@ -538,5 +538,19 @@ extern int cluster_gcs_block_retransmit_max_retries;
 extern int cluster_gcs_block_retransmit_initial_backoff_ms;
 extern int cluster_gcs_block_dedup_max_entries;
 
+/*
+ * PGRAC: spec-2.36 D8 — 3 NEW GUC for CF 3-way protocol.
+ *
+ *	cluster.gcs_block_invalidate_ack_timeout_ms — HC116;  master single
+ *	INVALIDATE_ACK wait deadline (default 1500).
+ *	cluster.gcs_block_starvation_backoff_ms — HC117;  reader DENIED_
+ *	PENDING_X backoff base (default 100).
+ *	cluster.gcs_block_starvation_max_retries — HC117;  reader retry
+ *	budget (default 8).
+ */
+extern int cluster_gcs_block_invalidate_ack_timeout_ms;
+extern int cluster_gcs_block_starvation_backoff_ms;
+extern int cluster_gcs_block_starvation_max_retries;
+
 
 #endif /* CLUSTER_GUC_H */

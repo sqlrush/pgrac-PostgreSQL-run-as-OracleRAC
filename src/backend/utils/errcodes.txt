@@ -548,6 +548,20 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 # so ops can distinguish GCS reliability failure from backend cancellation.
 53R90    E    ERRCODE_CLUSTER_GCS_BLOCK_RETRANSMIT_EXHAUSTED                  cluster_gcs_block_retransmit_exhausted
 
+# spec-2.36 D8 (HC116):  GCS block 3-way invalidate broadcast ack collection
+# timeout.  Master could not collect INVALIDATE_ACK msg_type 18 from all S/X
+# holders enumerated from s_holders_bitmap within retransmit budget;  master
+# replies DENIED_INVALIDATE_TIMEOUT to original X requester;  sender backend
+# maps reply status 11 to ereport(53R91).
+53R91    E    ERRCODE_CLUSTER_GCS_BLOCK_INVALIDATE_TIMEOUT                    cluster_gcs_block_invalidate_timeout
+
+# spec-2.36 D8 (HC117):  reader starvation guard retry budget exhaustion.
+# Reader backend sees DENIED_PENDING_X (HC117 S barrier) and exponential-
+# backoffs per cluster.gcs_block_starvation_max_retries (default 8 retries,
+# 100 × 2^attempt ms);  budget exhausted → ereport(53R92) so reader's
+# upper-layer transaction can retry or abort.
+53R92    E    ERRCODE_CLUSTER_GCS_BLOCK_STARVATION_EXHAUSTED                  cluster_gcs_block_starvation_exhausted
+
 Section: Class 54 - Program Limit Exceeded
 
 # this is for wired-in limits, not resource exhaustion problems (class borrowed from DB2)

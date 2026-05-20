@@ -1009,6 +1009,23 @@ pgstat_get_wait_cluster_pcm(WaitEventCluster w)
 		 * lazy retry (HC94);  re-lookup_master + retransmit follow. */
 		event_name = "ClusterGCSBlockEpochStaleRetry";
 		break;
+	case WAIT_EVENT_GCS_BLOCK_INVALIDATE_BROADCAST:
+		/* PGRAC (spec-2.36 D8): master backend sleep during INVALIDATE
+		 * dispatch loop while enumerating S/X holders bitmap. */
+		event_name = "ClusterGCSBlockInvalidateBroadcast";
+		break;
+	case WAIT_EVENT_GCS_BLOCK_INVALIDATE_ACK_WAIT:
+		/* PGRAC (spec-2.36 D8): master backend CV sleep waiting for
+		 * INVALIDATE_ACK msg_type 18 from all enumerated holders;
+		 * timeout maps to DENIED_INVALIDATE_TIMEOUT + 53R91. */
+		event_name = "ClusterGCSBlockInvalidateAckWait";
+		break;
+	case WAIT_EVENT_GCS_BLOCK_STARVATION_RETRY:
+		/* PGRAC (spec-2.36 D8): reader backend sleep between
+		 * DENIED_PENDING_X retry attempts (HC117 S barrier
+		 * exponential backoff). */
+		event_name = "ClusterGCSBlockStarvationRetry";
+		break;
 	default:
 		break;
 	}

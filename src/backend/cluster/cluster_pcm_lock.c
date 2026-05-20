@@ -186,25 +186,47 @@ struct GrdEntry {
 	TimestampTz last_transition_at;			 /*  8B [ 48,  56) */
 	pg_atomic_uint64 transition_count_local; /*  8B [ 56,  64) per-entry monotone */
 	ClusterGrdHolderId master_holder;		 /* 24B [ 64,  88) 4-tuple identity */
+	/* PGRAC: spec-2.36 D5 HC117 NEW — S barrier reader starvation guard.
+	 * pending_x_requester_node:	-1 = none; otherwise cluster_node_id
+	 *								of the X requester whose request is in
+	 *								flight (master-side broadcast pending).
+	 *								Read by N→S handler to short-circuit
+	 *								with DENIED_PENDING_X reply (HC117).
+	 * pending_x_since_lsn:		observability only — XLogCtl LSN at the
+	 *								moment pending_x was set;  do NOT use
+	 *								for timeout / retry math (LSN does not
+	 *								advance on idle DB;  see Q7 rationale).
+	 * Cleared paths: (a) X grant install ack;  (b) reconfig epoch advance;
+	 * (c) HC124 LMON node-dead sweep when requester crashes. */
+	int32 pending_x_requester_node;			 /*  4B [ 88,  92) -1 = none */
+	int32 _pad_pending_x;					 /*  4B [ 92,  96) 8B align */
+	uint64 pending_x_since_lsn;				 /*  8B [ 96, 104) HC117 observability */
 	ConditionVariable wait_cv;				 /* spec-2.31 D1 v0.4 incompatible state wait */
 	LWLockPadded entry_lock;				 /*128B PG_CACHE_LINE_SIZE — must stay last */
 };
 
 /*
- * PGRAC: spec-2.31 D1 v0.4 F2 — GrdEntry size bump from spec-2.30's 216B.
+ * PGRAC: spec-2.31 D1 v0.4 F2 / spec-2.36 D5 — GrdEntry size bumps.
  *
- *	`sizeof(ConditionVariable) == sizeof(slock_t) + sizeof(proclist_head)`
- *	depends on platform alignment (slock_t typically 4B on macOS / Linux;
- *	proclist_head = 8B).  We assert the actual measured size matches an
- *	expected value to catch silent layout drift; if the platform produces
- *	a different size, the assertion fires and the constant must be amended
- *	(with spec Hardening appendix) before ship.
+ *	spec-2.30 baseline:	216B (no s_holder_refcount_local, no wait_cv).
+ *	spec-2.31 D1 v0.4:	232B (added s_holder_refcount_local 2B + 2B
+ *						align;  + ConditionVariable wait_cv 12-16B;
+ *						+ LWLockPadded re-alignment).
+ *	spec-2.36 D5 v0.3:	248B (added pending_x_requester_node 4B +
+ *						_pad_pending_x 4B + pending_x_since_lsn 8B
+ *						= +16B for HC117 S barrier;  inserted between
+ *						master_holder and wait_cv).
+ *
+ *	`sizeof(ConditionVariable)` depends on platform alignment;  the
+ *	assertion fires if the actual measured size diverges from the
+ *	expected constant on this build platform, so silent layout drift
+ *	(e.g. a future struct change in a dependency) cannot slip past CI.
  */
-StaticAssertDecl(sizeof(struct GrdEntry) == 232,
-				 "spec-2.31 D1 v0.4 GrdEntry size 216 → 232 (added s_holder_refcount_local "
-				 "2B replacing 4B _pad1 → 2B + 2B align; + ConditionVariable wait_cv 12-16B "
-				 "+ LWLockPadded alignment); spec-2.30 was 216B; spec-2.30 Hardening v1.0.2 "
-				 "forward-link appendix to be added at ship-level closeout");
+StaticAssertDecl(sizeof(struct GrdEntry) == 248,
+				 "spec-2.36 D5 GrdEntry size 232 → 248 (added pending_x_requester_node 4B + "
+				 "_pad_pending_x 4B + pending_x_since_lsn 8B = +16B for HC117 S barrier);  "
+				 "spec-2.31 baseline was 232B;  amend this constant with Hardening appendix "
+				 "if a different platform produces a different size");
 
 
 /*
@@ -418,6 +440,139 @@ cluster_pcm_master_holder_node_by_tag(BufferTag tag)
 	LWLockRelease(&ClusterPcm->htab_lock.lock);
 
 	return node_id;
+}
+
+
+/* ============================================================
+ * PGRAC: spec-2.36 D5 HC117 / HC124 — S barrier helpers.
+ *
+ *	Implementation contract:
+ *	- set/clear mutate the field under entry_lock EXCLUSIVE because
+ *	  the field is read+modified by N→S decision path and N→X grant
+ *	  install ack path concurrently;  spec-2.30 entry_lock is also
+ *	  taken on every state transition so the cost is bounded.
+ *	- query takes htab_lock SHARED + reads pending_x_requester_node
+ *	  with one atomic load equivalent (int32, naturally aligned);
+ *	  callers are advisory readers that backoff retry on mismatch,
+ *	  so a torn read would only delay the next attempt one round
+ *	  trip (acceptable per HC117 backoff semantics).
+ *	- clear_pending_x_for_node (HC124) scans all entries under
+ *	  htab_lock SHARED;  per-entry mutation under entry_lock
+ *	  EXCLUSIVE;  idempotent recheck inside the lock.
+ * ============================================================ */
+void
+cluster_pcm_lock_set_pending_x(BufferTag tag, int32 requester_node, uint64 current_lsn)
+{
+	struct GrdEntry *entry;
+	bool found;
+
+	if (cluster_pcm_htab == NULL)
+		return;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL)
+	{
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		entry->pending_x_requester_node = requester_node;
+		entry->pending_x_since_lsn = current_lsn;
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+}
+
+void
+cluster_pcm_lock_clear_pending_x(BufferTag tag)
+{
+	struct GrdEntry *entry;
+	bool found;
+
+	if (cluster_pcm_htab == NULL)
+		return;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL)
+	{
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		entry->pending_x_requester_node = -1;
+		entry->pending_x_since_lsn = 0;
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+}
+
+int32
+cluster_pcm_lock_query_pending_x_requester(BufferTag tag)
+{
+	struct GrdEntry *entry;
+	bool found;
+	int32 requester = -1;
+
+	if (cluster_pcm_htab == NULL)
+		return -1;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL)
+		requester = entry->pending_x_requester_node;
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return requester;
+}
+
+uint32
+cluster_pcm_lock_query_s_holders_bitmap(BufferTag tag)
+{
+	struct GrdEntry *entry;
+	bool found;
+	uint32 bitmap = 0;
+
+	if (cluster_pcm_htab == NULL)
+		return 0;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
+	if (found && entry != NULL)
+		bitmap = pg_atomic_read_u32(&entry->s_holders_bitmap);
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return bitmap;
+}
+
+uint64
+cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node)
+{
+	HASH_SEQ_STATUS scan;
+	struct GrdEntry *entry;
+	uint64 cleared = 0;
+
+	if (cluster_pcm_htab == NULL || dead_node < 0)
+		return 0;
+
+	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
+	hash_seq_init(&scan, cluster_pcm_htab);
+	while ((entry = (struct GrdEntry *)hash_seq_search(&scan)) != NULL)
+	{
+		/* Fast SHARED read first — most entries will not match. */
+		if (entry->pending_x_requester_node != dead_node)
+			continue;
+		LWLockAcquire(&entry->entry_lock.lock, LW_EXCLUSIVE);
+		/* HC124 idempotent recheck under entry_lock: another path
+		 * (X grant install ack / reconfig epoch advance) may have
+		 * cleared the field between our SHARED read and the
+		 * EXCLUSIVE acquire. */
+		if (entry->pending_x_requester_node == dead_node)
+		{
+			entry->pending_x_requester_node = -1;
+			entry->pending_x_since_lsn = 0;
+			cleared++;
+		}
+		LWLockRelease(&entry->entry_lock.lock);
+	}
+	LWLockRelease(&ClusterPcm->htab_lock.lock);
+
+	return cleared;
 }
 
 
@@ -1518,6 +1673,9 @@ pcm_get_or_create_entry(BufferTag tag)
 		pg_atomic_init_u32(&entry->pi_holders_bitmap, 0);
 		pg_atomic_init_u64(&entry->transition_count_local, 0);
 		entry->s_holder_refcount_local = 0;		/* PGRAC: spec-2.31 D1 v0.4 */
+		/* PGRAC: spec-2.36 D5 HC117 — S barrier fields default to "none". */
+		entry->pending_x_requester_node = -1;
+		entry->pending_x_since_lsn = 0;
 		ConditionVariableInit(&entry->wait_cv); /* PGRAC: spec-2.31 D1 v0.4 */
 		LWLockInitialize(&entry->entry_lock.lock, LWTRANCHE_CLUSTER_PCM);
 	}

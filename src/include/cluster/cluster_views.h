@@ -51,7 +51,7 @@
  *	internal table in cluster_views.c stays in sync with the enum.
  */
 #define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
-	85 /* spec-2.34 D7: +2 GCS block reliability wait events (was 83 spec-2.33) */
+	88 /* spec-2.36 D8: +3 CF 3-way protocol wait events (invalidate broadcast/ack/starvation retry); was 85 spec-2.34 */
 
 
 /*

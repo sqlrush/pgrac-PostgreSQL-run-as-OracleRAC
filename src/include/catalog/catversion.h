@@ -373,7 +373,55 @@
  *   cluster-gcs-block-evict-holder-before-ship);
  * HC101-HC114 14 NEW.  catversion bump for catalog tooling + wire ABI
  * reserved 重解读 + bufmgr hook 重构. */
-#define CATALOG_VERSION_NO 202605420
+/* spec-2.36 D7 (2026-05-20):  Cache Fusion 3-way protocol — X writer
+ * transfer + reader starvation guard.
+ * NEW ClusterICMsgType:  PGRAC_IC_MSG_GCS_BLOCK_INVALIDATE=17 (master→
+ *   S/X holder invalidate request 64B) + PGRAC_IC_MSG_GCS_BLOCK_
+ *   INVALIDATE_ACK=18 (holder→master ack 64B);  request+ack MUST be
+ *   distinct msg_type because both are 64B fixed payload and IC
+ *   dispatcher demuxes by msg_type only (codereview F1 P0).
+ * NEW GcsBlockReplyStatus values (8→11):  X_GRANTED_FROM_HOLDER=9
+ *   (X-flavored holder direct ship for 3-way writer transfer;  reuses
+ *   spec-2.35 HC108 authorized chain) + DENIED_PENDING_X=10 (HC117
+ *   reader starvation guard transient deny + backoff retry) +
+ *   DENIED_INVALIDATE_TIMEOUT=11 (master invalidate ack budget
+ *   exhausted;  sender maps to 53R91).
+ * NEW GcsBlockInvalidatePayload 64B + GcsBlockInvalidateAckPayload
+ *   64B (HC83 CRC32C @ offset 48;  identical layout offsets for
+ *   symmetric header parsing).
+ * GrdEntry layout extends 232→248 (+16B):  new pending_x_requester_
+ *   node int32 (-1 = none) + pending_x_reserved int32 pad +
+ *   pending_x_since_lsn uint64 (HC117 observability;  LSN avoids clock
+ *   drift, idle DB acceptable per Q7).
+ * NEW HC115 master decision tree X-state path + HC116 broadcast
+ *   invalidate sync ack + HC117 S barrier reader starvation guard +
+ *   HC118 X transfer holder direct ship + HC120 dedup INVALIDATE_IN_
+ *   FLIGHT state + HC121 ClusterTriple 3-node TAP fixture + HC123
+ *   XLogFlush-before-X-transfer invariant + HC124 node-dead pending_x
+ *   sweep correctness contract.
+ * NEW cluster_bufmgr_invalidate_block_for_gcs(tag, expected_mode,
+ *   *out_lsn) bufmgr internal helper (InvalidateBuffer is PG static,
+ *   must wrap in bufmgr.c;  mirrors spec-2.35 HC112 release_buffer_
+ *   for_eviction pattern).
+ * 3 NEW GUC:  cluster.gcs_block_invalidate_ack_timeout_ms PGC_SUSET
+ *   1500 + cluster.gcs_block_starvation_backoff_ms PGC_SUSET 100 +
+ *   cluster.gcs_block_starvation_max_retries PGC_SUSET 8.
+ * 2 NEW SQLSTATE:  53R91 cluster_gcs_block_invalidate_timeout +
+ *   53R92 cluster_gcs_block_starvation_exhausted.
+ * 3 NEW wait events (CLUSTER_WAIT_EVENTS_COUNT 85→88):
+ *   ClusterGCSBlockInvalidateBroadcast + ClusterGCSBlockInvalidate
+ *   AckWait + ClusterGCSBlockStarvationRetry.
+ * 6 NEW counters exposed via dump_gcs (31→37 rows):
+ *   block_invalidate_broadcast_count / block_invalidate_ack_received_
+ *   count / block_invalidate_timeout_count / block_x_forward_sent_
+ *   count / block_x_granted_from_holder_count / starvation_denied_
+ *   pending_x_count.
+ * 4 NEW inject points (106→110):  cluster-gcs-block-invalidate-drop-
+ *   broadcast + cluster-gcs-block-invalidate-stall-ack + cluster-gcs-
+ *   block-x-forward-master-side + cluster-gcs-block-starvation-force-
+ *   denied.  catversion bump for catalog tooling + wire ABI extension
+ *   + GrdEntry sizeof bump. */
+#define CATALOG_VERSION_NO 202605430
 
 /* spec-2.16 D19 (2026-05-29):  GesRequestPayload + GesReplyPayload wire
  * payload structs (48B each + StaticAssertDecl);  ClusterGrdHolderId

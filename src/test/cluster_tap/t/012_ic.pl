@@ -102,13 +102,13 @@ like($stderr, qr/cannot be changed without restarting the server/i,
 # ----------
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'85',
-	'pg_stat_cluster_wait_events returns 85 rows after spec-2.34 D7');
+	'88',
+	'pg_stat_cluster_wait_events returns 88 rows after spec-2.36 D7');
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'85',
-	'pg_stat_gcluster_wait_events returns 85 rows after spec-2.34 D7');
+	'88',
+	'pg_stat_gcluster_wait_events returns 88 rows after spec-2.36 D7');
 
 
 # ----------

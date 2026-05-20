@@ -344,6 +344,31 @@ extern uint64 cluster_pcm_get_trans_s_to_x_cleanout_count(void);
  */
 extern void cluster_pcm_lock_module_init(void);
 
+/* ============================================================
+ * PGRAC: spec-2.36 D5 HC117 + HC124 — S barrier helpers.
+ *
+ *   cluster_pcm_lock_set_pending_x — record that an X request is
+ *     in flight at this master for `tag`;  N→S handlers short-
+ *     circuit with DENIED_PENDING_X while set.
+ *   cluster_pcm_lock_clear_pending_x — clear the field after X
+ *     grant install ack OR reconfig epoch advance.
+ *   cluster_pcm_lock_query_pending_x_requester — read for N→S
+ *     decision (returns -1 = none).
+ *   cluster_pcm_lock_clear_pending_x_for_node (HC124) — LMON
+ *     node-dead sweep;  scans all GrdEntry and clears any
+ *     pending_x_requester_node matching the dead node.  Must
+ *     be idempotent under concurrent X grant clear races.
+ * ============================================================ */
+extern void cluster_pcm_lock_set_pending_x(BufferTag tag, int32 requester_node,
+										   uint64 current_lsn);
+extern void cluster_pcm_lock_clear_pending_x(BufferTag tag);
+extern int32 cluster_pcm_lock_query_pending_x_requester(BufferTag tag);
+extern uint64 cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node);
+
+/* PGRAC: spec-2.36 D2/D3 — master broadcast invalidate needs raw bitmap
+ * read.  Returns 0 if entry not present (treated as "no holders"). */
+extern uint32 cluster_pcm_lock_query_s_holders_bitmap(BufferTag tag);
+
 
 #endif /* USE_PGRAC_CLUSTER */
 #endif /* CLUSTER_PCM_LOCK_H */
