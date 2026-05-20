@@ -39,6 +39,7 @@
 #include "cluster/cluster_grd_outbound.h" /* cluster_grd_outbound_enqueue_cleanup_release (D10) */
 #include "cluster/cluster_lmd.h"		  /* spec-2.24 D10 cleanup_*_count_inc */
 #include "cluster/cluster_guc.h"		  /* cluster_node_id, cluster_grd_max_entries */
+#include "cluster/cluster_pcm_lock.h"	  /* spec-2.36 HC124 pending_x node-dead cleanup */
 #include "cluster/cluster_signal.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h" /* spec-2.16 D8 newly-dead bitmap diff */
@@ -1590,6 +1591,13 @@ cluster_grd_cleanup_on_node_dead(int32 dead_node_id)
 	HASH_SEQ_STATUS status;
 	ClusterGrdEntry *entry;
 	int swept = 0;
+	uint64 pending_x_cleared = 0;
+
+	pending_x_cleared = cluster_pcm_lock_clear_pending_x_for_node(dead_node_id);
+	if (pending_x_cleared > 0)
+		ereport(DEBUG1, (errmsg_internal("cluster_grd_cleanup_on_node_dead(%d): "
+										 "cleared " UINT64_FORMAT " PCM pending_x entries",
+										 dead_node_id, pending_x_cleared)));
 
 	if (cluster_grd_entry_htab == NULL) {
 		ereport(DEBUG2, (errmsg_internal("cluster_grd_cleanup_on_node_dead(%d): "

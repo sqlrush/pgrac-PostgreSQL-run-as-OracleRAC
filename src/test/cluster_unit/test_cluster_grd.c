@@ -407,6 +407,11 @@ cluster_lmd_cleanup_on_backend_exit_count_inc(uint64 d pg_attribute_unused())
 void
 cluster_lmd_cleanup_skip_other_owner_count_inc(uint64 d pg_attribute_unused())
 {}
+uint64
+cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node pg_attribute_unused())
+{
+	return 0;
+}
 
 /* PG runtime stubs needed by D8 cluster_grd_sweep_local_stale_procnos. */
 LWLockPadded *MainLWLockArray = NULL;

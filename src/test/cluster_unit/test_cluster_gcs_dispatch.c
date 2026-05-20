@@ -345,6 +345,10 @@ cluster_pcm_lock_apply_gcs_transition(BufferTag tag pg_attribute_unused(),
 	return true;
 }
 
+void
+cluster_pcm_lock_clear_pending_x(BufferTag tag pg_attribute_unused())
+{}
+
 /* spec-2.33 D2 stub:  cluster_gcs_lookup_master now real (declared-node
  * hash mod-N) calls cluster_conf_lookup_node.  Single-node fixture: return
  * NULL for all slots except 0 to keep declared_count = 1 (HC72 self short-

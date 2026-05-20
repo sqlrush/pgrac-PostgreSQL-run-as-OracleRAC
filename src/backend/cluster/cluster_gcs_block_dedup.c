@@ -221,7 +221,8 @@ cluster_gcs_block_dedup_lookup_or_register(const GcsBlockDedupKey *key, BufferTa
 		 * is zero — the forward install_reply path stamps completed_at_ts
 		 * so TTL sweep can age the entry; consumers distinguish FORWARDED
 		 * from genuine CACHED_REPLY via the status field. */
-		if (entry->status == (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER) {
+		if (entry->status == (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER
+			|| entry->status == (uint8)GCS_BLOCK_REPLY_X_GRANTED_FROM_HOLDER) {
 			if (cached_reply_out != NULL)
 				*cached_reply_out = *entry;
 			LWLockRelease(&cluster_gcs_block_dedup_shared->lock.lock);

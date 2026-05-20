@@ -645,10 +645,15 @@ cluster_gcs_handle_request_envelope(const ClusterICEnvelope *env, const void *pa
 	/* HC77: master-side handler is the single transition-apply owner. */
 	if (!cluster_pcm_lock_apply_gcs_transition(req->tag, (PcmLockTransition)req->transition_id,
 											   req->sender_node)) {
+		if (req->transition_id == PCM_TRANS_N_TO_X
+			|| req->transition_id == PCM_TRANS_S_TO_X_UPGRADE)
+			cluster_pcm_lock_clear_pending_x(req->tag);
 		gcs_send_reply(req->sender_node, req->request_id, req->transition_id,
 					   GCS_REPLY_DENIED_INCOMPATIBLE);
 		return;
 	}
+	if (req->transition_id == PCM_TRANS_N_TO_X || req->transition_id == PCM_TRANS_S_TO_X_UPGRADE)
+		cluster_pcm_lock_clear_pending_x(req->tag);
 
 	gcs_send_reply(req->sender_node, req->request_id, req->transition_id, GCS_REPLY_GRANTED);
 }
