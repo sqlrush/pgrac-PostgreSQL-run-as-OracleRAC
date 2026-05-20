@@ -847,6 +847,28 @@ UT_TEST(test_pcm_H2_last_s_release_transitions_to_n)
 }
 
 
+UT_TEST(test_pcm_H2b_same_node_s_residency_upgrades_to_x)
+{
+	BufferTag tag = make_tag(14);
+
+	reset_fake_pcm_runtime(4);
+
+	cluster_node_id = 0;
+	cluster_pcm_lock_acquire(tag, PCM_LOCK_MODE_S);
+	UT_ASSERT_EQ((int)cluster_pcm_lock_query(tag), (int)PCM_LOCK_MODE_S);
+
+	/*
+	 * spec-2.35 HC111/HC112 keeps S as cache residency after content-lock
+	 * unlock.  A later local X acquire by the same node must upgrade the
+	 * residency bit instead of waiting on its own preserved S holder.
+	 */
+	cluster_pcm_lock_acquire(tag, PCM_LOCK_MODE_X);
+	UT_ASSERT_EQ((int)cluster_pcm_lock_query(tag), (int)PCM_LOCK_MODE_X);
+	UT_ASSERT_EQ((int)cluster_pcm_get_trans_s_to_x_upgrade_count(), 1);
+	UT_ASSERT_EQ(fake_cv_sleep_count, 0);
+}
+
+
 UT_TEST(test_pcm_H3_incompatible_x_waits_and_wakes)
 {
 	BufferTag tag = make_tag(12);
@@ -912,7 +934,7 @@ UT_TEST(test_pcm_H4_release_broadcasts_only_on_state_change)
 int
 main(void)
 {
-	UT_PLAN(30);
+	UT_PLAN(31);
 	UT_RUN(test_pcm_lock_mode_constant_aliases_match_pcm_state);
 	UT_RUN(test_pcm_lock_transition_count_is_9);
 	UT_RUN(test_pcm_lock_transition_enum_values_are_1_to_9);
@@ -941,6 +963,7 @@ main(void)
 	UT_RUN(test_pcm_real_wait_event_call_sites_are_exercised);
 	UT_RUN(test_pcm_H1_same_node_s_refcount_increments);
 	UT_RUN(test_pcm_H2_last_s_release_transitions_to_n);
+	UT_RUN(test_pcm_H2b_same_node_s_residency_upgrades_to_x);
 	UT_RUN(test_pcm_H3_incompatible_x_waits_and_wakes);
 	UT_RUN(test_pcm_H4_release_broadcasts_only_on_state_change);
 	UT_DONE();

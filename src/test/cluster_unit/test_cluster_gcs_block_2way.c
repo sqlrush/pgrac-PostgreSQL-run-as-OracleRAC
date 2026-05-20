@@ -93,31 +93,31 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 
 UT_TEST(test_block_forward_msg_type_is_16)
 {
-	UT_ASSERT_EQ((int) PGRAC_IC_MSG_GCS_BLOCK_FORWARD, 16);
+	UT_ASSERT_EQ((int)PGRAC_IC_MSG_GCS_BLOCK_FORWARD, 16);
 }
 
 
 UT_TEST(test_granted_from_holder_status_is_8)
 {
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER, 8);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER, 8);
 }
 
 
 UT_TEST(test_forward_payload_size_locked_at_64)
 {
-	UT_ASSERT_EQ((int) sizeof(GcsBlockForwardPayload), 64);
+	UT_ASSERT_EQ((int)sizeof(GcsBlockForwardPayload), 64);
 }
 
 
 UT_TEST(test_forward_payload_field_offsets)
 {
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, request_id), 0);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, epoch), 8);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, tag), 16);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, original_requester_node), 36);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, requester_backend_id), 40);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, master_node), 44);
-	UT_ASSERT_EQ((int) offsetof(GcsBlockForwardPayload, transition_id), 48);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, request_id), 0);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, epoch), 8);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, tag), 16);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, original_requester_node), 36);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, requester_backend_id), 40);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, master_node), 44);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockForwardPayload, transition_id), 48);
 }
 
 
@@ -128,69 +128,76 @@ UT_TEST(test_reply_header_size_still_48_after_hc109)
 	 * stay 48B; a regression to 56B (e.g. someone naively used
 	 * `int32 forwarding_master_node` and compiler inserted padding)
 	 * silently breaks the wire ABI. */
-	UT_ASSERT_EQ((int) sizeof(GcsBlockReplyHeader), 48);
+	UT_ASSERT_EQ((int)sizeof(GcsBlockReplyHeader), 48);
 }
 
 
 UT_TEST(test_reply_header_forwarding_master_node_bytes_offset_38)
 {
-	UT_ASSERT_EQ((int) offsetof(GcsBlockReplyHeader, forwarding_master_node_bytes), 38);
+	UT_ASSERT_EQ((int)offsetof(GcsBlockReplyHeader, forwarding_master_node_bytes), 38);
 }
 
 
 UT_TEST(test_forwarding_master_node_helper_round_trip)
 {
 	GcsBlockReplyHeader hdr;
-	int32		x;
+	int32 x;
 
 	memset(&hdr, 0, sizeof(hdr));
 
+	GcsBlockReplyHeaderSetForwardingMasterNode(&hdr, GCS_BLOCK_REPLY_NO_FORWARDING_MASTER);
+	UT_ASSERT_EQ((int)GcsBlockReplyHeaderGetForwardingMasterNode(&hdr),
+				 (int)GCS_BLOCK_REPLY_NO_FORWARDING_MASTER);
+
+	/* node 0 is a legal cluster node and must not collide with the
+	 * direct-from-master sentinel. */
 	GcsBlockReplyHeaderSetForwardingMasterNode(&hdr, 0);
-	UT_ASSERT_EQ((int) GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 0);
+	UT_ASSERT_EQ((int)GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 0);
+	UT_ASSERT((int)GcsBlockReplyHeaderGetForwardingMasterNode(&hdr)
+			  != (int)GCS_BLOCK_REPLY_NO_FORWARDING_MASTER);
 
 	GcsBlockReplyHeaderSetForwardingMasterNode(&hdr, 5);
-	UT_ASSERT_EQ((int) GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 5);
+	UT_ASSERT_EQ((int)GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 5);
 
 	GcsBlockReplyHeaderSetForwardingMasterNode(&hdr, 31);
-	UT_ASSERT_EQ((int) GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 31);
+	UT_ASSERT_EQ((int)GcsBlockReplyHeaderGetForwardingMasterNode(&hdr), 31);
 
 	/* Round-trip arbitrary value */
 	GcsBlockReplyHeaderSetForwardingMasterNode(&hdr, 0x01020304);
 	x = GcsBlockReplyHeaderGetForwardingMasterNode(&hdr);
-	UT_ASSERT_EQ((int) x, (int) 0x01020304);
+	UT_ASSERT_EQ((int)x, (int)0x01020304);
 }
 
 
 UT_TEST(test_dedup_forwarded_duplicate_enum_value_5)
 {
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE, 5);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE, 5);
 }
 
 
 UT_TEST(test_dedup_result_enum_has_6_values)
 {
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_MISS_REGISTERED, 0);
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE, 1);
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_CACHED_REPLY, 2);
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_VALIDATION_FAIL, 3);
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_FULL, 4);
-	UT_ASSERT_EQ((int) GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE, 5);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_MISS_REGISTERED, 0);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_IN_FLIGHT_DUPLICATE, 1);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_CACHED_REPLY, 2);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_VALIDATION_FAIL, 3);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_FULL, 4);
+	UT_ASSERT_EQ((int)GCS_BLOCK_DEDUP_FORWARDED_DUPLICATE, 5);
 }
 
 
 UT_TEST(test_block_forward_msg_type_distinct)
 {
-	UT_ASSERT((int) PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int) PGRAC_IC_MSG_GCS_REQUEST);
-	UT_ASSERT((int) PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int) PGRAC_IC_MSG_GCS_REPLY);
-	UT_ASSERT((int) PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int) PGRAC_IC_MSG_GCS_BLOCK_REQUEST);
-	UT_ASSERT((int) PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int) PGRAC_IC_MSG_GCS_BLOCK_REPLY);
+	UT_ASSERT((int)PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int)PGRAC_IC_MSG_GCS_REQUEST);
+	UT_ASSERT((int)PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int)PGRAC_IC_MSG_GCS_REPLY);
+	UT_ASSERT((int)PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int)PGRAC_IC_MSG_GCS_BLOCK_REQUEST);
+	UT_ASSERT((int)PGRAC_IC_MSG_GCS_BLOCK_FORWARD != (int)PGRAC_IC_MSG_GCS_BLOCK_REPLY);
 }
 
 
 UT_TEST(test_granted_from_holder_distinct_from_dedup_full)
 {
-	UT_ASSERT((int) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER
-			  != (int) GCS_BLOCK_REPLY_DENIED_DEDUP_FULL);
+	UT_ASSERT((int)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER != (int)GCS_BLOCK_REPLY_DENIED_DEDUP_FULL);
 }
 
 
@@ -198,21 +205,21 @@ UT_TEST(test_forward_payload_sizeof_equals_request_payload_sizeof)
 {
 	/* Both are 64B so the outbound ring (PGRAC_GES_OUTBOUND_PAYLOAD_MAX
 	 * = 64) can carry either request or forward in the same slot. */
-	UT_ASSERT_EQ((int) sizeof(GcsBlockForwardPayload), (int) sizeof(GcsBlockRequestPayload));
+	UT_ASSERT_EQ((int)sizeof(GcsBlockForwardPayload), (int)sizeof(GcsBlockRequestPayload));
 }
 
 
 UT_TEST(test_reply_status_enum_no_gap_0_to_8)
 {
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_GRANTED, 0);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_GRANTED_STORAGE_FALLBACK, 1);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE, 2);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT, 3);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_EPOCH_STALE, 4);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL, 5);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER, 6);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_DENIED_DEDUP_FULL, 7);
-	UT_ASSERT_EQ((int) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER, 8);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_GRANTED, 0);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_GRANTED_STORAGE_FALLBACK, 1);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE, 2);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_VALIDATOR_REJECT, 3);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_EPOCH_STALE, 4);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL, 5);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER, 6);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_DENIED_DEDUP_FULL, 7);
+	UT_ASSERT_EQ((int)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER, 8);
 }
 
 
@@ -222,26 +229,26 @@ UT_TEST(test_forwarding_master_field_within_reserved_budget)
 	 * forwarding_master_node_bytes[] field MUST stay within the 10-byte
 	 * reserved_0 budget allocated by spec-2.33 — otherwise sizeof
 	 * regresses to 56B and StaticAssertDecl above fails. */
-	UT_ASSERT_EQ((int) sizeof(((GcsBlockReplyHeader *) 0)->forwarding_master_node_bytes), 4);
-	UT_ASSERT_EQ((int) sizeof(((GcsBlockReplyHeader *) 0)->reserved_0), 6);
+	UT_ASSERT_EQ((int)sizeof(((GcsBlockReplyHeader *)0)->forwarding_master_node_bytes), 4);
+	UT_ASSERT_EQ((int)sizeof(((GcsBlockReplyHeader *)0)->reserved_0), 6);
 }
 
 
 UT_TEST(test_pcm_master_holder_node_by_tag_linkable)
 {
-	UT_ASSERT_NOT_NULL((void *) cluster_pcm_master_holder_node_by_tag);
+	UT_ASSERT_NOT_NULL((void *)cluster_pcm_master_holder_node_by_tag);
 }
 
 
 UT_TEST(test_pcm_unlock_content_buffer_linkable)
 {
-	UT_ASSERT_NOT_NULL((void *) cluster_pcm_lock_unlock_content_buffer);
+	UT_ASSERT_NOT_NULL((void *)cluster_pcm_lock_unlock_content_buffer);
 }
 
 
 UT_TEST(test_pcm_release_buffer_for_eviction_linkable)
 {
-	UT_ASSERT_NOT_NULL((void *) cluster_pcm_lock_release_buffer_for_eviction);
+	UT_ASSERT_NOT_NULL((void *)cluster_pcm_lock_release_buffer_for_eviction);
 }
 
 
@@ -254,27 +261,27 @@ UT_TEST(test_pcm_release_buffer_for_eviction_linkable)
 
 UT_TEST(test_l18_forward_end_to_end_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 113 L4 forward ship round-trip */
+	UT_ASSERT_EQ(1, 1); /* TAP 113 L4 forward ship round-trip */
 }
 
 UT_TEST(test_l19_hc108_authorized_chain_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 113 L5 from-holder accept + non-authorized drop */
+	UT_ASSERT_EQ(1, 1); /* TAP 113 L5 from-holder accept + non-authorized drop */
 }
 
 UT_TEST(test_l20_evict_race_recovery_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 113 L6 HC105 + retransmit budget */
+	UT_ASSERT_EQ(1, 1); /* TAP 113 L6 HC105 + retransmit budget */
 }
 
 UT_TEST(test_l21_hc112_unlock_preserves_bit_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 113 L8 HC111/HC112 UnlockBuffer no-clear */
+	UT_ASSERT_EQ(1, 1); /* TAP 113 L8 HC111/HC112 UnlockBuffer no-clear */
 }
 
 UT_TEST(test_l22_master_holder_lifecycle_documented_in_tap)
 {
-	UT_ASSERT_EQ(1, 1);	/* TAP 113 L7 HC110 lifecycle propagation */
+	UT_ASSERT_EQ(1, 1); /* TAP 113 L7 HC110 lifecycle propagation */
 }
 
 

@@ -440,7 +440,7 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 	bool terminal_denied = false;
 	bool retransmit_warning_emitted = false;
 	uint8 final_status = GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE;
-	int32 final_forwarding_master = 0;	/* spec-2.35 HC105 — track holder-source */
+	int32 final_forwarding_master = GCS_BLOCK_REPLY_NO_FORWARDING_MASTER;
 	XLogRecPtr final_page_lsn = InvalidXLogRecPtr;
 	int retry_attempt;
 	int max_retries;
@@ -602,10 +602,11 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 			/* spec-2.35 HC105:  capture forward source so DENIED_MASTER_
 			 * NOT_HOLDER from forward path can be classified as transient
 			 * retry (sender retransmit budget) rather than terminal. */
-			final_forwarding_master =
-				GcsBlockReplyHeaderGetForwardingMasterNode(&slot->reply_header);
+			final_forwarding_master
+				= GcsBlockReplyHeaderGetForwardingMasterNode(&slot->reply_header);
 
-			if (final_status == GCS_BLOCK_REPLY_GRANTED) {
+			if (final_status == GCS_BLOCK_REPLY_GRANTED
+				|| final_status == GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER) {
 				uint32 expected = slot->reply_header.checksum;
 				uint32 got = gcs_block_compute_checksum(slot->reply_block_data);
 
@@ -616,6 +617,21 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 					break;
 				}
 				gcs_block_install_block(buf, slot->reply_block_data, final_page_lsn);
+				if (final_status == GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER) {
+					/*
+					 * spec-2.35 HC111: requester S-holder bit represents real
+					 * cache residency, not a forward intent.  The master
+					 * therefore adds our bit only after the holder reply has
+					 * passed HC108/HC100, checksum verification, and local
+					 * block install.
+					 */
+					if (final_forwarding_master == GCS_BLOCK_REPLY_NO_FORWARDING_MASTER)
+						ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+										errmsg("cluster_gcs_block: holder-granted reply missing "
+											   "forwarding master")));
+					cluster_gcs_send_transition_and_wait(tag, (PcmLockTransition)transition_id,
+														 final_forwarding_master);
+				}
 				granted = true;
 				break;
 			}
@@ -637,15 +653,15 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 				break;
 			}
 
-			/* spec-2.35 HC105 — DENIED_MASTER_NOT_HOLDER from holder forward
-			 * path (forwarding_master_node != 0) is transient (holder
-			 * evict race during forward); sender retries within budget.
-			 * Direct-from-master DENIED_MASTER_NOT_HOLDER (forwarding_
-			 * master_node == 0) is terminal (master truly doesn't know any
-			 * holder).  HC108 authorized chain already validated the
-			 * forwarding_master_node field. */
+			/*
+			 * spec-2.35 HC105 — DENIED_MASTER_NOT_HOLDER from holder forward
+			 * path is transient (holder evict race during forward); sender
+			 * retries within budget. Direct-from-master DENIED_MASTER_NOT_HOLDER
+			 * is terminal (master truly doesn't know any holder). HC108 authorized
+			 * chain already validated the forwarding_master_node field.
+			 */
 			if (final_status == GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER
-				&& final_forwarding_master != 0) {
+				&& final_forwarding_master != GCS_BLOCK_REPLY_NO_FORWARDING_MASTER) {
 				if (retry_attempt < max_retries)
 					continue;
 				/* budget exhausted on transient holder-evict denial */
@@ -745,6 +761,7 @@ gcs_block_send_reply(int32 dest_node, const GcsBlockRequestPayload *req, GcsBloc
 	hdr->requester_backend_id = req->requester_backend_id;
 	hdr->transition_id = req->transition_id;
 	hdr->status = (uint8)status;
+	GcsBlockReplyHeaderSetForwardingMasterNode(hdr, GCS_BLOCK_REPLY_NO_FORWARDING_MASTER);
 
 	if (status == GCS_BLOCK_REPLY_GRANTED && block_data != NULL) {
 		memcpy(buf + sizeof(GcsBlockReplyHeader), block_data, GCS_BLOCK_DATA_SIZE);
@@ -983,10 +1000,10 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 		 * forward install path. */
 		{
 			GcsBlockForwardPayload fwd;
-			int32		holder_node = cached_entry.reply_header.sender_node;
+			int32 holder_node = cached_entry.reply_header.sender_node;
 
 			if (holder_node < 0 || holder_node == cluster_node_id)
-				return;			/* malformed dedup entry; silent drop */
+				return; /* malformed dedup entry; silent drop */
 
 			memset(&fwd, 0, sizeof(fwd));
 			fwd.request_id = req->request_id;
@@ -997,10 +1014,9 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 			fwd.master_node = cluster_node_id;
 			fwd.transition_id = req->transition_id;
 
-			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD,
-										 holder_node, &fwd, sizeof(fwd))
-				== CLUSTER_IC_SEND_DONE)
-			{
+			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, holder_node, &fwd,
+										 sizeof(fwd))
+				== CLUSTER_IC_SEND_DONE) {
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->forward_replay_count, 1);
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_forward_sent_count, 1);
 			}
@@ -1022,8 +1038,11 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	 *	  + master_holder is a valid peer node (HC110 maintained;
 	 *	    cluster_pcm_master_holder_node_by_tag returns >= 0)
 	 *	  + that peer is not ourselves (avoid self-forward loop)
-	 *	→ apply N→S transition (add requester to s_holders_bitmap;
-	 *	  HC77 single-apply owner), send GCS_BLOCK_FORWARD to peer,
+	 *	  + transition is N→S (2-way read sharing only; S→X writer transfer
+	 *	    lands in spec-2.36 with holder invalidation)
+	 *	→ send GCS_BLOCK_FORWARD to peer, keep requester out of
+	 *	  s_holders_bitmap until sender installs the holder reply and sends
+	 *	  a GCS control ACK (HC111 cache-residency semantics),
 	 *	  install dedup entry as FORWARDED_IN_FLIGHT (HC113;  Step 6
 	 *	  wires the dedup state machine), return without replying —
 	 *	  the holder will direct-ship the reply to the original sender
@@ -1036,8 +1055,8 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 	 */
 	{
 		PcmLockMode pre_state;
-		bool		local_resident;
-		int32		holder_node;
+		bool local_resident;
+		int32 holder_node;
 
 		pre_state = cluster_pcm_lock_query(req->tag);
 		local_resident = cluster_bufmgr_probe_block_for_gcs(req->tag);
@@ -1049,34 +1068,16 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 		 * topology that would otherwise trigger forward. */
 		CLUSTER_INJECTION_POINT("cluster-gcs-block-forward-master-side");
 
-		if (pre_state == PCM_LOCK_MODE_S
-			&& !local_resident
-			&& holder_node >= 0
-			&& holder_node != cluster_node_id
-			&& !cluster_injection_should_skip("cluster-gcs-block-forward-master-side"))
-		{
+		if (req->transition_id == PCM_TRANS_N_TO_S && pre_state == PCM_LOCK_MODE_S
+			&& !local_resident && holder_node >= 0 && holder_node != cluster_node_id
+			&& !cluster_injection_should_skip("cluster-gcs-block-forward-master-side")) {
 			GcsBlockForwardPayload fwd;
-			uint64		current_epoch;
+			uint64 current_epoch;
 
 			current_epoch = cluster_epoch_get_current();
-			if (req->epoch < current_epoch)
-			{
+			if (req->epoch < current_epoch) {
 				/* HC73 epoch freshness still applies before forwarding. */
-				gcs_block_send_reply(req->sender_node, req,
-									 GCS_BLOCK_REPLY_DENIED_EPOCH_STALE,
-									 InvalidXLogRecPtr, NULL);
-				return;
-			}
-
-			/* HC77: master is the single transition-apply owner.  Add
-			 * requester as a new S-holder so subsequent forward paths
-			 * may target it (spec-2.33 F4 compatible). */
-			if (!cluster_pcm_lock_apply_gcs_transition(req->tag,
-													   (PcmLockTransition) req->transition_id,
-													   req->sender_node))
-			{
-				gcs_block_send_reply(req->sender_node, req,
-									 GCS_BLOCK_REPLY_DENIED_INCOMPATIBLE,
+				gcs_block_send_reply(req->sender_node, req, GCS_BLOCK_REPLY_DENIED_EPOCH_STALE,
 									 InvalidXLogRecPtr, NULL);
 				return;
 			}
@@ -1091,10 +1092,9 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 			fwd.master_node = cluster_node_id;
 			fwd.transition_id = req->transition_id;
 
-			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD,
-										 holder_node, &fwd, sizeof(fwd))
-				== CLUSTER_IC_SEND_DONE)
-			{
+			if (cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_FORWARD, holder_node, &fwd,
+										 sizeof(fwd))
+				== CLUSTER_IC_SEND_DONE) {
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_forward_sent_count, 1);
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->s_holders_bitmap_redirect_count, 1);
 
@@ -1110,19 +1110,17 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 					fwd_hdr.request_id = req->request_id;
 					fwd_hdr.requester_backend_id = req->requester_backend_id;
 					fwd_hdr.transition_id = req->transition_id;
-					fwd_hdr.sender_node = holder_node;	/* HC113: holder stored here */
-					fwd_hdr.status = (uint8) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
+					fwd_hdr.sender_node = holder_node; /* HC113: holder stored here */
+					fwd_hdr.status = (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
 					GcsBlockReplyHeaderSetForwardingMasterNode(&fwd_hdr, cluster_node_id);
-					cluster_gcs_block_dedup_install_reply(&key,
-														  GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER,
+					cluster_gcs_block_dedup_install_reply(&key, GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER,
 														  &fwd_hdr, NULL);
 				}
 				return;
 			}
-			/* Forward send failed (transport issue);  fall through to
-			 * direct-ship attempt below.  apply_gcs_transition already
-			 * recorded the new S-holder bit so subsequent retransmit
-			 * routes through the normal path. */
+			/* Forward send failed (transport issue); fall through to
+			 * direct-ship attempt below.  No PCM state was mutated, so there is
+			 * no stale requester holder bit to clean up. */
 		}
 	}
 
@@ -1154,6 +1152,7 @@ cluster_gcs_handle_block_request_envelope(const ClusterICEnvelope *env, const vo
 		hdr->requester_backend_id = req->requester_backend_id;
 		hdr->transition_id = req->transition_id;
 		hdr->status = (uint8)status;
+		GcsBlockReplyHeaderSetForwardingMasterNode(hdr, GCS_BLOCK_REPLY_NO_FORWARDING_MASTER);
 
 		if (status == GCS_BLOCK_REPLY_GRANTED && block_payload != NULL) {
 			memcpy(buf + sizeof(GcsBlockReplyHeader), block_payload, GCS_BLOCK_DATA_SIZE);
@@ -1230,8 +1229,8 @@ cluster_gcs_handle_block_reply_envelope(const ClusterICEnvelope *env, const void
 		ClusterGcsBlockOutstandingSlot *slot = &blk->slots[i];
 
 		if (slot->in_use && slot->request_id == hdr->request_id) {
-			int32		fwd_master;
-			bool		authorized = false;
+			int32 fwd_master;
+			bool authorized = false;
 
 			/*
 			 * PGRAC: spec-2.34 HC100 — stale-reply defense (epoch +
@@ -1241,7 +1240,8 @@ cluster_gcs_handle_block_reply_envelope(const ClusterICEnvelope *env, const void
 			 *	Two reply path classes:
 			 *	  (a) direct-from-master:
 			 *	      hdr.sender_node == slot.expected_master_node
-			 *	      AND hdr.forwarding_master_node == 0
+			 *	      AND hdr.forwarding_master_node ==
+			 *	          GCS_BLOCK_REPLY_NO_FORWARDING_MASTER
 			 *	      AND hdr.status != GRANTED_FROM_HOLDER
 			 *	  (b) forwarded-by-master-to-holder:
 			 *	      hdr.forwarding_master_node == slot.expected_master_node
@@ -1257,26 +1257,21 @@ cluster_gcs_handle_block_reply_envelope(const ClusterICEnvelope *env, const void
 			 */
 			fwd_master = GcsBlockReplyHeaderGetForwardingMasterNode(hdr);
 
-			if (fwd_master == 0)
-			{
+			if (fwd_master == GCS_BLOCK_REPLY_NO_FORWARDING_MASTER) {
 				/* direct-from-master path */
 				if (hdr->sender_node == slot->expected_master_node
-					&& hdr->status != (uint8) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER)
+					&& hdr->status != (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER)
 					authorized = true;
-			}
-			else
-			{
+			} else {
 				/* forwarded-by-master path */
 				if (fwd_master == slot->expected_master_node
-					&& (hdr->status == (uint8) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER
-						|| hdr->status == (uint8) GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER))
+					&& (hdr->status == (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER
+						|| hdr->status == (uint8)GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER))
 					authorized = true;
 			}
 
-			if (!authorized
-				|| hdr->epoch < slot->request_epoch
-				|| hdr->transition_id != slot->transition_id)
-			{
+			if (!authorized || hdr->epoch < slot->request_epoch
+				|| hdr->transition_id != slot->transition_id) {
 				pg_atomic_fetch_add_u64(&ClusterGcsBlock->stale_reply_drop_count, 1);
 				LWLockRelease(&blk->lock.lock);
 				return;
@@ -1307,28 +1302,25 @@ cluster_gcs_handle_block_reply_envelope(const ClusterICEnvelope *env, const void
  * ============================================================ */
 
 void
-cluster_gcs_handle_block_forward_envelope(const ClusterICEnvelope *env,
-										  const void *payload)
+cluster_gcs_handle_block_forward_envelope(const ClusterICEnvelope *env, const void *payload)
 {
 	const GcsBlockForwardPayload *fwd;
-	char		block_buf[GCS_BLOCK_DATA_SIZE];
-	XLogRecPtr	page_lsn = InvalidXLogRecPtr;
-	bool		holder_ship_ok;
-	uint32		total;
-	char	   *buf;
+	char block_buf[GCS_BLOCK_DATA_SIZE];
+	XLogRecPtr page_lsn = InvalidXLogRecPtr;
+	bool holder_ship_ok;
+	uint32 total;
+	char *buf;
 	GcsBlockReplyHeader *hdr;
 
-	if (env == NULL || payload == NULL
-		|| env->payload_length != sizeof(GcsBlockForwardPayload))
+	if (env == NULL || payload == NULL || env->payload_length != sizeof(GcsBlockForwardPayload))
 		return;
 
-	fwd = (const GcsBlockForwardPayload *) payload;
+	fwd = (const GcsBlockForwardPayload *)payload;
 	pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_forward_received_count, 1);
 
 	/* HC75 transition_id range guard (same as request handler). */
-	if (fwd->transition_id < PCM_TRANS_N_TO_S
-		|| fwd->transition_id > PCM_TRANS_S_TO_X_CLEANOUT)
-		return;					/* malformed, silently drop;  master
+	if (fwd->transition_id < PCM_TRANS_N_TO_S || fwd->transition_id > PCM_TRANS_S_TO_X_CLEANOUT)
+		return; /* malformed, silently drop;  master
 								 * dedup TTL will sweep stale entry */
 
 	/* spec-2.35 D15 — fault injection.  SKIP simulates evict race:
@@ -1338,43 +1330,38 @@ cluster_gcs_handle_block_forward_envelope(const ClusterICEnvelope *env,
 	if (cluster_injection_should_skip("cluster-gcs-block-evict-holder-before-ship"))
 		holder_ship_ok = false;
 	else
-		holder_ship_ok = cluster_bufmgr_copy_block_for_gcs(fwd->tag, &page_lsn,
-														   block_buf);
+		holder_ship_ok = cluster_bufmgr_copy_block_for_gcs(fwd->tag, &page_lsn, block_buf);
 
 	/* Build reply (header + 8KB block or zero pad) and direct-ship to
 	 * the original requester.  HC109 stores fwd->master_node in the
 	 * reply's forwarding_master_node_bytes so sender's HC108 authorized
 	 * chain validates the chain master→holder→sender. */
-	total = (uint32) (sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
-	buf = (char *) palloc0(total);
-	hdr = (GcsBlockReplyHeader *) buf;
+	total = (uint32)(sizeof(GcsBlockReplyHeader) + GCS_BLOCK_DATA_SIZE);
+	buf = (char *)palloc0(total);
+	hdr = (GcsBlockReplyHeader *)buf;
 	hdr->request_id = fwd->request_id;
-	hdr->page_lsn = (uint64) page_lsn;
+	hdr->page_lsn = (uint64)page_lsn;
 	hdr->epoch = cluster_epoch_get_current();
-	hdr->sender_node = cluster_node_id;	/* holder is the reply origin */
+	hdr->sender_node = cluster_node_id; /* holder is the reply origin */
 	hdr->requester_backend_id = fwd->requester_backend_id;
 	hdr->transition_id = fwd->transition_id;
 	GcsBlockReplyHeaderSetForwardingMasterNode(hdr, fwd->master_node);
 
-	if (holder_ship_ok)
-	{
+	if (holder_ship_ok) {
 		memcpy(buf + sizeof(GcsBlockReplyHeader), block_buf, GCS_BLOCK_DATA_SIZE);
 		hdr->checksum = gcs_block_compute_checksum(block_buf);
-		hdr->status = (uint8) GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
+		hdr->status = (uint8)GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER;
 		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_from_holder_ship_count, 1);
-		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total,
-								GCS_BLOCK_DATA_SIZE);
-	}
-	else
-	{
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_ship_bytes_total, GCS_BLOCK_DATA_SIZE);
+	} else {
 		/* HC105 evict race */
 		hdr->checksum = gcs_block_compute_checksum(buf + sizeof(GcsBlockReplyHeader));
-		hdr->status = (uint8) GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER;
+		hdr->status = (uint8)GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER;
 		pg_atomic_fetch_add_u64(&ClusterGcsBlock->block_forward_holder_evicted_count, 1);
 	}
 
-	(void) cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY,
-									fwd->original_requester_node, buf, total);
+	(void)cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REPLY, fwd->original_requester_node, buf,
+								   total);
 
 	pfree(buf);
 }
@@ -1521,17 +1508,13 @@ cluster_gcs_get_block_forward_sent_count(void)
 uint64
 cluster_gcs_get_block_forward_received_count(void)
 {
-	return ClusterGcsBlock
-			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_forward_received_count)
-			   : 0;
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->block_forward_received_count) : 0;
 }
 
 uint64
 cluster_gcs_get_block_from_holder_ship_count(void)
 {
-	return ClusterGcsBlock
-			   ? pg_atomic_read_u64(&ClusterGcsBlock->block_from_holder_ship_count)
-			   : 0;
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->block_from_holder_ship_count) : 0;
 }
 
 uint64
@@ -1545,17 +1528,15 @@ cluster_gcs_get_block_forward_holder_evicted_count(void)
 uint64
 cluster_gcs_get_block_s_holders_bitmap_redirect_count(void)
 {
-	return ClusterGcsBlock
-			   ? pg_atomic_read_u64(&ClusterGcsBlock->s_holders_bitmap_redirect_count)
-			   : 0;
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->s_holders_bitmap_redirect_count)
+						   : 0;
 }
 
 uint64
 cluster_gcs_get_block_master_holder_lifecycle_count(void)
 {
-	return ClusterGcsBlock
-			   ? pg_atomic_read_u64(&ClusterGcsBlock->master_holder_lifecycle_count)
-			   : 0;
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->master_holder_lifecycle_count)
+						   : 0;
 }
 
 uint64

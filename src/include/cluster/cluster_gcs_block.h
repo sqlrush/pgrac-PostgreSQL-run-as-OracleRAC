@@ -83,6 +83,14 @@
  * ============================================================ */
 #define GCS_BLOCK_DATA_SIZE 8192
 
+/*
+ * spec-2.35 HC108/HC109: forwarding_master_node_bytes stores the master that
+ * authorized a holder-to-requester direct ship.  Node 0 is a valid cluster
+ * node, so the direct-from-master sentinel must be outside the legal node-id
+ * range.
+ */
+#define GCS_BLOCK_REPLY_NO_FORWARDING_MASTER (-1)
+
 
 /* ============================================================
  * GcsBlockReplyStatus -- reply status code carried in
@@ -107,11 +115,11 @@ typedef enum GcsBlockReplyStatus {
 	GCS_BLOCK_REPLY_DENIED_EPOCH_STALE = 4,
 	GCS_BLOCK_REPLY_DENIED_CHECKSUM_FAIL = 5,
 	GCS_BLOCK_REPLY_DENIED_MASTER_NOT_HOLDER = 6,
-	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7, /* PGRAC: spec-2.34 D1 NEW;
+	GCS_BLOCK_REPLY_DENIED_DEDUP_FULL = 7,	/* PGRAC: spec-2.34 D1 NEW;
 											 * HC96 transient — sender 走 retry
 											 * path 同 timeout 语义,budget 耗尽
 											 * 才 ereport 53R90 */
-	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8	  /* PGRAC: spec-2.35 D1 NEW;
+	GCS_BLOCK_REPLY_GRANTED_FROM_HOLDER = 8 /* PGRAC: spec-2.35 D1 NEW;
 											   * holder ships block directly to
 											   * original requester (2-way CF read
 											   * sharing).  Sender HC108
@@ -185,22 +193,24 @@ StaticAssertDecl(sizeof(GcsBlockRequestPayload) == 64,
  *                                          GcsBlockReplyHeaderGet/Set
  *                                          ForwardingMasterNode() helpers to
  *                                          encode/decode int32 little-endian.
- *                                          0 == direct from master;  != 0 ==
- *                                          forwarded by this master (sender
- *                                          走 HC108 authorized chain).
+ *                                          -1 == direct from master;
+ *                                          >= 0 == forwarded by this master
+ *                                          (sender 走 HC108 authorized chain).
+ *                                          Node 0 is a valid cluster node;
+ *                                          never use 0 as the direct sentinel.
  *    [ 42,  48) reserved_0[6]           -- align + future fields
  * ============================================================ */
 typedef struct GcsBlockReplyHeader {
-	uint64 request_id;					/*  8B [  0,   8) */
-	uint64 page_lsn;					/*  8B [  8,  16) HC84 */
-	uint64 epoch;						/*  8B [ 16,  24) */
-	uint32 checksum;					/*  4B [ 24,  28) HC83 CRC32C */
-	int32 sender_node;					/*  4B [ 28,  32) */
-	int32 requester_backend_id;			/*  4B [ 32,  36) */
-	uint8 transition_id;				/*  1B [ 36,  37) */
-	uint8 status;						/*  1B [ 37,  38) GcsBlockReplyStatus */
-	uint8 forwarding_master_node_bytes[4];	/* 4B [ 38,  42) HC109 spec-2.35 */
-	uint8 reserved_0[6];				/*  6B [ 42,  48) */
+	uint64 request_id;					   /*  8B [  0,   8) */
+	uint64 page_lsn;					   /*  8B [  8,  16) HC84 */
+	uint64 epoch;						   /*  8B [ 16,  24) */
+	uint32 checksum;					   /*  4B [ 24,  28) HC83 CRC32C */
+	int32 sender_node;					   /*  4B [ 28,  32) */
+	int32 requester_backend_id;			   /*  4B [ 32,  36) */
+	uint8 transition_id;				   /*  1B [ 36,  37) */
+	uint8 status;						   /*  1B [ 37,  38) GcsBlockReplyStatus */
+	uint8 forwarding_master_node_bytes[4]; /* 4B [ 38,  42) HC109 spec-2.35 */
+	uint8 reserved_0[6];				   /*  6B [ 42,  48) */
 } GcsBlockReplyHeader;
 
 StaticAssertDecl(sizeof(GcsBlockReplyHeader) == 48,
@@ -219,12 +229,13 @@ StaticAssertDecl(sizeof(GcsBlockReplyHeader) == 48,
  *	bytes — that would silently break the wire ABI lock above).  Wire
  *	encoding is little-endian, matching every other multi-byte field in
  *	the envelope (cluster_ic_envelope.h uses LE for magic / payload_crc
- *	/ etc).  0 sentinel marks "direct from master, not forwarded".
+ *	/ etc).  GCS_BLOCK_REPLY_NO_FORWARDING_MASTER marks "direct from
+ *	master, not forwarded"; node 0 is a valid forwarding master.
  * ============================================================ */
 static inline int32
 GcsBlockReplyHeaderGetForwardingMasterNode(const GcsBlockReplyHeader *hdr)
 {
-	int32		v;
+	int32 v;
 
 	memcpy(&v, hdr->forwarding_master_node_bytes, sizeof(int32));
 	return v;
@@ -263,14 +274,14 @@ GcsBlockReplyHeaderSetForwardingMasterNode(GcsBlockReplyHeader *hdr, int32 node_
  *	  [ 49,  64) reserved_0[15]        -- align + future fields
  * ============================================================ */
 typedef struct GcsBlockForwardPayload {
-	uint64 request_id;				/*  8B [  0,   8) */
-	uint64 epoch;					/*  8B [  8,  16) */
-	BufferTag tag;					/* 20B [ 16,  36) */
-	int32 original_requester_node;	/*  4B [ 36,  40) */
-	int32 requester_backend_id;		/*  4B [ 40,  44) */
-	int32 master_node;				/*  4B [ 44,  48) */
-	uint8 transition_id;			/*  1B [ 48,  49) */
-	uint8 reserved_0[15];			/* 15B [ 49,  64) */
+	uint64 request_id;			   /*  8B [  0,   8) */
+	uint64 epoch;				   /*  8B [  8,  16) */
+	BufferTag tag;				   /* 20B [ 16,  36) */
+	int32 original_requester_node; /*  4B [ 36,  40) */
+	int32 requester_backend_id;	   /*  4B [ 40,  44) */
+	int32 master_node;			   /*  4B [ 44,  48) */
+	uint8 transition_id;		   /*  1B [ 48,  49) */
+	uint8 reserved_0[15];		   /* 15B [ 49,  64) */
 } GcsBlockForwardPayload;
 
 StaticAssertDecl(sizeof(GcsBlockForwardPayload) == 64,

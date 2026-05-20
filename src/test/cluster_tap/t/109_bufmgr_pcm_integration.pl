@@ -80,22 +80,32 @@ ok($n_to_s_after_select > $n_to_s_before_select,
    "($n_to_s_before_select → $n_to_s_after_select)");
 
 
-# L3 — UPDATE triggers LockBuffer(EXCLUSIVE) hot path.
+# L3 — UPDATE triggers LockBuffer(EXCLUSIVE) hot path.  After spec-2.35,
+# prior SELECT leaves an S cache-residency bit behind, so the correct local
+# path may be S→X_UPGRADE rather than fresh N→X.
 my $n_to_x_before_update = trans_count($node, 'trans_n_to_x_count');
+my $s_to_x_before_update = trans_count($node, 'trans_s_to_x_upgrade_count');
 $node->safe_psql('postgres', 'UPDATE heap_t SET val = val || \'!\' WHERE id <= 50');
 my $n_to_x_after_update = trans_count($node, 'trans_n_to_x_count');
-ok($n_to_x_after_update > $n_to_x_before_update,
-   "L3 UPDATE heap_t increments trans_n_to_x_count " .
-   "($n_to_x_before_update → $n_to_x_after_update)");
+my $s_to_x_after_update = trans_count($node, 'trans_s_to_x_upgrade_count');
+ok(($n_to_x_after_update + $s_to_x_after_update)
+	> ($n_to_x_before_update + $s_to_x_before_update),
+   "L3 UPDATE heap_t advances X ownership counter " .
+   "(N→X $n_to_x_before_update → $n_to_x_after_update; " .
+   "S→X $s_to_x_before_update → $s_to_x_after_update)");
 
 
 # L4 — VACUUM triggers LockBufferForCleanup which reuses internal LockBuffer.
 my $n_to_x_before_vacuum = trans_count($node, 'trans_n_to_x_count');
+my $s_to_x_before_vacuum = trans_count($node, 'trans_s_to_x_upgrade_count');
 $node->safe_psql('postgres', 'VACUUM heap_t');
 my $n_to_x_after_vacuum = trans_count($node, 'trans_n_to_x_count');
-ok($n_to_x_after_vacuum > $n_to_x_before_vacuum,
-   "L4 VACUUM heap_t further increments trans_n_to_x_count " .
-   "($n_to_x_before_vacuum → $n_to_x_after_vacuum) " .
+my $s_to_x_after_vacuum = trans_count($node, 'trans_s_to_x_upgrade_count');
+ok(($n_to_x_after_vacuum + $s_to_x_after_vacuum)
+	> ($n_to_x_before_vacuum + $s_to_x_before_vacuum),
+   "L4 VACUUM heap_t further advances X ownership counter " .
+   "(N→X $n_to_x_before_vacuum → $n_to_x_after_vacuum; " .
+   "S→X $s_to_x_before_vacuum → $s_to_x_after_vacuum) " .
    "via LockBufferForCleanup → internal LockBuffer(EXCLUSIVE) hook (D4 audit)");
 
 

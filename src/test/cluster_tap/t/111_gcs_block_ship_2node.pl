@@ -187,64 +187,22 @@ for my $msg (qw(gcs_block_request gcs_block_reply)) {
 
 
 # ============================================================
-# L8: workload-induced GRD lookups split across nodes.  With
-#	   deterministic hash mod-N over a 2-node topology, ~50% of
-#	   distinct tags hash to the other node.
+# L8-L11: workload-driven block-ship substrate checks.
+#
+# spec-2.35 HC111/HC112 changed S-holder bits from transient content-lock
+# ownership to cache-residency ownership.  With this ClusterPair fixture's
+# independent local data directories, identical relfilenumber allocation can
+# make two unrelated local heap files look like the same shared BufferTag and
+# trip the intentionally fail-closed spec-2.36 writer-transfer gap.  Keep this
+# older spec-2.33 TAP as a surface/registry regression test; real 2-way
+# behaviour coverage now lives in t/113_gcs_block_2way_2node.pl.
 # ============================================================
-for my $node ($pair->node0, $pair->node1) {
-	$node->safe_psql('postgres', q{
-	CREATE TABLE block_ship_t (id int, val text);
-	INSERT INTO block_ship_t SELECT g, 'row-' || g
-	  FROM generate_series(1, 200) g;
-});
+SKIP:
+{
+	skip "workload block-ship substrate moved to 113 after spec-2.35 HC112; "
+		. "111 remains surface/registry regression only",
+		6;
 }
-
-# Force buffers to be touched on both nodes by reading each node-local table.
-$pair->node0->safe_psql('postgres', 'SELECT count(*) FROM block_ship_t');
-$pair->node1->safe_psql('postgres', 'SELECT count(*) FROM block_ship_t');
-
-my $remote_n0 = gcs_int_value($pair->node0, 'lookup_master_remote_count');
-my $remote_n1 = gcs_int_value($pair->node1, 'lookup_master_remote_count');
-ok($remote_n0 + $remote_n1 > 0,
-	"L8 lookup_master_remote_count grew under workload "
-	. "(n0=$remote_n0, n1=$remote_n1)");
-
-
-# ============================================================
-# L9: block-ship counters monotone non-decreasing.  Repeat workload
-#	   and confirm counters do not go backwards.
-# ============================================================
-my $b0_t1 = gcs_int_value($pair->node0, 'block_request_count');
-my $b1_t1 = gcs_int_value($pair->node1, 'block_request_count');
-$pair->node1->safe_psql('postgres', 'SELECT count(*) FROM block_ship_t');
-$pair->node0->safe_psql('postgres', 'SELECT count(*) FROM block_ship_t');
-my $b0_t2 = gcs_int_value($pair->node0, 'block_request_count');
-my $b1_t2 = gcs_int_value($pair->node1, 'block_request_count');
-ok($b0_t2 >= $b0_t1,
-	"L9 node0 block_request_count monotone ($b0_t1 → $b0_t2)");
-ok($b1_t2 >= $b1_t1,
-	"L9 node1 block_request_count monotone ($b1_t1 → $b1_t2)");
-
-
-# ============================================================
-# L10: block_checksum_fail_count remains 0 under healthy workload.
-# ============================================================
-is(gcs_value($pair->node0, 'block_checksum_fail_count'), '0',
-	'L10 node0 block_checksum_fail_count = 0 (HC83 healthy path)');
-is(gcs_value($pair->node1, 'block_checksum_fail_count'), '0',
-	'L10 node1 block_checksum_fail_count = 0 (HC83 healthy path)');
-
-
-# ============================================================
-# L11: cross-node counter relation — total requests = total replies
-#	   when all round-trips have closed.
-# ============================================================
-my $req_total = $b0_t2 + $b1_t2;
-my $rep_total = gcs_int_value($pair->node0, 'block_reply_count')
-	+ gcs_int_value($pair->node1, 'block_reply_count');
-ok($rep_total <= $req_total,
-	"L11 reply_total ($rep_total) <= request_total ($req_total) "
-	. "across both nodes (in-flight requests permitted)");
 
 
 # ============================================================

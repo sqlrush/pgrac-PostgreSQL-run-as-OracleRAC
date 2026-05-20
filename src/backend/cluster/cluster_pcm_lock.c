@@ -350,15 +350,15 @@ pcm_transition_target(PcmLockTransition trans)
  *	known".  Caller must check via cluster_pcm_master_holder_is_valid()
  *	before consuming the node_id.
  */
-#define INVALID_PCM_MASTER_HOLDER_NODE ((uint32) UINT32_MAX)
+#define INVALID_PCM_MASTER_HOLDER_NODE ((uint32)UINT32_MAX)
 
 static inline void
 pcm_master_holder_set_node(struct GrdEntry *entry, int32 node_id)
 {
 	Assert(node_id >= 0 && node_id < 32);
-	if (entry->master_holder.node_id == (uint32) node_id)
-		return;					/* no-op; do not bump lifecycle counter */
-	entry->master_holder.node_id = (uint32) node_id;
+	if (entry->master_holder.node_id == (uint32)node_id)
+		return; /* no-op; do not bump lifecycle counter */
+	entry->master_holder.node_id = (uint32)node_id;
 	/* procno / cluster_epoch / request_id intentionally left at current
 	 * values (zero on fresh entry from pcm_get_or_create_entry); spec-2.35
 	 * scope does not consume them.  HC110. */
@@ -369,7 +369,7 @@ static inline void
 pcm_master_holder_clear(struct GrdEntry *entry)
 {
 	if (entry->master_holder.node_id == INVALID_PCM_MASTER_HOLDER_NODE)
-		return;					/* already cleared; no lifecycle event */
+		return; /* already cleared; no lifecycle event */
 	memset(&entry->master_holder, 0, sizeof(ClusterGrdHolderId));
 	entry->master_holder.node_id = INVALID_PCM_MASTER_HOLDER_NODE;
 	cluster_gcs_block_bump_master_holder_lifecycle();
@@ -384,13 +384,13 @@ pcm_master_holder_is_valid(const struct GrdEntry *entry)
 static inline int32
 pcm_lowest_set_bit_node(uint32 bitmap)
 {
-	uint32		i;
+	uint32 i;
 
 	if (bitmap == 0)
 		return -1;
 	for (i = 0; i < 32; i++)
-		if (bitmap & ((uint32) 1u << i))
-			return (int32) i;
+		if (bitmap & ((uint32)1u << i))
+			return (int32)i;
 	return -1;
 }
 
@@ -405,17 +405,16 @@ int32
 cluster_pcm_master_holder_node_by_tag(BufferTag tag)
 {
 	struct GrdEntry *entry;
-	bool		found;
-	int32		node_id = -1;
+	bool found;
+	int32 node_id = -1;
 
 	if (cluster_pcm_htab == NULL)
 		return -1;
 
 	LWLockAcquire(&ClusterPcm->htab_lock.lock, LW_SHARED);
-	entry = (struct GrdEntry *) hash_search(cluster_pcm_htab, &tag,
-											HASH_FIND, &found);
+	entry = (struct GrdEntry *)hash_search(cluster_pcm_htab, &tag, HASH_FIND, &found);
 	if (found && entry != NULL && pcm_master_holder_is_valid(entry))
-		node_id = (int32) entry->master_holder.node_id;
+		node_id = (int32)entry->master_holder.node_id;
 	LWLockRelease(&ClusterPcm->htab_lock.lock);
 
 	return node_id;
@@ -489,16 +488,13 @@ cluster_pcm_transition_apply(struct GrdEntry *entry, PcmLockTransition trans, in
 		 *   else:            keep existing master_holder
 		 */
 		{
-			uint32		bm_after = pg_atomic_read_u32(&entry->s_holders_bitmap);
+			uint32 bm_after = pg_atomic_read_u32(&entry->s_holders_bitmap);
 
-			if (bm_after == 0)
-			{
-				pg_atomic_write_u32(&entry->master_state, (uint32) PCM_STATE_N);
+			if (bm_after == 0) {
+				pg_atomic_write_u32(&entry->master_state, (uint32)PCM_STATE_N);
 				pcm_master_holder_clear(entry);
-			}
-			else if (pcm_master_holder_is_valid(entry)
-					 && (int32) entry->master_holder.node_id == holder_node_id)
-			{
+			} else if (pcm_master_holder_is_valid(entry)
+					   && (int32)entry->master_holder.node_id == holder_node_id) {
 				int32 next_holder = pcm_lowest_set_bit_node(bm_after);
 				if (next_holder >= 0)
 					pcm_master_holder_set_node(entry, next_holder);
@@ -511,16 +507,13 @@ cluster_pcm_transition_apply(struct GrdEntry *entry, PcmLockTransition trans, in
 	case PCM_TRANS_S_TO_N_RELEASE:
 		pg_atomic_fetch_and_u32(&entry->s_holders_bitmap, ~holder_bit);
 		{
-			uint32		bm_after = pg_atomic_read_u32(&entry->s_holders_bitmap);
+			uint32 bm_after = pg_atomic_read_u32(&entry->s_holders_bitmap);
 
-			if (bm_after == 0)
-			{
-				pg_atomic_write_u32(&entry->master_state, (uint32) PCM_STATE_N);
+			if (bm_after == 0) {
+				pg_atomic_write_u32(&entry->master_state, (uint32)PCM_STATE_N);
 				pcm_master_holder_clear(entry);
-			}
-			else if (pcm_master_holder_is_valid(entry)
-					 && (int32) entry->master_holder.node_id == holder_node_id)
-			{
+			} else if (pcm_master_holder_is_valid(entry)
+					   && (int32)entry->master_holder.node_id == holder_node_id) {
 				int32 next_holder = pcm_lowest_set_bit_node(bm_after);
 				if (next_holder >= 0)
 					pcm_master_holder_set_node(entry, next_holder);
@@ -866,8 +859,27 @@ cluster_pcm_lock_acquire(BufferTag tag, PcmLockMode mode)
 			/* cur == X → fall through to wait */
 		} else /* mode == PCM_LOCK_MODE_X */
 		{
+			uint32 holders;
+
 			if (cur == PCM_STATE_N) {
 				cluster_pcm_transition_apply(entry, PCM_TRANS_N_TO_X, holder_node);
+				LWLockRelease(&entry->entry_lock.lock);
+				if (cv_prepared)
+					ConditionVariableCancelSleep();
+				return;
+			}
+			holders = pg_atomic_read_u32(&entry->s_holders_bitmap);
+			if (cur == PCM_STATE_S && (holders & holder_bit) != 0 && (holders & ~holder_bit) == 0) {
+				/*
+				 * spec-2.35 HC111/HC112: an S bit records cache residency,
+				 * not a currently held shared content_lock.  A later local X
+				 * acquire by the same node must upgrade the residency claim
+				 * instead of waiting forever for its own preserved S bit.
+				 * PG's content_lock is still acquired after this point and
+				 * serializes against any in-process shared readers.
+				 */
+				cluster_pcm_transition_apply(entry, PCM_TRANS_S_TO_X_UPGRADE, holder_node);
+				entry->s_holder_refcount_local = 0;
 				LWLockRelease(&entry->entry_lock.lock);
 				if (cv_prepared)
 					ConditionVariableCancelSleep();
@@ -1126,8 +1138,7 @@ cluster_pcm_lock_unlock_content_buffer(BufferDesc *buf, PcmLockMode mode)
 		return;
 
 	/* X is single-holder semantics; content-lock unlock = release X. */
-	if (mode == PCM_LOCK_MODE_X)
-	{
+	if (mode == PCM_LOCK_MODE_X) {
 		cluster_pcm_lock_release_buffer_for_eviction(buf, mode);
 		return;
 	}
