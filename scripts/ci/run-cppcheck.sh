@@ -142,6 +142,9 @@ SHAREDFS_SUPP=(
 # finding for cluster_unit test stubs.
 UNIT_STUB_SUPP=(
   --suppress=constParameterPointer:src/test/cluster_unit/test_cluster_*.c
+  # spec-3.1 D9: tt_status test stub parameters mirror real prototypes
+  # whose pointer args can't be widened to const without breaking callers.
+  --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_tt_status.c
 )
 
 echo "## cppcheck $(cppcheck --version)"

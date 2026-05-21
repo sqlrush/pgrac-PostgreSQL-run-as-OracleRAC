@@ -165,4 +165,53 @@ TTSlot_is_committed(const TTSlot *slot)
 }
 
 
+/*
+ * ============================================================
+ * PGRAC MODIFICATIONS by SqlRush <sqlrush@gmail.com>
+ *
+ * spec-3.1 D3 — extend with `ClusterUndoTTSlotRef` minimal read-only
+ * descriptor that links an ITL slot to its owning TT slot status
+ * lookup key (see cluster_tt_status.h ClusterTTStatusKey).
+ *
+ * What changed:
+ *   - Added `ClusterUndoTTSlotRef` 32-byte struct + StaticAssertDecl
+ *     enforcing explicit padding (v0.4 M4 — no implicit padding).
+ *   - The reader function `cluster_itl_get_tt_ref` extern lives in
+ *     cluster_itl.h (backend-only; needs `Page` type from
+ *     storage/bufpage.h, kept out of this frontend-safe header).
+ *
+ * Why:
+ *   spec-3.1 v1.0 FROZEN ITL/TT exact-key foundation;tuple xmin/xmax
+ *   raw xid has no origin so visibility must reach the TT status via
+ *   ITL slot → UBA → TT slot ref (HC180;L176;spec-3.1 Q3 ★ A).
+ *
+ * Frontend-safety preserved:  ClusterUndoTTSlotRef contains only
+ *   uint16/uint32/TransactionId/SCN/bool/uint8[] — all already in
+ *   c.h / transam.h / cluster_scn.h.
+ * ============================================================
+ */
+
+/*
+ * ClusterUndoTTSlotRef -- read-only descriptor of one ITL slot's TT
+ * binding.  Filled by cluster_itl_get_tt_ref (cluster_itl.h, D4) and
+ * consumed by visibility-side code (spec-3.2+).
+ *
+ * 32 bytes wire-stable (spec-3.1 v0.4 M4).  Field order is locked.
+ */
+typedef struct ClusterUndoTTSlotRef {
+	uint16 origin_node_id;	 /* offset  0, 2B */
+	uint16 undo_segment_id;	 /* offset  2, 2B */
+	uint32 tt_slot_id;		 /* offset  4, 4B */
+	uint32 cluster_epoch;	 /* offset  8, 4B */
+	TransactionId local_xid; /* offset 12, 4B */
+	SCN cached_commit_scn;	 /* offset 16, 8B; InvalidScn if no cleanout */
+	bool has_cached_status;	 /* offset 24, 1B */
+	uint8 _padding[7];		 /* offset 25, 7B explicit padding to 32B */
+} ClusterUndoTTSlotRef;
+
+StaticAssertDecl(sizeof(ClusterUndoTTSlotRef) == 32,
+				 "spec-3.1 v0.4 M4: ClusterUndoTTSlotRef must be 32 bytes;"
+				 " explicit _padding[7] required, no implicit padding");
+
+
 #endif /* CLUSTER_TT_SLOT_H */

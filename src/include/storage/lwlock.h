@@ -322,6 +322,9 @@ typedef enum BuiltinTrancheIds {
 	 * nonblocking constraint) and LWLockAcquire EXCLUSIVE only from the
 	 * SI Broadcaster aux process drain path. */
 	LWTRANCHE_CLUSTER_SINVAL,
+	/* PGRAC: spec-3.1 D2 — Undo TT status overlay HTAB (single-partition;
+	 * EXCLUSIVE for install/flush, SHARED for lookup_exact). */
+	LWTRANCHE_CLUSTER_TT_STATUS,
 #endif
 	LWTRANCHE_FIRST_USER_DEFINED
 } BuiltinTrancheIds;

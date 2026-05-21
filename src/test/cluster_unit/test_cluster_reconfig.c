@@ -320,6 +320,13 @@ void
 cluster_sinval_reset_all_on_reconfig(void)
 {}
 
+/* spec-3.1 D7 stub: cluster_reconfig_apply_epoch_bump_as_coordinator
+ * calls cluster_tt_status_flush_all.  Fixture has no TT overlay shmem;
+ * stub no-op. */
+void
+cluster_tt_status_flush_all(uint32 new_epoch pg_attribute_unused())
+{}
+
 /* Reset helper for between-test mock state. */
 static void
 ut_reset_mocks(void)

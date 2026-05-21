@@ -371,6 +371,10 @@ int cluster_sinval_ack_mode = CLUSTER_SINVAL_ACK_MODE_PEER_ENQUEUED;
 int cluster_sinval_ack_timeout_ms = 5000;
 int cluster_sinval_ack_wait_slots = 256;
 
+/* spec-3.1 D8:  2 NEW GUC for TT status overlay (D2). */
+int cluster_tt_status_overlay_max_entries = 32768;
+int cluster_tt_status_overlay_ttl_ms = 30000;
+
 static const struct config_enum_entry cluster_sinval_ack_mode_options[]
 	= { { "none", CLUSTER_SINVAL_ACK_MODE_NONE, false },
 		{ "peer_enqueued", CLUSTER_SINVAL_ACK_MODE_PEER_ENQUEUED, false },
@@ -1577,4 +1581,33 @@ cluster_init_guc(void)
 					 "broadcasts SINVAL_RESET_ALL_BROADCAST fail-safe.  "
 					 "PGC_POSTMASTER."),
 		&cluster_sinval_ack_wait_slots, 256, 64, 4096, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+
+	/*
+	 * spec-3.1 D8:  Undo TT status overlay GUCs.
+	 *
+	 * cluster.tt_status_overlay_max_entries — bounded HTAB capacity for
+	 * cross-node transaction status overlay; HTAB shmem sized at postmaster
+	 * startup; PGC_POSTMASTER.
+	 *
+	 * cluster.tt_status_overlay_ttl_ms — soft TTL in ms; lookup_exact ages
+	 * out entries past this age and returns UNKNOWN (HC181 fail-closed).
+	 */
+	DefineCustomIntVariable(
+		"cluster.tt_status_overlay_max_entries",
+		gettext_noop("Capacity of cluster Undo TT status overlay HTAB (spec-3.1 D2)."),
+		gettext_noop(
+			"Bounded in-memory cache of {origin_node, undo_segment, tt_slot, epoch, xid} "
+			"exact-key transaction status entries.  Miss returns CLUSTER_TT_STATUS_UNKNOWN "
+			"with authoritative=false (HC181 fail-closed); MUST NOT silent fallback to "
+			"PG CLOG (L176).  PGC_SIGHUP."),
+		&cluster_tt_status_overlay_max_entries, 32768, 1024, 1048576, PGC_SIGHUP, 0, NULL, NULL,
+		NULL);
+
+	DefineCustomIntVariable(
+		"cluster.tt_status_overlay_ttl_ms",
+		gettext_noop("TTL in milliseconds for cluster Undo TT status overlay entries."),
+		gettext_noop("Soft TTL applied on lookup_exact; entries older than this age are aged out "
+					 "and lookup returns UNKNOWN.  Default 30000 (30s) covers typical OLTP active-"
+					 "xact window.  PGC_SIGHUP."),
+		&cluster_tt_status_overlay_ttl_ms, 30000, 1000, 600000, PGC_SIGHUP, 0, NULL, NULL, NULL);
 }

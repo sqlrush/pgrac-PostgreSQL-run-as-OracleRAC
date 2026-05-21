@@ -145,6 +145,7 @@
 #include "cluster/cluster_guc.h"		/* PGRAC: spec-2.6 cluster_enabled gate */
 #include "cluster/cluster_qvotec.h" /* PGRAC: spec-2.6 in_quorum lease check */
 #include "cluster/cluster_scn.h"
+#include "cluster/cluster_tt_local.h" /* PGRAC: spec-3.1 D6 commit/abort hook */
 #endif
 
 /*
@@ -1611,6 +1612,19 @@ RecordTransactionCommit(void)
 	latestXid = TransactionIdLatest(xid, nchildren, children);
 
 	/*
+	 * PGRAC (spec-3.1 D6):  record COMMITTED into in-memory cluster Undo TT
+	 * status overlay.  PG-native CLOG is untouched (feature-069 AD-006 第五
+	 * 轮);  cluster visibility (spec-3.2+) reaches TT status by exact key,
+	 * not by raw TransactionIdDidCommit(xid) (HC180 / HC181 / L176).
+	 *
+	 * Self-consumer assertion (spec-3.1 v0.4 N7) lives inside
+	 * cluster_tt_local_record_commit (debug build) — keeps D5/D6 wired and
+	 * exercised by D10 L2 TAP via the self_consumer_hit counter.
+	 */
+	if (markXidCommitted)
+		cluster_tt_local_record_commit(xid);
+
+	/*
 	 * Wait for synchronous replication, if required. Similar to the decision
 	 * above about using committing asynchronously we only want to wait if
 	 * this backend assigned an xid and wrote WAL.  No need to wait if an xid
@@ -1927,6 +1941,15 @@ RecordTransactionAbort(bool isSubXact)
 	TransactionIdAbortTree(xid, nchildren, children);
 
 	END_CRIT_SECTION();
+
+	/*
+	 * PGRAC (spec-3.1 D6):  record ABORTED into in-memory cluster Undo TT
+	 * status overlay.  Top-level aborts only (isSubXact=false);  subxact
+	 * aborts are tracked by PG's SUBTRANS path and are out of scope for
+	 * spec-3.1 (§1.3 #10 SUBTRANS cross-node sync defer to later spec).
+	 */
+	if (!isSubXact)
+		cluster_tt_local_record_abort(xid);
 
 	/* Compute latestXid while we have the child XIDs handy */
 	latestXid = TransactionIdLatest(xid, nchildren, children);

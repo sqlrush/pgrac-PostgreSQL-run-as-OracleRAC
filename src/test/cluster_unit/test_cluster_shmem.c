@@ -359,6 +359,15 @@ void
 cluster_sinval_module_init(void)
 {}
 
+/* spec-3.1 D2 + D5 stub: cluster_init_shmem_module also calls
+ * cluster_tt_status_shmem_register and cluster_tt_local_shmem_register. */
+void
+cluster_tt_status_shmem_register(void)
+{}
+void
+cluster_tt_local_shmem_register(void)
+{}
+
 
 /*
  * Spec-1.10.1 D1 F1 stub: cluster_init_shmem_module also calls

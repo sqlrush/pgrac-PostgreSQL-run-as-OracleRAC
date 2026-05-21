@@ -97,6 +97,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_gcs.h"		   /* GCS request protocol surface (spec-2.32 D8) */
 #include "cluster/cluster_gcs_block.h"	   /* GCS block-ship data plane (spec-2.33 D10) */
 #include "cluster/cluster_sinval.h"		   /* SI Broadcaster counter accessors (spec-2.38 D10) */
+#include "cluster/cluster_tt_status.h"	   /* TT status overlay counter accessors (spec-3.1 D9) */
 #include "cluster/cluster_startup_phase.h" /* phase enum + accessors (stage 1.10) */
 #include "storage/bufpage.h"	   /* PG_PAGE_LAYOUT_VERSION, SizeOfPageHeaderData (stage 1.4) */
 #include "storage/buf_internals.h" /* BufferDesc layout (stage 1.6) */
@@ -1373,6 +1374,22 @@ dump_gcs(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_sinval_get_ack_timeout_count()));
 	emit_row(rsinfo, "sinval", "ack_orphan_count",
 			 fmt_int64((int64)cluster_sinval_get_ack_orphan_count()));
+
+	/* spec-3.1 D9:  7 NEW counter rows for Undo TT status overlay. */
+	emit_row(rsinfo, "tt_status", "install_count",
+			 fmt_int64((int64)cluster_tt_status_get_install_count()));
+	emit_row(rsinfo, "tt_status", "lookup_hit_count",
+			 fmt_int64((int64)cluster_tt_status_get_lookup_hit_count()));
+	emit_row(rsinfo, "tt_status", "lookup_miss_count",
+			 fmt_int64((int64)cluster_tt_status_get_lookup_miss_count()));
+	emit_row(rsinfo, "tt_status", "evict_count",
+			 fmt_int64((int64)cluster_tt_status_get_evict_count()));
+	emit_row(rsinfo, "tt_status", "flush_count",
+			 fmt_int64((int64)cluster_tt_status_get_flush_count()));
+	emit_row(rsinfo, "tt_status", "self_consumer_hit_count",
+			 fmt_int64((int64)cluster_tt_status_get_self_consumer_hit_count()));
+	emit_row(rsinfo, "tt_status", "evict_fail_count",
+			 fmt_int64((int64)cluster_tt_status_get_evict_fail_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */

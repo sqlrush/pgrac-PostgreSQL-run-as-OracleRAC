@@ -584,5 +584,9 @@ extern int cluster_sinval_ack_mode;
 extern int cluster_sinval_ack_timeout_ms;
 extern int cluster_sinval_ack_wait_slots;
 
+/* spec-3.1 D8:  2 NEW GUC for TT status overlay (D2). */
+extern int cluster_tt_status_overlay_max_entries;
+extern int cluster_tt_status_overlay_ttl_ms;
+
 
 #endif /* CLUSTER_GUC_H */

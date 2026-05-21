@@ -69,6 +69,7 @@
 #include "cluster/cluster_epoch.h"	   /* advance + observe + set_changed_at_lsn */
 #include "cluster/cluster_gcs_block.h" /* spec-2.34 D4 — eager epoch wake hook */
 #include "cluster/cluster_sinval.h"	   /* spec-2.39 D14 — RESET-all reconfig hook */
+#include "cluster/cluster_tt_status.h" /* spec-3.1 D7 — TT status overlay flush hook */
 #include "cluster/cluster_guc.h"	   /* cluster_enabled */
 #include "cluster/cluster_inject.h"	   /* CLUSTER_INJECTION_POINT */
 #include "cluster/cluster_qvotec.h"	   /* cluster_qvotec_in_quorum */
@@ -552,6 +553,22 @@ cluster_reconfig_apply_epoch_bump_as_coordinator(
 	 * cluster弹性收敛.
 	 */
 	cluster_sinval_reset_all_on_reconfig();
+
+	/*
+	 * spec-3.1 D7 (v0.4 N11):  flush cluster Undo TT status overlay on
+	 * reconfig epoch bump.  Adopt the spec-2.39 D14 hardcoded-callsite
+	 * pattern (linkdb has no register-based reconfig callback API).
+	 *
+	 * Why here:  old-epoch overlay entries become invalid when the
+	 * cluster epoch advances (HC182);  a fresh epoch must start with a
+	 * clean overlay to avoid stale-status leaks across reconfig.
+	 * Generation bump inside flush_all means future readers naturally
+	 * skip pre-flush entries even if the flush races with concurrent
+	 * lookups (HC181 fail-closed).
+	 *
+	 * PG CLOG is intentionally NOT touched (feature-069 L176).
+	 */
+	cluster_tt_status_flush_all((uint32)new_epoch);
 
 	memset(&evt, 0, sizeof(evt));
 	evt.event_id = cluster_reconfig_compute_event_id(dead_bitmap, cssd_dead_generation);

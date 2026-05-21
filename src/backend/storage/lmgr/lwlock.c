@@ -228,6 +228,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"ClusterGcsBlockDedup",
 	/* PGRAC LWTRANCHE_CLUSTER_SINVAL: spec-2.38 D2 outbound + inbound ring lock */
 	"ClusterSinval",
+	/* PGRAC LWTRANCHE_CLUSTER_TT_STATUS: spec-3.1 D2 Undo TT status overlay HTAB */
+	"ClusterTTStatus",
 #endif
 };
 

@@ -94,6 +94,9 @@ jobs:
       - name: Check SCN cmp gate (spec-1.15 Q8+L4)
         run: ./scripts/ci/check-scn-cmp-gate.sh
 
+      - name: Check no CLOG overlay (spec-3.1 L176)
+        run: ./scripts/ci/check-no-clog-overlay.sh
+
       - name: Lint commit message
         if: github.event_name == 'pull_request'
         run: |

@@ -613,6 +613,43 @@ cluster_sinval_get_ack_orphan_count(void)
 	return 0;
 }
 
+/* spec-3.1 D9:  7 NEW TT status counter stubs. */
+uint64
+cluster_tt_status_get_install_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_lookup_hit_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_lookup_miss_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_evict_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_flush_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_self_consumer_hit_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_status_get_evict_fail_count(void)
+{
+	return 0;
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {
