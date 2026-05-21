@@ -632,6 +632,20 @@ cluster_sinval_unregister_proc_latch(void)
 		ClusterSinvalBcastLatch = NULL;
 }
 
+/*
+ * cluster_sinval_set_proc_latch -- wake SinvalBcast aux process.
+ *
+ *	In-process(SinvalBcast itself):  SetLatch(local latch)直接走。
+ *	Cross-process(LMON / IC handler context / backend after enqueue_batch
+ *	had previously woken SinvalBcast directly — now wakes LMON instead):
+ *	  从 shmem 读 sinval_bcast_pid + kill(SIGUSR1)。Wake 依赖
+ *	  procsignal_sigusr1_handler 末尾 SetLatch(MyLatch) 兜底
+ *	  (src/backend/storage/ipc/procsignal.c:711),**不依赖** ProcSignalInit
+ *	  slot —— SinvalBcast 故意跳过 ProcSignalInit(spec-2.18 LMS / 2.19 LMD
+ *	  / 2.38 SinvalBcast 同款 lifecycle 简化),CheckProcSignal 各分支因
+ *	  MyProcSignalSlot=NULL 自动 no-op,handler 末尾 SetLatch(MyLatch) 仍
+ *	  fire → WaitLatch 解阻。Hardening v1.0.1 L172 family。
+ */
 void
 cluster_sinval_set_proc_latch(void)
 {

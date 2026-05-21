@@ -28,8 +28,11 @@
  *	          fail-safe SIResetAll()
  *	    HC135 source_node 辅助 echo defense (envelope-level only;不可替代
  *	          HC132 硬防线)
- *	    HC136 SI Broadcaster aux process main loop drain pattern (reuse
- *	          spec-1.11 LMON pattern)
+ *	    HC136 split drain ownership (Hardening v1.0.1): LMON drains
+ *	          outbound queue + fanouts wire envelopes (tier1 fd LMON-only);
+ *	          SinvalBcast aux process drains inbound queue + applies
+ *	          SendSharedInvalidMessages locally + executes fail-safe
+ *	          SIResetAll() on overflow.  See L172.
  *	    HC137 StaticAssertDecl(SharedInvalidationMessage == 16) 锁 PG ABI
  *	    HC138 wire ABI variable-length tail (reuse spec-2.4 chunked framing)
  *	    HC139 producer mask = CLUSTER_IC_PRODUCER_SINVAL_FANOUT (LMON) only;
@@ -123,7 +126,6 @@ StaticAssertDecl(sizeof(SinvalBroadcastHeader) == 24,
  *         into ClusterSinvalOutbound via cluster_sinval_enqueue_batch();
  *         SinvalBcast only applies inbound messages locally.
  * ============================================================ */
-#define CLUSTER_IC_PRODUCER_SINVAL_BCAST ((uint32)(1u << B_SINVAL_BCAST))
 #define CLUSTER_IC_PRODUCER_SINVAL_FANOUT ((uint32)(1u << B_LMON))
 
 

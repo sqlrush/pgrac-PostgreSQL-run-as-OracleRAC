@@ -90,10 +90,8 @@ UT_TEST(test_sinval_msg_type_is_7)
 UT_TEST(test_producer_mask_equals_lmon_bit)
 {
 	/* HC139 hardening: outbound wire fanout must be LMON-mediated because
-	 * tier1 TCP fds are LMON process-local. */
+	 * tier1 TCP fds are LMON process-local (L172). */
 	UT_ASSERT_EQ((unsigned int)CLUSTER_IC_PRODUCER_SINVAL_FANOUT, (unsigned int)(1u << B_LMON));
-	UT_ASSERT_EQ((unsigned int)CLUSTER_IC_PRODUCER_SINVAL_BCAST,
-				 (unsigned int)(1u << B_SINVAL_BCAST));
 }
 
 UT_TEST(test_broadcast_header_sizeof_24)
