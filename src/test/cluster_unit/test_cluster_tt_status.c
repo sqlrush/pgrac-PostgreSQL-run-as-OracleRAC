@@ -33,10 +33,9 @@
  *
  *	  No raw xid lookup path is exercised here (HC180 / L176 — by design,
  *	  no such API exists in spec-3.1).  Negative-grep assertions (no
- *	  cluster_clog_overlay / no SharedInvalCLOGStatusMsg / no
- *	  PGRAC_IC_MSG_TT_STATUS_HINT symbols in spec-3.1 implementation) live
- *	  in scripts/ci/check-no-clog-overlay.sh (D11);  not encoded as C
- *	  unit tests (v0.4 N8).
+ *	  banned CLOG-overlay identifiers — see check-no-clog-overlay.sh for
+ *	  the full banned list) live in scripts/ci/check-no-clog-overlay.sh
+ *	  (D11);  not encoded as C unit tests (v0.4 N8).
  *
  *	  Header-only;  behavioral coverage in cluster_tap t/203.
  *

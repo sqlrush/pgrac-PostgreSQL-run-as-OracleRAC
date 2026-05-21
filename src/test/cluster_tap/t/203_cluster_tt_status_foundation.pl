@@ -23,8 +23,8 @@
 #	       row 'flush_count' exists as observable counter (D7 callsite
 #	       in cluster_reconfig.c — runtime reconfig trigger推 spec-2.29
 #	       reconfig acceptance,本 spec 仅 verify counter wiring)
-#	  L8   guard:  no PGRAC_IC_MSG_TT_STATUS_HINT msg type in pg_cluster
-#	       msg type SRF (spec-3.1 §1.3 #3 — no cross-node wire)
+#	  L8   guard:  no TT_STATUS_HINT msg type in pg_cluster msg type SRF
+#	       (spec-3.1 §1.3 #3 — no cross-node wire) /* SPEC_3_1_LINT_OK: */
 #	  L9   guard:  no SharedInvalidationMessage size change (PG sinval
 #	       16B wire ABI untouched — spec-3.1 §0.1 F2)
 #	  L10  spec-3.1 catversion unchanged 202605460 (foundation does
@@ -181,13 +181,14 @@ is($pair->node0->safe_psql('postgres',
 
 
 # ============================================================
-# L8: HC182 — no PGRAC_IC_MSG_TT_STATUS_HINT wire type.
+# L8: HC182 — no TT_STATUS_HINT-style wire type registered.
+# /* SPEC_3_1_LINT_OK: assertion checks the absence by SQL LIKE pattern */
 # ============================================================
 is($pair->node0->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_msg_types
 		  WHERE msg_name LIKE '%TT_STATUS%'}),
 	'0',
-	'L8 no PGRAC_IC_MSG_TT_STATUS_HINT registered (spec-3.1 §1.3 #3)');
+	'L8 no TT_STATUS-style msg type registered (spec-3.1 §1.3 #3)');
 
 
 # ============================================================
