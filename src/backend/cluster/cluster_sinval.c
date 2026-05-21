@@ -413,30 +413,6 @@ cluster_sinval_inbound_try_enqueue(uint64 batch_id, const SharedInvalidationMess
  *	HC135:  source_node ≠ self envelope-level echo defense (auxiliary;
  *	HC132 outbound queue 独立 is the only hard echo防线).
  * ============================================================ */
-static uint32
-sinval_payload_checksum(const SinvalBroadcastHeader *hdr, const SharedInvalidationMessage *msgs,
-						int n)
-{
-	const uint8 *bytes;
-	uint32 c = 0;
-	int i;
-
-	bytes = (const uint8 *)hdr;
-	for (i = 0; i < (int)sizeof(SinvalBroadcastHeader); i++)
-		c = (c * 31u) + bytes[i];
-	bytes = (const uint8 *)msgs;
-	for (i = 0; i < n * (int)sizeof(SharedInvalidationMessage); i++)
-		c = (c * 31u) + bytes[i];
-	return c;
-}
-
-uint32
-cluster_sinval_compute_payload_checksum(const SinvalBroadcastHeader *hdr,
-										const SharedInvalidationMessage *msgs, int n)
-{
-	return sinval_payload_checksum(hdr, msgs, n);
-}
-
 static void
 cluster_sinval_handle_envelope(const ClusterICEnvelope *env, const void *payload)
 {
@@ -934,7 +910,7 @@ typedef struct ClusterSinvalAckWaitEntry {
 	uint32 ack_received_mask;
 	TimestampTz deadline_us;
 	uint16 status; /* ClusterSinvalAckStatus aggregate (DONE if all DONE) */
-	uint16 pad;
+	uint16 completion_signaled;
 } ClusterSinvalAckWaitEntry;
 
 typedef struct ClusterSinvalAckOutboundEntry {
@@ -1066,6 +1042,8 @@ cluster_sinval_ack_outbound_enqueue(uint64 batch_id, int32 sender_node, uint16 s
 	ClusterSinvalAckOutbound->slots[tail].pad = 0;
 	pg_atomic_write_u32(&ClusterSinvalAckOutbound->tail, next_tail);
 	LWLockRelease(&ClusterSinvalAckOutbound->lock.lock);
+
+	cluster_lmon_wakeup();
 }
 
 
@@ -1134,7 +1112,7 @@ cluster_sinval_handle_ack_envelope(const ClusterICEnvelope *env, const void *pay
 	const SinvalAckHeader *hdr = (const SinvalAckHeader *)payload;
 	ClusterSinvalAckWaitEntry *entry;
 	bool found;
-	uint32 alive_mask, recv_mask;
+	uint32 alive_mask, recv_mask, acker_bit;
 	int32 enqueuer_pgprocno = -1;
 	uint64 current_epoch;
 
@@ -1178,13 +1156,23 @@ match_batch:
 
 	/* HC141 fulfilled rule:  DONE or RESET_PENDING → bit-set;DROPPED 不. */
 	if (hdr->status == SINVAL_ACK_DONE || hdr->status == SINVAL_ACK_RESET_PENDING) {
-		entry->ack_received_mask |= (1u << hdr->acker_node);
+		acker_bit = (1u << hdr->acker_node);
+		if ((entry->alive_peer_mask & acker_bit) == 0) {
+			LWLockRelease(ClusterSinvalAckWaitLock);
+			pg_atomic_fetch_add_u64(&ClusterSinval->ack_orphan_count, 1);
+			return;
+		}
+
+		entry->ack_received_mask |= acker_bit;
 		alive_mask = entry->alive_peer_mask;
 		recv_mask = entry->ack_received_mask;
-		enqueuer_pgprocno = entry->enqueuer_pgprocno;
+		if ((recv_mask & alive_mask) == alive_mask && entry->completion_signaled == 0) {
+			entry->completion_signaled = 1;
+			enqueuer_pgprocno = entry->enqueuer_pgprocno;
+		}
 		LWLockRelease(ClusterSinvalAckWaitLock);
 
-		if (recv_mask == alive_mask && enqueuer_pgprocno >= 0) {
+		if (enqueuer_pgprocno >= 0) {
 			pg_atomic_fetch_add_u64(&ClusterSinval->ack_received_count, 1);
 			SetLatch(&GetPGProcByNumber(enqueuer_pgprocno)->procLatch);
 		}
@@ -1255,6 +1243,7 @@ cluster_sinval_enqueue_and_wait_ack(const SharedInvalidationMessage *msgs, int n
 				 errhint("raise cluster.sinval_ack_wait_slots or check ack_orphan_count.")));
 		pg_atomic_fetch_add_u64(&ClusterSinval->outbound_queue_full_count, 1);
 		pg_atomic_write_u32(&ClusterSinval->reset_all_broadcast_pending, 1);
+		cluster_lmon_wakeup();
 		return CLUSTER_SINVAL_ACK_ENQUEUE_FAILED;
 	}
 	entry->enqueuer_pgprocno = MyProc->pgprocno;
@@ -1262,16 +1251,14 @@ cluster_sinval_enqueue_and_wait_ack(const SharedInvalidationMessage *msgs, int n
 	entry->ack_received_mask = 0;
 	entry->deadline_us = deadline_us;
 	entry->status = SINVAL_ACK_DONE;
-	entry->pad = 0;
+	entry->completion_signaled = 0;
 	LWLockRelease(ClusterSinvalAckWaitLock);
 
 	/* Reset latch before publishing the batch so we don't miss early ACKs. */
 	ResetLatch(MyLatch);
 
-	/* spec-2.38 enqueue_batch sets SINVAL_REQUIRES_ACK flag implicitly via
-	 * cluster_sinval_enqueue_batch_with_flags wrapper.  For minimal change
-	 * to spec-2.38 ABI we set the flag inside the existing path by passing
-	 * a sentinel:  patched in next commit step. */
+	/* Publish the batch with the preallocated batch_id and REQUIRES_ACK flag
+	 * so the returning ACK can be correlated with the wait entry above. */
 	if (!cluster_sinval_enqueue_batch_with_ack_flag(msgs, n, batch_id)) {
 		LWLockAcquire(ClusterSinvalAckWaitLock, LW_EXCLUSIVE);
 		(void)hash_search(ClusterSinvalAckWaitHTAB, &batch_id, HASH_REMOVE, &found);
@@ -1388,6 +1375,7 @@ cluster_sinval_reset_all_on_reconfig(void)
 	while ((entry = hash_seq_search(&scan)) != NULL) {
 		Latch *latch = &GetPGProcByNumber(entry->enqueuer_pgprocno)->procLatch;
 		entry->ack_received_mask = entry->alive_peer_mask;
+		entry->completion_signaled = 1;
 		SetLatch(latch);
 	}
 	LWLockRelease(ClusterSinvalAckWaitLock);
