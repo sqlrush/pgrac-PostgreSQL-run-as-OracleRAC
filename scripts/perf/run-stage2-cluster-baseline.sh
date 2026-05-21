@@ -61,9 +61,13 @@ run_pgbench()
 	echo "--- workload $label (mode=$mode port=$port duration=${DURATION_SEC}s) ---"
 	local out
 	out="$("$PGBIN/pgbench" $opts -c 4 -j 2 -T "$DURATION_SEC" -n \
-		-p "$port" -h /tmp -d postgres 2>&1 || true)"
+		-p "$port" -h /tmp -d postgres 2>&1)"
 	local tps="$(echo "$out" | sed -nE 's/.*tps = ([0-9.]+).*/\1/p' | head -1)"
-	tps="${tps:-0}"
+	if [ -z "$tps" ]; then
+		echo "$out"
+		echo "ERROR: pgbench output did not contain a TPS line for workload $label" >&2
+		return 1
+	fi
 	RESULTS+=("{\"workload\":\"$label\",\"mode\":\"$mode\",\"port\":$port,\"duration_s\":$DURATION_SEC,\"tps\":$tps}")
 	echo "  → tps=$tps"
 }
@@ -79,7 +83,7 @@ PORT2="${PORT2:-5434}"
 
 echo ""
 echo "=== single-node off (port=$PORT0) ==="
-"$PGBIN/pgbench" -i -s 1 -q -p "$PORT0" -h /tmp -d postgres >/dev/null 2>&1 || true
+"$PGBIN/pgbench" -i -s 1 -q -p "$PORT0" -h /tmp -d postgres >/dev/null
 run_pgbench "single-node-off"  "$PORT0" "select"
 run_pgbench "single-node-off"  "$PORT0" "full"
 

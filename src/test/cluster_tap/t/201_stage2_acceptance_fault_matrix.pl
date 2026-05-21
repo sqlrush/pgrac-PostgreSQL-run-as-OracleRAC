@@ -1,21 +1,18 @@
 # -*- perl -*-
 #
 # 201_stage2_acceptance_fault_matrix.pl
-#	  spec-2.40 D2 — Stage 2 acceptance:  5 portable fault scenarios.
+#	  spec-2.40 D2 — Stage 2 acceptance: portable fault-matrix smoke.
 #
-#	  F1 SIGSTOP node1 CSSD → cluster_cssd_get_peer_state(1) → DEAD →
-#	     SIGCONT → ALIVE recovery (spec-2.5)
-#	  F2 SIGKILL node1 backend mid-DDL → no PANIC + ack_timeout WARN
-#	     53R95 (spec-2.39)
-#	  F3 inject cluster-gcs-block-drop-reply-before-send → retransmit
-#	     dedup HTAB + 53R90 + recovery (spec-2.33/2.34)
-#	  F4 inject cluster-sinval-ack-drop-send → ack_timeout_count bump +
-#	     DDL 继续 (spec-2.39 D17)
-#	  F5 inject cluster-voting-disk-write-fail → 2-of-3 quorum survives
-#	     + fence-lite on losing node (spec-2.6)
+#	  CI-safe layer: verify the fault-control surfaces are present,
+#	  armable, and do not leave the two-node cluster unable to answer SQL.
+#	  Destructive SIGSTOP/SIGKILL/quorum-loss chaos is intentionally kept in
+#	  scripts/perf/run-stage2-fault-matrix.sh for manual/pre-release runs.
 #
-#	  Each F-block contains recovery bound assertion (<= 30s, F5 <= 60s).
-#	  ClusterPair fixture (F1/F2/F4) + ClusterTriple (F3/F5).
+#	  F1 CSSD heartbeat/fault surface readable
+#	  F2 sinval ack-drop inject armable
+#	  F3 GCS block reply-drop inject armable
+#	  F4 sinval ack_timeout_count exposed
+#	  F5 voting-disk write-fail inject armable
 #
 # IDENTIFICATION
 #	  src/test/cluster_tap/t/201_stage2_acceptance_fault_matrix.pl

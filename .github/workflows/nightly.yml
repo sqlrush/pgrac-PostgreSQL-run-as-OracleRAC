@@ -101,15 +101,6 @@ jobs:
         run: make check
 
       - name: Run cluster-check (unit + tap full + regress)
-        # spec-2.40 D9:  cluster_tap full suite (含 t/200_stage2_
-        # acceptance_capability + t/201_stage2_acceptance_fault_matrix +
-        # t/202_stage2_acceptance_perf_smoke)在此 job 已嵌入(tier-1 smoke).
-        # 真 tier-2 medium soak (4 workload × 10min × 2-node + 2 workload ×
-        # 10min × 3-node = 60min workload + 30min buffer = 90min) 是 manual
-        # via:  TIER=medium PORT0=... PORT1=... PORT2=... \
-        #         bash scripts/perf/run-stage2-cluster-baseline.sh
-        # (separate dedicated job future work per spec-2.40 D9 forward-link;
-        # 本 nightly job 不假设 build artifact 跨 job 复用 — spec v0.2 F2).
         run: make -C src/test cluster-check
 
       - name: Upload regression diffs on failure
@@ -124,3 +115,62 @@ jobs:
             src/test/cluster_tap/tmp_check/log/
           if-no-files-found: ignore
           retention-days: 14
+
+  # ====================================================================
+  # Tier 2.2 — Stage 2 acceptance medium representative job
+  # --------------------------------------------------------------------
+  # Self-contained Ubuntu job.  It intentionally rebuilds/install locally
+  # instead of assuming workspace or install artifacts from build-test-full.
+  # Runs the Stage 2 acceptance TAPs with longer knobs than fast-gate and
+  # uploads the generated JSON reports.
+  # ====================================================================
+  stage2-acceptance-medium:
+    name: Stage 2 acceptance medium (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libreadline-dev zlib1g-dev libicu-dev \
+            liblz4-dev libzstd-dev libssl-dev libxml2-dev \
+            libipc-run-perl pkg-config
+
+      - name: Configure (--enable-cluster)
+        run: |
+          ./configure \
+            --prefix=$HOME/pgrac-install \
+            --enable-cassert --enable-debug \
+            --with-openssl --with-icu --with-lz4 --with-zstd \
+            --enable-cluster --enable-tap-tests
+
+      - name: Build and install
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN)
+          make install
+
+      - name: Run Stage 2 acceptance TAP matrix
+        env:
+          STAGE2_TAG: ${{ github.ref_name }}
+          STAGE2_PGBENCH_SECONDS: "20"
+          STAGE2_WORKLOAD_SECONDS: "1"
+          STAGE2_WORKLOAD_ITERATIONS: "20"
+        run: |
+          make -C src/test/cluster_tap check \
+            PROVE_TESTS="t/200_stage2_acceptance_capability.pl t/201_stage2_acceptance_fault_matrix.pl t/202_stage2_acceptance_perf_smoke.pl"
+
+      - name: Upload Stage 2 acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-acceptance-medium-${{ github.run_id }}
+          path: |
+            src/test/cluster_tap/tmp/stage2-acceptance-*.json
+            src/test/cluster_tap/tmp_check/log/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -4,12 +4,12 @@
 #	  spec-2.40 D3 — Stage 2 acceptance:  4 workload tier-1 smoke
 #	  with single-node cluster_enabled=on/off perf gate.
 #
-#	  L1 pgbench TPC-B select-only -S 30s (single-node on/off, hard
-#	     gate ≤ 10% regression with same-job paired + fail-rerun)
-#	  L2 pgbench TPC-B 完整 read+write 30s (single-node on/off, hard
-#	     gate ≤ 15%)
-#	  L3 跨节点 DDL loop 30s (PgracClusterDdlLoop;counter delta verify)
-#	  L4 跨节点 contention 30s (PgracClusterContention;GES + CF counter)
+#	  L1 pgbench TPC-B select-only -S smoke (single-node on/off,
+#	     warning ≤ 10%; sanity floor ≤ 60%)
+#	  L2 pgbench TPC-B 完整 read+write smoke (single-node on/off,
+#	     warning ≤ 15%; sanity floor ≤ 70%)
+#	  L3 跨节点 DDL burst (PgracClusterDdlLoop;counter delta verify)
+#	  L4 跨节点 contention burst (PgracClusterContention;GES + CF counter)
 #
 #	  Smoke scope:  ≤ 2min total.  2-node bound 仅 warning gate (red /
 #	  yellow / green report;  user amend2 严守 — 不 hard fail trend
@@ -48,7 +48,7 @@ sub _pgbench_tps
 
 
 # ============================================================
-# L1/L2 single-node cluster_enabled=on vs off (smoke + hard gate)
+# L1/L2 single-node cluster_enabled=on vs off (smoke + trend gate)
 # ============================================================
 # spec-2.40 D3 + spec v0.2 F6:  paired on/off on **same job/runner**
 # 降低 shared runner CPU 抖动 false-fail;  failure-before-confirmation
