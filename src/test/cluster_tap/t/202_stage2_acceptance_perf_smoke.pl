@@ -149,7 +149,16 @@ SKIP: {
 # scripts/perf/run-stage2-cluster-baseline.sh tier=medium。
 my $pair = PostgreSQL::Test::ClusterPair->new_pair(
 	'stage2_perf_pair',
-	extra_conf => [ 'autovacuum = off' ]);
+	extra_conf => [
+		'autovacuum = off',
+
+		# spec-2.40 D3: this TAP is an acceptance smoke for the
+		# workload helpers and trend counters.  Keep Cache Fusion PCM out
+		# of the DDL/contention burst so a short HC116 invalidate timeout
+		# does not mask the Stage 2 acceptance signal; dedicated GCS
+		# behaviour remains covered by t/113..t/116.
+		'cluster.pcm_grd_max_entries = 0',
+	]);
 $pair->start_pair;
 sleep 3;
 
