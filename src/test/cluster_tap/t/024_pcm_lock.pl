@@ -178,7 +178,7 @@ is($node->safe_psql(
 
 # ----------
 # L7: 1.6 baseline preserved (buffer_format 6 keys, block_format 9 keys,
-# categories total 11 = 10 pre-1.7 + pcm).
+# categories total follows the current pg_cluster_state surface).
 # ----------
 is($node->safe_psql(
 		'postgres',
@@ -189,8 +189,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT category) FROM pg_cluster_state}),
-   '24',
-   'L7b pg_cluster_state has 24 distinct categories (tt_status added in spec-3.1)');
+   '25',
+   'L7b pg_cluster_state has 25 distinct categories (tt_status_hint added in spec-3.2)');
 
 
 # ----------
