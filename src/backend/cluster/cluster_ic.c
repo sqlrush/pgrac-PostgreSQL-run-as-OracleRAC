@@ -114,6 +114,18 @@ PG_FUNCTION_INFO_V1(cluster_get_fence_state);
  */
 PG_FUNCTION_INFO_V1(cluster_get_reconfig_state);
 
+#ifndef USE_PGRAC_CLUSTER
+/*
+ * spec-3.2 D5b -- visibility-fork injection SQL symbols.  The real
+ * injection-backed bodies live in cluster_visibility_inject.c, which is
+ * compiled only for --enable-cluster builds.  Keep disable-cluster stubs in
+ * this always-linked file so pg_proc.dat symbols still resolve without
+ * pulling cluster_visibility_inject.o into the vanilla binary.
+ */
+PG_FUNCTION_INFO_V1(cluster_test_inject_visibility_tt_ref);
+PG_FUNCTION_INFO_V1(cluster_test_clear_visibility_injects);
+#endif
+
 
 #ifdef USE_PGRAC_CLUSTER
 
@@ -1330,5 +1342,21 @@ cluster_get_reconfig_state(PG_FUNCTION_ARGS pg_attribute_unused())
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					errmsg("cluster_get_reconfig_state requires --enable-cluster")));
 	PG_RETURN_NULL();
+}
+
+Datum
+cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_test_inject_visibility_tt_ref requires --enable-cluster")));
+	PG_RETURN_BOOL(false);
+}
+
+Datum
+cluster_test_clear_visibility_injects(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_test_clear_visibility_injects requires --enable-cluster")));
+	PG_RETURN_INT32(0);
 }
 #endif
