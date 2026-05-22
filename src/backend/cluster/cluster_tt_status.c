@@ -151,8 +151,11 @@ cluster_tt_status_shmem_init(void)
 		LWLockInitialize(&lockblock->lock, LWTRANCHE_CLUSTER_TT_STATUS);
 	ClusterTTStatusLock = &lockblock->lock;
 
-	/* HTAB.  ClusterTTStatusKey is 24B blob — HASH_BLOBS is fine. */
-	MemSet(&info, 0, sizeof(info));
+	/* HTAB.  ClusterTTStatusKey is 24B blob — HASH_BLOBS is fine.
+	 * Use memset rather than PG's MemSet macro:  cppcheck 2.13 flags
+	 * MemSet's internal _stop pointer as constVariablePointer (known
+	 * false positive on the PG macro expansion). */
+	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(ClusterTTStatusKey);
 	info.entrysize = sizeof(ClusterTTOverlayEntry);
 	info.num_partitions = 1;
