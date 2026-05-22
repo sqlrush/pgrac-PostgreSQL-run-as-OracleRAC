@@ -98,12 +98,10 @@ cluster_visibility_inject_shmem_size(void)
 }
 void
 cluster_visibility_inject_shmem_init(void)
-{
-}
+{}
 void
 cluster_visibility_inject_shmem_register(void)
-{
-}
+{}
 
 
 /* ===== T1: ClusterUndoTTSlotRef size 32B ===== */
@@ -139,7 +137,7 @@ UT_TEST(test_t3_placeholder_ref_sentinel)
 UT_TEST(test_t4_self_origin_gate)
 {
 	ClusterUndoTTSlotRef ref;
-	int			fake_self_node = 1;
+	int fake_self_node = 1;
 	memset(&ref, 0, sizeof(ref));
 	ref.origin_node_id = (uint16)fake_self_node;
 	/* spec-3.2 §3.3:  ref.origin_node_id == cluster_node_id (self) =
@@ -181,7 +179,7 @@ UT_TEST(test_t5_build_key_field_carry)
 /* ===== T6: 53R97 SQLSTATE encodable ===== */
 UT_TEST(test_t6_errcode_53r97_encodable)
 {
-	int			sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', '7');
+	int sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', '7');
 	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_TT_STATUS_UNKNOWN, sqlstate);
 }
 
@@ -204,7 +202,7 @@ UT_TEST(test_t8_inject_shmem_helpers_linkable)
 UT_TEST(test_t9_production_inject_returns_false)
 {
 	ClusterUndoTTSlotRef ref;
-	bool		hit;
+	bool hit;
 	memset(&ref, 0, sizeof(ref));
 	/* This binary links the stub form (test_cluster_visibility_fork.c
 	 * defines a local stub that always returns false) → covers the
