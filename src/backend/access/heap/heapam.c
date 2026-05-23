@@ -91,7 +91,14 @@ static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
-								  bool all_visible_cleared, bool new_all_visible_cleared);
+								  bool all_visible_cleared, bool new_all_visible_cleared
+#ifdef USE_PGRAC_CLUSTER
+								  /* spec-3.4a D4 ITL delta info */
+								  , TransactionId cluster_itl_xid
+								  , bool cluster_itl_old_active, uint8 cluster_itl_old_slot
+								  , bool cluster_itl_new_active, uint8 cluster_itl_new_slot
+#endif
+								  );
 #ifdef USE_ASSERT_CHECKING
 static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 ItemPointer otid,
@@ -3282,13 +3289,16 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 				infomask2_new_tuple;
 #ifdef USE_PGRAC_CLUSTER
 	/*
-	 * PGRAC (spec-3.4a D4): TODO — full ITL allocate / stamp / register
-	 * integration for heap_update is split between two critical sections
-	 * (same-page HOT/non-HOT and cross-page).  Subxact guard is in place
-	 * below; full ITL stamp work is queued for post-codereview hardening
-	 * round (mirrors heap_insert D3 / heap_delete D5 pattern but for
-	 * (old page, new page) tuple of handles).
+	 * PGRAC (spec-3.4a D4 + Hardening v1.0.1 A2): one ITL slot per
+	 * (page, top_xid).  Same-page UPDATE: a single slot reused for both
+	 * the old (lock + xmax) and new (insert) tuple.  Cross-page: two
+	 * slots, one per buffer.  Touch handle is registered for each
+	 * stamped buffer after END_CRIT_SECTION.
 	 */
+	uint8		cluster_itl_old_slot = CLUSTER_ITL_SLOT_UNALLOCATED;
+	uint8		cluster_itl_new_slot = CLUSTER_ITL_SLOT_UNALLOCATED;
+	bool		cluster_itl_old_active = false;
+	bool		cluster_itl_new_active = false;
 #endif
 
 	Assert(ItemPointerIsValid(otid));
@@ -4057,8 +4067,48 @@ l2:
 										   id_has_external,
 										   &old_key_copied);
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4a D4): allocate ITL slot for the update xid on the
+	 * old tuple's page and (if cross-page) on the new tuple's page.
+	 * EXCLUSIVE content locks already held; OVERFLOW raises ERROR
+	 * before the critical section.
+	 */
+	if (cluster_enabled && PageHasItl(BufferGetPage(buffer)))
+	{
+		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_old_slot))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("ITL slot OVERFLOW on heap page (INITRANS=%d full)",
+							CLUSTER_ITL_INITRANS_DEFAULT),
+					 errhint("Raise per-table INITRANS (spec-3.4b) or reduce write concurrency.")));
+		cluster_itl_old_active = true;
+
+		if (newbuf != buffer && PageHasItl(BufferGetPage(newbuf)))
+		{
+			if (!cluster_itl_alloc_or_reuse_slot(newbuf, xid, &cluster_itl_new_slot))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("ITL slot OVERFLOW on heap page (INITRANS=%d full)",
+								CLUSTER_ITL_INITRANS_DEFAULT),
+						 errhint("Raise per-table INITRANS (spec-3.4b) or reduce write concurrency.")));
+			cluster_itl_new_active = true;
+		}
+	}
+#endif
+
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
+
+#ifdef USE_PGRAC_CLUSTER
+	/* spec-3.4a D4: stamp ACTIVE inside critical section. */
+	if (cluster_itl_old_active)
+		cluster_itl_stamp_active(buffer, cluster_itl_old_slot, xid,
+								 cluster_scn_advance());
+	if (cluster_itl_new_active)
+		cluster_itl_stamp_active(newbuf, cluster_itl_new_slot, xid,
+								 cluster_scn_advance());
+#endif
 
 	/*
 	 * If this transaction commits, the old tuple will become DEAD sooner or
@@ -4146,7 +4196,13 @@ l2:
 								 newbuf, &oldtup, heaptup,
 								 old_key_tuple,
 								 all_visible_cleared,
-								 all_visible_cleared_new);
+								 all_visible_cleared_new
+#ifdef USE_PGRAC_CLUSTER
+								 , xid
+								 , cluster_itl_old_active, cluster_itl_old_slot
+								 , cluster_itl_new_active, cluster_itl_new_slot
+#endif
+								 );
 		if (newbuf != buffer)
 		{
 			PageSetLSN(BufferGetPage(newbuf), recptr);
@@ -4155,6 +4211,36 @@ l2:
 	}
 
 	END_CRIT_SECTION();
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4a D4): register touched ITL handle(s).  Outside
+	 * CRIT so palloc is safe.  Same-page UPDATE registers one handle
+	 * (oldbuf == newbuf); cross-page registers two.
+	 */
+	if (cluster_itl_old_active)
+	{
+		ClusterItlTouchHandle handle;
+
+		handle.rloc = relation->rd_locator;
+		handle.block = BufferGetBlockNumber(buffer);
+		handle.forknum = MAIN_FORKNUM;
+		handle.slot_idx = cluster_itl_old_slot;
+		handle.flags = 0;
+		cluster_itl_touch_register(&handle);
+	}
+	if (cluster_itl_new_active && newbuf != buffer)
+	{
+		ClusterItlTouchHandle handle;
+
+		handle.rloc = relation->rd_locator;
+		handle.block = BufferGetBlockNumber(newbuf);
+		handle.forknum = MAIN_FORKNUM;
+		handle.slot_idx = cluster_itl_new_slot;
+		handle.flags = 0;
+		cluster_itl_touch_register(&handle);
+	}
+#endif
 
 	if (newbuf != buffer)
 		LockBuffer(newbuf, BUFFER_LOCK_UNLOCK);
@@ -9132,7 +9218,13 @@ static XLogRecPtr
 log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup, HeapTuple newtup,
 				HeapTuple old_key_tuple,
-				bool all_visible_cleared, bool new_all_visible_cleared)
+				bool all_visible_cleared, bool new_all_visible_cleared
+#ifdef USE_PGRAC_CLUSTER
+				, TransactionId cluster_itl_xid
+				, bool cluster_itl_old_active, uint8 cluster_itl_old_slot
+				, bool cluster_itl_new_active, uint8 cluster_itl_new_slot
+#endif
+				)
 {
 	xl_heap_update xlrec;
 	xl_heap_header xlhdr;
@@ -9146,6 +9238,12 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	bool		need_tuple_data = RelationIsLogicallyLogged(reln);
 	bool		init;
 	int			bufflags;
+#ifdef USE_PGRAC_CLUSTER
+	xl_heap_itl_delta_block cluster_itl_old_hdr;
+	xl_heap_itl_delta cluster_itl_old_delta;
+	xl_heap_itl_delta_block cluster_itl_new_hdr;
+	xl_heap_itl_delta cluster_itl_new_delta;
+#endif
 
 	/* Caller should not call me on a non-WAL-logged relation */
 	Assert(RelationNeedsWAL(reln));
@@ -9231,6 +9329,59 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		}
 	}
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4a D4 / D8): set XLH_UPDATE_ITL_DELTA when either
+	 * the old or new page received an ACTIVE stamp.  Construct both
+	 * block-local arrays now; their attachment to blocks 0 (newbuf)
+	 * and 1 (oldbuf) happens via XLogRegisterBufData after buffers are
+	 * registered below.
+	 */
+	if (cluster_itl_old_active || cluster_itl_new_active)
+	{
+		xlrec.flags |= XLH_UPDATE_ITL_DELTA;
+
+		if (cluster_itl_new_active)
+		{
+			cluster_itl_new_hdr.ndeltas = 1;
+			cluster_itl_new_hdr.reserved = 0;
+			cluster_itl_new_hdr._pad = 0;
+			cluster_itl_new_delta.slot_idx = cluster_itl_new_slot;
+			cluster_itl_new_delta.flags_after = ITL_FLAG_ACTIVE;
+			cluster_itl_new_delta.xid = cluster_itl_xid;
+			cluster_itl_new_delta.write_scn = ClusterPageGetItlSlots(BufferGetPage(newbuf))[cluster_itl_new_slot].write_scn;
+			cluster_itl_new_delta.commit_scn = InvalidScn;
+		}
+		if (cluster_itl_old_active && oldbuf != newbuf)
+		{
+			cluster_itl_old_hdr.ndeltas = 1;
+			cluster_itl_old_hdr.reserved = 0;
+			cluster_itl_old_hdr._pad = 0;
+			cluster_itl_old_delta.slot_idx = cluster_itl_old_slot;
+			cluster_itl_old_delta.flags_after = ITL_FLAG_ACTIVE;
+			cluster_itl_old_delta.xid = cluster_itl_xid;
+			cluster_itl_old_delta.write_scn = ClusterPageGetItlSlots(BufferGetPage(oldbuf))[cluster_itl_old_slot].write_scn;
+			cluster_itl_old_delta.commit_scn = InvalidScn;
+		}
+		else if (cluster_itl_old_active)
+		{
+			/*
+			 * Same-page UPDATE: one slot per (page, top_xid) shared
+			 * between old (xmax stamp) and new (insert) tuple.  Emit a
+			 * single delta on block 0 (newbuf == oldbuf).
+			 */
+			cluster_itl_new_hdr.ndeltas = 1;
+			cluster_itl_new_hdr.reserved = 0;
+			cluster_itl_new_hdr._pad = 0;
+			cluster_itl_new_delta.slot_idx = cluster_itl_old_slot;
+			cluster_itl_new_delta.flags_after = ITL_FLAG_ACTIVE;
+			cluster_itl_new_delta.xid = cluster_itl_xid;
+			cluster_itl_new_delta.write_scn = ClusterPageGetItlSlots(BufferGetPage(newbuf))[cluster_itl_old_slot].write_scn;
+			cluster_itl_new_delta.commit_scn = InvalidScn;
+		}
+	}
+#endif
+
 	/* If new tuple is the single and first tuple on page... */
 	if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
 		PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
@@ -9262,6 +9413,43 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		XLogRegisterBuffer(1, oldbuf, REGBUF_STANDARD);
 
 	XLogRegisterData((char *) &xlrec, SizeOfHeapUpdate);
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4a D4 / D8): attach the block-local ITL delta
+	 * arrays as MAIN data (XLogRegisterData), not block data, because
+	 * PG's heap_xlog_update reconstructs the new tuple from block 0
+	 * BufData using length subtraction -- appending ITL delta to block
+	 * 0 BufData would extend tuple newlen and corrupt the rebuild.
+	 *
+	 * Layout in main data after xl_heap_update:
+	 *   xl_heap_update            (SizeOfHeapUpdate bytes)
+	 *   xl_heap_itl_delta_block   for newbuf (block 0), if ITL flag set
+	 *   xl_heap_itl_delta * N1
+	 *   xl_heap_itl_delta_block   for oldbuf (block 1), if cross-page
+	 *   xl_heap_itl_delta * N2
+	 *
+	 * Same-page UPDATE emits one array (newbuf == oldbuf, one slot per
+	 * (page, top_xid)).  Cross-page emits two arrays.
+	 */
+	if (xlrec.flags & XLH_UPDATE_ITL_DELTA)
+	{
+		/* Block 0 (newbuf) array: same-page shares the old slot value. */
+		XLogRegisterData((char *) &cluster_itl_new_hdr,
+						 offsetof(xl_heap_itl_delta_block, deltas));
+		XLogRegisterData((char *) &cluster_itl_new_delta,
+						 sizeof(cluster_itl_new_delta));
+
+		/* Block 1 (oldbuf) array: cross-page only. */
+		if (cluster_itl_old_active && oldbuf != newbuf)
+		{
+			XLogRegisterData((char *) &cluster_itl_old_hdr,
+							 offsetof(xl_heap_itl_delta_block, deltas));
+			XLogRegisterData((char *) &cluster_itl_old_delta,
+							 sizeof(cluster_itl_old_delta));
+		}
+	}
+#endif
 
 	/*
 	 * Prepare WAL data for the new tuple.
@@ -10455,6 +10643,54 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4a D9): replay block 1 (old page) ITL delta if
+		 * present.  Main data layout when XLH_UPDATE_ITL_DELTA set:
+		 *   xl_heap_update + new-block delta_block + (cross-page only)
+		 *   old-block delta_block.  Cross-page case skips the new-block
+		 *   array first.
+		 */
+		if ((xlrec->flags & XLH_UPDATE_ITL_DELTA) && oldblk != newblk)
+		{
+			char	   *itl_cursor = (char *) xlrec + SizeOfHeapUpdate;
+			xl_heap_itl_delta_block new_hdr;
+			uint16		i;
+			xl_heap_itl_delta_block old_hdr;
+
+			/* Skip the new-block array first. */
+			memcpy(&new_hdr, itl_cursor,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			itl_cursor +=
+				offsetof(xl_heap_itl_delta_block, deltas)
+				+ new_hdr.ndeltas * sizeof(xl_heap_itl_delta);
+
+			/* Now itl_cursor points at the old-block delta_block. */
+			memcpy(&old_hdr, itl_cursor,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			for (i = 0; i < old_hdr.ndeltas; i++)
+			{
+				xl_heap_itl_delta delta;
+				ClusterItlSlotData *slot;
+
+				memcpy(&delta,
+					   itl_cursor
+					   + offsetof(xl_heap_itl_delta_block, deltas)
+					   + i * sizeof(xl_heap_itl_delta),
+					   sizeof(xl_heap_itl_delta));
+				if (delta.flags_after == ITL_FLAG_COMMITTED &&
+					!SCN_VALID(delta.commit_scn))
+					elog(PANIC,
+						 "spec-3.4a D9: ITL COMMITTED delta with InvalidScn at heap_xlog_update old-block redo");
+				slot = &ClusterPageGetItlSlots(page)[delta.slot_idx];
+				slot->xid = delta.xid;
+				slot->flags = delta.flags_after;
+				slot->write_scn = delta.write_scn;
+				slot->commit_scn = delta.commit_scn;
+			}
+		}
+#endif
+
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(obuffer);
 	}
@@ -10599,6 +10835,51 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			PageClearAllVisible(page);
 
 		freespace = PageGetHeapFreeSpace(page); /* needed to update FSM below */
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4a D9): replay block 0 (new page) ITL delta
+		 * from MAIN data (XLogRecGetData), not block data, to avoid
+		 * confusing PG's tuple reconstruction from block-0 BufData.
+		 *
+		 * For same-page UPDATE block 0 IS the old page; the single
+		 * delta describes the shared (page, top_xid) slot.  This
+		 * branch handles BOTH cases:
+		 *   - same-page: only one array in main data; apply it.
+		 *   - cross-page: first array in main data is for block 0
+		 *     (newbuf); apply it here.  Block 1 (oldbuf) array is
+		 *     replayed by the obuffer branch above.
+		 */
+		if (xlrec->flags & XLH_UPDATE_ITL_DELTA)
+		{
+			char	   *itl_cursor = (char *) xlrec + SizeOfHeapUpdate;
+			xl_heap_itl_delta_block hdr;
+			uint16		i;
+
+			memcpy(&hdr, itl_cursor,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			for (i = 0; i < hdr.ndeltas; i++)
+			{
+				xl_heap_itl_delta delta;
+				ClusterItlSlotData *slot;
+
+				memcpy(&delta,
+					   itl_cursor
+					   + offsetof(xl_heap_itl_delta_block, deltas)
+					   + i * sizeof(xl_heap_itl_delta),
+					   sizeof(xl_heap_itl_delta));
+				if (delta.flags_after == ITL_FLAG_COMMITTED &&
+					!SCN_VALID(delta.commit_scn))
+					elog(PANIC,
+						 "spec-3.4a D9: ITL COMMITTED delta with InvalidScn at heap_xlog_update new-block redo");
+				slot = &ClusterPageGetItlSlots(page)[delta.slot_idx];
+				slot->xid = delta.xid;
+				slot->flags = delta.flags_after;
+				slot->write_scn = delta.write_scn;
+				slot->commit_scn = delta.commit_scn;
+			}
+		}
+#endif
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(nbuffer);
