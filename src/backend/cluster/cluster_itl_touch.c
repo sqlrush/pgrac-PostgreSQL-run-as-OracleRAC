@@ -61,11 +61,23 @@ static ClusterItlTouchHandle *touch_list = NULL;
 static uint32 touch_count = 0;
 static uint32 touch_capacity = 0;
 
+static bool
+itl_touch_handle_matches(const ClusterItlTouchHandle *left,
+						 const ClusterItlTouchHandle *right)
+{
+	return RelFileLocatorEquals(left->rloc, right->rloc) &&
+		left->block == right->block &&
+		left->forknum == right->forknum &&
+		left->slot_idx == right->slot_idx;
+}
+
 /* ---------- public API ---------- */
 
 void
 cluster_itl_touch_register(const ClusterItlTouchHandle *handle)
 {
+	uint32 i;
+
 	Assert(handle != NULL);
 
 	/*
@@ -74,6 +86,12 @@ cluster_itl_touch_register(const ClusterItlTouchHandle *handle)
 	 * async-signal-safe.
 	 */
 	Assert(InterruptHoldoffCount == 0);
+
+	for (i = 0; i < touch_count; i++)
+	{
+		if (itl_touch_handle_matches(&touch_list[i], handle))
+			return;
+	}
 
 	/* Grow or allocate the list as needed. */
 	if (touch_list == NULL)
@@ -198,8 +216,11 @@ cluster_itl_xact_precommit_finish(TransactionId xid, SCN commit_scn)
 
 	(void) xid;					/* xid currently unused; reserved for WAL emit */
 
-	if (!cluster_enabled)
+	if (!cluster_enabled || cluster_node_id < 0)
+	{
+		cluster_itl_touch_reset_at_end_xact();
 		return;
+	}
 	if (touch_count == 0)
 		return;
 
@@ -218,8 +239,11 @@ cluster_itl_xact_abort_finish(TransactionId xid)
 
 	(void) xid;
 
-	if (!cluster_enabled)
+	if (!cluster_enabled || cluster_node_id < 0)
+	{
+		cluster_itl_touch_reset_at_end_xact();
 		return;
+	}
 	if (touch_count == 0)
 		return;
 

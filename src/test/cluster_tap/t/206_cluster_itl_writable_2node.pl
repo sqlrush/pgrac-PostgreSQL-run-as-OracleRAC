@@ -8,7 +8,8 @@
 #	  L1   ClusterPair startup + both nodes alive
 #	  L2   INSERT triggers ITL allocate + stamp ACTIVE + dirty buffer
 #	       (via pg_buffercache + cluster_itl_touch_count())
-#	  L3   same-page UPDATE reuses ITL slot (one slot per page/top_xid)
+#	  L3   same-page UPDATE reuses ITL slot (one slot per page/top_xid);
+#	       same-xact INSERT+UPDATE+DELETE does not duplicate-finish slot
 #	  L4   DELETE stamps ITL on the deleted tuple's page
 #	  L5   COMMIT transitions ACTIVE -> COMMITTED with valid commit_scn
 #	       (observable via pg_buffercache + slot inspection)
@@ -94,8 +95,8 @@ unlike($l2_stderr, qr/53R97|ERRCODE_FEATURE_NOT_SUPPORTED|ERRCODE_PROGRAM_LIMIT_
 # L3: same-page UPDATE reuses ITL slot (one slot per page/top_xid).
 # ============================================================
 # spec-3.4a Hardening v1.0.1 A2 wired heap_update full integration:
-# alloc_or_reuse_slot returns the existing ACTIVE slot owned by
-# top_xid (allocated during L2 INSERT) -- no new slot consumed.
+# alloc_or_reuse_slot returns the existing ACTIVE slot owned by the
+# current top_xid. L3b covers same-transaction reuse across multiple DML.
 my ($l3_rc, undef, $l3_stderr) = $pair->node0->psql('postgres', q{
 	\set VERBOSITY verbose
 	UPDATE l2_itl_insert SET payload = 'updated' WHERE id = 1;
@@ -103,6 +104,20 @@ my ($l3_rc, undef, $l3_stderr) = $pair->node0->psql('postgres', q{
 ok($l3_rc == 0, 'L3 same-page UPDATE succeeds (slot reuse path)');
 unlike($l3_stderr, qr/53R97/,
 	'L3 same-page UPDATE did not raise 53R97');
+
+my ($l3b_rc, undef, $l3b_stderr) = $pair->node0->psql('postgres', q{
+	\set VERBOSITY verbose
+	BEGIN;
+	CREATE TABLE l3_same_xact(id int PRIMARY KEY, payload text);
+	INSERT INTO l3_same_xact VALUES (1, 'inserted');
+	UPDATE l3_same_xact SET payload = 'updated' WHERE id = 1;
+	DELETE FROM l3_same_xact WHERE id = 1;
+	COMMIT;
+});
+ok($l3b_rc == 0,
+	'L3b same-xact INSERT+UPDATE+DELETE reuses one touched ITL handle');
+unlike($l3b_stderr, qr/assert|PANIC|ITL slot OVERFLOW|53R97/i,
+	'L3b same-xact slot reuse does not duplicate-finish or overflow');
 
 
 # ============================================================

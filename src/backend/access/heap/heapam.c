@@ -83,6 +83,12 @@
 #include "cluster/cluster_itl_slot.h"	/* CLUSTER_ITL_SLOT_UNALLOCATED */
 #include "cluster/cluster_itl_touch.h"	/* xact-local touch list */
 #include "cluster/cluster_scn.h"		/* cluster_scn_advance / SCN */
+
+static inline bool
+cluster_itl_write_path_enabled(void)
+{
+	return cluster_enabled && cluster_node_id >= 0;
+}
 #endif
 
 
@@ -1964,7 +1970,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * the touched-handle is registered after the critical section so
 	 * palloc cannot fire inside CRIT.
 	 */
-	if (cluster_enabled && PageHasItl(BufferGetPage(buffer)))
+	if (cluster_itl_write_path_enabled() && PageHasItl(BufferGetPage(buffer)))
 	{
 		cluster_itl_check_subxact_or_error();
 
@@ -1989,8 +1995,10 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 #ifdef USE_PGRAC_CLUSTER
 	if (cluster_itl_active)
+	{
 		cluster_itl_stamp_active(buffer, cluster_itl_slot, xid,
 								 cluster_scn_advance());
+	}
 #endif
 
 	if (PageIsAllVisible(BufferGetPage(buffer)))
@@ -2396,7 +2404,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		 * this page during the inner loop reference the same slot.
 		 * Failure (OVERFLOW) raises ERROR before the critical section.
 		 */
-		if (cluster_enabled && PageHasItl(page))
+		if (cluster_itl_write_path_enabled() && PageHasItl(page))
 		{
 			if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_mi_slot))
 				ereport(ERROR,
@@ -3069,7 +3077,7 @@ l1:
 	 * the page holding the deleted tuple.  EXCLUSIVE content lock is
 	 * already held; OVERFLOW raises ERROR before the critical section.
 	 */
-	if (cluster_enabled && PageHasItl(page))
+	if (cluster_itl_write_path_enabled() && PageHasItl(page))
 	{
 		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_slot))
 			ereport(ERROR,
@@ -3085,8 +3093,11 @@ l1:
 
 #ifdef USE_PGRAC_CLUSTER
 	if (cluster_itl_active)
+	{
 		cluster_itl_stamp_active(buffer, cluster_itl_slot, xid,
 								 cluster_scn_advance());
+		tp.t_data->t_itl_slot_idx = cluster_itl_slot;
+	}
 #endif
 
 	/*
@@ -4167,7 +4178,7 @@ l2:
 	 * EXCLUSIVE content locks already held; OVERFLOW raises ERROR
 	 * before the critical section.
 	 */
-	if (cluster_enabled && PageHasItl(BufferGetPage(buffer)))
+	if (cluster_itl_write_path_enabled() && PageHasItl(BufferGetPage(buffer)))
 	{
 		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_old_slot))
 			ereport(ERROR,
@@ -4196,11 +4207,22 @@ l2:
 #ifdef USE_PGRAC_CLUSTER
 	/* spec-3.4a D4: stamp ACTIVE inside critical section. */
 	if (cluster_itl_old_active)
+	{
 		cluster_itl_stamp_active(buffer, cluster_itl_old_slot, xid,
 								 cluster_scn_advance());
+		oldtup.t_data->t_itl_slot_idx = cluster_itl_old_slot;
+	}
 	if (cluster_itl_new_active)
+	{
 		cluster_itl_stamp_active(newbuf, cluster_itl_new_slot, xid,
 								 cluster_scn_advance());
+		heaptup->t_data->t_itl_slot_idx = cluster_itl_new_slot;
+	}
+	else if (cluster_itl_old_active)
+	{
+		/* Same-page UPDATE: old and new tuple versions share one ITL slot. */
+		heaptup->t_data->t_itl_slot_idx = cluster_itl_old_slot;
+	}
 #endif
 
 	/*
@@ -10295,6 +10317,7 @@ heap_xlog_delete(XLogReaderState *record)
 				slot->flags = delta.flags_after;
 				slot->write_scn = delta.write_scn;
 				slot->commit_scn = delta.commit_scn;
+				htup->t_itl_slot_idx = delta.slot_idx;
 			}
 		}
 #endif
@@ -10326,6 +10349,10 @@ heap_xlog_insert(XLogReaderState *record)
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
+#ifdef USE_PGRAC_CLUSTER
+	bool		cluster_itl_replay_active = false;
+	uint8		cluster_itl_replay_slot = CLUSTER_ITL_SLOT_UNALLOCATED;
+#endif
 
 	XLogRecGetBlockTag(record, 0, &target_locator, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
@@ -10379,6 +10406,27 @@ heap_xlog_insert(XLogReaderState *record)
 
 		data = XLogRecGetBlockData(record, 0, &datalen);
 
+#ifdef USE_PGRAC_CLUSTER
+		if (xlrec->flags & XLH_INSERT_ITL_DELTA)
+		{
+			char	   *itl_start = (char *) xlrec + SizeOfHeapInsert;
+			xl_heap_itl_delta_block hdr;
+			xl_heap_itl_delta delta;
+
+			memcpy(&hdr, itl_start,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			if (hdr.ndeltas != 1)
+				elog(PANIC,
+					 "spec-3.4a D9: heap_xlog_insert expected exactly one ITL delta, got %u",
+					 hdr.ndeltas);
+			memcpy(&delta,
+				   itl_start + offsetof(xl_heap_itl_delta_block, deltas),
+				   sizeof(delta));
+			cluster_itl_replay_slot = delta.slot_idx;
+			cluster_itl_replay_active = true;
+		}
+#endif
+
 		newlen = datalen - SizeOfHeapHeader;
 		Assert(datalen > SizeOfHeapHeader && newlen <= MaxHeapTupleSize);
 		memcpy((char *) &xlhdr, data, SizeOfHeapHeader);
@@ -10397,6 +10445,10 @@ heap_xlog_insert(XLogReaderState *record)
 		/* PGRAC (stage 1.5 hardening): WAL header doesn't carry t_itl_slot_idx;
 		 * write 255 sentinel so replay-created tuples match primary's. */
 		ClusterHeapTupleHeaderInitItlSlot(htup);
+#ifdef USE_PGRAC_CLUSTER
+		if (cluster_itl_replay_active)
+			htup->t_itl_slot_idx = cluster_itl_replay_slot;
+#endif
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
 		htup->t_ctid = target_tid;
@@ -10444,6 +10496,7 @@ heap_xlog_insert(XLogReaderState *record)
 				slot->flags = delta.flags_after;
 				slot->write_scn = delta.write_scn;
 				slot->commit_scn = delta.commit_scn;
+				htup->t_itl_slot_idx = delta.slot_idx;
 			}
 		}
 #endif
@@ -10494,6 +10547,10 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	int			i;
 	bool		isinit = (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE) != 0;
 	XLogRedoAction action;
+#ifdef USE_PGRAC_CLUSTER
+	bool		cluster_itl_replay_active = false;
+	uint8		cluster_itl_replay_slot = CLUSTER_ITL_SLOT_UNALLOCATED;
+#endif
 
 	/*
 	 * Insertion doesn't overwrite MVCC data, so no conflict processing is
@@ -10546,6 +10603,30 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		tupdata = XLogRecGetBlockData(record, 0, &len);
 		endptr = tupdata + len;
 
+#ifdef USE_PGRAC_CLUSTER
+		if (xlrec->flags & XLH_INSERT_ITL_DELTA)
+		{
+			char	   *itl_cursor = (char *) xlrec + SizeOfHeapMultiInsert;
+			xl_heap_itl_delta_block hdr;
+			xl_heap_itl_delta delta;
+
+			if (!isinit)
+				itl_cursor += xlrec->ntuples * sizeof(OffsetNumber);
+
+			memcpy(&hdr, itl_cursor,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			if (hdr.ndeltas != 1)
+				elog(PANIC,
+					 "spec-3.4a D9: heap_xlog_multi_insert expected exactly one ITL delta, got %u",
+					 hdr.ndeltas);
+			memcpy(&delta,
+				   itl_cursor + offsetof(xl_heap_itl_delta_block, deltas),
+				   sizeof(delta));
+			cluster_itl_replay_slot = delta.slot_idx;
+			cluster_itl_replay_active = true;
+		}
+#endif
+
 		page = (Page) BufferGetPage(buffer);
 
 		for (i = 0; i < xlrec->ntuples; i++)
@@ -10585,6 +10666,10 @@ heap_xlog_multi_insert(XLogReaderState *record)
 			/* PGRAC (stage 1.5 hardening): WAL multi_insert doesn't carry
 			 * t_itl_slot_idx; write 255 sentinel. */
 			ClusterHeapTupleHeaderInitItlSlot(htup);
+#ifdef USE_PGRAC_CLUSTER
+			if (cluster_itl_replay_active)
+				htup->t_itl_slot_idx = cluster_itl_replay_slot;
+#endif
 			HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 			HeapTupleHeaderSetCmin(htup, FirstCommandId);
 			ItemPointerSetBlockNumber(&htup->t_ctid, blkno);
@@ -10700,6 +10785,10 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	Size		freespace = 0;
 	XLogRedoAction oldaction;
 	XLogRedoAction newaction;
+#ifdef USE_PGRAC_CLUSTER
+	bool		cluster_itl_new_replay_active = false;
+	uint8		cluster_itl_new_replay_slot = CLUSTER_ITL_SLOT_UNALLOCATED;
+#endif
 
 	/* initialize to keep the compiler quiet */
 	oldtup.t_data = NULL;
@@ -10822,6 +10911,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 				slot->flags = delta.flags_after;
 				slot->write_scn = delta.write_scn;
 				slot->commit_scn = delta.commit_scn;
+				htup->t_itl_slot_idx = delta.slot_idx;
 			}
 		}
 #endif
@@ -10878,6 +10968,27 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		recdata = XLogRecGetBlockData(record, 0, &datalen);
 		recdata_end = recdata + datalen;
+
+#ifdef USE_PGRAC_CLUSTER
+		if (xlrec->flags & XLH_UPDATE_ITL_DELTA)
+		{
+			char	   *itl_cursor = (char *) xlrec + SizeOfHeapUpdate;
+			xl_heap_itl_delta_block hdr;
+			xl_heap_itl_delta delta;
+
+			memcpy(&hdr, itl_cursor,
+				   offsetof(xl_heap_itl_delta_block, deltas));
+			if (hdr.ndeltas != 1)
+				elog(PANIC,
+					 "spec-3.4a D9: heap_xlog_update expected exactly one new-block ITL delta, got %u",
+					 hdr.ndeltas);
+			memcpy(&delta,
+				   itl_cursor + offsetof(xl_heap_itl_delta_block, deltas),
+				   sizeof(delta));
+			cluster_itl_new_replay_slot = delta.slot_idx;
+			cluster_itl_new_replay_active = true;
+		}
+#endif
 
 		page = BufferGetPage(nbuffer);
 
@@ -10955,6 +11066,10 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		/* PGRAC (stage 1.5 hardening): WAL update doesn't carry
 		 * t_itl_slot_idx; write 255 sentinel. */
 		ClusterHeapTupleHeaderInitItlSlot(htup);
+#ifdef USE_PGRAC_CLUSTER
+		if (cluster_itl_new_replay_active)
+			htup->t_itl_slot_idx = cluster_itl_new_replay_slot;
+#endif
 
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
@@ -11012,6 +11127,8 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 				slot->flags = delta.flags_after;
 				slot->write_scn = delta.write_scn;
 				slot->commit_scn = delta.commit_scn;
+				if (oldblk == newblk && oldtup.t_data != NULL)
+					oldtup.t_data->t_itl_slot_idx = delta.slot_idx;
 			}
 		}
 #endif

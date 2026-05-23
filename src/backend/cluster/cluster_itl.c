@@ -209,7 +209,7 @@ cluster_itl_stamp_aborted(Buffer buf, uint8 slot_idx)
 void
 cluster_itl_check_subxact_or_error(void)
 {
-	if (!cluster_enabled)
+	if (!cluster_enabled || cluster_node_id < 0)
 		return;
 
 	/*
