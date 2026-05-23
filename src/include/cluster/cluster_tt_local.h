@@ -39,6 +39,7 @@
 
 #include "c.h"
 #include "access/transam.h"
+#include "cluster/cluster_scn.h" /* SCN */
 #include "cluster/cluster_tt_status.h" /* ClusterTTStatus */
 
 /*
@@ -48,8 +49,15 @@
  * Caller invokes this from xact.c RecordTransactionCommit after PG
  * native CLOG is finalized.  No-op when cluster mode disabled or
  * xid is not a normal transaction id.
+ *
+ * spec-3.3 D6 (L181 chain step 1): commit_scn parameter added so the
+ * cluster TT status overlay carries the real commit_scn end-to-end
+ * (xact.c -> here -> install_local -> wire V2 -> receiver -> snapshot
+ * consumer). InvalidScn here would short-circuit the entire chain to
+ * UNKNOWN at the consumer side and silently revert spec-3.2's
+ * COMMITTED visibility -- L181 forbids partial chains.
  */
-extern void cluster_tt_local_record_commit(TransactionId xid);
+extern void cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn);
 
 /*
  * cluster_tt_local_record_abort -- install ABORTED status for a local

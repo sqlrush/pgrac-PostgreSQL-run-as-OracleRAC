@@ -141,7 +141,8 @@ cluster_tt_status_shmem_register(void)
 {}
 
 void
-cluster_tt_local_record_commit(TransactionId xid pg_attribute_unused())
+cluster_tt_local_record_commit(TransactionId xid pg_attribute_unused(),
+							   SCN commit_scn pg_attribute_unused())
 {}
 
 void

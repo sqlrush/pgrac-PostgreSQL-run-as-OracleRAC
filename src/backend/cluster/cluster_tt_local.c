@@ -145,9 +145,14 @@ build_local_key(TransactionId xid, ClusterTTStatusKey *out)
 /*
  * install_status -- common path for commit / abort install + N7
  * self-consumer lookup.
+ *
+ * spec-3.3 D6: commit_scn flows in from the caller. For COMMITTED status
+ * the caller (cluster_tt_local_record_commit) must pass a real SCN that
+ * came from cluster_scn_advance_for_commit(); for ABORTED status the
+ * caller passes InvalidScn (abort has no commit_scn).
  */
 static void
-install_status(TransactionId xid, ClusterTTStatus status)
+install_status(TransactionId xid, ClusterTTStatus status, SCN commit_scn)
 {
 	ClusterTTStatusKey key;
 	ClusterTTStatusResult res;
@@ -161,12 +166,12 @@ install_status(TransactionId xid, ClusterTTStatus status)
 	build_local_key(xid, &key);
 
 	/*
-	 * spec-3.1 D5:  install in-memory overlay entry.  commit_scn is
-	 * intentionally InvalidScn here — spec-3.4 will activate real
-	 * commit_scn assignment when ITL writable path lands;  spec-3.1
-	 * only proves the install/lookup contract.
+	 * spec-3.3 D6 (L181 chain step 2): install in-memory overlay entry
+	 * with the real commit_scn (or InvalidScn on abort). The overlay
+	 * carries commit_scn to (a) self-consumer N7 lookup and (b) the wire
+	 * emit path which will ship it to peers in V2 hints (D8).
 	 */
-	cluster_tt_status_install_local(&key, status, InvalidScn);
+	cluster_tt_status_install_local(&key, status, commit_scn);
 
 	/*
 	 * spec-3.1 v0.4 N7 self-consumer:  immediately re-lookup to prove
@@ -195,15 +200,15 @@ install_status(TransactionId xid, ClusterTTStatus status)
 /* ------------------------------------------------------------ */
 
 void
-cluster_tt_local_record_commit(TransactionId xid)
+cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn)
 {
-	install_status(xid, CLUSTER_TT_STATUS_COMMITTED);
+	install_status(xid, CLUSTER_TT_STATUS_COMMITTED, commit_scn);
 }
 
 void
 cluster_tt_local_record_abort(TransactionId xid)
 {
-	install_status(xid, CLUSTER_TT_STATUS_ABORTED);
+	install_status(xid, CLUSTER_TT_STATUS_ABORTED, InvalidScn);
 }
 
 uint32
@@ -231,9 +236,10 @@ cluster_tt_local_shmem_register(void)
 {}
 
 void
-cluster_tt_local_record_commit(TransactionId xid)
+cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn)
 {
 	(void)xid;
+	(void)commit_scn;
 }
 
 void

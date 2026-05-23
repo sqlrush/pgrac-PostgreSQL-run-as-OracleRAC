@@ -1373,6 +1373,16 @@ RecordTransactionCommit(void)
 	SharedInvalidationMessage *invalMessages = NULL;
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.3 D7 / R3 P1): hoist commit_scn from the inner else
+	 * block to function scope so the later cluster_tt_local_record_commit()
+	 * call (below, outside that block) can see it. spec-1.16 captures it
+	 * pre-START_CRIT_SECTION; spec-3.3 reuses the captured value -- no
+	 * additional SCN allocation.
+	 */
+	SCN			tt_commit_scn = InvalidScn;
+#endif
 
 	/*
 	 * Log pending invalidations for logical decoding of in-progress
@@ -1499,6 +1509,8 @@ RecordTransactionCommit(void)
 		 */
 #ifdef USE_PGRAC_CLUSTER
 		commit_scn = cluster_scn_advance_for_commit();
+		/* spec-3.3 D7: copy to function-scope variable for TT hook below. */
+		tt_commit_scn = commit_scn;
 #endif
 
 		START_CRIT_SECTION();
@@ -1625,7 +1637,7 @@ RecordTransactionCommit(void)
 	 */
 #ifdef USE_PGRAC_CLUSTER
 	if (markXidCommitted)
-		cluster_tt_local_record_commit(xid);
+		cluster_tt_local_record_commit(xid, tt_commit_scn);
 #endif
 
 	/*
