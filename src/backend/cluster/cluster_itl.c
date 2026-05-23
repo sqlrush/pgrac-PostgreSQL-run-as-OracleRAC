@@ -68,13 +68,19 @@ cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTSlotRef *ref)
 		return false;
 
 	/*
-	 * Fill the read-only ref.  spec-1.5 ITL slot layout does not yet
-	 * carry origin_node_id / undo_segment_id / tt_slot_id on disk
-	 * (those land in spec-3.4 ITL writable activation).  spec-3.1 D4
-	 * reports the physical xid + commit_scn for the slot and zeros the
-	 * origin/segment/tt_slot triple; visibility code (spec-3.2)
-	 * decides how to combine with caller-side origin knowledge when
-	 * constructing the ClusterTTStatusKey.
+	 * Fill the read-only ref.  After spec-3.4a D10 the slot may carry
+	 * real xid + flags + commit_scn from the heap AM write path (D3-D5)
+	 * and the xact pre-commit hook (D6) -- this reader exposes those
+	 * via cached_commit_scn / has_cached_status.
+	 *
+	 * The origin/segment/tt_slot triple is still ZEROED here: spec-3.4a
+	 * does not yet land UBA encoding or per-undo-segment TT slot
+	 * allocation (推 spec-3.4b).  spec-3.2 D5 visibility fork keys on
+	 * `ref.tt_slot_id != 0`, so a zero triple causes that fork to fall
+	 * back to PG-native silent-invisible.  Production cross-node
+	 * visibility consequently remains "silent invisible" until spec-3.4b
+	 * ships real UBA decode + segment->owner_inst mapping; that is the
+	 * honest-scope boundary between 3.4a and 3.4b.
 	 */
 	ref->origin_node_id = 0;
 	ref->undo_segment_id = 0;
