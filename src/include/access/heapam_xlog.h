@@ -499,11 +499,12 @@ typedef struct xl_heap_itl_delta_block
 {
 	uint16			ndeltas;		/* offset 0, 2B */
 	uint16			reserved;		/* offset 2, 2B (zero) */
+	uint32			_pad;			/* offset 4, 4B (zero; alignment) */
 	xl_heap_itl_delta deltas[FLEXIBLE_ARRAY_MEMBER];
 } xl_heap_itl_delta_block;
 
-StaticAssertDecl(offsetof(xl_heap_itl_delta_block, deltas) == 4,
-				 "spec-3.4a D7 — block-local array header is 4 bytes");
+StaticAssertDecl(offsetof(xl_heap_itl_delta_block, deltas) == 8,
+				 "spec-3.4a D7 — block-local array header is 8 bytes (4 + 4B pad for SCN alignment)");
 
 #endif							/* USE_PGRAC_CLUSTER */
 
