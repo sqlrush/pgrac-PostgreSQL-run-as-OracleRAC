@@ -168,13 +168,10 @@ itl_finish_stamp_page(Page page, uint8 slot_idx, const ItlFinishCtx *ctx)
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
 	Assert(slot->flags == ITL_FLAG_ACTIVE);
 
-	if (ctx->is_commit)
-	{
+	if (ctx->is_commit) {
 		slot->flags = ITL_FLAG_COMMITTED;
 		slot->commit_scn = ctx->commit_scn;
-	}
-	else
-	{
+	} else {
 		slot->flags = ITL_FLAG_ABORTED;
 		slot->commit_scn = InvalidScn;
 	}
