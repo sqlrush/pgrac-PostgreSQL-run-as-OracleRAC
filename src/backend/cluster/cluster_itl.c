@@ -103,6 +103,7 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 	const ClusterItlSlotData *slots;
 	uint8 i;
 	int free_idx;
+	int reusable_idx;
 
 	Assert(BufferIsValid(buf));
 	Assert(TransactionIdIsValid(top_xid));
@@ -115,11 +116,16 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 
 	slots = ClusterPageGetItlSlots(page);
 	free_idx = -1;
+	reusable_idx = -1;
 
 	/*
 	 * spec-3.4a N7: one ITL slot per (page, top_xid).  Reuse an
 	 * existing ACTIVE slot if it already belongs to top_xid; otherwise
-	 * remember the first FREE slot we see.
+	 * remember the first FREE slot we see.  If all slots are occupied
+	 * but none is ACTIVE for another transaction, recycle the first
+	 * completed slot.  Full delayed cleanout/freeing lands in 3.4c, but
+	 * 3.4a must not make every hot page fail after INITRANS completed
+	 * transactions.
 	 */
 	for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++) {
 		if (slots[i].flags == ITL_FLAG_ACTIVE && slots[i].xid == top_xid) {
@@ -128,13 +134,21 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 		}
 		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
 			free_idx = i;
+		else if (slots[i].flags != ITL_FLAG_ACTIVE && reusable_idx < 0)
+			reusable_idx = i;
 	}
 
-	if (free_idx < 0)
-		return false; /* OVERFLOW — caller raises ERROR before CRIT */
+	if (free_idx >= 0) {
+		*out_slot_idx = (uint8)free_idx;
+		return true;
+	}
 
-	*out_slot_idx = (uint8)free_idx;
-	return true;
+	if (reusable_idx >= 0) {
+		*out_slot_idx = (uint8)reusable_idx;
+		return true;
+	}
+
+	return false; /* OVERFLOW — caller raises ERROR before CRIT */
 }
 
 void
@@ -150,6 +164,9 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	Assert(PageHasItl(page));
 
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
+	if (slot->flags != ITL_FLAG_FREE
+		&& !(slot->flags == ITL_FLAG_ACTIVE && slot->xid == xid))
+		slot->wrap++;
 	slot->xid = xid;
 	slot->flags = ITL_FLAG_ACTIVE;
 	slot->commit_scn = InvalidScn;

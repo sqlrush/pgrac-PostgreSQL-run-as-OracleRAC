@@ -89,10 +89,16 @@ extern bool cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTS
  *	  - otherwise, scan the ITL slot array for the first FREE slot and
  *	    return its index (caller will stamp ACTIVE inside the critical
  *	    section).
- *	  - returns false on OVERFLOW (INITRANS=8 full and no slot owned by
- *	    top_xid).  Caller raises ereport(ERROR, ERRCODE_PROGRAM_LIMIT_
- *	    EXCEEDED) BEFORE entering the critical section (PG critical
- *	    sections forbid ERROR).
+ *	  - if no FREE slot exists, recycle the first completed slot
+ *	    (COMMITTED / ABORTED / NEEDS_CLEANOUT).  spec-3.4a does not yet
+ *	    let production visibility consume the on-page history because
+ *	    UBA/TT allocation stays zero until spec-3.4b; recycling completed
+ *	    placeholder slots is therefore the minimal hot-page safety valve.
+ *	  - returns false on OVERFLOW only when INITRANS=8 has no FREE or
+ *	    completed slot and no slot owned by top_xid, i.e. all slots are
+ *	    ACTIVE for other transactions.  Caller raises ereport(ERROR,
+ *	    ERRCODE_PROGRAM_LIMIT_EXCEEDED) BEFORE entering the critical
+ *	    section (PG critical sections forbid ERROR).
  *
  *	NOTE: This function does NOT write the page.  Stamping happens via
  *	cluster_itl_stamp_active() inside the critical section.

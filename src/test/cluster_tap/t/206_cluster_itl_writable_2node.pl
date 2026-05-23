@@ -10,6 +10,7 @@
 #	       (via pg_buffercache + cluster_itl_touch_count())
 #	  L3   same-page UPDATE reuses ITL slot (one slot per page/top_xid);
 #	       same-xact INSERT+UPDATE+DELETE does not duplicate-finish slot
+#	       and completed slots recycle after INITRANS transactions
 #	  L4   DELETE stamps ITL on the deleted tuple's page
 #	  L5   COMMIT transitions ACTIVE -> COMMITTED with valid commit_scn
 #	       (observable via pg_buffercache + slot inspection)
@@ -118,6 +119,29 @@ ok($l3b_rc == 0,
 	'L3b same-xact INSERT+UPDATE+DELETE reuses one touched ITL handle');
 unlike($l3b_stderr, qr/assert|PANIC|ITL slot OVERFLOW|53R97/i,
 	'L3b same-xact slot reuse does not duplicate-finish or overflow');
+
+my ($l3c_rc, undef, $l3c_stderr) = $pair->node0->psql('postgres', q{
+	\set VERBOSITY verbose
+	DROP TABLE IF EXISTS l3_recycle;
+	CREATE TABLE l3_recycle(id int PRIMARY KEY, payload int);
+	INSERT INTO l3_recycle VALUES (1, 0);
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+	UPDATE l3_recycle SET payload = payload + 1 WHERE id = 1;
+});
+ok($l3c_rc == 0,
+	'L3c completed ITL slots recycle after INITRANS transactions on a hot page');
+unlike($l3c_stderr, qr/assert|PANIC|ITL slot OVERFLOW|53R97/i,
+	'L3c hot-page completed-slot recycle avoids false OVERFLOW');
 
 
 # ============================================================
