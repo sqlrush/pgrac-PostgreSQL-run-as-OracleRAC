@@ -195,6 +195,7 @@ UT_TEST(test_t18_block_allows_zero_ndeltas)
 	hdr.ndeltas = 0;
 	hdr.reserved = 0;
 	UT_ASSERT_EQ((int)hdr.ndeltas, 0);
+	UT_ASSERT_EQ((int)hdr.reserved, 0);
 }
 
 

@@ -98,6 +98,13 @@ constParameterCallback:src/test/cluster_unit/test_cluster_tt_status.c
 # test stub MUST match production signature.
 constParameterCallback:src/test/cluster_unit/test_cluster_visibility_fork.c
 
+# spec-3.4a D5/D11: ClusterItlTouchCallback and cluster_itl_touch_foreach
+# intentionally use PG-style `void *arg` callback context.  cppcheck suggests
+# const-widening because current callback bodies only read the context, but
+# changing the signature would break the production API.
+constParameterCallback:src/backend/cluster/cluster_itl_touch.c
+constParameterCallback:src/test/cluster_unit/test_cluster_itl_touch.c
+
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a
 # "Reason:" line on the next line.  Currently:

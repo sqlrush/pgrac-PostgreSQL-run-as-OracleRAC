@@ -171,7 +171,7 @@ typedef struct ItlFinishCtx {
 static void
 itl_finish_one(const ClusterItlTouchHandle *handle, void *arg)
 {
-	ItlFinishCtx *ctx = (ItlFinishCtx *)arg;
+	const ItlFinishCtx *ctx = (const ItlFinishCtx *)arg;
 	Buffer buf;
 
 	buf = itl_touch_acquire_buffer(handle);

@@ -116,9 +116,10 @@ cluster_itl_get_tt_ref(Page page pg_attribute_unused(), uint8 itl_slot_idx pg_at
 }
 bool
 cluster_itl_alloc_or_reuse_slot(Buffer buf pg_attribute_unused(),
-								TransactionId top_xid pg_attribute_unused(),
-								uint8 *out_slot_idx pg_attribute_unused())
+								TransactionId top_xid pg_attribute_unused(), uint8 *out_slot_idx)
 {
+	if (out_slot_idx != NULL)
+		*out_slot_idx = 0;
 	return false;
 }
 void

@@ -100,7 +100,7 @@ bool
 cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_slot_idx)
 {
 	Page page;
-	ClusterItlSlotData *slots;
+	const ClusterItlSlotData *slots;
 	uint8 i;
 	int free_idx;
 
