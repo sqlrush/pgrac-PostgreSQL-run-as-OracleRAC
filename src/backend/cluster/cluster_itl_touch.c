@@ -43,11 +43,10 @@
  */
 #include "postgres.h"
 
-#include "access/xloginsert.h"	 /* log_newpage_buffer (spec-3.4a D8) */
+#include "access/generic_xlog.h" /* GenericXLog delta WAL (spec-3.4a D8) */
 #include "cluster/cluster_guc.h" /* cluster_enabled */
 #include "cluster/cluster_itl.h" /* stamp_committed / stamp_aborted */
 #include "cluster/cluster_itl_touch.h"
-#include "miscadmin.h"		/* START_CRIT_SECTION / END_CRIT_SECTION */
 #include "storage/bufmgr.h" /* ReadBufferWithoutRelcache / LockBuffer */
 #include "utils/memutils.h"
 
@@ -162,32 +161,49 @@ typedef struct ItlFinishCtx {
 } ItlFinishCtx;
 
 static void
+itl_finish_stamp_page(Page page, uint8 slot_idx, const ItlFinishCtx *ctx)
+{
+	ClusterItlSlotData *slot;
+
+	slot = &ClusterPageGetItlSlots(page)[slot_idx];
+	Assert(slot->flags == ITL_FLAG_ACTIVE);
+
+	if (ctx->is_commit)
+	{
+		slot->flags = ITL_FLAG_COMMITTED;
+		slot->commit_scn = ctx->commit_scn;
+	}
+	else
+	{
+		slot->flags = ITL_FLAG_ABORTED;
+		slot->commit_scn = InvalidScn;
+	}
+}
+
+static void
 itl_finish_one(const ClusterItlTouchHandle *handle, void *arg)
 {
 	const ItlFinishCtx *ctx = (const ItlFinishCtx *)arg;
+	GenericXLogState *state;
 	Buffer buf;
+	Page image;
+	bool needs_wal;
 
 	buf = itl_touch_acquire_buffer(handle);
-
-	START_CRIT_SECTION();
-	if (ctx->is_commit)
-		cluster_itl_stamp_committed(buf, (uint8)handle->slot_idx, ctx->commit_scn);
-	else
-		cluster_itl_stamp_aborted(buf, (uint8)handle->slot_idx);
+	needs_wal = (handle->flags & CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL) != 0;
 
 	/*
-	 * spec-3.4a D8 (Step 7): the ACTIVE -> COMMITTED / ACTIVE -> ABORTED
-	 * transition mutates the page's special area; we must produce a WAL
-	 * record so crash recovery sees the post-transition state.  Since
-	 * RM_HEAP and RM_HEAP2 op-code spaces are already saturated and a
-	 * dedicated RM_CLUSTER_ITL rmgr is out of scope for spec-3.4a, we
-	 * fall back to log_newpage_buffer() which emits a full-page image
-	 * (FPI) of the dirty buffer.  Heavy (8KB per touched ITL slot) but
-	 * trivially correct.  spec-3.4c is expected to graduate to a
-	 * compact ITL-only WAL record reusing xl_heap_itl_delta_block.
+	 * spec-3.4a D8: commit/abort stamping must be crash-safe but must
+	 * not emit an 8KB FPI for every touched ITL slot.  Use PG's generic
+	 * rmgr to log the small page delta.  The handle carries the original
+	 * RelationNeedsWAL() decision so this transaction-end path avoids a
+	 * relcache lookup; GenericXLogFinish() still owns the critical section
+	 * and dirty marking for both logged and unlogged relations.
 	 */
-	log_newpage_buffer(buf, false /* page_std */);
-	END_CRIT_SECTION();
+	state = GenericXLogStartLogged(needs_wal);
+	image = GenericXLogRegisterBuffer(state, buf, 0);
+	itl_finish_stamp_page(image, (uint8)handle->slot_idx, ctx);
+	GenericXLogFinish(state);
 
 	UnlockReleaseBuffer(buf);
 }

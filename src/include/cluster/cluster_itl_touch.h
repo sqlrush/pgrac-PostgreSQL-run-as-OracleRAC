@@ -65,7 +65,7 @@
  *	  offset 12,  4B : block
  *	  offset 16,  4B : forknum (normally MAIN_FORKNUM)
  *	  offset 20,  2B : slot_idx (0 .. INITRANS-1)
- *	  offset 22,  2B : flags (reserved; zero in v1.0)
+ *	  offset 22,  2B : flags
  */
 typedef struct ClusterItlTouchHandle {
 	RelFileLocator rloc;   /* offset  0, 12B */
@@ -84,6 +84,8 @@ StaticAssertDecl(offsetof(ClusterItlTouchHandle, forknum) == 16,
 StaticAssertDecl(offsetof(ClusterItlTouchHandle, slot_idx) == 20,
 				 "spec-3.4a D1 — slot_idx at offset 20");
 StaticAssertDecl(offsetof(ClusterItlTouchHandle, flags) == 22, "spec-3.4a D1 — flags at offset 22");
+
+#define CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL 0x0001
 
 /*
  * cluster_itl_touch_register -- append a handle to the xact-local
@@ -132,9 +134,9 @@ extern uint32 cluster_itl_touch_count(void);
  *	xact.c BEFORE the durable commit/abort XLOG record is written.
  *	The hook iterates the xact-local touched list (D1), re-ReadBuffer
  *	each handle, acquires EXCLUSIVE content lock, stamps the ITL slot
- *	COMMITTED/ABORTED inside a critical section that also emits the
- *	matching xl_heap_itl_delta_block WAL record (full WAL emit wired
- *	in spec-3.4a D8 / Step 7).  Finally calls
+ *	COMMITTED/ABORTED through PG generic WAL delta logging (or the same
+ *	generic critical-section path without WAL for unlogged relations).
+ *	Finally calls
  *	cluster_itl_touch_reset_at_end_xact().
  *
  *	No-op when cluster_enabled is false or the touched list is empty.

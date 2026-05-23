@@ -2154,7 +2154,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		handle.block = ItemPointerGetBlockNumber(&heaptup->t_self);
 		handle.forknum = MAIN_FORKNUM;
 		handle.slot_idx = cluster_itl_slot;
-		handle.flags = 0;
+		handle.flags = RelationNeedsWAL(relation) ? CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
 		cluster_itl_touch_register(&handle);
 	}
 #endif
@@ -2653,7 +2653,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			handle.block = BufferGetBlockNumber(buffer);
 			handle.forknum = MAIN_FORKNUM;
 			handle.slot_idx = cluster_mi_slot;
-			handle.flags = 0;
+			handle.flags = RelationNeedsWAL(relation) ? CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
 			cluster_itl_touch_register(&handle);
 		}
 #endif
@@ -3243,7 +3243,7 @@ l1:
 		handle.block = BufferGetBlockNumber(buffer);
 		handle.forknum = MAIN_FORKNUM;
 		handle.slot_idx = cluster_itl_slot;
-		handle.flags = 0;
+		handle.flags = RelationNeedsWAL(relation) ? CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
 		cluster_itl_touch_register(&handle);
 	}
 #endif
@@ -4341,7 +4341,7 @@ l2:
 		handle.block = BufferGetBlockNumber(buffer);
 		handle.forknum = MAIN_FORKNUM;
 		handle.slot_idx = cluster_itl_old_slot;
-		handle.flags = 0;
+		handle.flags = RelationNeedsWAL(relation) ? CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
 		cluster_itl_touch_register(&handle);
 	}
 	if (cluster_itl_new_active && newbuf != buffer)
@@ -4352,7 +4352,7 @@ l2:
 		handle.block = BufferGetBlockNumber(newbuf);
 		handle.forknum = MAIN_FORKNUM;
 		handle.slot_idx = cluster_itl_new_slot;
-		handle.flags = 0;
+		handle.flags = RelationNeedsWAL(relation) ? CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
 		cluster_itl_touch_register(&handle);
 	}
 #endif

@@ -269,13 +269,25 @@ computeDelta(PageData *pageData, Page curpage, Page targetpage)
 GenericXLogState *
 GenericXLogStart(Relation relation)
 {
+	return GenericXLogStartLogged(RelationNeedsWAL(relation));
+}
+
+/*
+ * Start a new generic xlog record when the caller already knows whether
+ * the target relfilenode needs WAL.  This is used by code paths that only
+ * carry a RelFileLocator at finish time and intentionally avoid relcache
+ * lookup in transaction-end hooks.
+ */
+GenericXLogState *
+GenericXLogStartLogged(bool is_logged)
+{
 	GenericXLogState *state;
 	int			i;
 
 	state = (GenericXLogState *) palloc_aligned(sizeof(GenericXLogState),
 												PG_IO_ALIGN_SIZE,
 												0);
-	state->isLogged = RelationNeedsWAL(relation);
+	state->isLogged = is_logged;
 
 	for (i = 0; i < MAX_GENERIC_XLOG_PAGES; i++)
 	{

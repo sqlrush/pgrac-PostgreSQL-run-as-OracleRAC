@@ -31,6 +31,7 @@ typedef struct GenericXLogState GenericXLogState;
 
 /* API for construction of generic xlog records */
 extern GenericXLogState *GenericXLogStart(Relation relation);
+extern GenericXLogState *GenericXLogStartLogged(bool is_logged);
 extern Page GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buffer,
 									  int flags);
 extern XLogRecPtr GenericXLogFinish(GenericXLogState *state);
