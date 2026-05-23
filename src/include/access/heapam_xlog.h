@@ -72,6 +72,15 @@
 /* all_frozen_set always implies all_visible_set */
 #define XLH_INSERT_ALL_FROZEN_SET				(1<<5)
 
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC (spec-3.4a D7): block-local ITL delta array attached to a
+ * mutated XLog block (xl_heap_itl_delta_block; see below).  Spec body
+ * referenced bit 6 originally; bit 7 is used because UPDATE flags
+ * already consume bit 6 (XLH_UPDATE_SUFFIX_FROM_OLD).  Three enum
+ * namespaces independent. */
+#define XLH_INSERT_ITL_DELTA					(1<<7)
+#endif
+
 /*
  * xl_heap_update flag values, 8 bits are available.
  */
@@ -84,6 +93,11 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
+
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC (spec-3.4a D7): block-local ITL delta array; see XLH_INSERT_ITL_DELTA. */
+#define XLH_UPDATE_ITL_DELTA					(1<<7)
+#endif
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\
@@ -98,6 +112,11 @@
 #define XLH_DELETE_CONTAINS_OLD_KEY				(1<<2)
 #define XLH_DELETE_IS_SUPER						(1<<3)
 #define XLH_DELETE_IS_PARTITION_MOVE			(1<<4)
+
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC (spec-3.4a D7): block-local ITL delta array; see XLH_INSERT_ITL_DELTA. */
+#define XLH_DELETE_ITL_DELTA					(1<<7)
+#endif
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_DELETE_CONTAINS_OLD						\
@@ -416,5 +435,76 @@ extern XLogRecPtr log_heap_visible(Relation rel, Buffer heap_buffer,
 								   Buffer vm_buffer,
 								   TransactionId snapshotConflictHorizon,
 								   uint8 vmflags);
+
+#ifdef USE_PGRAC_CLUSTER
+
+#include "cluster/cluster_itl_slot.h"		/* ClusterItlFlags */
+#include "cluster/cluster_scn.h"			/* SCN */
+
+/*
+ * PGRAC (spec-3.4a D7): block-local ITL delta payload attached to a
+ * mutated XLog block when XLH_*_ITL_DELTA is set on the heap WAL
+ * record's flags.
+ *
+ *	Per-XLog-block array because:
+ *	  - heap_update mutates two pages (old + new) on cross-page UPDATE;
+ *	    each block needs its own delta description.
+ *	  - heap_multi_insert mutates multiple pages in a single record;
+ *	    each page needs its own delta.
+ *
+ *	A single delta describes one ITL slot transition (FREE->ACTIVE,
+ *	ACTIVE->COMMITTED, ACTIVE->ABORTED).
+ *
+ *	Wire-stable layout (HC: cluster_unit test_cluster_itl_wal enforces
+ *	sizeof / offsetof):
+ *
+ *	  xl_heap_itl_delta (24 bytes):
+ *	    offset  0,  2B : slot_idx (uint16; 0..INITRANS-1)
+ *	    offset  2,  2B : flags_after (uint16; ClusterItlFlags value
+ *	                     written by the redo)
+ *	    offset  4,  4B : xid (TransactionId of the slot owner)
+ *	    offset  8,  8B : write_scn (SCN; valid on ACTIVE transitions)
+ *	    offset 16,  8B : commit_scn (SCN; MUST be valid when
+ *	                     flags_after == ITL_FLAG_COMMITTED, otherwise
+ *	                     InvalidScn)
+ *
+ *	  xl_heap_itl_delta_block (4 + 24*N bytes):
+ *	    offset 0, 2B   : ndeltas (uint16)
+ *	    offset 2, 2B   : reserved (must be zero)
+ *	    offset 4, 24*N : deltas[ndeltas]
+ */
+typedef struct xl_heap_itl_delta
+{
+	uint16			slot_idx;		/* offset 0,  2B */
+	uint16			flags_after;	/* offset 2,  2B (ClusterItlFlags) */
+	TransactionId	xid;			/* offset 4,  4B */
+	SCN				write_scn;		/* offset 8,  8B */
+	SCN				commit_scn;		/* offset 16, 8B */
+} xl_heap_itl_delta;
+
+StaticAssertDecl(sizeof(xl_heap_itl_delta) == 24,
+				 "spec-3.4a D7 — xl_heap_itl_delta must be 24 bytes");
+StaticAssertDecl(offsetof(xl_heap_itl_delta, slot_idx) == 0,
+				 "spec-3.4a D7 — slot_idx at offset 0");
+StaticAssertDecl(offsetof(xl_heap_itl_delta, flags_after) == 2,
+				 "spec-3.4a D7 — flags_after at offset 2");
+StaticAssertDecl(offsetof(xl_heap_itl_delta, xid) == 4,
+				 "spec-3.4a D7 — xid at offset 4");
+StaticAssertDecl(offsetof(xl_heap_itl_delta, write_scn) == 8,
+				 "spec-3.4a D7 — write_scn at offset 8");
+StaticAssertDecl(offsetof(xl_heap_itl_delta, commit_scn) == 16,
+				 "spec-3.4a D7 — commit_scn at offset 16");
+
+typedef struct xl_heap_itl_delta_block
+{
+	uint16			ndeltas;		/* offset 0, 2B */
+	uint16			reserved;		/* offset 2, 2B (zero) */
+	xl_heap_itl_delta deltas[FLEXIBLE_ARRAY_MEMBER];
+} xl_heap_itl_delta_block;
+
+StaticAssertDecl(offsetof(xl_heap_itl_delta_block, deltas) == 4,
+				 "spec-3.4a D7 — block-local array header is 4 bytes");
+
+#endif							/* USE_PGRAC_CLUSTER */
 
 #endif							/* HEAPAM_XLOG_H */
