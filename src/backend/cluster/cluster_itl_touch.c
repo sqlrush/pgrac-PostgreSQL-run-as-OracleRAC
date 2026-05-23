@@ -43,6 +43,7 @@
  */
 #include "postgres.h"
 
+#include "access/xloginsert.h"	/* log_newpage_buffer (spec-3.4a D8) */
 #include "cluster/cluster_guc.h"		/* cluster_enabled */
 #include "cluster/cluster_itl.h"		/* stamp_committed / stamp_aborted */
 #include "cluster/cluster_itl_touch.h"
@@ -172,14 +173,19 @@ itl_finish_one(const ClusterItlTouchHandle *handle, void *arg)
 									ctx->commit_scn);
 	else
 		cluster_itl_stamp_aborted(buf, (uint8) handle->slot_idx);
+
 	/*
-	 * TODO spec-3.4a D8: emit xl_heap_itl_delta_block WAL record here
-	 * BEFORE END_CRIT_SECTION.  Currently the stamp mutates the page
-	 * + MarkBufferDirty, but the COMMITTED/ABORTED transition is not
-	 * yet WAL-logged separately from the original heap_insert /
-	 * heap_update WAL record.  Crash safety for ACTIVE -> COMMITTED
-	 * transition is provided by D8 (Step 7) in a follow-up commit.
+	 * spec-3.4a D8 (Step 7): the ACTIVE -> COMMITTED / ACTIVE -> ABORTED
+	 * transition mutates the page's special area; we must produce a WAL
+	 * record so crash recovery sees the post-transition state.  Since
+	 * RM_HEAP and RM_HEAP2 op-code spaces are already saturated and a
+	 * dedicated RM_CLUSTER_ITL rmgr is out of scope for spec-3.4a, we
+	 * fall back to log_newpage_buffer() which emits a full-page image
+	 * (FPI) of the dirty buffer.  Heavy (8KB per touched ITL slot) but
+	 * trivially correct.  spec-3.4c is expected to graduate to a
+	 * compact ITL-only WAL record reusing xl_heap_itl_delta_block.
 	 */
+	log_newpage_buffer(buf, false /* page_std */);
 	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(buf);

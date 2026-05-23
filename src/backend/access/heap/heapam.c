@@ -2017,6 +2017,10 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		Page		page = BufferGetPage(buffer);
 		uint8		info = XLOG_HEAP_INSERT;
 		int			bufflags = 0;
+#ifdef USE_PGRAC_CLUSTER
+		xl_heap_itl_delta_block cluster_itl_hdr;
+		xl_heap_itl_delta cluster_itl_delta;
+#endif
 
 		/*
 		 * If this is a catalog, we need to transmit combo CIDs to properly
@@ -2060,8 +2064,40 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 				xlrec.flags |= XLH_INSERT_ON_TOAST_RELATION;
 		}
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4a D8): set the ITL delta flag on xlrec BEFORE
+		 * XLogRegisterData so the flag byte goes durable.  Construct
+		 * the 1-delta block-local array and stash it for registration
+		 * after the existing xlrec/header/buf-data sequence.
+		 */
+		if (cluster_itl_active)
+		{
+			cluster_itl_hdr.ndeltas = 1;
+			cluster_itl_hdr.reserved = 0;
+			cluster_itl_hdr._pad = 0;
+			cluster_itl_delta.slot_idx = cluster_itl_slot;
+			cluster_itl_delta.flags_after = ITL_FLAG_ACTIVE;
+			cluster_itl_delta.xid = xid;
+			cluster_itl_delta.write_scn = ClusterPageGetItlSlots(BufferGetPage(buffer))[cluster_itl_slot].write_scn;
+			cluster_itl_delta.commit_scn = InvalidScn;
+
+			xlrec.flags |= XLH_INSERT_ITL_DELTA;
+		}
+#endif
+
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfHeapInsert);
+
+#ifdef USE_PGRAC_CLUSTER
+		if (cluster_itl_active)
+		{
+			XLogRegisterData((char *) &cluster_itl_hdr,
+							 offsetof(xl_heap_itl_delta_block, deltas));
+			XLogRegisterData((char *) &cluster_itl_delta,
+							 sizeof(cluster_itl_delta));
+		}
+#endif
 
 		xlhdr.t_infomask2 = heaptup->t_data->t_infomask2;
 		xlhdr.t_infomask = heaptup->t_data->t_infomask;
@@ -2998,6 +3034,10 @@ l1:
 		xl_heap_delete xlrec;
 		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
+#ifdef USE_PGRAC_CLUSTER
+		xl_heap_itl_delta_block cluster_itl_hdr;
+		xl_heap_itl_delta cluster_itl_delta;
+#endif
 
 		/*
 		 * For logical decode we need combo CIDs to properly decode the
@@ -3024,8 +3064,35 @@ l1:
 				xlrec.flags |= XLH_DELETE_CONTAINS_OLD_KEY;
 		}
 
+#ifdef USE_PGRAC_CLUSTER
+		/* PGRAC (spec-3.4a D8): block-local ITL delta for the deleted
+		 * tuple's page.  Single delta describing the ACTIVE stamp. */
+		if (cluster_itl_active)
+		{
+			cluster_itl_hdr.ndeltas = 1;
+			cluster_itl_hdr.reserved = 0;
+			cluster_itl_hdr._pad = 0;
+			cluster_itl_delta.slot_idx = cluster_itl_slot;
+			cluster_itl_delta.flags_after = ITL_FLAG_ACTIVE;
+			cluster_itl_delta.xid = xid;
+			cluster_itl_delta.write_scn = ClusterPageGetItlSlots(page)[cluster_itl_slot].write_scn;
+			cluster_itl_delta.commit_scn = InvalidScn;
+			xlrec.flags |= XLH_DELETE_ITL_DELTA;
+		}
+#endif
+
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfHeapDelete);
+
+#ifdef USE_PGRAC_CLUSTER
+		if (cluster_itl_active)
+		{
+			XLogRegisterData((char *) &cluster_itl_hdr,
+							 offsetof(xl_heap_itl_delta_block, deltas));
+			XLogRegisterData((char *) &cluster_itl_delta,
+							 sizeof(cluster_itl_delta));
+		}
+#endif
 
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
 
