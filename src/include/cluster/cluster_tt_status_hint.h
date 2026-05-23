@@ -119,12 +119,12 @@ StaticAssertDecl(sizeof(ClusterTTStatusHintMsgV1) == 32,
  *	                   COMMITTED/CLEANED_OUT -- L181 chain)
  */
 typedef struct ClusterTTStatusHintMsgV2 {
-	uint16 msg_version;		/* offset  0, 2B; = CLUSTER_TT_STATUS_HINT_V2 */
+	uint16 msg_version; /* offset  0, 2B; = CLUSTER_TT_STATUS_HINT_V2 */
 	uint16 status;
 	uint16 flags;
 	uint16 _reserved16;
 	ClusterTTStatusKey key; /* offset  8, 24B */
-	SCN    commit_scn;		/* offset 32, 8B */
+	SCN commit_scn;			/* offset 32, 8B */
 } ClusterTTStatusHintMsgV2;
 
 StaticAssertDecl(offsetof(ClusterTTStatusHintMsgV2, key) == 8,
@@ -169,8 +169,7 @@ typedef ClusterTTStatusHintMsgV1 ClusterTTStatusHintMsg;
  *	  LMON drain entry point.  Iterates alive peers (3-gate) and
  *	  fanout each hint via tier1 send.  Only LMON calls this (HC185).
  */
-extern void cluster_tt_status_hint_emit(const ClusterTTStatusKey *key,
-										ClusterTTStatus status,
+extern void cluster_tt_status_hint_emit(const ClusterTTStatusKey *key, ClusterTTStatus status,
 										SCN commit_scn);
 extern void cluster_tt_status_hint_handle_envelope(const struct ClusterICEnvelope *env,
 												   const void *payload);

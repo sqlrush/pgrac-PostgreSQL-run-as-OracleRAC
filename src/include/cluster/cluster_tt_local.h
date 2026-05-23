@@ -39,7 +39,7 @@
 
 #include "c.h"
 #include "access/transam.h"
-#include "cluster/cluster_scn.h" /* SCN */
+#include "cluster/cluster_scn.h"	   /* SCN */
 #include "cluster/cluster_tt_status.h" /* ClusterTTStatus */
 
 /*

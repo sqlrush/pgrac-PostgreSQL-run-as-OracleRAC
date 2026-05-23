@@ -85,8 +85,8 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 
 UT_TEST(test_t1_snapshot_source_enum_stable)
 {
-	UT_ASSERT_EQ((int) SNAPSHOT_SOURCE_LOCAL, 0);
-	UT_ASSERT_EQ((int) SNAPSHOT_SOURCE_CLUSTER, 1);
+	UT_ASSERT_EQ((int)SNAPSHOT_SOURCE_LOCAL, 0);
+	UT_ASSERT_EQ((int)SNAPSHOT_SOURCE_CLUSTER, 1);
 }
 
 UT_TEST(test_t2_snapshot_cluster_tail_members_present)
@@ -100,50 +100,49 @@ UT_TEST(test_t2_snapshot_cluster_tail_members_present)
 	 */
 	s.read_scn = InvalidScn;
 	s.read_epoch = 0;
-	s.cluster_source = (uint8) SNAPSHOT_SOURCE_LOCAL;
+	s.cluster_source = (uint8)SNAPSHOT_SOURCE_LOCAL;
 	s._pad[0] = 0;
 	s._pad[6] = 0;
-	UT_ASSERT_EQ((int) s.cluster_source, 0);
+	UT_ASSERT_EQ((int)s.cluster_source, 0);
 }
 
 UT_TEST(test_t3_read_scn_is_scn)
 {
-	UT_ASSERT_EQ((int) sizeof(((SnapshotData *) 0)->read_scn), (int) sizeof(SCN));
-	UT_ASSERT_EQ((int) sizeof(SCN), 8);
+	UT_ASSERT_EQ((int)sizeof(((SnapshotData *)0)->read_scn), (int)sizeof(SCN));
+	UT_ASSERT_EQ((int)sizeof(SCN), 8);
 }
 
 UT_TEST(test_t4_read_epoch_is_uint64)
 {
-	UT_ASSERT_EQ((int) sizeof(((SnapshotData *) 0)->read_epoch), 8);
+	UT_ASSERT_EQ((int)sizeof(((SnapshotData *)0)->read_epoch), 8);
 }
 
 UT_TEST(test_t5_cluster_source_is_uint8)
 {
-	UT_ASSERT_EQ((int) sizeof(((SnapshotData *) 0)->cluster_source), 1);
+	UT_ASSERT_EQ((int)sizeof(((SnapshotData *)0)->cluster_source), 1);
 }
 
 UT_TEST(test_t6_pad_is_seven_bytes)
 {
-	UT_ASSERT_EQ((int) sizeof(((SnapshotData *) 0)->_pad), 7);
+	UT_ASSERT_EQ((int)sizeof(((SnapshotData *)0)->_pad), 7);
 }
 
 UT_TEST(test_t7_cluster_tail_spans_24_bytes)
 {
-	int			start = (int) offsetof(SnapshotData, read_scn);
-	int			pad_end = (int) (offsetof(SnapshotData, _pad)
-								 + sizeof(((SnapshotData *) 0)->_pad));
+	int start = (int)offsetof(SnapshotData, read_scn);
+	int pad_end = (int)(offsetof(SnapshotData, _pad) + sizeof(((SnapshotData *)0)->_pad));
 
 	UT_ASSERT_EQ(pad_end - start, 24);
 }
 
 UT_TEST(test_t8_snapshot_struct_multiple_of_8)
 {
-	UT_ASSERT_EQ((int) (sizeof(SnapshotData) % 8), 0);
+	UT_ASSERT_EQ((int)(sizeof(SnapshotData) % 8), 0);
 }
 
 UT_TEST(test_t9_local_cluster_distinct)
 {
-	UT_ASSERT_NE((int) SNAPSHOT_SOURCE_LOCAL, (int) SNAPSHOT_SOURCE_CLUSTER);
+	UT_ASSERT_NE((int)SNAPSHOT_SOURCE_LOCAL, (int)SNAPSHOT_SOURCE_CLUSTER);
 }
 
 UT_TEST(test_t10_zeroed_snapshot_is_local)
@@ -151,46 +150,45 @@ UT_TEST(test_t10_zeroed_snapshot_is_local)
 	SnapshotData s;
 
 	memset(&s, 0, sizeof(s));
-	UT_ASSERT_EQ((int) s.cluster_source, (int) SNAPSHOT_SOURCE_LOCAL);
-	UT_ASSERT_EQ((int) s.read_scn, (int) InvalidScn);
-	UT_ASSERT_EQ((int) s.read_epoch, 0);
+	UT_ASSERT_EQ((int)s.cluster_source, (int)SNAPSHOT_SOURCE_LOCAL);
+	UT_ASSERT_EQ((int)s.read_scn, (int)InvalidScn);
+	UT_ASSERT_EQ((int)s.read_epoch, 0);
 }
 
 UT_TEST(test_t11_hint_v1_sizeof_32)
 {
-	UT_ASSERT_EQ((int) sizeof(ClusterTTStatusHintMsgV1), 32);
+	UT_ASSERT_EQ((int)sizeof(ClusterTTStatusHintMsgV1), 32);
 }
 
 UT_TEST(test_t12_hint_v1_key_offset_8)
 {
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV1, key), 8);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV1, key), 8);
 }
 
 UT_TEST(test_t13_hint_v2_sizeof_40)
 {
-	UT_ASSERT_EQ((int) sizeof(ClusterTTStatusHintMsgV2), 40);
+	UT_ASSERT_EQ((int)sizeof(ClusterTTStatusHintMsgV2), 40);
 }
 
 UT_TEST(test_t14_hint_v2_key_offset_8)
 {
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV2, key), 8);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV2, key), 8);
 }
 
 UT_TEST(test_t15_hint_v2_commit_scn_offset_32)
 {
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV2, commit_scn), 32);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV2, commit_scn), 32);
 }
 
 UT_TEST(test_t16_hint_version_values_stable)
 {
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_HINT_V1, 1);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_HINT_V2, 2);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_HINT_V1, 1);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_HINT_V2, 2);
 }
 
 UT_TEST(test_t17_legacy_typedef_is_v1)
 {
-	UT_ASSERT_EQ((int) sizeof(ClusterTTStatusHintMsg),
-				 (int) sizeof(ClusterTTStatusHintMsgV1));
+	UT_ASSERT_EQ((int)sizeof(ClusterTTStatusHintMsg), (int)sizeof(ClusterTTStatusHintMsgV1));
 }
 
 UT_TEST(test_t18_cluster_local_invalidscn_representable)
@@ -198,12 +196,12 @@ UT_TEST(test_t18_cluster_local_invalidscn_representable)
 	SnapshotData s;
 
 	memset(&s, 0, sizeof(s));
-	s.cluster_source = (uint8) SNAPSHOT_SOURCE_CLUSTER;
+	s.cluster_source = (uint8)SNAPSHOT_SOURCE_CLUSTER;
 	s.read_scn = InvalidScn;
-	s.read_epoch = (uint64) 1;
-	UT_ASSERT_EQ((int) s.cluster_source, 1);
-	UT_ASSERT_EQ((int) s.read_scn, (int) InvalidScn);
-	UT_ASSERT_EQ((int) s.read_epoch, 1);
+	s.read_epoch = (uint64)1;
+	UT_ASSERT_EQ((int)s.cluster_source, 1);
+	UT_ASSERT_EQ((int)s.read_scn, (int)InvalidScn);
+	UT_ASSERT_EQ((int)s.read_epoch, 1);
 }
 
 

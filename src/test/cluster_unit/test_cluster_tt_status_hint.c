@@ -106,7 +106,7 @@ HINT_GETTER_STUB(drop_invalid_count)
 HINT_GETTER_STUB(drop_stale_epoch_count)
 HINT_GETTER_STUB(drop_unknown_version_count)
 HINT_GETTER_STUB(install_count)
-HINT_GETTER_STUB(drop_v1_compat_count)	/* spec-3.3 D9 */
+HINT_GETTER_STUB(drop_v1_compat_count) /* spec-3.3 D9 */
 
 Size
 cluster_tt_status_hint_shmem_size(void)
