@@ -85,9 +85,17 @@
 #include "cluster/cluster_scn.h"		/* cluster_scn_advance / SCN */
 
 static inline bool
-cluster_itl_write_path_enabled(void)
+cluster_itl_write_path_enabled(Relation relation)
 {
-	return cluster_enabled && cluster_node_id >= 0;
+	/*
+	 * spec-3.4a activates only top-level, shared-buffer heap writes.
+	 * SUBTRANS and local-buffer/temp relations are deferred; leaving the
+	 * tuple without an ITL slot keeps the existing PG-native path intact
+	 * instead of installing a partial cluster-visible status.
+	 */
+	return cluster_enabled && cluster_node_id >= 0
+		   && !RelationUsesLocalBuffers(relation)
+		   && GetCurrentTransactionNestLevel() <= 1;
 }
 #endif
 
@@ -1970,10 +1978,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * the touched-handle is registered after the critical section so
 	 * palloc cannot fire inside CRIT.
 	 */
-	if (cluster_itl_write_path_enabled() && PageHasItl(BufferGetPage(buffer)))
+	if (cluster_itl_write_path_enabled(relation) && PageHasItl(BufferGetPage(buffer)))
 	{
-		cluster_itl_check_subxact_or_error();
-
 		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_slot))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -2291,11 +2297,11 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	int			npages_used = 0;
 
 #ifdef USE_PGRAC_CLUSTER
-	/* spec-3.4a N9: subxact / savepoint fail-closed at entry.
+	/*
 	 * Full per-page ITL allocate/stamp/register for batched multi_insert
 	 * is queued for post-codereview hardening round (one slot per
-	 * (page, top_xid) pattern from heap_insert D3 applied per page). */
-	cluster_itl_check_subxact_or_error();
+	 * (page, top_xid) pattern from heap_insert D3 applied per page).
+	 */
 #endif
 
 	/* currently not needed (thus unsupported) for heap_multi_insert() */
@@ -2404,7 +2410,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		 * this page during the inner loop reference the same slot.
 		 * Failure (OVERFLOW) raises ERROR before the critical section.
 		 */
-		if (cluster_itl_write_path_enabled() && PageHasItl(page))
+		if (cluster_itl_write_path_enabled(relation) && PageHasItl(page))
 		{
 			if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_mi_slot))
 				ereport(ERROR,
@@ -2825,11 +2831,6 @@ heap_delete(Relation relation, ItemPointer tid,
 
 	AssertHasSnapshotForToast(relation);
 
-#ifdef USE_PGRAC_CLUSTER
-	/* spec-3.4a N9: subxact / savepoint fail-closed at entry. */
-	cluster_itl_check_subxact_or_error();
-#endif
-
 	/*
 	 * Forbid this during a parallel operation, lest it allocate a combo CID.
 	 * Other workers might need that combo CID for visibility checks, and we
@@ -3077,7 +3078,7 @@ l1:
 	 * the page holding the deleted tuple.  EXCLUSIVE content lock is
 	 * already held; OVERFLOW raises ERROR before the critical section.
 	 */
-	if (cluster_itl_write_path_enabled() && PageHasItl(page))
+	if (cluster_itl_write_path_enabled(relation) && PageHasItl(page))
 	{
 		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_slot))
 			ereport(ERROR,
@@ -3412,11 +3413,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		   RelationGetNumberOfAttributes(relation));
 
 	AssertHasSnapshotForToast(relation);
-
-#ifdef USE_PGRAC_CLUSTER
-	/* spec-3.4a N9: subxact / savepoint fail-closed at entry. */
-	cluster_itl_check_subxact_or_error();
-#endif
 
 	/*
 	 * Forbid this during a parallel operation, lest it allocate a combo CID.
@@ -4178,7 +4174,7 @@ l2:
 	 * EXCLUSIVE content locks already held; OVERFLOW raises ERROR
 	 * before the critical section.
 	 */
-	if (cluster_itl_write_path_enabled() && PageHasItl(BufferGetPage(buffer)))
+	if (cluster_itl_write_path_enabled(relation) && PageHasItl(BufferGetPage(buffer)))
 	{
 		if (!cluster_itl_alloc_or_reuse_slot(buffer, xid, &cluster_itl_old_slot))
 			ereport(ERROR,
