@@ -164,8 +164,7 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	Assert(PageHasItl(page));
 
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
-	if (slot->flags != ITL_FLAG_FREE
-		&& !(slot->flags == ITL_FLAG_ACTIVE && slot->xid == xid))
+	if (slot->flags != ITL_FLAG_FREE && !(slot->flags == ITL_FLAG_ACTIVE && slot->xid == xid))
 		slot->wrap++;
 	slot->xid = xid;
 	slot->flags = ITL_FLAG_ACTIVE;
