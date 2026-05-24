@@ -173,11 +173,9 @@ cluster_undo_segment_allocate(uint32 segment_id, uint8 owner_instance)
 {
 	char path[MAXPGPATH];
 	PGAlignedBlock page;
-	PGAlignedBlock existing;
 	int fd;
 	bool created;
 	struct stat st;
-	ssize_t readbytes;
 	ssize_t written;
 
 	/*
@@ -264,6 +262,9 @@ cluster_undo_segment_allocate(uint32 segment_id, uint8 owner_instance)
 		}
 
 		if (st.st_size == UNDO_SEGMENT_SIZE_BYTES) {
+			PGAlignedBlock existing;
+			ssize_t readbytes;
+
 			readbytes = pg_pread(fd, existing.data, BLCKSZ, 0);
 			if (readbytes < 0) {
 				int save_errno = errno;

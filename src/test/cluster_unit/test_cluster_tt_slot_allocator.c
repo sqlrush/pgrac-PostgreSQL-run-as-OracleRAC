@@ -95,6 +95,10 @@ ShmemInitStruct(const char *name pg_attribute_unused(), Size size, bool *foundPt
 {
 	if (mock_shmem_buffer == NULL)
 		mock_shmem_buffer = malloc(size);
+	if (mock_shmem_buffer == NULL) {
+		fprintf(stderr, "out of memory allocating %zu bytes for mock shmem\n", (size_t)size);
+		exit(1);
+	}
 	*foundPtr = false;
 	memset(mock_shmem_buffer, 0, size);
 	return mock_shmem_buffer;
