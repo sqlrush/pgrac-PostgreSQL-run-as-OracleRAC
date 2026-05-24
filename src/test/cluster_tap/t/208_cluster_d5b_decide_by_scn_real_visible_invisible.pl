@@ -46,7 +46,7 @@
 #	  L11  Postmaster clean shutdown
 #
 #	  Spec: spec-3.4c-delayed-cleanout-d5b-commit-scn-yellow-perf-hardening.md
-#	        (v0.3 FROZEN 2026-05-24)
+#	        (v0.2 FROZEN 2026-05-24)
 #
 #-------------------------------------------------------------------------
 
@@ -130,8 +130,11 @@ SKIP: {
 	# ============================================================
 	my ($rc3, $out3, $err3) = $pair->node0->psql('postgres',
 		q{SELECT count(*) FROM l3_visible});
+	chomp $out3;
 	is($rc3, 0,
 		'L3 SELECT returns 0 (no error) — decide_by_scn VISIBLE branch reached');
+	is($out3, '1',
+		'L3 SELECT returns the row (VISIBLE branch, not PG-native false positive)');
 	unlike($err3, qr/53R97|cluster TT status unknown/,
 		'L3 SELECT did not raise 53R97 (overlay COMMITTED + small commit_scn)');
 
@@ -159,8 +162,11 @@ SKIP: {
 
 	my ($rc4, $out4, $err4) = $pair->node0->psql('postgres',
 		q{SELECT count(*) FROM l4_future});
+	chomp $out4;
 	is($rc4, 0,
 		'L4 SELECT returns 0 (no error) — decide_by_scn INVISIBLE branch reached');
+	is($out4, '0',
+		'L4 SELECT hides the row (INVISIBLE branch, catches PG-native fallback)');
 	unlike($err4, qr/53R97|cluster TT status unknown/,
 		'L4 SELECT did not raise 53R97 (overlay COMMITTED + future commit_scn)');
 
@@ -192,7 +198,8 @@ SKIP: {
 	my ($rc6, $out6, $err6) = $pair->node0->psql('postgres',
 		q{\set VERBOSITY verbose
 		  SELECT count(*) FROM l6_unknown});
-	ok($rc6 != 0 || $err6 =~ /53R97|cluster TT status unknown/,
+	ok($rc6 != 0, 'L6 commit_scn=InvalidScn SELECT errors');
+	like($err6, qr/53R97|cluster TT status unknown/,
 		'L6 commit_scn=InvalidScn falls through to 53R97 (genuine UNKNOWN)');
 
 
@@ -208,7 +215,8 @@ SKIP: {
 	my ($rc7, $out7, $err7) = $pair->node0->psql('postgres',
 		q{\set VERBOSITY verbose
 		  SELECT count(*) FROM l3_visible});
-	ok($rc7 != 0 || $err7 =~ /53R97|cluster TT status unknown/,
+	ok($rc7 != 0, 'L7 SELECT after clear_injects errors');
+	like($err7, qr/53R97|cluster TT status unknown/,
 		'L7 clear_injects really deletes overlay (next SELECT → 53R97)');
 
 

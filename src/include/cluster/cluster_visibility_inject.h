@@ -11,8 +11,9 @@
  *	  in spec-3.4).  D5b provides:
  *	    - test-only GUC cluster_test_force_visibility_cluster_path
  *	    - test-only SQL UDF cluster_test_inject_visibility_tt_ref(xid,
- *	      origin, segment, slot, epoch)
+ *	      origin, segment, slot, epoch, commit_scn)
  *	    - shmem-resident inject table keyed by xid, value = ref
+ *	      (including cached_commit_scn for spec-3.4c decide_by_scn)
  *	    - lookup helper used by D5 fork entry
  *
  *	  ENABLE_INJECTION conditional:  production binary (no

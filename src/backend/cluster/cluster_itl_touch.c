@@ -188,8 +188,19 @@ cluster_itl_touch_foreach_per_page(ClusterItlTouchPagedCallback cb, void *arg)
 		}
 
 		/*
-		 * Register's dedupe already guarantees slot_idx uniqueness per
-		 * page; the bound check defends against future bumps to
+		 * Register dedupes exact handles today, but keep the aggregate
+		 * stage independently robust: callers/tests may eventually feed a
+		 * pre-sorted duplicate, and the public header promises this helper
+		 * dedupes consecutive identical page+slot keys.  Preserve flags
+		 * from both entries before skipping the duplicate.
+		 */
+		if (same_page && ph.nslots > 0 && ph.slot_indices[ph.nslots - 1] == h->slot_idx) {
+			ph.flags |= (uint8)h->flags;
+			continue;
+		}
+
+		/*
+		 * The bound check defends against future bumps to
 		 * CLUSTER_ITL_INITRANS_DEFAULT that bypass register's guard.
 		 */
 		Assert(ph.nslots < CLUSTER_ITL_INITRANS_DEFAULT);

@@ -18,8 +18,9 @@
  *	  Buffer argument -- no Relation / RelationNeedsWAL() context --
  *	  so this helper MUST NOT emit generic WAL.  It marks the buffer
  *	  dirty as a hint (PG-standard reader-path mutation pattern,
- *	  same as HEAP_XMIN_COMMITTED hint bit).  Crash may lose the
- *	  hint; the next reader will re-resolve via the TT status
+ *	  same as HEAP_XMIN_COMMITTED hint bit).  PG may still emit a hint
+ *	  FPI when checksums / wal_log_hints require it.  Crash may lose
+ *	  the hint; the next reader will re-resolve via the TT status
  *	  overlay.  Correctness is guaranteed by the overlay path; this
  *	  helper is a perf optimization only.
  *
@@ -41,7 +42,7 @@
  * Author: SqlRush <sqlrush@gmail.com>
  *
  * Spec: spec-3.4c-delayed-cleanout-d5b-commit-scn-yellow-perf-hardening.md
- *       (v0.3 FROZEN 2026-05-24)
+ *       (v0.2 FROZEN 2026-05-24)
  *
  * IDENTIFICATION
  *	  src/include/cluster/cluster_itl_cleanout.h

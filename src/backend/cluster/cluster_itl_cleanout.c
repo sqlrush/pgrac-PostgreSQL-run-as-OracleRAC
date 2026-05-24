@@ -9,7 +9,8 @@
  *
  *	    F1  HeapTupleSatisfiesMVCC has no Relation, so this helper
  *	        MUST NOT emit generic WAL.  It uses MarkBufferDirtyHint
- *	        (hint-style, no WAL).  Crash may lose the hint; the
+ *	        (hint-style; PG may still emit a hint FPI when checksums or
+ *	        wal_log_hints require it).  Crash may lose the hint; the
  *	        overlay path guarantees correctness.
  *
  *	    F2  expected_xid is required to defend against the L189 slot
@@ -28,7 +29,7 @@
  * Author: SqlRush <sqlrush@gmail.com>
  *
  * Spec: spec-3.4c-delayed-cleanout-d5b-commit-scn-yellow-perf-hardening.md
- *       (v0.3 FROZEN 2026-05-24)
+ *       (v0.2 FROZEN 2026-05-24)
  *
  * IDENTIFICATION
  *	  src/backend/cluster/cluster_itl_cleanout.c
@@ -125,17 +126,18 @@ cluster_itl_cleanout_lazy(Buffer buf, uint8 slot_idx, TransactionId expected_xid
 		return false;
 	}
 
-	/* Hint-style page mutation: stamp + dirty-hint, no WAL (F1). */
+	/* Hint-style page mutation: stamp + dirty-hint, no generic WAL (F1). */
 	slot->commit_scn = expected_commit_scn;
 	slot->flags = ITL_FLAG_COMMITTED;
 
 	/*
 	 * MarkBufferDirtyHint(buf, true): the buffer is "standard" (heap layout)
 	 * so PG can compute the page checksum correctly when the dirty hint is
-	 * eventually flushed.  No WAL is emitted; this matches the HEAP_XMIN_
-	 * COMMITTED hint-bit pattern used by HeapTupleSatisfies* on the reader
-	 * path.  If the buffer is evicted before flush, the hint is lost; the
-	 * next reader will re-resolve via the TT status overlay.
+	 * eventually flushed.  This matches the HEAP_XMIN_COMMITTED hint-bit
+	 * pattern used by HeapTupleSatisfies* on the reader path: no generic WAL,
+	 * though PG may still emit a hint FPI under checksums / wal_log_hints.
+	 * If the buffer is evicted before flush, the hint is lost; the next
+	 * reader will re-resolve via the TT status overlay.
 	 */
 	MarkBufferDirtyHint(buf, true);
 
