@@ -38,7 +38,8 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_startup_phase test_cluster_lmon test_cluster_lck test_cluster_diag test_cluster_stats test_cluster_cssd test_cluster_qvotec test_cluster_voting_disk_io test_cluster_quorum_decision \
         test_cluster_xlog test_cluster_tt_slot test_cluster_undo_segment \
         test_cluster_epoch test_cluster_fence test_cluster_reconfig \
-        test_cluster_ges test_cluster_grd test_cluster_lmd test_cluster_lock_acquire
+        test_cluster_ges test_cluster_grd test_cluster_lmd test_cluster_lock_acquire \
+        test_cluster_tt_slot_allocator test_cluster_itl_reader_real_triple
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -730,5 +731,28 @@ test_cluster_uba: test_cluster_uba.c unit_test.h \
 		$(CLUSTER_VERSION_O) $(CLUSTER_UBA_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_UBA_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-3.4b D11: test_cluster_tt_slot_allocator — 30 tests linking the
+# real cluster_tt_slot.o + mocked ShmemInitStruct / LWLock / ereport so
+# allocator behaviour (3-tier recycle, OVERFLOW, multi-instance, fail-
+# closed) is exercised end-to-end without postmaster.
+CLUSTER_TT_SLOT_O = $(top_builddir)/src/backend/cluster/cluster_tt_slot.o
+test_cluster_tt_slot_allocator: test_cluster_tt_slot_allocator.c unit_test.h \
+		$(CLUSTER_VERSION_O) $(CLUSTER_TT_SLOT_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_TT_SLOT_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-3.4b D12: test_cluster_itl_reader_real_triple — 18 tests for
+# the 3-branch reader (FREE / UBA_is_invalid legacy / real decode) on
+# a hand-constructed Page + ItlSlotData fixture.
+CLUSTER_ITL_O = $(top_builddir)/src/backend/cluster/cluster_itl.o
+test_cluster_itl_reader_real_triple: test_cluster_itl_reader_real_triple.c unit_test.h \
+		$(CLUSTER_VERSION_O) $(CLUSTER_ITL_O) $(CLUSTER_UBA_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) $(CLUSTER_ITL_O) $(CLUSTER_UBA_O) \
 		$(top_builddir)/src/common/libpgcommon_srv.a \
 		$(top_builddir)/src/port/libpgport_srv.a -o $@

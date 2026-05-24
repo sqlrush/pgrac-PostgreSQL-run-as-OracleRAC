@@ -121,19 +121,16 @@ is($segment_id, 0, 'L5 block 0 segment_id == 0 (seed segment)');
 
 
 # ----------
-# L6: cross-instance allocation rejection -- DEFERRED to feature-117.
-# Stage 1.22 does not expose a SQL UDF for cluster_undo_segment_allocate;
-# the rejection logic exists at C level (Assert in cluster_undo_alloc.c)
-# but cannot be exercised from a TAP test without the SQL surface.
-#
-# Hardening v1.0.1 / codex review P2-3: removed the stand-in
-# `ok(1, ...)` fake assertion that previously inflated the test count
-# without actually verifying behaviour.  The C-level enforcement is
-# covered by cluster_unit; the SQL/TAP coverage will land with the
-# UDF in feature-117.
+# L6: cross-instance allocation -- spec-3.4b D2 UNLOCKED.
+# The previous single-node restriction (owner_instance == 1) has been
+# replaced by multi-instance validation (owner_instance in [1, 128] +
+# == cluster_node_id + 1 + per-instance segment-id range encoding).
+# The full cross-instance allocator test still lacks a SQL UDF surface
+# (deferred to feature-117); the new validation paths are covered by
+# cluster_unit test_cluster_tt_slot_allocator (T26/T27/T28).
 # ----------
-note('L6 cross-instance allocation rejection -- deferred to feature-117 '
-	. '(C-level Assert covered by cluster_unit; no SQL UDF in Stage 1.22)');
+note('L6 cross-instance allocation unlocked by spec-3.4b D2 '
+	. '(C-level validation covered by cluster_unit; SQL UDF deferred to feature-117)');
 
 
 # ----------
