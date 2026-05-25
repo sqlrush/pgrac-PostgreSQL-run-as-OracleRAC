@@ -85,16 +85,15 @@ extern bool cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTS
  *	pointing at the lock-only ITL slot (v0.1 t_lock_itl_slot_idx scheme
  *	rejected per F2 — derive instead of store, avoiding MAXALIGN tax).
  *
- *	Selection rules (5 重判别):
+ *	Selection rules:
  *	  1. slot.flags has ITL_FLAG_LOCK_ONLY set,
  *	  2. slot.xid == raw_xmax (exact match),
  *	  3. UBA valid (not InvalidUba),
- *	  4. slot.cluster_epoch == current cluster_epoch_get_current() — stale
- *	     COMMITTED/ABORTED slots from prior epoch are skipped,
- *	  5. if multiple candidates qualify, pick the slot with highest
+ *	  4. if multiple candidates qualify, pick the slot with highest
  *	     wrap (generation counter) — recycled slot conservatism;
- *	     if still ambiguous, return false + bump corruption counter
- *	     (page metadata corruption; caller should fail closed).
+ *	     if still ambiguous, return false.  Callers that have already
+ *	     identified a remote ref fail closed only after exact TT lookup;
+ *	     false here means "no authoritative lock-only ref".
  *
  *	Returns:
  *	  true   matching LOCK_ONLY slot found, `*ref` filled.
@@ -135,6 +134,9 @@ extern bool cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xm
  *	    let production visibility consume the on-page history because
  *	    UBA/TT allocation stays zero until spec-3.4b; recycling completed
  *	    placeholder slots is therefore the minimal hot-page safety valve.
+ *	    spec-3.4d: LOCK_ONLY_ACTIVE is also an active owner and MUST NOT
+ *	    be recycled by data DML; only LOCK_ONLY_COMMITTED/ABORTED are
+ *	    completed and reusable.
  *	  - returns false on OVERFLOW only when INITRANS=8 has no FREE or
  *	    completed slot and no slot owned by top_xid, i.e. all slots are
  *	    ACTIVE for other transactions.  Caller raises ereport(ERROR,
@@ -149,6 +151,27 @@ extern bool cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xm
  *	before invoking this helper.
  */
 extern bool cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_slot_idx);
+
+/*
+ * cluster_itl_alloc_or_reuse_lock_slot -- lock-only allocator for
+ * heap_lock_tuple (spec-3.4d F9).
+ *
+ * This is intentionally separate from cluster_itl_alloc_or_reuse_slot().
+ * A data ACTIVE slot and a LOCK_ONLY_ACTIVE slot carry different tuple
+ * semantics and must not overwrite each other even if they belong to the
+ * same top_xid.  Behaviour:
+ *   - reuse existing LOCK_ONLY_ACTIVE slot for `top_xid` on the page;
+ *   - otherwise take the first FREE slot;
+ *   - otherwise recycle a completed slot (data committed/aborted/needs
+ *     cleanout or lock-only committed/aborted);
+ *   - return false when every slot is actively owned by another
+ *     transaction or by an incompatible active data/lock category.
+ *
+ * The caller stamps ITL_FLAG_LOCK_ONLY_ACTIVE inside the heap AM critical
+ * section.  This function does not modify page bytes.
+ */
+extern bool cluster_itl_alloc_or_reuse_lock_slot(Buffer buf, TransactionId top_xid,
+												 uint8 *out_slot_idx);
 
 /*
  * cluster_itl_stamp_active -- write ACTIVE state into ITL slot

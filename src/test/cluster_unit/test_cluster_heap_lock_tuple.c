@@ -283,10 +283,10 @@ UT_TEST(t21_xlh_lock_itl_delta_distinct_from_existing)
 UT_TEST(t22_lock_only_active_can_recycle)
 {
 	/* spec-3.4d L189 lineage:  LOCK_ONLY_COMMITTED / LOCK_ONLY_ABORTED
-	 * are "completed" states eligible for slot recycling (per the
-	 * existing cluster_itl_alloc_or_reuse_slot policy that scans for
-	 * non-ACTIVE non-FREE slots).  ITL_FLAG_IS_LOCK_ONLY_COMPLETED
-	 * macro identifies them. */
+	 * are "completed" states eligible for slot recycling.  LOCK_ONLY_ACTIVE
+	 * is not reusable by data DML or by another xid; spec-3.4d F9 adds a
+	 * lock-only allocator so data ACTIVE and lock-only ACTIVE slots never
+	 * overwrite each other. */
 	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_COMMITTED), 0);
 	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_ABORTED), 0);
 	UT_ASSERT_EQ((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_ACTIVE), 0);

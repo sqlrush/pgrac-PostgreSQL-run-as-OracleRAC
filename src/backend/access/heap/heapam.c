@@ -4893,6 +4893,12 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	bool		skip_tuple_lock = false;
 	bool		have_tuple_lock = false;
 	bool		cleared_all_frozen = false;
+#ifdef USE_PGRAC_CLUSTER
+	bool		cluster_did_lock_stamp = false;
+	uint8		cluster_lock_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+	UBA			cluster_lock_uba = InvalidUba_init;
+	SCN			cluster_lock_write_scn = InvalidScn;
+#endif
 
 	*buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 	block = ItemPointerGetBlockNumber(tid);
@@ -5323,11 +5329,15 @@ l3:
 				 * Algorithm (matches spec-3.4d §7.3):
 				 *   1. tuple has HEAP_XMAX_LOCK_ONLY infomask, raw xmax
 				 *      not MultiXact (else branch already rules out MULTI);
-				 *   2. raw_xmax + ITL slot scan via
-				 *      cluster_itl_find_lock_tt_ref_by_xmax;
-				 *   3. ref origin != self_node + tt_slot_id != 0 →
+				 *   2. re-lock buffer and recheck xmax/infomask before
+				 *      reading page ITL bytes (F10:  PG has released the
+				 *      buffer lock before this wait window);
+				 *   3. raw_xmax + ITL slot scan via
+				 *      cluster_itl_find_lock_tt_ref_by_xmax, then copy ref
+				 *      and unlock before TT lookup;
+				 *   4. ref origin != self_node + tt_slot_id != 0 →
 				 *      authoritative remote exact-key candidate;
-				 *   4. cluster_tt_status_lookup_exact → switch on result:
+				 *   5. cluster_tt_status_lookup_exact → switch on result:
 				 *        ACTIVE (IN_PROGRESS):  fail-closed per wait_policy
 				 *           LockWaitBlock → 53R98 ereport;
 				 *           LockWaitSkip  → TM_WouldBlock + goto failed;
@@ -5347,17 +5357,39 @@ l3:
 				if (HEAP_XMAX_IS_LOCKED_ONLY(infomask)
 					&& cluster_enabled
 					&& cluster_node_id >= 0
-					&& cluster_conf_has_peers()
-					&& PageHasItl(page))
+					&& cluster_conf_has_peers())
 				{
 					ClusterUndoTTSlotRef cref;
+					bool		have_remote_ref = false;
 
-					if (cluster_itl_find_lock_tt_ref_by_xmax(page, xwait, &cref)
+					/*
+					 * F10:  this branch runs after PG intentionally released
+					 * the buffer lock.  Reacquire it before scanning the ITL
+					 * array, and revalidate the tuple state against the
+					 * copied xmax/infomask snapshot just like the native
+					 * no-sleep fast paths above.  Keep only the copied TT ref;
+					 * TT status lookup happens after unlock to avoid taking
+					 * cluster locks under a buffer content lock.
+					 */
+					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+					if (xmax_infomask_changed(tuple->t_data->t_infomask, infomask) ||
+						!TransactionIdEquals(HeapTupleHeaderGetRawXmax(tuple->t_data),
+											 xwait))
+						goto l3;
+
+					if (PageHasItl(page)
+						&& cluster_itl_find_lock_tt_ref_by_xmax(page, xwait, &cref)
 						&& cref.tt_slot_id != 0
 						&& (int32) cref.origin_node_id != cluster_node_id)
+						have_remote_ref = true;
+
+					LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
+
+					if (have_remote_ref)
 					{
 						ClusterTTStatusKey ckey;
 						ClusterTTStatusResult cres;
+						bool		tt_found;
 
 						memset(&ckey, 0, sizeof(ckey));
 						ckey.origin_node_id = cref.origin_node_id;
@@ -5366,49 +5398,52 @@ l3:
 						ckey.cluster_epoch = cref.cluster_epoch;
 						ckey.local_xid = xwait;
 
-						if (cluster_tt_status_lookup_exact(&ckey, &cres)
-							&& cres.authoritative)
+						tt_found = cluster_tt_status_lookup_exact(&ckey, &cres);
+						if (!tt_found || !cres.authoritative
+							|| cres.status == CLUSTER_TT_STATUS_UNKNOWN)
+							ereport(ERROR,
+									(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+									 errmsg("cluster TT status unknown for remote lock_xid %u",
+											xwait)));
+
+						switch (cres.status)
 						{
-							switch (cres.status)
-							{
-								case CLUSTER_TT_STATUS_IN_PROGRESS:
-									cluster_itl_bump_remote_row_lock_fail_closed_count();
-									switch (wait_policy)
-									{
-										case LockWaitBlock:
-											ereport(ERROR,
-													(errcode(ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED),
-													 errmsg("cannot wait for remote row lock held by transaction %u on node %u",
-															xwait, cref.origin_node_id),
-													 errhint("Cross-node block-wait is not supported in spec-3.4d;"
-															 " application should retry, use SKIP LOCKED, or wait for"
-															 " spec-5.2 GES TX to ship.")));
-											break;
-										case LockWaitSkip:
-											result = TM_WouldBlock;
-											LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-											goto failed;
-										case LockWaitError:
-											ereport(ERROR,
-													(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-													 errmsg("could not obtain lock on row in relation \"%s\"",
-															RelationGetRelationName(relation))));
-											break;
-									}
-									break;
-								case CLUSTER_TT_STATUS_COMMITTED:
-								case CLUSTER_TT_STATUS_ABORTED:
-								case CLUSTER_TT_STATUS_CLEANED_OUT:
-									/* lock released — fall through to native wait
-									 * path which will see xwait commit/abort. */
-									break;
-								case CLUSTER_TT_STATUS_UNKNOWN:
-									ereport(ERROR,
-											(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-											 errmsg("cluster TT status unknown for remote lock_xid %u",
-													xwait)));
-									break;
-							}
+							case CLUSTER_TT_STATUS_IN_PROGRESS:
+								cluster_itl_bump_remote_row_lock_fail_closed_count();
+								switch (wait_policy)
+								{
+									case LockWaitBlock:
+										ereport(ERROR,
+												(errcode(ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED),
+												 errmsg("cannot wait for remote row lock held by transaction %u on node %u",
+														xwait, cref.origin_node_id),
+												 errhint("Cross-node block-wait is not supported in spec-3.4d;"
+														 " application should retry, use SKIP LOCKED, or wait for"
+														 " spec-5.2 GES TX to ship.")));
+										break;
+									case LockWaitSkip:
+										result = TM_WouldBlock;
+										LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+										goto failed;
+									case LockWaitError:
+										ereport(ERROR,
+												(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+												 errmsg("could not obtain lock on row in relation \"%s\"",
+														RelationGetRelationName(relation))));
+										break;
+								}
+								break;
+							case CLUSTER_TT_STATUS_COMMITTED:
+							case CLUSTER_TT_STATUS_ABORTED:
+							case CLUSTER_TT_STATUS_CLEANED_OUT:
+								/*
+								 * Lock released — fall through to native wait
+								 * path which will see xwait commit/abort.
+								 */
+								break;
+							case CLUSTER_TT_STATUS_UNKNOWN:
+								/* handled above */
+								break;
 						}
 					}
 				}
@@ -5581,10 +5616,10 @@ failed:
 	 *
 	 * The actual slot write happens inside the critical section below.
 	 */
-	bool		cluster_did_lock_stamp = false;
-	uint8		cluster_lock_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
-	UBA			cluster_lock_uba = InvalidUba_init;
-	SCN			cluster_lock_write_scn = InvalidScn;
+	cluster_did_lock_stamp = false;
+	cluster_lock_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+	memset(&cluster_lock_uba, 0, sizeof(cluster_lock_uba));
+	cluster_lock_write_scn = InvalidScn;
 
 	if (cluster_itl_lock_path_enabled(relation) && PageHasItl(page))
 	{
@@ -5599,7 +5634,7 @@ failed:
 							 " or wait for spec-3.5 SUBTRANS to ship.")));
 		}
 
-		if (!cluster_itl_alloc_or_reuse_slot(*buffer, xid, &cluster_lock_slot_idx))
+		if (!cluster_itl_alloc_or_reuse_lock_slot(*buffer, xid, &cluster_lock_slot_idx))
 		{
 			cluster_itl_bump_overflow_lock_count();
 			ereport(ERROR,
@@ -6278,6 +6313,12 @@ heap_lock_updated_tuple_rec(Relation rel, TransactionId priorXmax,
 	bool		pinned_desired_page;
 	Buffer		vmbuffer = InvalidBuffer;
 	BlockNumber block;
+#ifdef USE_PGRAC_CLUSTER
+	bool		cluster_chain_lock_stamp = false;
+	uint8		cluster_chain_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+	UBA			cluster_chain_uba = InvalidUba_init;
+	SCN			cluster_chain_write_scn = InvalidScn;
+#endif
 
 	ItemPointerCopy(tid, &tupid);
 
@@ -6525,10 +6566,10 @@ l4:
 		 * RM_HEAP2_ID / XLOG_HEAP2_LOCK_UPDATED with bit 7
 		 * XLH_LOCK_UPDATED_ITL_DELTA.
 		 */
-		bool		cluster_chain_lock_stamp = false;
-		uint8		cluster_chain_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
-		UBA			cluster_chain_uba = InvalidUba_init;
-		SCN			cluster_chain_write_scn = InvalidScn;
+		cluster_chain_lock_stamp = false;
+		cluster_chain_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+		memset(&cluster_chain_uba, 0, sizeof(cluster_chain_uba));
+		cluster_chain_write_scn = InvalidScn;
 
 		if (cluster_itl_lock_path_enabled(rel) && PageHasItl(BufferGetPage(buf)))
 		{
@@ -6541,7 +6582,7 @@ l4:
 						 errhint("MULTIXACT lock support deferred to spec-3.5+.")));
 			}
 
-			if (!cluster_itl_alloc_or_reuse_slot(buf, xid, &cluster_chain_slot_idx))
+			if (!cluster_itl_alloc_or_reuse_lock_slot(buf, xid, &cluster_chain_slot_idx))
 			{
 				cluster_itl_bump_overflow_lock_count();
 				ereport(ERROR,

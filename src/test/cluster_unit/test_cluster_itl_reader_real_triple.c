@@ -27,6 +27,9 @@
  *	    T16  3-branch B3 with segment_id producing out-of-range node → ereport ERROR
  *	    T17  reader fills has_cached_status=true for COMMITTED+SCN_VALID
  *	    T18  reader fills has_cached_status=false for ACTIVE
+ *	    T19  lock-only raw_xmax scan ignores data ACTIVE slot for same xid
+ *	    T20  lock-only raw_xmax scan rejects ambiguous duplicate same wrap
+ *	    T21  lock-only raw_xmax scan chooses highest-wrap unique match
  *
  *	  Spec: spec-3.4b-real-tt-allocator-uba-encoding-production-cross-node.md
  *	        (v0.3 FROZEN 2026-05-24)
@@ -474,6 +477,72 @@ UT_TEST(test_t18_has_cached_status_false_for_active)
 }
 
 
+/* ---------- spec-3.4d F9: lock-only raw_xmax scan ---------- */
+
+UT_TEST(test_t19_lock_scan_ignores_data_active_same_xid)
+{
+	Page page = build_itl_page();
+	ClusterUndoTTSlotRef ref;
+	ClusterItlSlotData *data = slot_at(page, 0);
+	ClusterItlSlotData *lock = slot_at(page, 1);
+
+	data->flags = ITL_FLAG_ACTIVE;
+	data->xid = (TransactionId)777;
+	data->undo_segment_head = uba_encode(1, 0, 1, 0);
+
+	lock->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+	lock->xid = (TransactionId)777;
+	lock->wrap = 1;
+	lock->undo_segment_head = uba_encode(257, 0, 7, 0);
+
+	UT_ASSERT_EQ((int)cluster_itl_find_lock_tt_ref_by_xmax(page, (TransactionId)777, &ref), 1);
+	UT_ASSERT_EQ((int)ref.undo_segment_id, 257);
+	UT_ASSERT_EQ((int)ref.tt_slot_id, 8);
+}
+
+UT_TEST(test_t20_lock_scan_rejects_ambiguous_same_wrap)
+{
+	Page page = build_itl_page();
+	ClusterUndoTTSlotRef ref;
+	ClusterItlSlotData *a = slot_at(page, 0);
+	ClusterItlSlotData *b = slot_at(page, 1);
+
+	a->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+	a->xid = (TransactionId)888;
+	a->wrap = 3;
+	a->undo_segment_head = uba_encode(1, 0, 2, 0);
+
+	b->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+	b->xid = (TransactionId)888;
+	b->wrap = 3;
+	b->undo_segment_head = uba_encode(257, 0, 4, 0);
+
+	UT_ASSERT_EQ((int)cluster_itl_find_lock_tt_ref_by_xmax(page, (TransactionId)888, &ref), 0);
+}
+
+UT_TEST(test_t21_lock_scan_chooses_highest_wrap)
+{
+	Page page = build_itl_page();
+	ClusterUndoTTSlotRef ref;
+	ClusterItlSlotData *old = slot_at(page, 0);
+	ClusterItlSlotData *newer = slot_at(page, 1);
+
+	old->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+	old->xid = (TransactionId)999;
+	old->wrap = 1;
+	old->undo_segment_head = uba_encode(1, 0, 2, 0);
+
+	newer->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+	newer->xid = (TransactionId)999;
+	newer->wrap = 4;
+	newer->undo_segment_head = uba_encode(257, 0, 9, 0);
+
+	UT_ASSERT_EQ((int)cluster_itl_find_lock_tt_ref_by_xmax(page, (TransactionId)999, &ref), 1);
+	UT_ASSERT_EQ((int)ref.undo_segment_id, 257);
+	UT_ASSERT_EQ((int)ref.tt_slot_id, 10);
+}
+
+
 int
 main(void)
 {
@@ -495,6 +564,9 @@ main(void)
 	UT_RUN(test_t16_out_of_range_node_raises);
 	UT_RUN(test_t17_has_cached_status_true_for_committed_valid_scn);
 	UT_RUN(test_t18_has_cached_status_false_for_active);
+	UT_RUN(test_t19_lock_scan_ignores_data_active_same_xid);
+	UT_RUN(test_t20_lock_scan_rejects_ambiguous_same_wrap);
+	UT_RUN(test_t21_lock_scan_chooses_highest_wrap);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

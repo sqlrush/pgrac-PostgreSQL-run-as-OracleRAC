@@ -236,7 +236,7 @@ cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTSlotRef *ref)
  *
  *	Scan the page's ITL slot array for a LOCK_ONLY slot whose xid
  *	matches raw_xmax + decode UBA + fill ref.  See header for full
- *	contract (5 重判别).  This is the derive-not-store path that
+ *	contract.  This is the derive-not-store path that
  *	replaces v0.1's t_lock_itl_slot_idx tuple header field (rejected
  *	by F2 due to MAXALIGN tax + disk format break).
  */
@@ -289,8 +289,8 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax, ClusterU
 	if (match_idx < 0)
 		return false;
 
-	/* If we hit ambiguous duplicates with same wrap, fail closed.
-	 * The page metadata is corrupted; caller will 53R97. */
+	/* If highest-wrap duplicates remain, the caller has no authoritative
+	 * lock-only ref and must treat this as no match. */
 	if (match_count > 1) {
 		const ClusterItlSlotData *winner = &slots[match_idx];
 		int ambiguous = 0;
@@ -347,6 +347,13 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax, ClusterU
 
 /* ---------- spec-3.4a D2 — writer API ---------- */
 
+static inline bool
+cluster_itl_slot_is_completed_reusable(uint8 flags)
+{
+	return flags == ITL_FLAG_COMMITTED || flags == ITL_FLAG_ABORTED
+		   || flags == ITL_FLAG_NEEDS_CLEANOUT || ITL_FLAG_IS_LOCK_ONLY_COMPLETED(flags);
+}
+
 bool
 cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_slot_idx)
 {
@@ -385,7 +392,7 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 		}
 		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
 			free_idx = i;
-		else if (slots[i].flags != ITL_FLAG_ACTIVE && reusable_idx < 0)
+		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0)
 			reusable_idx = i;
 	}
 
@@ -400,6 +407,59 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 	}
 
 	return false; /* OVERFLOW — caller raises ERROR before CRIT */
+}
+
+bool
+cluster_itl_alloc_or_reuse_lock_slot(Buffer buf, TransactionId top_xid, uint8 *out_slot_idx)
+{
+	Page page;
+	const ClusterItlSlotData *slots;
+	uint8 i;
+	int free_idx;
+	int reusable_idx;
+
+	Assert(BufferIsValid(buf));
+	Assert(TransactionIdIsValid(top_xid));
+	Assert(out_slot_idx != NULL);
+
+	page = BufferGetPage(buf);
+
+	if (!PageHasItl(page))
+		return false;
+
+	slots = ClusterPageGetItlSlots(page);
+	free_idx = -1;
+	reusable_idx = -1;
+
+	/*
+	 * spec-3.4d F9: lock-only allocation must not reuse a data ACTIVE
+	 * slot for the same xid.  Data and lock-only slots have different
+	 * consumers: data visibility uses t_itl_slot_idx, while lock visibility
+	 * derives from raw_xmax + LOCK_ONLY scan.  Converting data ACTIVE to
+	 * LOCK_ONLY_ACTIVE would orphan the tuple's data ITL metadata.
+	 */
+	for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++) {
+		if (slots[i].flags == ITL_FLAG_LOCK_ONLY_ACTIVE && slots[i].xid == top_xid) {
+			*out_slot_idx = i;
+			return true;
+		}
+		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
+			free_idx = i;
+		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0)
+			reusable_idx = i;
+	}
+
+	if (free_idx >= 0) {
+		*out_slot_idx = (uint8)free_idx;
+		return true;
+	}
+
+	if (reusable_idx >= 0) {
+		*out_slot_idx = (uint8)reusable_idx;
+		return true;
+	}
+
+	return false;
 }
 
 void
@@ -648,6 +708,14 @@ bool
 cluster_itl_alloc_or_reuse_slot(Buffer buf pg_attribute_unused(),
 								TransactionId top_xid pg_attribute_unused(),
 								uint8 *out_slot_idx pg_attribute_unused())
+{
+	return false;
+}
+
+bool
+cluster_itl_alloc_or_reuse_lock_slot(Buffer buf pg_attribute_unused(),
+									 TransactionId top_xid pg_attribute_unused(),
+									 uint8 *out_slot_idx pg_attribute_unused())
 {
 	return false;
 }
