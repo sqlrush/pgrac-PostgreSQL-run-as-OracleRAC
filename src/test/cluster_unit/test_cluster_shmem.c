@@ -423,6 +423,13 @@ void
 cluster_stats_shmem_register(void)
 {}
 
+/* spec-3.4e D6 stub: cluster_init_shmem_module also calls
+ * cluster_lock_path_shmem_register (cluster_itl.c).  cluster_unit
+ * test binary doesn't link cluster_itl.o;  provide no-op stub. */
+void
+cluster_lock_path_shmem_register(void)
+{}
+
 /* Spec-2.5 Sprint A stub: same for CSSD. */
 void
 cluster_cssd_shmem_register(void)
