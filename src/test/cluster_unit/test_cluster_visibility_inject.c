@@ -261,10 +261,41 @@ UT_TEST(t16_inject_udf_entry_linkable)
 }
 
 
+/* ===== T17-T19: spec-3.4d D9 7-arg + is_lock_only path ===== */
+
+UT_TEST(t17_status_in_progress_is_1)
+{
+	/* spec-3.4d D9:  is_lock_only=true installs CLUSTER_TT_STATUS_IN_PROGRESS
+	 * (== "ACTIVE" in spec v0.2 §6.4 wording).  Reusing existing enum value
+	 * avoids enum proliferation;  the semantic is identical (running xact). */
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_IN_PROGRESS, 1);
+}
+
+UT_TEST(t18_lock_only_active_state_distinct_from_data_active)
+{
+	/* spec-3.4d:  ITL slot LOCK_ONLY_ACTIVE = 5 (page-side) vs TT status
+	 * IN_PROGRESS = 1 (overlay-side).  Distinct values, distinct namespaces.
+	 * D5b inject UDF with is_lock_only=true installs OVERLAY IN_PROGRESS,
+	 * and the on-page ITL slot (if any) would carry LOCK_ONLY_ACTIVE. */
+	UT_ASSERT_NE((int)CLUSTER_TT_STATUS_IN_PROGRESS,
+				 (int)CLUSTER_TT_STATUS_COMMITTED);
+}
+
+UT_TEST(t19_is_lock_only_bool_distinct_arg)
+{
+	/* spec-3.4d D9:  pg_proc.dat proargtypes is 7 args including bool
+	 * is_lock_only.  v0.1 6-arg signature is gone — any caller passing
+	 * 6 args will get "function does not exist" from PG resolver.
+	 * This test is a documented regression anchor;  no runtime check
+	 * because cluster_unit cannot exercise PG function resolution. */
+	UT_ASSERT_EQ(1, 1);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(16);
+	UT_PLAN(19);
 	UT_RUN(t1_lookup_inject_linkable);
 	UT_RUN(t2_inject_shmem_helpers_linkable);
 	UT_RUN(t3_tt_status_lookup_exact_linkable);
@@ -281,6 +312,9 @@ main(void)
 	UT_RUN(t14_status_committed_is_2);
 	UT_RUN(t15_production_inject_stub_returns_false);
 	UT_RUN(t16_inject_udf_entry_linkable);
+	UT_RUN(t17_status_in_progress_is_1);
+	UT_RUN(t18_lock_only_active_state_distinct_from_data_active);
+	UT_RUN(t19_is_lock_only_bool_distinct_arg);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

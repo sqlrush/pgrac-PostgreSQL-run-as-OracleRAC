@@ -174,6 +174,8 @@ cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS)
 	uint32 slot;
 	uint32 epoch;
 	SCN commit_scn;
+	bool is_lock_only;
+	ClusterTTStatus install_status;
 	ClusterTTStatusKey key;
 	ClusterTTStatusResult res;
 	ClusterVisibilityInjectEntry *e;
@@ -193,6 +195,25 @@ cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS)
 	slot = (uint32)PG_GETARG_INT32(3);
 	epoch = (uint32)PG_GETARG_INT32(4);
 	commit_scn = (SCN)PG_GETARG_INT64(5);
+	is_lock_only = PG_GETARG_BOOL(6);
+
+	/*
+	 * spec-3.4d D8/D9 + F3:  is_lock_only=true installs IN_PROGRESS status
+	 * (== ACTIVE in spec v0.2 §6.4 wording) + commit_scn forced to InvalidScn.
+	 * Used by t/209 + cluster_unit to verify wait_policy-aware fail-closed
+	 * remote ACTIVE detection without a real cross-node lock fixture.
+	 *
+	 * is_lock_only=false preserves spec-3.4c COMMITTED + commit_scn behavior.
+	 */
+	if (is_lock_only)
+	{
+		install_status = CLUSTER_TT_STATUS_IN_PROGRESS;
+		commit_scn = InvalidScn;
+	}
+	else
+	{
+		install_status = CLUSTER_TT_STATUS_COMMITTED;
+	}
 
 	/* 1. inject ref HTAB (existing surface + D9 commit_scn stash) */
 	LWLockAcquire(ClusterVisibilityInjectLock, LW_EXCLUSIVE);
@@ -228,14 +249,16 @@ cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS)
 	key.cluster_epoch = epoch;
 	key.local_xid = xid;
 
-	cluster_tt_status_install_local(&key, CLUSTER_TT_STATUS_COMMITTED, commit_scn);
+	cluster_tt_status_install_local(&key, install_status, commit_scn);
 
 	/*
-	 * 3. spec-3.4c F5 — install_local() is best-effort and returns void.
-	 *    Verify immediately so a silent overlay-full drop (WARNING + bump
-	 *    evict_fail_count) cannot hide behind a successful PG_RETURN_BOOL(true).
+	 * 3. spec-3.4c F5 + spec-3.4d D9:  install_local() is best-effort and
+	 *    returns void.  Verify immediately so a silent overlay-full drop
+	 *    cannot hide behind a successful PG_RETURN_BOOL(true).  spec-3.4d
+	 *    extends the check to verify is_lock_only path installs IN_PROGRESS
+	 *    + InvalidScn commit_scn (not COMMITTED + valid commit_scn).
 	 */
-	if (!cluster_tt_status_lookup_exact(&key, &res) || res.status != CLUSTER_TT_STATUS_COMMITTED
+	if (!cluster_tt_status_lookup_exact(&key, &res) || res.status != install_status
 		|| res.commit_scn != commit_scn)
 		ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 						errmsg("cluster TT status overlay install verification failed"),

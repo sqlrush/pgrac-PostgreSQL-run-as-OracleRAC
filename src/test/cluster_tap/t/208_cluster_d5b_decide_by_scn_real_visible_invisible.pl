@@ -113,7 +113,7 @@ SKIP: {
 	my $small_scn = 1;
 	$pair->node0->safe_psql('postgres',
 		qq{SELECT cluster_test_inject_visibility_tt_ref(
-			'$xid_l3'::xid, 7, 3, 42, 0, ${small_scn}::int8)});
+			'$xid_l3'::xid, 7, 3, 42, 0, ${small_scn}::int8, false)});
 
 	# Enable D5b force flag — every subsequent visibility check enters
 	# the cluster path.
@@ -158,7 +158,7 @@ SKIP: {
 	my $huge_scn = '4611686018427387904';
 	$pair->node0->safe_psql('postgres',
 		qq{SELECT cluster_test_inject_visibility_tt_ref(
-			'$xid_l4'::xid, 7, 3, 43, 0, ${huge_scn}::int8)});
+			'$xid_l4'::xid, 7, 3, 43, 0, ${huge_scn}::int8, false)});
 
 	my ($rc4, $out4, $err4) = $pair->node0->psql('postgres',
 		q{SELECT count(*) FROM l4_future});
@@ -193,7 +193,7 @@ SKIP: {
 		q{SELECT xmin::text::int FROM l6_unknown WHERE id = 3});
 	$pair->node0->safe_psql('postgres',
 		qq{SELECT cluster_test_inject_visibility_tt_ref(
-			'$xid_l6'::xid, 7, 3, 44, 0, 0::int8)});
+			'$xid_l6'::xid, 7, 3, 44, 0, 0::int8, false)});
 
 	my ($rc6, $out6, $err6) = $pair->node0->psql('postgres',
 		q{\set VERBOSITY verbose

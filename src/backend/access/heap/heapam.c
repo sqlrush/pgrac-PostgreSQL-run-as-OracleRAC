@@ -5309,6 +5309,110 @@ l3:
 			}
 			else
 			{
+#ifdef USE_PGRAC_CLUSTER
+				/*
+				 * PGRAC (spec-3.4d D8 / Q1 / F1 / L199 P0):  remote ACTIVE
+				 * row lock detection BEFORE the PG-native wait_policy switch.
+				 *
+				 * Native XactLockTableWait / ConditionalXactLockTableWait
+				 * only see local ProcArray — for cross-node lock_xid this
+				 * is a correctness hole (would silently treat remote as
+				 * not-locked / not-in-progress and grant the lock to us,
+				 * causing concurrent writes on the same row from two nodes).
+				 *
+				 * Algorithm (matches spec-3.4d §7.3):
+				 *   1. tuple has HEAP_XMAX_LOCK_ONLY infomask, raw xmax
+				 *      not MultiXact (else branch already rules out MULTI);
+				 *   2. raw_xmax + ITL slot scan via
+				 *      cluster_itl_find_lock_tt_ref_by_xmax;
+				 *   3. ref origin != self_node + tt_slot_id != 0 →
+				 *      authoritative remote exact-key candidate;
+				 *   4. cluster_tt_status_lookup_exact → switch on result:
+				 *        ACTIVE (IN_PROGRESS):  fail-closed per wait_policy
+				 *           LockWaitBlock → 53R98 ereport;
+				 *           LockWaitSkip  → TM_WouldBlock + goto failed;
+				 *           LockWaitError → ERRCODE_LOCK_NOT_AVAILABLE;
+				 *        COMMITTED/ABORTED: lock released, fall through
+				 *           native path (xwait commit/abort recorded);
+				 *        UNKNOWN: 53R97 fail-closed (spec-3.2 既有);
+				 *
+				 * Falls through to native wait_policy switch when:
+				 *   - cluster_enabled / cluster_node_id / has_peers gate
+				 *     fails (no-peer fast path);
+				 *   - cluster_itl_find_lock_tt_ref_by_xmax returns false
+				 *     (no remote lock metadata on page — local xwait or
+				 *     pre-spec-3.4d page);
+				 *   - ref origin == self_node (local lock — native path).
+				 */
+				if (HEAP_XMAX_IS_LOCKED_ONLY(infomask)
+					&& cluster_enabled
+					&& cluster_node_id >= 0
+					&& cluster_conf_has_peers()
+					&& PageHasItl(page))
+				{
+					ClusterUndoTTSlotRef cref;
+
+					if (cluster_itl_find_lock_tt_ref_by_xmax(page, xwait, &cref)
+						&& cref.tt_slot_id != 0
+						&& (int32) cref.origin_node_id != cluster_node_id)
+					{
+						ClusterTTStatusKey ckey;
+						ClusterTTStatusResult cres;
+
+						memset(&ckey, 0, sizeof(ckey));
+						ckey.origin_node_id = cref.origin_node_id;
+						ckey.undo_segment_id = cref.undo_segment_id;
+						ckey.tt_slot_id = cref.tt_slot_id;
+						ckey.cluster_epoch = cref.cluster_epoch;
+						ckey.local_xid = xwait;
+
+						if (cluster_tt_status_lookup_exact(&ckey, &cres)
+							&& cres.authoritative)
+						{
+							switch (cres.status)
+							{
+								case CLUSTER_TT_STATUS_IN_PROGRESS:
+									cluster_itl_bump_remote_row_lock_fail_closed_count();
+									switch (wait_policy)
+									{
+										case LockWaitBlock:
+											ereport(ERROR,
+													(errcode(ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED),
+													 errmsg("cannot wait for remote row lock held by transaction %u on node %u",
+															xwait, cref.origin_node_id),
+													 errhint("Cross-node block-wait is not supported in spec-3.4d;"
+															 " application should retry, use SKIP LOCKED, or wait for"
+															 " spec-5.2 GES TX to ship.")));
+											break;
+										case LockWaitSkip:
+											result = TM_WouldBlock;
+											LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+											goto failed;
+										case LockWaitError:
+											ereport(ERROR,
+													(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+													 errmsg("could not obtain lock on row in relation \"%s\"",
+															RelationGetRelationName(relation))));
+											break;
+									}
+									break;
+								case CLUSTER_TT_STATUS_COMMITTED:
+								case CLUSTER_TT_STATUS_ABORTED:
+								case CLUSTER_TT_STATUS_CLEANED_OUT:
+									/* lock released — fall through to native wait
+									 * path which will see xwait commit/abort. */
+									break;
+								case CLUSTER_TT_STATUS_UNKNOWN:
+									ereport(ERROR,
+											(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+											 errmsg("cluster TT status unknown for remote lock_xid %u",
+													xwait)));
+									break;
+							}
+						}
+					}
+				}
+#endif
 				/* wait for regular transaction to end, or die trying */
 				switch (wait_policy)
 				{
@@ -5463,6 +5567,68 @@ failed:
 							  GetCurrentTransactionId(), mode, false,
 							  &xid, &new_infomask, &new_infomask2);
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4d D4 / F4):  cluster lock-only ITL stamp preparation.
+	 * Runs AFTER compute_new_xmax_infomask (final xid + new_infomask
+	 * known) and BEFORE START_CRIT_SECTION (palloc / ereport allowed).
+	 *
+	 *   - Gate check via cluster_itl_lock_path_enabled.
+	 *   - F4:  reject final MultiXact (peer mode 53R99).
+	 *   - Allocate ITL slot (shared 8-slot pool with data ITL;  OVERFLOW
+	 *     fail-closed 53R9A per F7).
+	 *   - Get UBA from xact-local TT binding (auto-create on first stamp).
+	 *
+	 * The actual slot write happens inside the critical section below.
+	 */
+	bool		cluster_did_lock_stamp = false;
+	uint8		cluster_lock_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+	UBA			cluster_lock_uba = InvalidUba_init;
+	SCN			cluster_lock_write_scn = InvalidScn;
+
+	if (cluster_itl_lock_path_enabled(relation) && PageHasItl(page))
+	{
+		if (new_infomask & HEAP_XMAX_IS_MULTI)
+		{
+			cluster_itl_bump_multixact_lock_reject_count();
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_MULTIXACT_LOCK_NOT_SUPPORTED),
+					 errmsg("cluster MULTIXACT row lock not supported in spec-3.4d"),
+					 errhint("MULTIXACT lock support deferred to spec-3.5+;"
+							 " application should retry as non-multixact lock"
+							 " or wait for spec-3.5 SUBTRANS to ship.")));
+		}
+
+		if (!cluster_itl_alloc_or_reuse_slot(*buffer, xid, &cluster_lock_slot_idx))
+		{
+			cluster_itl_bump_overflow_lock_count();
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW),
+					 errmsg("cluster ITL slot overflow on lock acquire"),
+					 errhint("Page ITL array (INITRANS=%d) is full, lock and"
+							 " data ITL share this capacity in spec-3.4d;"
+							 " raise INITRANS or wait for spec-3.5+ to split.",
+							 CLUSTER_ITL_INITRANS_DEFAULT)));
+		}
+
+		{
+			uint32		seg = 0;
+			uint16		off = 0;
+			uint32		tt_id = 0;
+
+			if (!cluster_tt_local_get_or_create_binding(xid, &seg, &off, &tt_id))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("cluster TT binding allocate failed for"
+								" lock_xid %u", xid)));
+			cluster_lock_uba = uba_encode(seg, 0, off, 0);
+		}
+
+		cluster_lock_write_scn = cluster_scn_advance();
+		cluster_did_lock_stamp = true;
+	}
+#endif
+
 	START_CRIT_SECTION();
 
 	/*
@@ -5499,6 +5665,36 @@ failed:
 							VISIBILITYMAP_ALL_FROZEN))
 		cleared_all_frozen = true;
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4d D4 — inside critical section):  stamp lock-only ITL
+	 * slot with LOCK_ONLY_ACTIVE state.  Allocation + binding happened
+	 * pre-CRIT;  here we only write the slot bytes.  No ereport allowed
+	 * (PG critical section rule);  cluster_itl_alloc_or_reuse_slot
+	 * already proved the slot index valid.
+	 */
+	if (cluster_did_lock_stamp)
+	{
+		ClusterItlSlotData *cslot;
+
+		cslot = &ClusterPageGetItlSlots(page)[cluster_lock_slot_idx];
+		/*
+		 * L189:  recycled slot needs wrap++ bump unless we are re-stamping
+		 * our own existing LOCK_ONLY_ACTIVE slot (multi-lock within same
+		 * xact on same tuple).
+		 */
+		if (cslot->flags != ITL_FLAG_FREE
+			&& !(cslot->flags == ITL_FLAG_LOCK_ONLY_ACTIVE && cslot->xid == xid))
+			cslot->wrap++;
+		cslot->xid = xid;
+		cslot->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+		cslot->lock_count = 0;	/* lock_count tracking deferred to spec-3.5+ */
+		cslot->undo_segment_head = cluster_lock_uba;
+		cslot->commit_scn = InvalidScn;
+		cslot->write_scn = cluster_lock_write_scn;
+		cslot->first_change_lsn = InvalidXLogRecPtr;
+	}
+#endif
 
 	MarkBufferDirty(*buffer);
 
@@ -5518,6 +5714,10 @@ failed:
 	{
 		xl_heap_lock xlrec;
 		XLogRecPtr	recptr;
+#ifdef USE_PGRAC_CLUSTER
+		xl_heap_itl_delta_block hdr;
+		xl_heap_itl_delta_v2 delta;
+#endif
 
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, *buffer, REGBUF_STANDARD);
@@ -5527,9 +5727,39 @@ failed:
 		xlrec.infobits_set = compute_infobits(new_infomask,
 											  tuple->t_data->t_infomask2);
 		xlrec.flags = cleared_all_frozen ? XLH_LOCK_ALL_FROZEN_CLEARED : 0;
+#ifdef USE_PGRAC_CLUSTER
+		if (cluster_did_lock_stamp)
+			xlrec.flags |= XLH_LOCK_ITL_DELTA;
+#endif
 		XLogRegisterData((char *) &xlrec, SizeOfHeapLock);
 
 		/* we don't decode row locks atm, so no need to log the origin */
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4d D4 WAL emit / Q4 A2):  append v2 40B ITL delta
+		 * + 4B block header inside same xlrec so heap_xlog_lock can replay
+		 * the lock-only ITL slot stamp on standbys.  Layout mirrors
+		 * spec-3.4b D6 single-block delta WAL ABI.
+		 */
+		if (cluster_did_lock_stamp)
+		{
+			memset(&hdr, 0, sizeof(hdr));
+			hdr.format_version = CLUSTER_ITL_DELTA_FORMAT_V2;
+			hdr.ndeltas = 1;
+			hdr.reserved = 0;
+			XLogRegisterData((char *) &hdr, offsetof(xl_heap_itl_delta_block, deltas));
+
+			memset(&delta, 0, sizeof(delta));
+			delta.slot_idx = cluster_lock_slot_idx;
+			delta.flags_after = ITL_FLAG_LOCK_ONLY_ACTIVE;
+			delta.xid = xid;
+			delta.write_scn = cluster_lock_write_scn;
+			delta.commit_scn = InvalidScn;
+			delta.undo_segment_head = cluster_lock_uba;
+			XLogRegisterData((char *) &delta, sizeof(delta));
+		}
+#endif
 
 		recptr = XLogInsert(RM_HEAP_ID, XLOG_HEAP_LOCK);
 
@@ -5539,6 +5769,40 @@ failed:
 	END_CRIT_SECTION();
 
 	result = TM_Ok;
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC (spec-3.4d D4 — post-CRIT_SECTION):  install local ACTIVE
+	 * TT status + emit cross-node TT_STATUS_HINT ACTIVE + register touch
+	 * handle for xact-end finish (LOCK_ONLY_ACTIVE -> LOCK_ONLY_COMMITTED/
+	 * LOCK_ONLY_ABORTED).
+	 *
+	 * F3 P0:  install + emit are required — without them peer
+	 * cluster_tt_status_lookup_exact returns UNKNOWN forever, breaking
+	 * spec-3.4d Q1 wait_policy fail-closed contract (53R98 / TM_WouldBlock /
+	 * LOCK_NOT_AVAILABLE all rely on ACTIVE lookup hit).
+	 *
+	 * Runs OUTSIDE the critical section + buffer lock — palloc / network
+	 * operations are allowed here.
+	 */
+	if (cluster_did_lock_stamp)
+	{
+		ClusterItlTouchHandle handle;
+
+		cluster_tt_local_record_active(xid);
+		cluster_itl_bump_lock_only_tt_hint_emit_count();
+		cluster_itl_bump_lock_only_itl_stamp_count();
+
+		memset(&handle, 0, sizeof(handle));
+		handle.rloc = relation->rd_locator;
+		handle.forknum = MAIN_FORKNUM;
+		handle.block = block;
+		handle.slot_idx = cluster_lock_slot_idx;
+		handle.flags = RelationNeedsWAL(relation) ?
+			CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
+		cluster_itl_touch_register(&handle);
+	}
+#endif
 
 out_locked:
 	LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
@@ -6253,6 +6517,58 @@ l4:
 								VISIBILITYMAP_ALL_FROZEN))
 			cleared_all_frozen = true;
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4d D5 / F5):  follow_updates path lock-only ITL
+		 * stamp preparation for each successor tuple on update chain.
+		 * Same pattern as heap_lock_tuple §3.1, but WAL emit uses
+		 * RM_HEAP2_ID / XLOG_HEAP2_LOCK_UPDATED with bit 7
+		 * XLH_LOCK_UPDATED_ITL_DELTA.
+		 */
+		bool		cluster_chain_lock_stamp = false;
+		uint8		cluster_chain_slot_idx = CLUSTER_ITL_SLOT_UNALLOCATED;
+		UBA			cluster_chain_uba = InvalidUba_init;
+		SCN			cluster_chain_write_scn = InvalidScn;
+
+		if (cluster_itl_lock_path_enabled(rel) && PageHasItl(BufferGetPage(buf)))
+		{
+			if (new_infomask & HEAP_XMAX_IS_MULTI)
+			{
+				cluster_itl_bump_multixact_lock_reject_count();
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_MULTIXACT_LOCK_NOT_SUPPORTED),
+						 errmsg("cluster MULTIXACT lock not supported on update chain"),
+						 errhint("MULTIXACT lock support deferred to spec-3.5+.")));
+			}
+
+			if (!cluster_itl_alloc_or_reuse_slot(buf, xid, &cluster_chain_slot_idx))
+			{
+				cluster_itl_bump_overflow_lock_count();
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW),
+						 errmsg("cluster ITL slot overflow on follow_updates"),
+						 errhint("Page ITL array full;  raise INITRANS or"
+								 " disable follow_updates.")));
+			}
+
+			{
+				uint32		seg = 0;
+				uint16		off = 0;
+				uint32		tt_id = 0;
+
+				if (!cluster_tt_local_get_or_create_binding(xid, &seg, &off, &tt_id))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("cluster TT binding allocate failed for"
+									" follow_updates xid %u", xid)));
+				cluster_chain_uba = uba_encode(seg, 0, off, 0);
+			}
+
+			cluster_chain_write_scn = cluster_scn_advance();
+			cluster_chain_lock_stamp = true;
+		}
+#endif
+
 		START_CRIT_SECTION();
 
 		/* ... and set them */
@@ -6262,6 +6578,30 @@ l4:
 		mytup.t_data->t_infomask |= new_infomask;
 		mytup.t_data->t_infomask2 |= new_infomask2;
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4d D5 — inside CRIT):  stamp lock-only ITL slot
+		 * for this successor tuple.
+		 */
+		if (cluster_chain_lock_stamp)
+		{
+			Page		cpage = BufferGetPage(buf);
+			ClusterItlSlotData *cslot;
+
+			cslot = &ClusterPageGetItlSlots(cpage)[cluster_chain_slot_idx];
+			if (cslot->flags != ITL_FLAG_FREE
+				&& !(cslot->flags == ITL_FLAG_LOCK_ONLY_ACTIVE && cslot->xid == xid))
+				cslot->wrap++;
+			cslot->xid = xid;
+			cslot->flags = ITL_FLAG_LOCK_ONLY_ACTIVE;
+			cslot->lock_count = 0;
+			cslot->undo_segment_head = cluster_chain_uba;
+			cslot->commit_scn = InvalidScn;
+			cslot->write_scn = cluster_chain_write_scn;
+			cslot->first_change_lsn = InvalidXLogRecPtr;
+		}
+#endif
+
 		MarkBufferDirty(buf);
 
 		/* XLOG stuff */
@@ -6270,6 +6610,10 @@ l4:
 			xl_heap_lock_updated xlrec;
 			XLogRecPtr	recptr;
 			Page		page = BufferGetPage(buf);
+#ifdef USE_PGRAC_CLUSTER
+			xl_heap_itl_delta_block chain_hdr;
+			xl_heap_itl_delta_v2 chain_delta;
+#endif
 
 			XLogBeginInsert();
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
@@ -6279,8 +6623,33 @@ l4:
 			xlrec.infobits_set = compute_infobits(new_infomask, new_infomask2);
 			xlrec.flags =
 				cleared_all_frozen ? XLH_LOCK_ALL_FROZEN_CLEARED : 0;
+#ifdef USE_PGRAC_CLUSTER
+			if (cluster_chain_lock_stamp)
+				xlrec.flags |= XLH_LOCK_UPDATED_ITL_DELTA;
+#endif
 
 			XLogRegisterData((char *) &xlrec, SizeOfHeapLockUpdated);
+
+#ifdef USE_PGRAC_CLUSTER
+			if (cluster_chain_lock_stamp)
+			{
+				memset(&chain_hdr, 0, sizeof(chain_hdr));
+				chain_hdr.format_version = CLUSTER_ITL_DELTA_FORMAT_V2;
+				chain_hdr.ndeltas = 1;
+				chain_hdr.reserved = 0;
+				XLogRegisterData((char *) &chain_hdr,
+								 offsetof(xl_heap_itl_delta_block, deltas));
+
+				memset(&chain_delta, 0, sizeof(chain_delta));
+				chain_delta.slot_idx = cluster_chain_slot_idx;
+				chain_delta.flags_after = ITL_FLAG_LOCK_ONLY_ACTIVE;
+				chain_delta.xid = xid;
+				chain_delta.write_scn = cluster_chain_write_scn;
+				chain_delta.commit_scn = InvalidScn;
+				chain_delta.undo_segment_head = cluster_chain_uba;
+				XLogRegisterData((char *) &chain_delta, sizeof(chain_delta));
+			}
+#endif
 
 			recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_LOCK_UPDATED);
 
@@ -6288,6 +6657,28 @@ l4:
 		}
 
 		END_CRIT_SECTION();
+
+#ifdef USE_PGRAC_CLUSTER
+		/* PGRAC (spec-3.4d D5 — post-CRIT):  install ACTIVE TT + emit
+		 * hint + register touch handle for each successor tuple. */
+		if (cluster_chain_lock_stamp)
+		{
+			ClusterItlTouchHandle chain_handle;
+
+			cluster_tt_local_record_active(xid);
+			cluster_itl_bump_lock_only_tt_hint_emit_count();
+			cluster_itl_bump_lock_only_itl_stamp_count();
+
+			memset(&chain_handle, 0, sizeof(chain_handle));
+			chain_handle.rloc = rel->rd_locator;
+			chain_handle.forknum = MAIN_FORKNUM;
+			chain_handle.block = block;
+			chain_handle.slot_idx = cluster_chain_slot_idx;
+			chain_handle.flags = RelationNeedsWAL(rel) ?
+				CLUSTER_ITL_TOUCH_FLAG_NEEDS_WAL : 0;
+			cluster_itl_touch_register(&chain_handle);
+		}
+#endif
 
 next:
 		/* if we find the end of update chain, we're done. */
@@ -11194,6 +11585,24 @@ heap_xlog_lock(XLogReaderState *record)
 		}
 		HeapTupleHeaderSetXmax(htup, xlrec->xmax);
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-3.4d D6 redo / Q4 A2):  replay lock-only ITL slot
+		 * stamp from v2 40B delta appended after xlrec.  See spec-3.4b D6
+		 * for delta block layout.  htup tuple header has no
+		 * t_lock_itl_slot_idx field (per F2 raw_xmax scan derivation), so
+		 * we do not patch any tuple header field;  the slot stamp itself
+		 * carries lock_xid and reader will rediscover via raw_xmax scan.
+		 */
+		if (xlrec->flags & XLH_LOCK_ITL_DELTA)
+		{
+			const char *delta_start = ((const char *) xlrec) + SizeOfHeapLock;
+
+			cluster_itl_redo_apply_block_local_delta(page, NULL, delta_start);
+		}
+#endif
+
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
 	}
@@ -11253,6 +11662,17 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		fix_infomask_from_infobits(xlrec->infobits_set, &htup->t_infomask,
 								   &htup->t_infomask2);
 		HeapTupleHeaderSetXmax(htup, xlrec->xmax);
+
+#ifdef USE_PGRAC_CLUSTER
+		/* PGRAC (spec-3.4d D6 redo / follow_updates):  replay lock-only
+		 * ITL slot for successor tuple from v2 40B delta. */
+		if (xlrec->flags & XLH_LOCK_UPDATED_ITL_DELTA)
+		{
+			const char *delta_start = ((const char *) xlrec) + SizeOfHeapLockUpdated;
+
+			cluster_itl_redo_apply_block_local_delta(page, NULL, delta_start);
+		}
+#endif
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);

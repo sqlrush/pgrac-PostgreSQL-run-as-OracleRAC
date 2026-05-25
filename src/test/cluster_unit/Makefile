@@ -40,7 +40,8 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_epoch test_cluster_fence test_cluster_reconfig \
         test_cluster_ges test_cluster_grd test_cluster_lmd test_cluster_lock_acquire \
         test_cluster_tt_slot_allocator test_cluster_itl_reader_real_triple \
-        test_cluster_itl_cleanout test_cluster_visibility_inject test_cluster_itl_cleanout_perf
+        test_cluster_itl_cleanout test_cluster_visibility_inject test_cluster_itl_cleanout_perf \
+        test_cluster_heap_lock_tuple
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -792,6 +793,18 @@ test_cluster_visibility_inject: test_cluster_visibility_inject.c unit_test.h \
 # qsort comparator's offset assumptions stay frozen.  Behavioural
 # coverage of dedupe / qsort / batch stamp lives in cluster_tap.
 test_cluster_itl_cleanout_perf: test_cluster_itl_cleanout_perf.c unit_test.h \
+		$(CLUSTER_VERSION_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-3.4d D13: test_cluster_heap_lock_tuple — 19 tests covering the
+# spec-3.4d ABI / lock-only ITL enum / SQLSTATE / WAL flag / counter
+# symbol contracts.  Behavioral coverage of heap_lock_tuple full path
+# (raw_xmax scan + ACTIVE TT install + wait_policy fail-closed) lives
+# in cluster_tap t/209.  Local stubs only (no PG core link required).
+test_cluster_heap_lock_tuple: test_cluster_heap_lock_tuple.c unit_test.h \
 		$(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \

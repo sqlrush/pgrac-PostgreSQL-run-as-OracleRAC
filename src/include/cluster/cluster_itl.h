@@ -267,4 +267,19 @@ extern Size cluster_itl_wal_block_consumed_bytes(const char *itl_block_start);
 extern uint16 cluster_itl_wal_block_first_slot_idx(const char *itl_block_start);
 
 
+/* ---------- spec-3.4d D11 — 5 lock-path counters (per-backend) ---------- */
+
+extern void cluster_itl_bump_overflow_lock_count(void);
+extern void cluster_itl_bump_multixact_lock_reject_count(void);
+extern void cluster_itl_bump_remote_row_lock_fail_closed_count(void);
+extern void cluster_itl_bump_lock_only_itl_stamp_count(void);
+extern void cluster_itl_bump_lock_only_tt_hint_emit_count(void);
+
+extern uint64 cluster_itl_get_overflow_lock_count(void);
+extern uint64 cluster_itl_get_multixact_lock_reject_count(void);
+extern uint64 cluster_itl_get_remote_row_lock_fail_closed_count(void);
+extern uint64 cluster_itl_get_lock_only_itl_stamp_count(void);
+extern uint64 cluster_itl_get_lock_only_tt_hint_emit_count(void);
+
+
 #endif /* CLUSTER_ITL_H */

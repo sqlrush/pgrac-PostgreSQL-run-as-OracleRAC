@@ -295,6 +295,33 @@ typedef struct xl_heap_vacuum
 /* flag bits for xl_heap_lock / xl_heap_lock_updated's flag field */
 #define XLH_LOCK_ALL_FROZEN_CLEARED		0x01
 
+/*
+ * PGRAC (spec-3.4d D6 / Q4 A2 / L184):  ITL delta block follows xlrec.
+ *
+ *	XLH_LOCK_ITL_DELTA          — set on xl_heap_lock when heap_lock_tuple
+ *	                              stamped a lock-only ITL slot under the
+ *	                              cluster lock path (peer mode).  The
+ *	                              40B v2 delta + 4B block header (spec-3.4b
+ *	                              D6 layout) is appended to xlrec via
+ *	                              XLogRegisterData and replayed by
+ *	                              heap_xlog_lock to reconstruct the slot.
+ *
+ *	XLH_LOCK_UPDATED_ITL_DELTA  — same shape but on xl_heap_lock_updated
+ *	                              (RM_HEAP2_ID / XLOG_HEAP2_LOCK_UPDATED
+ *	                              namespace per F5).  follow_updates=true
+ *	                              path stamps successor tuples' ITL slots
+ *	                              via heap_lock_updated_tuple_rec.
+ *
+ *	bit 7 selected because:  bit 0 = XLH_LOCK_ALL_FROZEN_CLEARED (existing
+ *	PG);  bit 7 free in both xl_heap_lock.flags and xl_heap_lock_updated.flags
+ *	namespaces (grep verified;  L184 inheritance from spec-3.4a/b);  aligns
+ *	with XLH_INSERT_ITL_DELTA / XLH_UPDATE_ITL_DELTA / XLH_DELETE_ITL_DELTA
+ *	(spec-3.4a) bit 7 — namespace consistency helps reviewers grep / replay
+ *	all ITL delta paths together.
+ */
+#define XLH_LOCK_ITL_DELTA				(1 << 7)
+#define XLH_LOCK_UPDATED_ITL_DELTA		(1 << 7)
+
 /* This is what we need to know about lock */
 typedef struct xl_heap_lock
 {

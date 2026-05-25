@@ -393,6 +393,29 @@ cluster_tt_local_record_abort(TransactionId xid)
 	cluster_tt_local_reset_binding();
 }
 
+/*
+ * cluster_tt_local_record_active (spec-3.4d D4 / F3 P0):
+ *
+ *	Install local CLUSTER_TT_STATUS_IN_PROGRESS(== "ACTIVE" in spec
+ *	v0.2 §6.4 wording) + emit cross-node TT_STATUS_HINT for `xid`.
+ *	Distinguishes from record_commit/abort:
+ *	  - does NOT reset the xact-local TT binding (xact still running)
+ *	  - commit_scn = InvalidScn (lock-only carries no commit ordering)
+ *	  - idempotent (overlay install overwrites;  hint emit fire-and-forget)
+ *
+ *	Called from heap_lock_tuple / heap_lock_updated_tuple_rec AFTER
+ *	the lock-only ITL slot is stamped (under buffer content lock) and
+ *	AFTER xact-local binding exists (caller must have invoked
+ *	cluster_tt_local_get_or_create_binding first).
+ */
+void
+cluster_tt_local_record_active(TransactionId xid)
+{
+	install_status(xid, CLUSTER_TT_STATUS_IN_PROGRESS, InvalidScn);
+	/* NOTE: NOT calling cluster_tt_local_reset_binding() — xact is still
+	 * running and may stamp additional lock-only or data ITL slots. */
+}
+
 uint32
 cluster_tt_local_slot_seq_peek(void)
 {
@@ -426,6 +449,12 @@ cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn)
 
 void
 cluster_tt_local_record_abort(TransactionId xid)
+{
+	(void)xid;
+}
+
+void
+cluster_tt_local_record_active(TransactionId xid)
 {
 	(void)xid;
 }

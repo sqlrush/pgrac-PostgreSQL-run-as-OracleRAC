@@ -66,6 +66,31 @@ extern void cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn);
 extern void cluster_tt_local_record_abort(TransactionId xid);
 
 /*
+ * cluster_tt_local_record_active (spec-3.4d D4 / F3 P0):
+ *	  Install local ACTIVE status + emit cross-node TT_STATUS_HINT ACTIVE
+ *	  for `xid` from heap_lock_tuple / heap_lock_updated_tuple_rec.  Used
+ *	  when peer mode lock-only ITL slot is stamped — without this peer
+ *	  cluster_tt_status_lookup_exact returns UNKNOWN forever, breaking
+ *	  the spec-3.4d Q1 wait_policy-aware fail-closed contract.
+ *
+ *	  Idempotent:  install_local + hint_emit are both safe to repeat
+ *	  (overlay overwrite, fanout fire-and-forget).  Multiple lock
+ *	  operations within the same xact bump the install_count counter
+ *	  but do not break correctness.
+ *
+ *	  commit_scn = InvalidScn (lock-only status has no commit_scn);
+ *	  peer reader sees ACTIVE status without commit_scn → returns
+ *	  ACTIVE via lookup_exact + heap_lock_tuple consumer fail-closes
+ *	  per wait_policy.
+ *
+ *	  No-op if cluster_enabled is false or xact-local TT binding is
+ *	  missing (DDL-only / read-only xact never allocated a binding;
+ *	  the lock-only ITL slot stamp call site is responsible for
+ *	  ensuring the binding exists before invoking this).
+ */
+extern void cluster_tt_local_record_active(TransactionId xid);
+
+/*
  * Counters / introspection used by test_cluster_tt_status (D9 T17).
  */
 extern uint32 cluster_tt_local_slot_seq_peek(void);

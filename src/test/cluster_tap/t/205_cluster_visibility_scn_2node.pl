@@ -167,7 +167,7 @@ SKIP: {
 	my $l4_xid = $pair->node0->safe_psql('postgres',
 		q{SELECT xmin::text FROM l4_scn_visible WHERE id = 1});
 	$pair->node0->safe_psql('postgres',
-		qq{SELECT cluster_test_inject_visibility_tt_ref('$l4_xid'::xid, 7, 3, 42, 0)});
+		qq{SELECT cluster_test_inject_visibility_tt_ref('$l4_xid'::xid, 7, 3, 42, 0, 0::int8, false)});
 	$pair->node0->safe_psql('postgres',
 		q{ALTER SYSTEM SET cluster_test_force_visibility_cluster_path = on});
 	$pair->node0->safe_psql('postgres', 'SELECT pg_reload_conf()');

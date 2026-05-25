@@ -285,15 +285,31 @@ static void
 itl_finish_stamp_page(Page page, uint8 slot_idx, const ItlFinishCtx *ctx)
 {
 	ClusterItlSlotData *slot;
+	bool		is_lock_only;
 
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
-	Assert(slot->flags == ITL_FLAG_ACTIVE);
+
+	/*
+	 * spec-3.4d D4:  touch list now contains lock-only ITL slots (LOCK_ONLY_
+	 * ACTIVE) alongside the spec-3.4a data ITL slots (ACTIVE).  Both
+	 * states transition to their respective COMMITTED/ABORTED on
+	 * xact-end finish.  Distinguish via ITL_FLAG_IS_LOCK_ONLY().
+	 */
+	is_lock_only = ITL_FLAG_IS_LOCK_ONLY(slot->flags);
+
+	Assert(slot->flags == ITL_FLAG_ACTIVE
+		   || slot->flags == ITL_FLAG_LOCK_ONLY_ACTIVE);
 
 	if (ctx->is_commit) {
-		slot->flags = ITL_FLAG_COMMITTED;
+		slot->flags = is_lock_only ? ITL_FLAG_LOCK_ONLY_COMMITTED : ITL_FLAG_COMMITTED;
+		/*
+		 * spec-3.4d:  lock-only commit_scn carries no visibility ordering
+		 * (lock release ≠ MVCC commit).  Still store for observability;
+		 * reader silent-falls-through these slots.
+		 */
 		slot->commit_scn = ctx->commit_scn;
 	} else {
-		slot->flags = ITL_FLAG_ABORTED;
+		slot->flags = is_lock_only ? ITL_FLAG_LOCK_ONLY_ABORTED : ITL_FLAG_ABORTED;
 		slot->commit_scn = InvalidScn;
 	}
 }

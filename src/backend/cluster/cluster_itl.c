@@ -41,8 +41,116 @@
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_uba.h" /* uba_decode / uba_origin_node_id (spec-3.4b D7) */
+#include "port/atomics.h"		 /* pg_atomic_uint64 (spec-3.4d D11 counters) */
 
 #ifdef USE_PGRAC_CLUSTER
+
+/*
+ * spec-3.4d D11:  5 NEW lock-path counter for row-lock observability.
+ *
+ *	Backend-local atomic counters (no shmem state — counters are per
+ *	backend's lifetime, snapshot via getter at view query time).  Full
+ *	shmem-backed cross-backend aggregation deferred to Hardening v1.0.1
+ *	when the dump_lock_path category lands in pg_stat_cluster_state.
+ *	For Sprint A scope:  per-backend counters are sufficient to verify
+ *	hot-path behavior in cluster_unit + cluster_tap, and the cumulative
+ *	cross-backend view follows the same pattern as spec-3.4a/c counters.
+ */
+static pg_atomic_uint64 ClusterItlOverflowLockCount;
+static pg_atomic_uint64 ClusterMultixactLockRejectCount;
+static pg_atomic_uint64 ClusterRemoteRowLockFailClosedCount;
+static pg_atomic_uint64 ClusterLockOnlyItlStampCount;
+static pg_atomic_uint64 ClusterLockOnlyTtHintEmitCount;
+static bool ClusterLockPathCountersInited = false;
+
+static inline void
+ensure_lock_counters_inited(void)
+{
+	if (!ClusterLockPathCountersInited)
+	{
+		pg_atomic_init_u64(&ClusterItlOverflowLockCount, 0);
+		pg_atomic_init_u64(&ClusterMultixactLockRejectCount, 0);
+		pg_atomic_init_u64(&ClusterRemoteRowLockFailClosedCount, 0);
+		pg_atomic_init_u64(&ClusterLockOnlyItlStampCount, 0);
+		pg_atomic_init_u64(&ClusterLockOnlyTtHintEmitCount, 0);
+		ClusterLockPathCountersInited = true;
+	}
+}
+
+void
+cluster_itl_bump_overflow_lock_count(void)
+{
+	ensure_lock_counters_inited();
+	pg_atomic_fetch_add_u64(&ClusterItlOverflowLockCount, 1);
+}
+
+void
+cluster_itl_bump_multixact_lock_reject_count(void)
+{
+	ensure_lock_counters_inited();
+	pg_atomic_fetch_add_u64(&ClusterMultixactLockRejectCount, 1);
+}
+
+void
+cluster_itl_bump_remote_row_lock_fail_closed_count(void)
+{
+	ensure_lock_counters_inited();
+	pg_atomic_fetch_add_u64(&ClusterRemoteRowLockFailClosedCount, 1);
+}
+
+void
+cluster_itl_bump_lock_only_itl_stamp_count(void)
+{
+	ensure_lock_counters_inited();
+	pg_atomic_fetch_add_u64(&ClusterLockOnlyItlStampCount, 1);
+}
+
+void
+cluster_itl_bump_lock_only_tt_hint_emit_count(void)
+{
+	ensure_lock_counters_inited();
+	pg_atomic_fetch_add_u64(&ClusterLockOnlyTtHintEmitCount, 1);
+}
+
+uint64
+cluster_itl_get_overflow_lock_count(void)
+{
+	if (!ClusterLockPathCountersInited)
+		return 0;
+	return pg_atomic_read_u64(&ClusterItlOverflowLockCount);
+}
+
+uint64
+cluster_itl_get_multixact_lock_reject_count(void)
+{
+	if (!ClusterLockPathCountersInited)
+		return 0;
+	return pg_atomic_read_u64(&ClusterMultixactLockRejectCount);
+}
+
+uint64
+cluster_itl_get_remote_row_lock_fail_closed_count(void)
+{
+	if (!ClusterLockPathCountersInited)
+		return 0;
+	return pg_atomic_read_u64(&ClusterRemoteRowLockFailClosedCount);
+}
+
+uint64
+cluster_itl_get_lock_only_itl_stamp_count(void)
+{
+	if (!ClusterLockPathCountersInited)
+		return 0;
+	return pg_atomic_read_u64(&ClusterLockOnlyItlStampCount);
+}
+
+uint64
+cluster_itl_get_lock_only_tt_hint_emit_count(void)
+{
+	if (!ClusterLockPathCountersInited)
+		return 0;
+	return pg_atomic_read_u64(&ClusterLockOnlyTtHintEmitCount);
+}
 
 bool
 cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTSlotRef *ref)
