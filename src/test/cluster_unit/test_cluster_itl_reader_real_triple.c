@@ -56,8 +56,10 @@
 #include "cluster/cluster_itl.h"
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_scn.h"
+#include "cluster/cluster_shmem.h" /* ClusterShmemRegion (spec-3.4e D6 stub) */
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_uba.h"
+#include "miscadmin.h"			  /* ProcessingMode / Mode (spec-3.4e D6 stub) */
 #include "storage/bufpage.h"
 
 #undef printf
@@ -189,6 +191,32 @@ GetCurrentTransactionNestLevel(void)
 {
 	return 1;
 }
+
+
+/* ============================================================
+ *	spec-3.4e D6 stubs:  cluster_itl.c now references shmem APIs
+ *	(IsBootstrapProcessingMode is a macro using `Mode` global;
+ *	ShmemInitStruct;  cluster_shmem_register_region) for fail_closed
+ *	counter aggregation.  Reader path doesn't reach those;  provide
+ *	stub `Mode` global (NormalProcessing = 2) so the macro evaluates
+ *	false, plus link-only stubs for the shmem calls (size_fn /
+ *	init_fn never invoked under the IsBootstrapProcessingMode short-
+ *	circuit, but ld still needs symbols).
+ * ============================================================ */
+ProcessingMode Mode = NormalProcessing;
+
+void *
+ShmemInitStruct(const char *name pg_attribute_unused(), Size size pg_attribute_unused(),
+				bool *foundPtr pg_attribute_unused())
+{
+	if (foundPtr)
+		*foundPtr = true;
+	return NULL;
+}
+
+void
+cluster_shmem_register_region(const ClusterShmemRegion *region pg_attribute_unused())
+{}
 
 
 /* ============================================================
