@@ -59,7 +59,7 @@
 #include "cluster/cluster_shmem.h" /* ClusterShmemRegion (spec-3.4e D6 stub) */
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_uba.h"
-#include "miscadmin.h"			  /* ProcessingMode / Mode (spec-3.4e D6 stub) */
+#include "miscadmin.h" /* ProcessingMode / Mode (spec-3.4e D6 stub) */
 #include "storage/bufpage.h"
 
 #undef printf
