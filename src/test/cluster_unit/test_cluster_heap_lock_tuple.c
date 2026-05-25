@@ -208,22 +208,19 @@ UT_TEST(t11_record_active_linkable)
 UT_TEST(t12_errcode_53r98_encodable)
 {
 	int sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', '8');
-	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED,
-				 sqlstate);
+	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED, sqlstate);
 }
 UT_TEST(t13_errcode_53r99_encodable)
 {
 	int sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', '9');
-	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_MULTIXACT_LOCK_NOT_SUPPORTED,
-				 sqlstate);
+	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_MULTIXACT_LOCK_NOT_SUPPORTED, sqlstate);
 }
 UT_TEST(t14_errcode_53r9a_encodable)
 {
 	int sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', 'A');
 	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW, sqlstate);
 	/* F7:  must not equal 53R94 sinval_queue_full (semantically distinct) */
-	UT_ASSERT_NE((int)ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW,
-				 (int)ERRCODE_CLUSTER_SINVAL_QUEUE_FULL);
+	UT_ASSERT_NE((int)ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW, (int)ERRCODE_CLUSTER_SINVAL_QUEUE_FULL);
 }
 
 
@@ -262,10 +259,61 @@ UT_TEST(t19_slot_field_offsets_stable)
 }
 
 
+/* ===== T20-T24: spec-3.4d extra ABI / contract anchors ===== */
+
+UT_TEST(t20_lock_only_states_distinct_from_data_states)
+{
+	/* spec-3.4d D1: LOCK_ONLY_* states (5/6/7) must not collide with
+	 * data ITL states (0-4) — existing slot.flags == ITL_FLAG_ACTIVE
+	 * equality checks in spec-3.4a/b/c must NOT match LOCK_ONLY_ACTIVE. */
+	UT_ASSERT_NE((int)ITL_FLAG_LOCK_ONLY_ACTIVE, (int)ITL_FLAG_ACTIVE);
+	UT_ASSERT_NE((int)ITL_FLAG_LOCK_ONLY_COMMITTED, (int)ITL_FLAG_COMMITTED);
+	UT_ASSERT_NE((int)ITL_FLAG_LOCK_ONLY_ABORTED, (int)ITL_FLAG_ABORTED);
+}
+
+UT_TEST(t21_xlh_lock_itl_delta_distinct_from_existing)
+{
+	/* spec-3.4d Q4 A2 + L184:  bit 7 (0x80) must not collide with
+	 * existing xl_heap_lock.flags bit 0 = XLH_LOCK_ALL_FROZEN_CLEARED.
+	 * Same for xl_heap_lock_updated namespace. */
+	UT_ASSERT_EQ((int)(XLH_LOCK_ITL_DELTA & XLH_LOCK_ALL_FROZEN_CLEARED), 0);
+	UT_ASSERT_EQ((int)(XLH_LOCK_UPDATED_ITL_DELTA & XLH_LOCK_ALL_FROZEN_CLEARED), 0);
+}
+
+UT_TEST(t22_lock_only_active_can_recycle)
+{
+	/* spec-3.4d L189 lineage:  LOCK_ONLY_COMMITTED / LOCK_ONLY_ABORTED
+	 * are "completed" states eligible for slot recycling (per the
+	 * existing cluster_itl_alloc_or_reuse_slot policy that scans for
+	 * non-ACTIVE non-FREE slots).  ITL_FLAG_IS_LOCK_ONLY_COMPLETED
+	 * macro identifies them. */
+	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_COMMITTED), 0);
+	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_ABORTED), 0);
+	UT_ASSERT_EQ((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_ACTIVE), 0);
+}
+
+UT_TEST(t23_invalid_xid_constant_sentinel)
+{
+	/* spec-3.4d D1 cluster_itl_find_lock_tt_ref_by_xmax requires
+	 * TransactionIdIsValid(raw_xmax) — InvalidTransactionId (== 0)
+	 * must be the sentinel.  This catches accidental redefinition. */
+	UT_ASSERT_EQ((int)InvalidTransactionId, 0);
+}
+
+UT_TEST(t24_cluster_itl_slot_unallocated_sentinel_consistent)
+{
+	/* spec-3.4d:  CLUSTER_ITL_SLOT_UNALLOCATED == 255 sentinel still
+	 * used as the "no slot assigned" marker on t_itl_slot_idx (data
+	 * ITL).  Lock-only path uses raw_xmax scan derivation (F2), no
+	 * separate sentinel needed. */
+	UT_ASSERT_EQ((int)CLUSTER_ITL_SLOT_UNALLOCATED, 255);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(19);
+	UT_PLAN(24);
 	UT_RUN(t1_tuple_header_sizeof_24);
 	UT_RUN(t2_itl_flag_lock_only_enum_stable);
 	UT_RUN(t3_itl_flag_is_lock_only_macro);
@@ -285,6 +333,11 @@ main(void)
 	UT_RUN(t17_initrans_default_is_8);
 	UT_RUN(t18_slot_sizeof_48);
 	UT_RUN(t19_slot_field_offsets_stable);
+	UT_RUN(t20_lock_only_states_distinct_from_data_states);
+	UT_RUN(t21_xlh_lock_itl_delta_distinct_from_existing);
+	UT_RUN(t22_lock_only_active_can_recycle);
+	UT_RUN(t23_invalid_xid_constant_sentinel);
+	UT_RUN(t24_cluster_itl_slot_unallocated_sentinel_consistent);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

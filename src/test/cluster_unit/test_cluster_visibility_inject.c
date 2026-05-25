@@ -277,8 +277,7 @@ UT_TEST(t18_lock_only_active_state_distinct_from_data_active)
 	 * IN_PROGRESS = 1 (overlay-side).  Distinct values, distinct namespaces.
 	 * D5b inject UDF with is_lock_only=true installs OVERLAY IN_PROGRESS,
 	 * and the on-page ITL slot (if any) would carry LOCK_ONLY_ACTIVE. */
-	UT_ASSERT_NE((int)CLUSTER_TT_STATUS_IN_PROGRESS,
-				 (int)CLUSTER_TT_STATUS_COMMITTED);
+	UT_ASSERT_NE((int)CLUSTER_TT_STATUS_IN_PROGRESS, (int)CLUSTER_TT_STATUS_COMMITTED);
 }
 
 UT_TEST(t19_is_lock_only_bool_distinct_arg)
@@ -291,11 +290,23 @@ UT_TEST(t19_is_lock_only_bool_distinct_arg)
 	UT_ASSERT_EQ(1, 1);
 }
 
+UT_TEST(t20_invalid_scn_sentinel_consistent)
+{
+	/* spec-3.4d D9:  is_lock_only=true forces commit_scn = InvalidScn
+	 * (= 0).  Reader-side decide_by_scn returns UNKNOWN on InvalidScn,
+	 * but for lock-only path we never reach decide_by_scn (lock-only
+	 * status detection in heap_lock_tuple is wait_policy fail-closed,
+	 * not visibility decide).  Sentinel value must stay 0 for SCN_VALID
+	 * macro to return false correctly. */
+	UT_ASSERT_EQ((long long)InvalidScn, 0LL);
+	UT_ASSERT_EQ((int)SCN_VALID(InvalidScn), 0);
+}
+
 
 int
 main(void)
 {
-	UT_PLAN(19);
+	UT_PLAN(20);
 	UT_RUN(t1_lookup_inject_linkable);
 	UT_RUN(t2_inject_shmem_helpers_linkable);
 	UT_RUN(t3_tt_status_lookup_exact_linkable);
@@ -315,6 +326,7 @@ main(void)
 	UT_RUN(t17_status_in_progress_is_1);
 	UT_RUN(t18_lock_only_active_state_distinct_from_data_active);
 	UT_RUN(t19_is_lock_only_bool_distinct_arg);
+	UT_RUN(t20_invalid_scn_sentinel_consistent);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

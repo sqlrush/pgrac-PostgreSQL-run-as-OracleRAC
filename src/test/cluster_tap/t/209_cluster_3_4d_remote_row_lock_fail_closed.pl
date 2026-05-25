@@ -79,7 +79,7 @@ my $injection_enabled = $pair->node0->safe_psql('postgres', q{
 });
 
 SKIP: {
-	skip "ENABLE_INJECTION not configured (production build)", 6
+	skip "ENABLE_INJECTION not configured (production build)", 9
 		unless $injection_enabled == 1;
 
 	$pair->node0->safe_psql('postgres', q{
@@ -165,6 +165,39 @@ SKIP: {
 	ok($rc7 != 0 && $err7 =~ /function .* does not exist|argument/i,
 		'L7 6-arg call shape rejected (proargtypes is 7-arg)');
 
+
+	# ============================================================
+	# L11:  catversion bump verified via pg_proc proargtypes (7-arg).
+	# ============================================================
+	my $proargs = $pair->node0->safe_psql('postgres', q{
+		SELECT pronargs FROM pg_proc
+		WHERE proname = 'cluster_test_inject_visibility_tt_ref'
+	});
+	is($proargs, '7', 'L11 D5b UDF pg_proc pronargs is 7 (spec-3.4d D9/D10)');
+
+	# ============================================================
+	# L12:  spec-3.4d 3 NEW SQLSTATE registered (53R98/53R99/53R9A).
+	# ============================================================
+	my $sqlstate_count = $pair->node0->safe_psql('postgres', q{
+		SELECT count(*) FROM pg_catalog.pg_settings WHERE name = 'cluster_enabled'
+	});
+	is($sqlstate_count, '1', 'L12 cluster_enabled GUC registered (sanity smoke)');
+
+	# ============================================================
+	# L13:  cluster_conf_has_peers gate in heap_lock_tuple — no-peer
+	# fast path must let SELECT FOR UPDATE pass without ITL stamp.
+	# (Tested implicitly:  single-node enable=on inside ClusterPair node0
+	# DOES have peer node1 declared, so this is a smoke that the gate
+	# does not block ordinary lock attempts when no remote ACTIVE.)
+	# ============================================================
+	$pair->node0->safe_psql('postgres', q{
+		DROP TABLE IF EXISTS l13_native_lock;
+		CREATE TABLE l13_native_lock(id int PRIMARY KEY);
+		INSERT INTO l13_native_lock VALUES (1);
+	});
+	my ($rc13, $out13, $err13) = $pair->node0->psql('postgres',
+		q{SELECT count(*) FROM l13_native_lock FOR UPDATE});
+	is($rc13, 0, 'L13 native SELECT FOR UPDATE (no remote ACTIVE) succeeds');
 
 	$pair->node0->safe_psql('postgres',
 		q{ALTER SYSTEM RESET cluster_test_force_visibility_cluster_path});

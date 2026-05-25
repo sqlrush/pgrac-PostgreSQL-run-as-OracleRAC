@@ -35,6 +35,7 @@
 
 #include <stddef.h> /* offsetof */
 
+#include "access/htup_details.h" /* SizeofHeapTupleHeader (spec-3.4d D14) */
 #include "cluster/cluster_itl_slot.h"
 
 /* Drop PG's port.h printf -> pg_printf override; unit_test.h uses
@@ -150,10 +151,62 @@ UT_TEST(test_uba_nonzero_is_valid)
 }
 
 
+/* ===== spec-3.4d D14: ABI regression — tuple header MUST NOT grow ===== */
+
+UT_TEST(test_spec_3_4d_tuple_header_unchanged_24)
+{
+	/*
+	 * spec-3.4d F2 P0 — v0.1 proposed `t_lock_itl_slot_idx` 1B field with
+	 * SizeofHeapTupleHeader 24→25.  v0.2 REJECTED this because
+	 * MAXALIGN(SizeofHeapTupleHeader) on 8B-align platforms makes the
+	 * real cost +8B/tuple (MinHeapTupleSize jumps 24→32).  Final design:
+	 * raw_xmax + ITL slot scan derivation
+	 * (cluster_itl_find_lock_tt_ref_by_xmax) — zero header growth.
+	 *
+	 * If this test fails, somebody added a field to HeapTupleHeaderData
+	 * defeating L198 lesson "lock-only ITL ref must not bloat tuple
+	 * header when derivable from existing state".
+	 */
+	UT_ASSERT_EQ((int)SizeofHeapTupleHeader, 24);
+}
+
+UT_TEST(test_spec_3_4d_lock_only_states_enum_5_to_7)
+{
+	/*
+	 * spec-3.4d D1:  3 NEW LOCK_ONLY_* enum values (5/6/7) added without
+	 * disturbing data ITL state values (0-4).  ITL_FLAG_IS_LOCK_ONLY()
+	 * + ITL_FLAG_IS_LOCK_ONLY_COMPLETED() helper macros gate the new
+	 * state range.  This test catches accidental enum value drift that
+	 * would silently break the existing slot.flags == ITL_FLAG_ACTIVE
+	 * equality checks in spec-3.4a/b/c (which still must NOT match
+	 * lock-only slots).
+	 */
+	UT_ASSERT_EQ((int)ITL_FLAG_LOCK_ONLY_ACTIVE, 5);
+	UT_ASSERT_EQ((int)ITL_FLAG_LOCK_ONLY_COMMITTED, 6);
+	UT_ASSERT_EQ((int)ITL_FLAG_LOCK_ONLY_ABORTED, 7);
+
+	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY(ITL_FLAG_LOCK_ONLY_ACTIVE), 0);
+	UT_ASSERT_EQ((int)ITL_FLAG_IS_LOCK_ONLY(ITL_FLAG_ACTIVE), 0);
+	UT_ASSERT_NE((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_COMMITTED), 0);
+	UT_ASSERT_EQ((int)ITL_FLAG_IS_LOCK_ONLY_COMPLETED(ITL_FLAG_LOCK_ONLY_ACTIVE), 0);
+}
+
+UT_TEST(test_spec_3_4d_slot_sizeof_unchanged_48)
+{
+	/*
+	 * spec-3.4d:  adding 3 NEW LOCK_ONLY_* enum values does NOT grow
+	 * ClusterItlSlotData because `flags` field is uint8 with 256 possible
+	 * values (we use 8 = FREE..LOCK_ONLY_ABORTED).  The 48B slot sizeof
+	 * regression must hold across all spec-3.4 sub-specs.
+	 */
+	UT_ASSERT_EQ((int)sizeof(ClusterItlSlotData), 48);
+}
+
+
 int
 main(void)
 {
-	UT_PLAN(8);
+	UT_PLAN(11);
 	UT_RUN(test_itl_slot_size_is_48_bytes);
 	UT_RUN(test_itl_constants_match_spec_1_5);
 	UT_RUN(test_itl_slot_unallocated_sentinel_is_255);
@@ -162,6 +215,9 @@ main(void)
 	UT_RUN(test_uba_stub_size_is_16_bytes);
 	UT_RUN(test_uba_zero_init_is_invalid);
 	UT_RUN(test_uba_nonzero_is_valid);
+	UT_RUN(test_spec_3_4d_tuple_header_unchanged_24);
+	UT_RUN(test_spec_3_4d_lock_only_states_enum_5_to_7);
+	UT_RUN(test_spec_3_4d_slot_sizeof_unchanged_48);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }

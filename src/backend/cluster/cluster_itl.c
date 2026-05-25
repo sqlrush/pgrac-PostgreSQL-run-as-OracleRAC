@@ -66,8 +66,7 @@ static bool ClusterLockPathCountersInited = false;
 static inline void
 ensure_lock_counters_inited(void)
 {
-	if (!ClusterLockPathCountersInited)
-	{
+	if (!ClusterLockPathCountersInited) {
 		pg_atomic_init_u64(&ClusterItlOverflowLockCount, 0);
 		pg_atomic_init_u64(&ClusterMultixactLockRejectCount, 0);
 		pg_atomic_init_u64(&ClusterRemoteRowLockFailClosedCount, 0);
@@ -242,15 +241,14 @@ cluster_itl_get_tt_ref(Page page, uint8 itl_slot_idx, ClusterUndoTTSlotRef *ref)
  *	by F2 due to MAXALIGN tax + disk format break).
  */
 bool
-cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
-									 ClusterUndoTTSlotRef *ref)
+cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax, ClusterUndoTTSlotRef *ref)
 {
 	const ClusterItlSlotData *slots;
-	uint32		current_epoch;
-	int			match_idx = -1;
-	uint16		match_wrap = 0;
-	uint8		i;
-	int			match_count = 0;
+	uint32 current_epoch;
+	int match_idx = -1;
+	uint16 match_wrap = 0;
+	uint8 i;
+	int match_count = 0;
 
 	Assert(page != NULL);
 	Assert(ref != NULL);
@@ -261,15 +259,14 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
 		return false;
 
 	slots = ClusterPageGetItlSlots(page);
-	current_epoch = (uint32) cluster_epoch_get_current();
+	current_epoch = (uint32)cluster_epoch_get_current();
 
 	/* Scan all 8 slots looking for LOCK_ONLY + exact xid + valid UBA.
 	 * Pick the highest wrap (generation counter) if multiple candidates
 	 * match — recycled slot conservatism per spec-3.4d §6.1 step 6.
 	 * Ambiguous duplicate (multiple LOCK_ONLY slots with same xid + same
 	 * wrap) → fail closed:  page metadata corruption. */
-	for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++)
-	{
+	for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++) {
 		const ClusterItlSlotData *slot = &slots[i];
 
 		if (!ITL_FLAG_IS_LOCK_ONLY(slot->flags))
@@ -280,15 +277,12 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
 			continue;
 
 		match_count++;
-		if (match_idx < 0 || slot->wrap > match_wrap)
-		{
-			match_idx = (int) i;
+		if (match_idx < 0 || slot->wrap > match_wrap) {
+			match_idx = (int)i;
 			match_wrap = slot->wrap;
-		}
-		else if (slot->wrap == match_wrap)
-		{
+		} else if (slot->wrap == match_wrap) {
 			/* Two slots with identical (xid, wrap) — true ambiguity. */
-			match_count++;	/* defensive — keep going to count duplicates */
+			match_count++; /* defensive — keep going to count duplicates */
 		}
 	}
 
@@ -297,14 +291,12 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
 
 	/* If we hit ambiguous duplicates with same wrap, fail closed.
 	 * The page metadata is corrupted; caller will 53R97. */
-	if (match_count > 1)
-	{
+	if (match_count > 1) {
 		const ClusterItlSlotData *winner = &slots[match_idx];
-		int			ambiguous = 0;
+		int ambiguous = 0;
 
 		/* Re-scan to verify whether the highest-wrap slot is unique. */
-		for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++)
-		{
+		for (i = 0; i < CLUSTER_ITL_INITRANS_DEFAULT; i++) {
 			const ClusterItlSlotData *slot = &slots[i];
 
 			if (!ITL_FLAG_IS_LOCK_ONLY(slot->flags))
@@ -323,18 +315,17 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
 
 	{
 		const ClusterItlSlotData *slot = &slots[match_idx];
-		uint32		seg_id;
-		uint32		blk_no;
-		uint16		tt_off;
-		uint16		row_off;
-		NodeId		origin;
+		uint32 seg_id;
+		uint32 blk_no;
+		uint16 tt_off;
+		uint16 row_off;
+		NodeId origin;
 
 		memset(ref, 0, sizeof(*ref));
 
 		if (!uba_decode(slot->undo_segment_head, &seg_id, &blk_no, &tt_off, &row_off))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("malformed UBA in lock-only ITL slot %d", match_idx)));
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("malformed UBA in lock-only ITL slot %d", match_idx)));
 		origin = uba_origin_node_id(slot->undo_segment_head);
 		if (origin == InvalidNodeId)
 			ereport(ERROR,
@@ -342,12 +333,12 @@ cluster_itl_find_lock_tt_ref_by_xmax(Page page, TransactionId raw_xmax,
 					 errmsg("UBA decode: lock-only segment_id %u has no valid owner_instance",
 							seg_id)));
 
-		ref->origin_node_id = (uint16) origin;
-		ref->undo_segment_id = (uint16) seg_id;
+		ref->origin_node_id = (uint16)origin;
+		ref->undo_segment_id = (uint16)seg_id;
 		ref->tt_slot_id = cluster_tt_slot_offset_to_id(tt_off);
 		ref->cluster_epoch = current_epoch;
 		ref->local_xid = slot->xid;
-		ref->cached_commit_scn = InvalidScn;	/* lock-only never carries commit_scn */
+		ref->cached_commit_scn = InvalidScn; /* lock-only never carries commit_scn */
 		ref->has_cached_status = false;
 	}
 

@@ -285,7 +285,7 @@ static void
 itl_finish_stamp_page(Page page, uint8 slot_idx, const ItlFinishCtx *ctx)
 {
 	ClusterItlSlotData *slot;
-	bool		is_lock_only;
+	bool is_lock_only;
 
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
 
@@ -297,8 +297,7 @@ itl_finish_stamp_page(Page page, uint8 slot_idx, const ItlFinishCtx *ctx)
 	 */
 	is_lock_only = ITL_FLAG_IS_LOCK_ONLY(slot->flags);
 
-	Assert(slot->flags == ITL_FLAG_ACTIVE
-		   || slot->flags == ITL_FLAG_LOCK_ONLY_ACTIVE);
+	Assert(slot->flags == ITL_FLAG_ACTIVE || slot->flags == ITL_FLAG_LOCK_ONLY_ACTIVE);
 
 	if (ctx->is_commit) {
 		slot->flags = is_lock_only ? ITL_FLAG_LOCK_ONLY_COMMITTED : ITL_FLAG_COMMITTED;

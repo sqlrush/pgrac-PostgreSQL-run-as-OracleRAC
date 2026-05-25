@@ -205,13 +205,10 @@ cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS)
 	 *
 	 * is_lock_only=false preserves spec-3.4c COMMITTED + commit_scn behavior.
 	 */
-	if (is_lock_only)
-	{
+	if (is_lock_only) {
 		install_status = CLUSTER_TT_STATUS_IN_PROGRESS;
 		commit_scn = InvalidScn;
-	}
-	else
-	{
+	} else {
 		install_status = CLUSTER_TT_STATUS_COMMITTED;
 	}
 
