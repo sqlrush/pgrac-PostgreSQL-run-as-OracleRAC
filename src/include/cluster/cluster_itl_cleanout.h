@@ -42,7 +42,7 @@
  * Author: SqlRush <sqlrush@gmail.com>
  *
  * Spec: spec-3.4c-delayed-cleanout-d5b-commit-scn-yellow-perf-hardening.md
- *       (v0.2 FROZEN 2026-05-24)
+ *       (v0.3 FROZEN 2026-05-24)
  *
  * IDENTIFICATION
  *	  src/include/cluster/cluster_itl_cleanout.h
