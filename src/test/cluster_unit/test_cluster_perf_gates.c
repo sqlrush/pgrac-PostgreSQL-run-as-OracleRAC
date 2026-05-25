@@ -112,7 +112,7 @@ cluster_itl_get_lock_only_tt_hint_emit_count(void)
 
 UT_TEST(t1_workload_class_count_is_4)
 {
-	UT_ASSERT_EQ((int) SPEC_3_4E_WORKLOAD_CLASS_COUNT, 4);
+	UT_ASSERT_EQ((int)SPEC_3_4E_WORKLOAD_CLASS_COUNT, 4);
 }
 
 
@@ -127,13 +127,13 @@ UT_TEST(t1_workload_class_count_is_4)
 
 UT_TEST(t2_5_tier_name_count_is_5)
 {
-	UT_ASSERT_EQ((int) SPEC_3_4E_TIER_COUNT, 5);
+	UT_ASSERT_EQ((int)SPEC_3_4E_TIER_COUNT, 5);
 	/* Verify string anchors exist (compile-time link OK if reached here) */
-	UT_ASSERT_NE((void *) SPEC_3_4E_TIER_GREEN, NULL);
-	UT_ASSERT_NE((void *) SPEC_3_4E_TIER_YELLOW, NULL);
-	UT_ASSERT_NE((void *) SPEC_3_4E_TIER_ORANGE, NULL);
-	UT_ASSERT_NE((void *) SPEC_3_4E_TIER_RED, NULL);
-	UT_ASSERT_NE((void *) SPEC_3_4E_TIER_CATASTROPHIC, NULL);
+	UT_ASSERT_NE((void *)SPEC_3_4E_TIER_GREEN, NULL);
+	UT_ASSERT_NE((void *)SPEC_3_4E_TIER_YELLOW, NULL);
+	UT_ASSERT_NE((void *)SPEC_3_4E_TIER_ORANGE, NULL);
+	UT_ASSERT_NE((void *)SPEC_3_4E_TIER_RED, NULL);
+	UT_ASSERT_NE((void *)SPEC_3_4E_TIER_CATASTROPHIC, NULL);
 }
 
 
@@ -143,7 +143,7 @@ UT_TEST(t2_5_tier_name_count_is_5)
 
 UT_TEST(t3_metric_set_count_is_5)
 {
-	UT_ASSERT_EQ((int) SPEC_3_4E_METRIC_COUNT, 5);
+	UT_ASSERT_EQ((int)SPEC_3_4E_METRIC_COUNT, 5);
 }
 
 
@@ -151,19 +151,19 @@ UT_TEST(t3_metric_set_count_is_5)
 
 UT_TEST(t4_fail_closed_bump_linkable)
 {
-	UT_ASSERT_NE((void *) cluster_itl_bump_remote_row_lock_fail_closed_count, NULL);
+	UT_ASSERT_NE((void *)cluster_itl_bump_remote_row_lock_fail_closed_count, NULL);
 }
 UT_TEST(t5_fail_closed_get_linkable)
 {
-	UT_ASSERT_NE((void *) cluster_itl_get_remote_row_lock_fail_closed_count, NULL);
+	UT_ASSERT_NE((void *)cluster_itl_get_remote_row_lock_fail_closed_count, NULL);
 }
 UT_TEST(t6_lock_only_itl_stamp_get_linkable)
 {
-	UT_ASSERT_NE((void *) cluster_itl_get_lock_only_itl_stamp_count, NULL);
+	UT_ASSERT_NE((void *)cluster_itl_get_lock_only_itl_stamp_count, NULL);
 }
 UT_TEST(t7_lock_only_tt_hint_emit_get_linkable)
 {
-	UT_ASSERT_NE((void *) cluster_itl_get_lock_only_tt_hint_emit_count, NULL);
+	UT_ASSERT_NE((void *)cluster_itl_get_lock_only_tt_hint_emit_count, NULL);
 }
 
 
@@ -172,7 +172,7 @@ UT_TEST(t7_lock_only_tt_hint_emit_get_linkable)
 UT_TEST(t8_errcode_53r98_encodable)
 {
 	int sqlstate = MAKE_SQLSTATE('5', '3', 'R', '9', '8');
-	UT_ASSERT_EQ((int) ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED, sqlstate);
+	UT_ASSERT_EQ((int)ERRCODE_CLUSTER_REMOTE_ROW_LOCK_WAIT_NOT_SUPPORTED, sqlstate);
 }
 
 
@@ -185,7 +185,7 @@ UT_TEST(t9_single_node_no_peer_green_threshold_15)
 	/* spec-3.4c Hardening v1.0.1 A4 ★ 实测:single-node select-only 2.8% /
 	 * full 8.6% — generous-but-not-loose 上限 15% 给 5% noise buffer.
 	 * Threshold drift will be caught by docs/perf-gates.md §1 review. */
-	UT_ASSERT_EQ((int) SPEC_3_4E_CLASS_1_GREEN_THRESHOLD_PERCENT, 15);
+	UT_ASSERT_EQ((int)SPEC_3_4E_CLASS_1_GREEN_THRESHOLD_PERCENT, 15);
 }
 
 
@@ -202,10 +202,10 @@ UT_TEST(t10_class_3_4_partial_coverage_anchor)
 	 * shared heap);真 cross-node TPS contention forward-link
 	 * feature-117 / Stage 4+.  This compile-time anchor catches
 	 * accidental change to "real shared heap claim" in code. */
-	UT_ASSERT_NE((int) SPEC_3_4E_CLASS_3_PARTIAL_COVERAGE, 0);
-	UT_ASSERT_NE((int) SPEC_3_4E_CLASS_4_PARTIAL_COVERAGE, 0);
-	UT_ASSERT_EQ((int) SPEC_3_4E_CLASS_1_PARTIAL_COVERAGE, 0);
-	UT_ASSERT_EQ((int) SPEC_3_4E_CLASS_2_PARTIAL_COVERAGE, 0);
+	UT_ASSERT_NE((int)SPEC_3_4E_CLASS_3_PARTIAL_COVERAGE, 0);
+	UT_ASSERT_NE((int)SPEC_3_4E_CLASS_4_PARTIAL_COVERAGE, 0);
+	UT_ASSERT_EQ((int)SPEC_3_4E_CLASS_1_PARTIAL_COVERAGE, 0);
+	UT_ASSERT_EQ((int)SPEC_3_4E_CLASS_2_PARTIAL_COVERAGE, 0);
 }
 
 
