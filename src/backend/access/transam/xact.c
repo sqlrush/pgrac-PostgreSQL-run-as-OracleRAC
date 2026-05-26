@@ -149,6 +149,7 @@
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_tt_local.h" /* PGRAC: spec-3.1 D6 commit/abort hook */
 #include "cluster/cluster_itl_touch.h" /* PGRAC: spec-3.4a D6 pre-commit/abort */
+#include "cluster/cluster_subtrans.h"  /* PGRAC: spec-3.5 D7 subxact lifecycle hook */
 #endif
 #endif
 
@@ -5246,6 +5247,29 @@ CommitSubTransaction(void)
 	CommandCounterIncrement();
 
 	/*
+	 * PGRAC spec-3.5 D7:  emit SUBCOMMITTED to peers for cross-node
+	 * visibility (eager state propagation).  No-op on single-node /
+	 * no-peer cluster (L195).  Emit is fire-and-forget;  failure does
+	 * not block subxact commit (overlay miss → remote reader 53R97
+	 * per L199 on next visibility check).
+	 *
+	 * Child xid is s->fullTransactionId.  Parent xid is s->parent's
+	 * fullTransactionId (intermediate savepoint or top xid).  Both
+	 * must be normal (TransactionIdIsNormal) — guarded inside the
+	 * helper.
+	 */
+#ifdef USE_PGRAC_CLUSTER
+	if (FullTransactionIdIsValid(s->fullTransactionId) && s->parent != NULL &&
+		FullTransactionIdIsValid(s->parent->fullTransactionId))
+	{
+		TransactionId child_xid = XidFromFullTransactionId(s->fullTransactionId);
+		TransactionId parent_xid = XidFromFullTransactionId(s->parent->fullTransactionId);
+
+		(void) cluster_subtrans_emit_subcommit(child_xid, parent_xid);
+	}
+#endif
+
+	/*
 	 * Prior to 8.4 we marked subcommit in clog at this point.  We now only
 	 * perform that step, if required, as part of the atomic update of the
 	 * whole transaction tree at top level commit or abort.
@@ -5432,6 +5456,21 @@ AbortSubTransaction(void)
 
 		/* Advertise the fact that we aborted in pg_xact. */
 		(void) RecordTransactionAbort(true);
+
+		/*
+		 * PGRAC spec-3.5 D7:  emit ABORTED to peers for cross-node
+		 * visibility (eager state propagation).  No-op on single-node /
+		 * no-peer cluster (L195).  Subxact rollback is irrevocable at
+		 * this point;  emit failure does not affect rollback semantics.
+		 */
+#ifdef USE_PGRAC_CLUSTER
+		if (FullTransactionIdIsValid(s->fullTransactionId))
+		{
+			TransactionId child_xid = XidFromFullTransactionId(s->fullTransactionId);
+
+			(void) cluster_subtrans_emit_subabort(child_xid);
+		}
+#endif
 
 		/* Post-abort cleanup */
 		if (FullTransactionIdIsValid(s->fullTransactionId))
