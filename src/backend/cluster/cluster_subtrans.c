@@ -51,8 +51,7 @@
  * Module-local counters.  Shmem-resident so cross-backend aggregation is
  * possible from pg_cluster_state (spec-3.4e D6 pattern).
  */
-typedef struct ClusterSubtransShmem
-{
+typedef struct ClusterSubtransShmem {
 	pg_atomic_uint64 chain_depth_exceeded_count;
 	pg_atomic_uint64 xact_has_state_check_count;
 } ClusterSubtransShmem;
@@ -79,10 +78,9 @@ cluster_subtrans_shmem_init(void)
 	if (IsBootstrapProcessingMode() || !cluster_enabled || cluster_node_id < 0)
 		return;
 
-	ClusterSubtransState = (ClusterSubtransShmem *) ShmemInitStruct(
+	ClusterSubtransState = (ClusterSubtransShmem *)ShmemInitStruct(
 		"ClusterSubtransState", MAXALIGN(sizeof(ClusterSubtransShmem)), &found);
-	if (!found)
-	{
+	if (!found) {
 		pg_atomic_init_u64(&ClusterSubtransState->chain_depth_exceeded_count, 0);
 		pg_atomic_init_u64(&ClusterSubtransState->xact_has_state_check_count, 0);
 	}
@@ -135,10 +133,10 @@ build_key_for_xid(TransactionId xid, ClusterTTStatusKey *out)
 	if (!cluster_tt_local_get_or_create_binding(xid, &seg, &off, &tt_id))
 		return false;
 
-	out->origin_node_id = (uint16) cluster_node_id;
-	out->undo_segment_id = (uint16) seg;
+	out->origin_node_id = (uint16)cluster_node_id;
+	out->undo_segment_id = (uint16)seg;
 	out->tt_slot_id = tt_id;
-	out->cluster_epoch = (uint32) cluster_epoch_get_current();
+	out->cluster_epoch = (uint32)cluster_epoch_get_current();
 	out->local_xid = xid;
 	return true;
 }
@@ -148,8 +146,7 @@ build_key_for_xid(TransactionId xid, ClusterTTStatusKey *out)
 /* ------------------------------------------------------------ */
 
 bool
-cluster_subtrans_ensure_parent_binding(TransactionId		parent_xid,
-									   ClusterTTStatusKey * parent_key_out)
+cluster_subtrans_ensure_parent_binding(TransactionId parent_xid, ClusterTTStatusKey *parent_key_out)
 {
 	ClusterTTStatusKey key;
 
@@ -232,8 +229,7 @@ cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result, int de
 
 	memset(&cur, 0, sizeof(cur));
 
-	if (child_result == NULL)
-	{
+	if (child_result == NULL) {
 		cur.status = CLUSTER_TT_STATUS_UNKNOWN;
 		cur.authoritative = false;
 		return cur;
@@ -253,12 +249,10 @@ cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result, int de
 
 	next_key = cur.parent_key;
 
-	while (budget-- > 0)
-	{
+	while (budget-- > 0) {
 		ClusterTTStatusResult parent_res;
 
-		if (!cluster_tt_status_lookup_exact(&next_key, &parent_res))
-		{
+		if (!cluster_tt_status_lookup_exact(&next_key, &parent_res)) {
 			/*
 			 * parent overlay miss → caller must fail-closed (53R97 per
 			 * L199).  Return UNKNOWN authoritative=false.
@@ -276,8 +270,7 @@ cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result, int de
 			return parent_res;
 
 		/* Continue follow up the chain. */
-		if (!parent_res.has_parent_key)
-		{
+		if (!parent_res.has_parent_key) {
 			memset(&cur, 0, sizeof(cur));
 			cur.status = CLUSTER_TT_STATUS_UNKNOWN;
 			cur.authoritative = false;
@@ -324,8 +317,8 @@ cluster_subtrans_xact_has_state(TransactionId top_xid)
 		if (!cluster_tt_local_peek_binding(top_xid, &seg, &off, &tt_id, &epoch))
 			return false;
 		memset(&key, 0, sizeof(key));
-		key.origin_node_id = (uint16) cluster_node_id;
-		key.undo_segment_id = (uint16) seg;
+		key.origin_node_id = (uint16)cluster_node_id;
+		key.undo_segment_id = (uint16)seg;
 		key.tt_slot_id = tt_id;
 		key.cluster_epoch = epoch;
 		key.local_xid = top_xid;
@@ -365,15 +358,15 @@ cluster_subtrans_get_xact_has_state_check_count(void)
 bool
 cluster_subtrans_emit_subcommit(TransactionId child_xid, TransactionId parent_xid)
 {
-	(void) child_xid;
-	(void) parent_xid;
+	(void)child_xid;
+	(void)parent_xid;
 	return false;
 }
 
 bool
 cluster_subtrans_emit_subabort(TransactionId child_xid)
 {
-	(void) child_xid;
+	(void)child_xid;
 	return false;
 }
 
@@ -382,7 +375,7 @@ cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result, int de
 {
 	ClusterTTStatusResult r;
 
-	(void) depth_remaining;
+	(void)depth_remaining;
 	memset(&r, 0, sizeof(r));
 	if (child_result != NULL)
 		r = *child_result;
@@ -392,15 +385,14 @@ cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result, int de
 bool
 cluster_subtrans_xact_has_state(TransactionId top_xid)
 {
-	(void) top_xid;
+	(void)top_xid;
 	return false;
 }
 
 bool
-cluster_subtrans_ensure_parent_binding(TransactionId parent_xid,
-									   ClusterTTStatusKey *parent_key_out)
+cluster_subtrans_ensure_parent_binding(TransactionId parent_xid, ClusterTTStatusKey *parent_key_out)
 {
-	(void) parent_xid;
+	(void)parent_xid;
 	if (parent_key_out != NULL)
 		memset(parent_key_out, 0, sizeof(*parent_key_out));
 	return false;

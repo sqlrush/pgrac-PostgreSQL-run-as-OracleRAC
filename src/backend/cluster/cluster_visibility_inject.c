@@ -334,10 +334,10 @@ cluster_test_inject_subtrans_subcommitted(PG_FUNCTION_ARGS)
 {
 	TransactionId child_xid;
 	TransactionId parent_xid;
-	uint16		origin;
-	uint16		segment;
-	uint32		slot;
-	uint32		epoch;
+	uint16 origin;
+	uint16 segment;
+	uint32 slot;
+	uint32 epoch;
 	ClusterTTStatusKey child_key;
 	ClusterTTStatusKey parent_key;
 
@@ -346,12 +346,12 @@ cluster_test_inject_subtrans_subcommitted(PG_FUNCTION_ARGS)
 						errmsg("must be superuser to use "
 							   "cluster_test_inject_subtrans_subcommitted")));
 
-	child_xid = (TransactionId) PG_GETARG_UINT32(0);
-	parent_xid = (TransactionId) PG_GETARG_UINT32(1);
-	origin = (uint16) PG_GETARG_INT32(2);
-	segment = (uint16) PG_GETARG_INT32(3);
-	slot = (uint32) PG_GETARG_INT32(4);
-	epoch = (uint32) PG_GETARG_INT32(5);
+	child_xid = (TransactionId)PG_GETARG_UINT32(0);
+	parent_xid = (TransactionId)PG_GETARG_UINT32(1);
+	origin = (uint16)PG_GETARG_INT32(2);
+	segment = (uint16)PG_GETARG_INT32(3);
+	slot = (uint32)PG_GETARG_INT32(4);
+	epoch = (uint32)PG_GETARG_INT32(5);
 
 	memset(&child_key, 0, sizeof(child_key));
 	child_key.origin_node_id = origin;
@@ -362,7 +362,7 @@ cluster_test_inject_subtrans_subcommitted(PG_FUNCTION_ARGS)
 
 	memset(&parent_key, 0, sizeof(parent_key));
 	parent_key.origin_node_id = origin;
-	parent_key.undo_segment_id = (uint16) (segment + 1);
+	parent_key.undo_segment_id = (uint16)(segment + 1);
 	parent_key.tt_slot_id = slot + 1;
 	parent_key.cluster_epoch = epoch;
 	parent_key.local_xid = parent_xid;

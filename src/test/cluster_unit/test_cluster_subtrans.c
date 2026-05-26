@@ -79,7 +79,7 @@ cluster_subtrans_emit_subabort(TransactionId child_xid pg_attribute_unused())
 
 ClusterTTStatusResult
 cluster_subtrans_lookup_parent(const ClusterTTStatusResult *child_result,
-							   int						   depth_remaining pg_attribute_unused())
+							   int depth_remaining pg_attribute_unused())
 {
 	ClusterTTStatusResult r;
 
@@ -96,7 +96,7 @@ cluster_subtrans_xact_has_state(TransactionId top_xid pg_attribute_unused())
 }
 
 bool
-cluster_subtrans_ensure_parent_binding(TransactionId		parent_xid pg_attribute_unused(),
+cluster_subtrans_ensure_parent_binding(TransactionId parent_xid pg_attribute_unused(),
 									   ClusterTTStatusKey *parent_key_out)
 {
 	if (parent_key_out != NULL)
@@ -154,12 +154,12 @@ cluster_tt_status_hint_get_v3_downgrade_count(void)
 
 UT_TEST(t1_subcommitted_enum_is_5)
 {
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_UNKNOWN, 0);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_IN_PROGRESS, 1);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_COMMITTED, 2);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_ABORTED, 3);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_CLEANED_OUT, 4);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_SUBCOMMITTED, 5);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_UNKNOWN, 0);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_IN_PROGRESS, 1);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_COMMITTED, 2);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_ABORTED, 3);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_CLEANED_OUT, 4);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_SUBCOMMITTED, 5);
 }
 
 
@@ -174,9 +174,9 @@ UT_TEST(t2_result_struct_has_parent_metadata)
 	r.has_parent_key = true;
 	r.parent_key.origin_node_id = 7;
 
-	UT_ASSERT_EQ((int) r.status, 5);
+	UT_ASSERT_EQ((int)r.status, 5);
 	UT_ASSERT(r.has_parent_key);
-	UT_ASSERT_EQ((int) r.parent_key.origin_node_id, 7);
+	UT_ASSERT_EQ((int)r.parent_key.origin_node_id, 7);
 }
 
 
@@ -184,7 +184,7 @@ UT_TEST(t2_result_struct_has_parent_metadata)
 
 UT_TEST(t3_v3_sizeof_is_64)
 {
-	UT_ASSERT_EQ((int) sizeof(ClusterTTStatusHintMsgV3), 64);
+	UT_ASSERT_EQ((int)sizeof(ClusterTTStatusHintMsgV3), 64);
 }
 
 
@@ -192,25 +192,25 @@ UT_TEST(t3_v3_sizeof_is_64)
 
 UT_TEST(t4_v3_offsetof_msg_version_is_0)
 {
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV3, msg_version), 0);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV3, msg_version), 0);
 }
 
 UT_TEST(t5_v3_offsetof_key_is_8)
 {
 	/* HC184 wire ABI lock — V1/V2/V3 same key offset. */
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV3, key), 8);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV3, key), 8);
 }
 
 UT_TEST(t6_v3_offsetof_commit_scn_is_32)
 {
 	/* spec-3.3 D8 wire ABI lock — V2/V3 same commit_scn offset. */
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV3, commit_scn), 32);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV3, commit_scn), 32);
 }
 
 UT_TEST(t7_v3_offsetof_parent_key_is_40)
 {
 	/* L203 progressive extend convention — V3 appended @ offset 40. */
-	UT_ASSERT_EQ((int) offsetof(ClusterTTStatusHintMsgV3, parent_key), 40);
+	UT_ASSERT_EQ((int)offsetof(ClusterTTStatusHintMsgV3, parent_key), 40);
 }
 
 
@@ -218,9 +218,9 @@ UT_TEST(t7_v3_offsetof_parent_key_is_40)
 
 UT_TEST(t8_hint_v3_enum_is_3)
 {
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_HINT_V1, 1);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_HINT_V2, 2);
-	UT_ASSERT_EQ((int) CLUSTER_TT_STATUS_HINT_V3, 3);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_HINT_V1, 1);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_HINT_V2, 2);
+	UT_ASSERT_EQ((int)CLUSTER_TT_STATUS_HINT_V3, 3);
 }
 
 
@@ -242,7 +242,7 @@ UT_TEST(t9_cluster_subtrans_api_symbols_link)
 	ok = cluster_subtrans_emit_subabort(InvalidTransactionId);
 	UT_ASSERT(!ok);
 
-	(void) cluster_subtrans_lookup_parent(&r, 32);
+	(void)cluster_subtrans_lookup_parent(&r, 32);
 
 	ok = cluster_subtrans_xact_has_state(InvalidTransactionId);
 	UT_ASSERT(!ok);
@@ -282,7 +282,7 @@ UT_TEST(t11_hint_emit_subcommitted_links)
 	cluster_tt_status_hint_emit_subcommitted(&child, &parent);
 
 	/* Counter getter also links. */
-	UT_ASSERT_EQ((uint64) cluster_tt_status_hint_get_v3_downgrade_count(), (uint64) 0);
+	UT_ASSERT_EQ((uint64)cluster_tt_status_hint_get_v3_downgrade_count(), (uint64)0);
 }
 
 
@@ -298,7 +298,7 @@ UT_TEST(t12_errcode_53r9b)
 	int code = ERRCODE_PREPARE_TRANSACTION_WITH_CLUSTER_SUBTRANS_STATE;
 
 	UT_ASSERT_NE(code, 0);
-	UT_ASSERT_EQ(code, (int) MAKE_SQLSTATE('5', '3', 'R', '9', 'B'));
+	UT_ASSERT_EQ(code, (int)MAKE_SQLSTATE('5', '3', 'R', '9', 'B'));
 }
 
 
