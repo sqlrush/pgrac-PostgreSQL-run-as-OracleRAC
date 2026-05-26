@@ -205,7 +205,7 @@ jobs:
           export PG_REGRESS="$(pwd)/src/test/regress/pg_regress"
           # class 2/3/4 via Perl runner (ClusterPair fixture);
           # class 1 (single-node-no-peer) covered by existing perf-baseline job above.
-          for class in 2node-local-affinity 2node-cross-node-visibility 2node-hot-row-lock; do
+          for class in 2node-local-affinity 2node-cross-node-visibility 2node-hot-row-lock 2node-subxact-nesting; do
             echo "=== Running $class ==="
             rm -rf tmp_check  # avoid "File exists" Bail between classes
             scripts/perf/run-2node-baseline.sh \

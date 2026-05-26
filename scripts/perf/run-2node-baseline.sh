@@ -70,6 +70,7 @@ Modes:
   2node-local-affinity          class 2 (warn-only)
   2node-cross-node-visibility   class 3 (PARTIAL — inject-based)
   2node-hot-row-lock            class 4 (PARTIAL — inject-based)
+  2node-subxact-nesting         class 5 (spec-3.5 PARTIAL — savepoint depth=5)
   all                           run all 4 classes
 
 Options:
@@ -119,8 +120,8 @@ for arg in "$@"; do
 done
 
 case "$MODE" in
-    single-node-no-peer|2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|all) ;;
-    *) die "--mode must be one of:single-node-no-peer | 2node-local-affinity | 2node-cross-node-visibility | 2node-hot-row-lock | all" ;;
+    single-node-no-peer|2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting|all) ;;
+    *) die "--mode must be one of:single-node-no-peer | 2node-local-affinity | 2node-cross-node-visibility | 2node-hot-row-lock | 2node-subxact-nesting | all" ;;
 esac
 
 mkdir -p "$RESULTS_DIR"
@@ -174,7 +175,7 @@ case "$MODE" in
     single-node-no-peer)
         run_single_node_no_peer
         ;;
-    2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock)
+    2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting)
         run_2node_class "$MODE"
         ;;
     all)
@@ -182,6 +183,7 @@ case "$MODE" in
         run_2node_class "2node-local-affinity"
         run_2node_class "2node-cross-node-visibility"
         run_2node_class "2node-hot-row-lock"
+        run_2node_class "2node-subxact-nesting"
         ;;
 esac
 

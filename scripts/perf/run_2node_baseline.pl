@@ -112,7 +112,7 @@ $node0->command_ok(
     [ 'pgbench', '-i', '-s', $scale, 'postgres' ],
     'pgbench init scale ok',
 );
-if ($mode eq '2node-local-affinity') {
+if ($mode eq '2node-local-affinity' || $mode eq '2node-subxact-nesting') {
     print "run_2node_baseline.pl: pgbench -i scale=$scale on node1\n";
     $node1->command_ok(
         [ 'pgbench', '-i', '-s', $scale, 'postgres' ],
@@ -159,6 +159,17 @@ elsif ($mode eq '2node-hot-row-lock') {
         q{ALTER SYSTEM SET cluster_test_force_visibility_cluster_path = on});
     $node0->safe_psql('postgres', 'SELECT pg_reload_conf()');
     $script_path = File::Spec->catfile($FindBin::RealBin, 'scripts', 'hot_row_select_for_update.sql');
+}
+elsif ($mode eq '2node-subxact-nesting') {
+    # spec-3.5 class 5: savepoint depth=5 nesting workload.  Initialise
+    # pgbench baseline tables (UPDATE pgbench_accounts inside the
+    # innermost savepoint) so we measure subxact cost rather than IC
+    # traffic.  Cap chain depth via GUC for fair comparison; default
+    # 32 covers depth=5 with headroom.
+    $node0->safe_psql('postgres',
+        'ALTER SYSTEM SET cluster.subtrans_max_chain_depth = 32');
+    $node0->safe_psql('postgres', 'SELECT pg_reload_conf()');
+    $script_path = File::Spec->catfile($FindBin::RealBin, 'scripts', 'subxact_nesting.sql');
 }
 else {
     $pair->stop_pair;
@@ -308,7 +319,9 @@ my $summary = {
         p95_latency_ms => $p95_ms,
         latency_sample_count => scalar(@latencies),
     },
-    partial_coverage => ($mode eq '2node-cross-node-visibility' || $mode eq '2node-hot-row-lock') ? 1 : 0,
+    partial_coverage => ($mode eq '2node-cross-node-visibility'
+                          || $mode eq '2node-hot-row-lock'
+                          || $mode eq '2node-subxact-nesting') ? 1 : 0,
     notes => 'spec-3.4e v0.2 §2 — class 3/4 partial coverage:inject-based;真 cross-node shared heap TPS contention 推 feature-117 / Stage 4+',
 };
 
