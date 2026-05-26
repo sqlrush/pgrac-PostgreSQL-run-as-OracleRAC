@@ -12430,4 +12430,15 @@
   proargtypes => '',
   prosrc => 'cluster_test_clear_visibility_injects' },
 
+# spec-3.5 D19 TEST-ONLY:  inject SUBCOMMITTED parent chain entry for
+# spec-3.5 SUBTRANS reader lazy follow tests.  Production builds link
+# FEATURE_NOT_SUPPORTED stub;  --enable-injection-points builds activate.
+{ oid => '8927', descr => 'TEST-ONLY: inject SUBCOMMITTED parent chain for SUBTRANS visibility',
+  proname => 'cluster_test_inject_subtrans_subcommitted',
+  provolatile => 'v', proparallel => 'u',
+  prorettype => 'bool',
+  proargtypes => 'xid xid int4 int4 int4 int4',
+  proargnames => '{child_xid,parent_xid,origin_node_id,undo_segment_id,tt_slot_id,cluster_epoch}',
+  prosrc => 'cluster_test_inject_subtrans_subcommitted' },
+
 ]

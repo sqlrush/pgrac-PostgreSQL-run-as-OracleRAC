@@ -527,7 +527,20 @@
  * (v0.1 t_lock_itl_slot_idx scheme rejected per F2 — raw_xmax + ITL slot scan
  * derives lock-only ref without header growth, avoiding MAXALIGN tax + disk
  * format break).  Catalog tooling must use the new 7-arg layout. */
-#define CATALOG_VERSION_NO 202605510
+/*
+ * 202605520 = 2026-05-27 spec-3.5 D11+D19:
+ * - NEW SQLSTATE 53R9B (ERRCODE_PREPARE_TRANSACTION_WITH_CLUSTER_SUBTRANS_STATE)
+ * - NEW pg_proc.dat entry oid=8927 cluster_test_inject_subtrans_subcommitted
+ *   (TEST-ONLY SRF;  --enable-injection-points wires real impl;  production
+ *   build emits FEATURE_NOT_SUPPORTED stub)
+ * - ClusterTTStatusResult struct extended with has_parent_key + parent_key
+ *   (24B ClusterTTStatusKey;  spec-3.5 D1)
+ * - TT_STATUS_HINT V3 wire ABI (64B;  V2 0-39 byte-for-byte + parent_key
+ *   appended @ offset 40;  L203 progressive extend convention;  spec-3.5 D3)
+ * - CLUSTER_TT_STATUS_SUBCOMMITTED = 5 enum value
+ * - cluster.subtrans_max_chain_depth NEW GUC
+ */
+#define CATALOG_VERSION_NO 202605520
 
 /* spec-2.39 D10 (2026-05-21):  SI Broadcaster production activation —
  * DDL commit hook (AtEOXact_Inval + COMMIT PREPARED via cluster-aware

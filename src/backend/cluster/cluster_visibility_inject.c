@@ -148,6 +148,8 @@ cluster_test_lookup_visibility_inject(TransactionId xid, ClusterUndoTTSlotRef *r
 
 PG_FUNCTION_INFO_V1(cluster_test_inject_visibility_tt_ref);
 PG_FUNCTION_INFO_V1(cluster_test_clear_visibility_injects);
+/* PGRAC spec-3.5 D19 */
+PG_FUNCTION_INFO_V1(cluster_test_inject_subtrans_subcommitted);
 
 /*
  * cluster_test_inject_visibility_tt_ref (spec-3.4c D7 + A1 + F5):
@@ -310,6 +312,69 @@ cluster_test_clear_visibility_injects(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(removed);
 }
 
+/*
+ * cluster_test_inject_subtrans_subcommitted (spec-3.5 D19 NEW):
+ *
+ *	  Test-only inject of a SUBCOMMITTED parent chain overlay entry.
+ *	  Builds the child's ClusterTTStatusKey from (child_xid, origin,
+ *	  segment, slot, epoch) and the parent's key from (parent_xid,
+ *	  origin, segment+1, slot+1, epoch) — synthetic parent identity
+ *	  distinct from the child but living in the same origin/epoch so
+ *	  reader lazy follow can resolve.  Caller is responsible for the
+ *	  parent's terminal status (COMMITTED/ABORTED/IN_PROGRESS) — typical
+ *	  pattern:  call cluster_test_inject_visibility_tt_ref for the
+ *	  parent first, then this UDF to register the child SUBCOMMITTED.
+ *
+ *	  Used by t/210 L9 SUBCOMMITTED chain inject smoke (when
+ *	  ENABLE_INJECTION).  Production build returns FEATURE_NOT_SUPPORTED
+ *	  via the #else stub below.
+ */
+Datum
+cluster_test_inject_subtrans_subcommitted(PG_FUNCTION_ARGS)
+{
+	TransactionId child_xid;
+	TransactionId parent_xid;
+	uint16		origin;
+	uint16		segment;
+	uint32		slot;
+	uint32		epoch;
+	ClusterTTStatusKey child_key;
+	ClusterTTStatusKey parent_key;
+
+	if (!superuser())
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						errmsg("must be superuser to use "
+							   "cluster_test_inject_subtrans_subcommitted")));
+
+	child_xid = (TransactionId) PG_GETARG_UINT32(0);
+	parent_xid = (TransactionId) PG_GETARG_UINT32(1);
+	origin = (uint16) PG_GETARG_INT32(2);
+	segment = (uint16) PG_GETARG_INT32(3);
+	slot = (uint32) PG_GETARG_INT32(4);
+	epoch = (uint32) PG_GETARG_INT32(5);
+
+	memset(&child_key, 0, sizeof(child_key));
+	child_key.origin_node_id = origin;
+	child_key.undo_segment_id = segment;
+	child_key.tt_slot_id = slot;
+	child_key.cluster_epoch = epoch;
+	child_key.local_xid = child_xid;
+
+	memset(&parent_key, 0, sizeof(parent_key));
+	parent_key.origin_node_id = origin;
+	parent_key.undo_segment_id = (uint16) (segment + 1);
+	parent_key.tt_slot_id = slot + 1;
+	parent_key.cluster_epoch = epoch;
+	parent_key.local_xid = parent_xid;
+
+	if (!cluster_tt_status_install_subcommitted(&child_key, &parent_key))
+		ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+						errmsg("cluster_test_inject_subtrans_subcommitted: install failed"),
+						errhint("Raise cluster.tt_status_overlay_max_entries or lower TTL.")));
+
+	PG_RETURN_BOOL(true);
+}
+
 #else /* !ENABLE_INJECTION */
 
 Size
@@ -333,6 +398,8 @@ cluster_test_lookup_visibility_inject(TransactionId xid, ClusterUndoTTSlotRef *r
 
 PG_FUNCTION_INFO_V1(cluster_test_inject_visibility_tt_ref);
 PG_FUNCTION_INFO_V1(cluster_test_clear_visibility_injects);
+/* PGRAC spec-3.5 D19 */
+PG_FUNCTION_INFO_V1(cluster_test_inject_subtrans_subcommitted);
 
 Datum
 cluster_test_inject_visibility_tt_ref(PG_FUNCTION_ARGS)
@@ -352,6 +419,17 @@ cluster_test_clear_visibility_injects(PG_FUNCTION_ARGS)
 					errhint("Rebuild with --enable-injection-points to use "
 							"cluster_test_clear_visibility_injects().")));
 	PG_RETURN_INT32(0);
+}
+
+/* PGRAC spec-3.5 D19 stub for production build (--without ENABLE_INJECTION). */
+Datum
+cluster_test_inject_subtrans_subcommitted(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster visibility inject support is not enabled"),
+					errhint("Rebuild with --enable-injection-points to use "
+							"cluster_test_inject_subtrans_subcommitted().")));
+	PG_RETURN_BOOL(false);
 }
 
 #endif /* ENABLE_INJECTION */
