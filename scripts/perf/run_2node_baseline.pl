@@ -245,7 +245,9 @@ sub start_pgbench {
 }
 
 my @children;
-if ($mode eq '2node-local-affinity') {
+if ($mode eq '2node-local-affinity' || $mode eq '2node-subxact-nesting') {
+    # spec-3.5 D16: subxact-nesting reuses local-affinity fanout pattern
+    # (both nodes + per-node node_id pgbench var).
     push @children, [ start_pgbench($node0, 'node0', [ '-D', 'node_id=0' ]) ];
     push @children, [ start_pgbench($node1, 'node1', [ '-D', 'node_id=1' ]) ];
 } else {
