@@ -36,12 +36,18 @@ use File::Spec;
 use JSON::PP;
 
 # ClusterPair fixture (spec-3.4b/c/d 既有,本 spec 直接复用 — F4 修正)
-my $have_cluster_pair = 0;
-eval {
-    require PostgreSQL::Test::ClusterPair;
-    PostgreSQL::Test::ClusterPair->import();
-    $have_cluster_pair = 1;
-};
+# PGRAC: load in BEGIN so PostgreSQL::Test::Utils + Cluster INIT blocks fire
+# (Hardening v1.0.1 — Too-late-INIT fix for portdir resolution).
+# Declare with `our` (no `= 0`) so BEGIN-time assignment isn't overwritten
+# by main-time initialization.
+our $have_cluster_pair;
+BEGIN {
+    eval {
+        require PostgreSQL::Test::ClusterPair;
+        PostgreSQL::Test::ClusterPair->import();
+        $have_cluster_pair = 1;
+    };
+}
 
 my $mode;
 my $scale = 10;
@@ -292,4 +298,8 @@ print "  fail_closed_rate=$fail_closed_rate\n";
 print "  tt_hit_miss_ratio=$hit_miss_ratio (hit=$hit miss=$miss)\n";
 print "  p95_latency_ms=$p95_ms (samples=" . scalar(@latencies) . ")\n";
 
+# PGRAC: declare TAP plan so exit status reflects ok-count, not "no plan"
+# (Hardening v1.0.1 — done_testing fix; previously caused exit 254 even when
+# both PG TAP ok() calls succeeded).
+Test::More::done_testing();
 exit 0;
