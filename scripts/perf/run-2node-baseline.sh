@@ -120,8 +120,8 @@ for arg in "$@"; do
 done
 
 case "$MODE" in
-    single-node-no-peer|2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting|all) ;;
-    *) die "--mode must be one of:single-node-no-peer | 2node-local-affinity | 2node-cross-node-visibility | 2node-hot-row-lock | 2node-subxact-nesting | all" ;;
+    single-node-no-peer|2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting|2node-multixact-shared-lock|all) ;;
+    *) die "--mode must be one of:single-node-no-peer | 2node-local-affinity | 2node-cross-node-visibility | 2node-hot-row-lock | 2node-subxact-nesting | 2node-multixact-shared-lock | all" ;;
 esac
 
 mkdir -p "$RESULTS_DIR"
@@ -175,7 +175,7 @@ case "$MODE" in
     single-node-no-peer)
         run_single_node_no_peer
         ;;
-    2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting)
+    2node-local-affinity|2node-cross-node-visibility|2node-hot-row-lock|2node-subxact-nesting|2node-multixact-shared-lock)
         run_2node_class "$MODE"
         ;;
     all)
@@ -184,6 +184,7 @@ case "$MODE" in
         run_2node_class "2node-cross-node-visibility"
         run_2node_class "2node-hot-row-lock"
         run_2node_class "2node-subxact-nesting"
+        run_2node_class "2node-multixact-shared-lock"
         ;;
 esac
 

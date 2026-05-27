@@ -171,6 +171,16 @@ elsif ($mode eq '2node-subxact-nesting') {
     $node0->safe_psql('postgres', 'SELECT pg_reload_conf()');
     $script_path = File::Spec->catfile($FindBin::RealBin, 'scripts', 'subxact_nesting.sql');
 }
+elsif ($mode eq '2node-multixact-shared-lock') {
+    # spec-3.6 class 6: concurrent FOR SHARE + UPDATE workload to
+    # exercise MultiXact composition + cluster overlay emit/lookup +
+    # resolve_visibility truth table.  Default GUC cap (32 members)
+    # covers typical share-lock workloads.
+    $node0->safe_psql('postgres',
+        'ALTER SYSTEM SET cluster.multixact_member_overlay_max_members = 32');
+    $node0->safe_psql('postgres', 'SELECT pg_reload_conf()');
+    $script_path = File::Spec->catfile($FindBin::RealBin, 'scripts', 'multixact_shared_lock.sql');
+}
 else {
     $pair->stop_pair;
     die "unknown mode: $mode\n";
@@ -245,9 +255,11 @@ sub start_pgbench {
 }
 
 my @children;
-if ($mode eq '2node-local-affinity' || $mode eq '2node-subxact-nesting') {
-    # spec-3.5 D16: subxact-nesting reuses local-affinity fanout pattern
-    # (both nodes + per-node node_id pgbench var).
+if ($mode eq '2node-local-affinity' || $mode eq '2node-subxact-nesting'
+    || $mode eq '2node-multixact-shared-lock')
+{
+    # spec-3.5 D16 / spec-3.6 D13: subxact-nesting + multixact-shared-lock
+    # reuse local-affinity fanout (both nodes + per-node node_id).
     push @children, [ start_pgbench($node0, 'node0', [ '-D', 'node_id=0' ]) ];
     push @children, [ start_pgbench($node1, 'node1', [ '-D', 'node_id=1' ]) ];
 } else {
@@ -323,7 +335,8 @@ my $summary = {
     },
     partial_coverage => ($mode eq '2node-cross-node-visibility'
                           || $mode eq '2node-hot-row-lock'
-                          || $mode eq '2node-subxact-nesting') ? 1 : 0,
+                          || $mode eq '2node-subxact-nesting'
+                          || $mode eq '2node-multixact-shared-lock') ? 1 : 0,
     notes => 'spec-3.4e v0.2 §2 — class 3/4 partial coverage:inject-based;真 cross-node shared heap TPS contention 推 feature-117 / Stage 4+',
 };
 
