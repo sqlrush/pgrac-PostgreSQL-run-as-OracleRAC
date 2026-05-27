@@ -437,6 +437,13 @@ void
 cluster_subtrans_shmem_register(void)
 {}
 
+/* spec-3.6 D2 stub: cluster_init_shmem_module also calls
+ * cluster_multixact_shmem_register (cluster_multixact.c).  cluster_unit
+ * test binary doesn't link cluster_multixact.o;  provide no-op stub. */
+void
+cluster_multixact_shmem_register(void)
+{}
+
 /* Spec-2.5 Sprint A stub: same for CSSD. */
 void
 cluster_cssd_shmem_register(void)
