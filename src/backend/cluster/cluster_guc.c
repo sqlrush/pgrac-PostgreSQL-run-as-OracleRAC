@@ -63,6 +63,12 @@ int cluster_shmem_max_regions = 64;
 int cluster_grd_max_entries = 0;
 int cluster_ges_request_timeout_ms = 60000; /* spec-2.16 D12 + v0.5 P1.5 */
 
+#ifdef ENABLE_INJECTION
+#define CLUSTER_SHMEM_MIN_REGIONS 41
+#else
+#define CLUSTER_SHMEM_MIN_REGIONS 40
+#endif
+
 /* spec-2.23 D11: */
 int cluster_lmd_probe_collect_timeout_ms = 3000; /* coordinator REPORT collect deadline */
 int cluster_ges_reply_wait_max_entries = 1024;	 /* 5-tuple wait table cap */
@@ -632,9 +638,11 @@ cluster_init_guc(void)
 	 * cluster.shmem_max_regions (spec-1.3): capacity of the cluster shmem
 	 * region registry.  Default 64 covers the stage 1.3 baseline plus the
 	 * reserved regions planned in cluster-shmem-design.md §3.2 with a wide
-	 * safety margin.  Range [35, 256] -- 35 is the minimum to fit the
-	 * spec-3.1 baseline after adding the TT status overlay + local sequence
-	 * regions on top of spec-2.39's SI Broadcaster ACK regions.  256 is the
+	 * safety margin.  Range [40, 256] in production builds -- 40 is the
+	 * minimum to fit the spec-3.6 baseline after adding the MultiXact
+	 * overlay region on top of spec-3.5's SUBTRANS state region.  Test
+	 * injection builds use 41 because the visibility-inject shmem region is
+	 * compiled in.  256 is the
 	 * upper engineering bound (raise via source-code change if more are
 	 * needed).  PGC_POSTMASTER because the registry array is palloc'd once
 	 * at postmaster init from this value.  Min was raised 8 -> 16 in
@@ -642,9 +650,11 @@ cluster_init_guc(void)
 	 * 28 -> 29 in spec-2.34 for cluster_gcs_block_dedup, and 29 -> 31 in
 	 * spec-2.38 for ClusterSinvalOutbound + ClusterSinvalInbound, 31 -> 33
 	 * in spec-2.39 for ClusterSinvalAckWait + ClusterSinvalAckOutbound,
-	 * 33 -> 35 in spec-3.1 for ClusterTTStatus + ClusterTTLocalSeq, and
-	 * 35 -> 36 in spec-3.2 for the visibility injection region, so the
-	 * published lower bound remains bootable.
+	 * 33 -> 35 in spec-3.1 for ClusterTTStatus + ClusterTTLocalSeq,
+	 * 35 -> 36 in spec-3.2 for the visibility injection region, 36 -> 39
+	 * through the spec-3.4/spec-3.5 ITL/TT/SUBTRANS regions, and 39 -> 40
+	 * in spec-3.6 for the MultiXact overlay, so the published lower bound
+	 * remains bootable.
 	 */
 	DefineCustomIntVariable("cluster.shmem_max_regions",
 							gettext_noop("Capacity of the pgrac cluster shmem region registry."),
@@ -654,7 +664,7 @@ cluster_init_guc(void)
 										 "registers one region.  Raise if FATAL on startup with "
 										 "errcode 53400 \"cluster shmem registry capacity "
 										 "exceeded\"."),
-							&cluster_shmem_max_regions, 64, 39, 256,
+							&cluster_shmem_max_regions, 64, CLUSTER_SHMEM_MIN_REGIONS, 256,
 							PGC_POSTMASTER, /* registry array is palloc'd once at init */
 							0,				/* flags */
 							NULL,			/* check_hook */
