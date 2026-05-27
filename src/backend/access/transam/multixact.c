@@ -920,6 +920,9 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 			c_members[i].status = (uint8) members[i].status;
 			c_members[i]._pad8 = 0;
 			c_members[i].origin_node_id = (uint16) cluster_node_id;
+			c_members[i].undo_segment_id = (uint16) seg;
+			c_members[i]._pad16 = 0;
+			c_members[i].tt_slot_id = tt_id;
 			c_members[i].epoch = epoch;
 			c_members[i]._reserved2 = 0;
 		}

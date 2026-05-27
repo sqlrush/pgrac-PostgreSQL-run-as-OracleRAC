@@ -103,8 +103,8 @@ static ClusterTTStatusHintState *ClusterTTHintCounters = NULL;
 
 /*
  * PGRAC spec-3.6 D4:  V4 sidecar outbound queue (fixed-size, separate
- * from V2/V3 single-key ring).  Each slot reserves 4120B (header 24 +
- * 256 × 16 members).  Default 1024 slots ≈ 4.1 MiB shmem (GUC
+ * from V2/V3 single-key ring).  Each slot reserves 6168B (header 24 +
+ * 256 × 24 members).  Default 1024 slots ≈ 6.0 MiB shmem (GUC
  * cluster.multixact_hint_outbound_slots).
  */
 typedef struct ClusterMultiXactHintOutboundRing {
@@ -496,7 +496,7 @@ cluster_tt_status_hint_drain_outbound(void)
 			LWLockRelease(&ClusterMultiXactHintOutbound->lock.lock);
 
 			/*
-			 * Wire length = 24B header + member_count × 16B members.
+			 * Wire length = 24B header + member_count × 24B members.
 			 * Sender already capped member_count at GUC (emit path);
 			 * receiver re-validates per HC208.
 			 */
@@ -603,7 +603,7 @@ cluster_tt_status_hint_handle_envelope(const ClusterICEnvelope *env, const void 
 		/*
 		 * PGRAC spec-3.6 D4:  V4 sidecar multixact composition payload.
 		 *
-		 *   Strict payload length:  24B header + member_count × 16B
+		 *   Strict payload length:  24B header + member_count × 24B
 		 *   members[].  Receiver MUST validate exact length match.
 		 *   member_count > GUC cap → DROP + overlay_overflow_count +1.
 		 *   anti-spoof:  key.origin_node_id == env->source_node_id.
@@ -653,6 +653,15 @@ cluster_tt_status_hint_handle_envelope(const ClusterICEnvelope *env, const void 
 
 		v4_members = (const ClusterMultiXactMember *)((const char *)payload
 													  + sizeof(ClusterTTStatusHintMsgV4Header));
+		for (uint16 i = 0; i < v4_member_count; i++) {
+			const ClusterMultiXactMember *m = &v4_members[i];
+
+			if (m->status > (uint8)MultiXactStatusUpdate || m->_pad8 != 0 || m->_pad16 != 0
+				|| m->_reserved2 != 0 || (int32)m->origin_node_id != (int32)env->source_node_id) {
+				pg_atomic_fetch_add_u64(&ClusterTTHintCounters->drop_invalid_count, 1);
+				return;
+			}
+		}
 
 		(void)cluster_multixact_member_overlay_install(&v4hdr->key, v4_member_count, v4_members);
 

@@ -257,7 +257,7 @@ extern uint64 cluster_tt_status_hint_get_v3_downgrade_count(void);
  *	  unchanged;  V4 carries different data model (MultiXact composition).
  *
  *	  Strict payload length contract:
- *	      payload_length == 24 + member_count × 16
+ *	      payload_length == 24 + member_count × 24
  *	  Receiver mismatch → DROP + drop_invalid_count +1.
  *	  member_count > cluster.multixact_member_overlay_max_members
  *	  → DROP + overlay_overflow_count +1.
@@ -294,8 +294,8 @@ typedef struct ClusterMultiXactHintOutboundEntry {
 	ClusterMultiXactMember members[CLUSTER_MULTIXACT_HINT_MAX_MEMBERS];
 } ClusterMultiXactHintOutboundEntry;
 
-StaticAssertDecl(sizeof(ClusterMultiXactHintOutboundEntry) == 4120,
-				 "V4 outbound entry = 24 + 256 × 16 (F3/F7)");
+StaticAssertDecl(sizeof(ClusterMultiXactHintOutboundEntry) == 6168,
+				 "V4 outbound entry = 24 + 256 × 24 (F3/F7)");
 
 /*
  * cluster_tt_status_hint_emit_multixact_overlay (spec-3.6 D4):

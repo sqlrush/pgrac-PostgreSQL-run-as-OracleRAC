@@ -7,10 +7,10 @@
  *
  *	  16 tests covering:
  *	    T1   ClusterMultiXactKey sizeof = 16 + offsetof origin / mxid / epoch
- *	    T2   ClusterMultiXactMember sizeof = 16 + offsetof xid / status / origin
+ *	    T2   ClusterMultiXactMember sizeof = 24 + offsetof exact-key fields
  *	    T3   ClusterTTStatusHintMsgV4Header sizeof = 24 + offsetof msg_version / key
  *	    T4   CLUSTER_TT_STATUS_HINT_V4 = 4 enum value
- *	    T5   ClusterMultiXactHintOutboundEntry sizeof = 4120 (24 + 256 × 16)
+ *	    T5   ClusterMultiXactHintOutboundEntry sizeof = 6168 (24 + 256 × 24)
  *	    T6-10  cluster_multixact_* 5 API + ITL helper 2 API symbol link
  *	    T11  ITL_FLAG_LOCK_ONLY_XMAX_IS_MULTI = 8 enum value
  *	    T12  MultiXactStatus enum 0-5 preservation (PG core lock)
@@ -159,10 +159,13 @@ UT_TEST(t1_multixact_key_layout)
 
 UT_TEST(t2_multixact_member_layout)
 {
-	UT_ASSERT_EQ((int)sizeof(ClusterMultiXactMember), 16);
+	UT_ASSERT_EQ((int)sizeof(ClusterMultiXactMember), 24);
 	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, xid), 0);
 	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, status), 4);
 	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, origin_node_id), 6);
+	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, undo_segment_id), 8);
+	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, tt_slot_id), 12);
+	UT_ASSERT_EQ((int)offsetof(ClusterMultiXactMember, epoch), 16);
 }
 
 
@@ -187,12 +190,12 @@ UT_TEST(t4_v4_enum_is_4)
 }
 
 
-/* ===== T5: V4 sidecar outbound entry sizeof = 4120 ===== */
+/* ===== T5: V4 sidecar outbound entry sizeof = 6168 ===== */
 
 UT_TEST(t5_v4_outbound_entry_sizeof)
 {
-	/* 24 + 256 × 16 = 4120 */
-	UT_ASSERT_EQ((int)sizeof(ClusterMultiXactHintOutboundEntry), 4120);
+	/* 24 + 256 × 24 = 6168 */
+	UT_ASSERT_EQ((int)sizeof(ClusterMultiXactHintOutboundEntry), 6168);
 	UT_ASSERT_EQ((int)CLUSTER_MULTIXACT_HINT_MAX_MEMBERS, 256);
 }
 

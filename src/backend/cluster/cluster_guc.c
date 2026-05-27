@@ -1681,12 +1681,12 @@ cluster_init_guc(void)
 	/*
 	 * PGRAC spec-3.6 D9:  cluster.multixact_hint_outbound_slots
 	 *   V4 sidecar outbound queue slot count.  default 1024 slots ×
-	 *   4120B per slot ≈ 4.1 MiB shmem.  PGC_POSTMASTER.
+	 *   6168B per slot ≈ 6.0 MiB shmem.  PGC_POSTMASTER.
 	 */
 	DefineCustomIntVariable("cluster.multixact_hint_outbound_slots",
 							gettext_noop("V4 sidecar outbound queue slot count (spec-3.6 D4)."),
-							gettext_noop("Each slot reserves 4120B (header 24 + 256 × 16).  "
-										 "Default 1024 ≈ 4.1 MiB shmem.  PGC_POSTMASTER."),
+							gettext_noop("Each slot reserves 6168B (header 24 + 256 × 24).  "
+										 "Default 1024 ≈ 6.0 MiB shmem.  PGC_POSTMASTER."),
 							&cluster_multixact_hint_outbound_slots, 1024, 128, 8192, PGC_POSTMASTER,
 							0, NULL, NULL, NULL);
 

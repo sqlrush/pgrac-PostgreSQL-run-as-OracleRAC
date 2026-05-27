@@ -8,7 +8,7 @@
  *
  *	  Reader-side cluster overlay for remote-composed MultiXact:  each
  *	  ClusterMultiXactKey = (origin_node_id, multixact_id, cluster_epoch)
- *	  maps to a list of ClusterMultiXactMember(xid, status, origin, epoch).
+ *	  maps to a list of ClusterMultiXactMember(xid, status, exact TT key).
  *	  Reader resolves visibility by combining per-member MultiXactStatus
  *	  with per-member commit/abort/in-progress status via spec-3.2 TT
  *	  framework.  lock-side MultiXactIdCreate/Expand with remote member
@@ -19,9 +19,10 @@
  *	  HC contracts in this header (HC206-HC209 4 NEW):
  *	    HC206 ClusterMultiXactKey wire-stable — sizeof == 16 bytes,
  *	          explicit _pad16 + _reserved padding (mirror HC183 pattern)
- *	    HC207 ClusterMultiXactMember wire-stable — sizeof == 16 bytes,
- *	          explicit _pad8 + _reserved2 padding;status field uint8
- *	          maps to PG MultiXactStatus enum 0-5
+ *	    HC207 ClusterMultiXactMember wire-stable — sizeof == 24 bytes,
+ *	          carries exact TT key fields (origin, undo_segment_id,
+ *	          tt_slot_id, epoch, xid);status field uint8 maps to PG
+ *	          MultiXactStatus enum 0-5
  *	    HC208 V4 sidecar wire ABI — msg_version=4 sub-dispatch at
  *	          cluster_tt_status_hint_handle_envelope;V1/V2/V3 receivers
  *	          MUST DROP V4 + drop_unknown_version_count +1
@@ -86,30 +87,37 @@ StaticAssertDecl(sizeof(ClusterMultiXactKey) == 16,
 /*
  * ClusterMultiXactMember -- per-member record.
  *
- * 16 bytes wire-stable (HC207).  status field maps to PG MultiXactStatus
+ * 24 bytes wire-stable (HC207).  status field maps to PG MultiXactStatus
  * enum (0=ForKeyShare / 1=ForShare / 2=ForNoKeyUpdate / 3=ForUpdate /
- * 4=NoKeyUpdate / 5=Update).  origin_node_id + epoch identify the
- * member xid's binding for spec-3.2 TT lookup.
+ * 4=NoKeyUpdate / 5=Update).  origin_node_id + undo_segment_id +
+ * tt_slot_id + epoch + xid are the exact TT key fields for spec-3.2
+ * lookup; receivers MUST NOT reconstruct segment/slot from raw xid.
  *
  * Field layout:
  *   offset  0, 4B : xid (PG TransactionId)
  *   offset  4, 1B : status (MultiXactStatus 0-5)
  *   offset  5, 1B : _pad8 (zero on emit)
  *   offset  6, 2B : origin_node_id
- *   offset  8, 4B : epoch
- *   offset 12, 4B : _reserved2 (zero on emit)
+ *   offset  8, 2B : undo_segment_id
+ *   offset 10, 2B : _pad16 (zero on emit)
+ *   offset 12, 4B : tt_slot_id
+ *   offset 16, 4B : epoch
+ *   offset 20, 4B : _reserved2 (zero on emit)
  */
 typedef struct ClusterMultiXactMember {
 	TransactionId xid;
 	uint8 status;
 	uint8 _pad8;
 	uint16 origin_node_id;
+	uint16 undo_segment_id;
+	uint16 _pad16;
+	uint32 tt_slot_id;
 	uint32 epoch;
 	uint32 _reserved2;
 } ClusterMultiXactMember;
 
-StaticAssertDecl(sizeof(ClusterMultiXactMember) == 16,
-				 "ClusterMultiXactMember must be 16 bytes wire-stable (HC207)");
+StaticAssertDecl(sizeof(ClusterMultiXactMember) == 24,
+				 "ClusterMultiXactMember must be 24 bytes wire-stable (HC207)");
 
 /*
  * ClusterMultiXactMemberOverlayResult -- reader-side lookup output.

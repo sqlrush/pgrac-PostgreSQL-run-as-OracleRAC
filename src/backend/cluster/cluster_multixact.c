@@ -42,6 +42,7 @@
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_multixact.h"
 #include "cluster/cluster_shmem.h"
+#include "cluster/cluster_subtrans.h"
 #include "cluster/cluster_tt_status.h"
 
 #ifdef USE_PGRAC_CLUSTER
@@ -246,9 +247,9 @@ cluster_multixact_member_overlay_lookup(const ClusterMultiXactKey *key,
  *     UNKNOWN / TT miss / overlay miss                  -> UNKNOWN
  *
  *   Helper resolves each member's per-xid status via
- *   cluster_tt_status_lookup_exact + builds ClusterTTStatusKey from
- *   (member.origin_node_id, segment=0, slot=0, epoch, member.xid)
- *   matching the spec-3.1 D5 binding contract;  miss -> UNKNOWN per L199.
+ *   cluster_tt_status_lookup_exact + builds ClusterTTStatusKey from the
+ *   exact key fields carried in ClusterMultiXactMember;  miss -> UNKNOWN
+ *   per L199.
  */
 ClusterVisibilityDecision
 cluster_multixact_resolve_visibility(const ClusterMultiXactMemberOverlayResult *overlay,
@@ -284,13 +285,16 @@ cluster_multixact_resolve_visibility(const ClusterMultiXactMemberOverlayResult *
 
 			memset(&ttkey, 0, sizeof(ttkey));
 			ttkey.origin_node_id = m->origin_node_id;
-			ttkey.undo_segment_id = 0;
-			ttkey.tt_slot_id = 0;
+			ttkey.undo_segment_id = m->undo_segment_id;
+			ttkey.tt_slot_id = m->tt_slot_id;
 			ttkey.cluster_epoch = m->epoch;
 			ttkey.local_xid = m->xid;
 
 			if (!cluster_tt_status_lookup_exact(&ttkey, &ttres) || !ttres.authoritative)
 				return CLUSTER_VISIBILITY_UNKNOWN;
+
+			if (ttres.status == CLUSTER_TT_STATUS_SUBCOMMITTED && ttres.has_parent_key)
+				ttres = cluster_subtrans_lookup_parent(&ttres, cluster_subtrans_max_chain_depth);
 
 			if (ttres.status == CLUSTER_TT_STATUS_ABORTED)
 				continue; /* aborted updater does not hide tuple */
