@@ -430,6 +430,13 @@ void
 cluster_lock_path_shmem_register(void)
 {}
 
+/* spec-3.5 D5 stub: cluster_init_shmem_module also calls
+ * cluster_subtrans_shmem_register (cluster_subtrans.c).  cluster_unit
+ * test binary doesn't link cluster_subtrans.o;  provide no-op stub. */
+void
+cluster_subtrans_shmem_register(void)
+{}
+
 /* Spec-2.5 Sprint A stub: same for CSSD. */
 void
 cluster_cssd_shmem_register(void)
