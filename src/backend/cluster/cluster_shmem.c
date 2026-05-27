@@ -83,6 +83,7 @@
 #include "cluster/cluster_tt_slot.h"		 /* cluster_tt_slot_shmem_register (spec-3.4b D3) */
 #include "cluster/cluster_tt_status_hint.h" /* cluster_tt_status_hint_shmem_register (spec-3.2 D3) */
 #include "cluster/cluster_subtrans.h"		/* cluster_subtrans_shmem_register (spec-3.5 D5) */
+#include "cluster/cluster_multixact.h"		/* cluster_multixact_shmem_register (spec-3.6 D2) */
 #include "cluster/cluster_visibility_inject.h" /* cluster_visibility_inject_shmem_register (spec-3.2 D5b) */
 #include "cluster/cluster_itl.h"			   /* cluster_lock_path_shmem_register (spec-3.4e D6) */
 #include "cluster/cluster_qvotec.h" /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
@@ -447,6 +448,13 @@ cluster_init_shmem_module(void)
 	 */
 	if (cluster_shmem_lookup_region("pgrac cluster subtrans state") == NULL)
 		cluster_subtrans_shmem_register();
+
+	/*
+	 * PGRAC spec-3.6 D2:  register cluster_multixact overlay HTAB +
+	 * counters + LWLock.
+	 */
+	if (cluster_shmem_lookup_region("pgrac cluster multixact overlay") == NULL)
+		cluster_multixact_shmem_register();
 
 	/*
 	 * spec-3.2 D5b: register test-only visibility inject shmem.  The

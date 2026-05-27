@@ -95,6 +95,7 @@ OBJS = \
 	cluster_tt_status.o \
 	cluster_tt_status_hint.o \
 	cluster_subtrans.o \
+	cluster_multixact.o \
 	cluster_visibility_inject.o \
 	cluster_stats.o \
 	cluster_version.o \

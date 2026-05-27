@@ -377,6 +377,11 @@ int cluster_tt_status_overlay_ttl_ms = 30000;
 /* PGRAC spec-3.5 D5:  bounded reader lazy follow depth. */
 int cluster_subtrans_max_chain_depth = 32;
 
+/* PGRAC spec-3.6 D9:  MULTIXACT reader/member-resolution foundation GUCs. */
+int cluster_multixact_member_overlay_max_members = 32;
+int cluster_multixact_member_overlay_max_entries = 16384;
+int cluster_multixact_hint_outbound_slots = 1024;
+
 /* spec-3.2 D7:  2 NEW GUC for cross-node TT status hint wire (v0.3 删 commit_only). */
 int cluster_tt_status_hint_outbound_capacity = 256;
 int cluster_tt_status_hint_emit_mode = CLUSTER_TT_STATUS_HINT_EMIT_ALL_STATUS;
@@ -1645,6 +1650,45 @@ cluster_init_guc(void)
 					 "at this depth and raises 53R97 fail-closed.  Default 32 covers ORM-"
 					 "stacked savepoint workloads."),
 		&cluster_subtrans_max_chain_depth, 32, 4, 1024, PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+	/*
+	 * PGRAC spec-3.6 D9:  cluster.multixact_member_overlay_max_members
+	 *   Per-message hard cap on V4 sidecar wire member_count.  Sender
+	 *   overflow / receiver overflow → fail-closed + counter +1.
+	 *   PGC_SIGHUP.
+	 */
+	DefineCustomIntVariable(
+		"cluster.multixact_member_overlay_max_members",
+		gettext_noop("Per-message hard cap on V4 sidecar wire member_count."),
+		gettext_noop("spec-3.6 D9:  V4 sidecar payload member_count <= this cap.  "
+					 "Overflow (sender or receiver) → fail-closed + counter +1."),
+		&cluster_multixact_member_overlay_max_members, 32, 4, 256, PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+	/*
+	 * PGRAC spec-3.6 D9:  cluster.multixact_member_overlay_max_entries
+	 *   Overlay HTAB capacity (number of distinct cluster multixact keys).
+	 *   PGC_POSTMASTER.
+	 */
+	DefineCustomIntVariable(
+		"cluster.multixact_member_overlay_max_entries",
+		gettext_noop("Capacity of cluster MultiXact member overlay HTAB (spec-3.6 D2)."),
+		gettext_noop("Bounded in-memory cache of remote-composed MultiXact id -> members list.  "
+					 "Miss returns 53R9C fail-closed (NOT silent fallback to PG SLRU).  "
+					 "PGC_POSTMASTER."),
+		&cluster_multixact_member_overlay_max_entries, 16384, 1024, 1048576, PGC_POSTMASTER, 0,
+		NULL, NULL, NULL);
+
+	/*
+	 * PGRAC spec-3.6 D9:  cluster.multixact_hint_outbound_slots
+	 *   V4 sidecar outbound queue slot count.  default 1024 slots ×
+	 *   4120B per slot ≈ 4.1 MiB shmem.  PGC_POSTMASTER.
+	 */
+	DefineCustomIntVariable("cluster.multixact_hint_outbound_slots",
+							gettext_noop("V4 sidecar outbound queue slot count (spec-3.6 D4)."),
+							gettext_noop("Each slot reserves 4120B (header 24 + 256 × 16).  "
+										 "Default 1024 ≈ 4.1 MiB shmem.  PGC_POSTMASTER."),
+							&cluster_multixact_hint_outbound_slots, 1024, 128, 8192,
+							PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
 	/*
 	 * spec-3.2 D7:  cross-node TT status hint wire GUCs.
