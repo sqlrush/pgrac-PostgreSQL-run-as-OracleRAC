@@ -87,6 +87,30 @@
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * PGRAC spec-3.6 D5:  cluster-aware MultiXact composition hook.
+ *
+ *   At end of MultiXactIdCreateFromMembers (called by both Create and
+ *   Expand), if cluster_conf_has_peers() and ALL members have local
+ *   TT bindings (i.e. local-all-member compose;  not a remote-member
+ *   compose which would have been blocked by spec-3.4d 53R99 at
+ *   heap_lock_tuple before reaching this code), install the local
+ *   cluster_multixact_member_overlay entry + emit V4 sidecar wire to
+ *   peers.
+ *
+ *   53R99 narrow rule (spec-3.6 v0.3 Q4 B-narrow):  upstream
+ *   heap_lock_tuple D7a checks cluster_itl_lock_path_enabled + remote
+ *   member detection;  unreachable here when any member is remote.
+ */
+#include "cluster/cluster_conf.h"		/* cluster_conf_has_peers */
+#include "cluster/cluster_epoch.h"		/* cluster_epoch_get_current */
+#include "cluster/cluster_guc.h"		/* cluster_enabled / cluster_node_id */
+#include "cluster/cluster_multixact.h"	/* overlay install + types */
+#include "cluster/cluster_tt_local.h"	/* peek_binding */
+#include "cluster/cluster_tt_status_hint.h" /* emit_multixact_overlay */
+#endif
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -852,6 +876,66 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 	mXactCachePut(multi, nmembers, members);
 
 	debug_elog2(DEBUG2, "Create: all done");
+
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * PGRAC spec-3.6 D5:  cluster-aware MultiXact composition emit.
+	 *
+	 *   - L195 single-node fast path:  no peers → no emit.
+	 *   - Iterate members;  if ALL have a local TT binding (i.e. all
+	 *     members are this-node xids), build ClusterMultiXactMember[]
+	 *     + install local overlay + emit V4 to peers.
+	 *   - Remote-member case:  spec-3.4d 53R99 at heap_lock_tuple
+	 *     blocks the path before we reach here, so by contract this
+	 *     hook only sees local-all-member compose.  If any member
+	 *     lookup misses (corner case), skip emit defensively (caller
+	 *     visibility will fail-closed 53R9C on remote read — safer
+	 *     than emit partial overlay).
+	 *
+	 *   member_count > GUC cap → defensive skip + emit_overlay 自身
+	 *   会 reject + counter；本 hook 不重复 ereport.
+	 */
+	if (cluster_enabled && cluster_conf_has_peers() && nmembers > 0
+		&& nmembers <= cluster_multixact_member_overlay_max_members
+		&& nmembers <= CLUSTER_MULTIXACT_HINT_MAX_MEMBERS)
+	{
+		ClusterMultiXactMember c_members[CLUSTER_MULTIXACT_HINT_MAX_MEMBERS];
+		ClusterMultiXactKey c_key;
+		bool all_local = true;
+		int i;
+
+		for (i = 0; i < nmembers; i++)
+		{
+			uint32 seg;
+			uint16 off;
+			uint32 tt_id;
+			uint32 epoch;
+
+			if (!cluster_tt_local_peek_binding(members[i].xid, &seg, &off, &tt_id, &epoch))
+			{
+				all_local = false;
+				break;
+			}
+			c_members[i].xid = members[i].xid;
+			c_members[i].status = (uint8) members[i].status;
+			c_members[i]._pad8 = 0;
+			c_members[i].origin_node_id = (uint16) cluster_node_id;
+			c_members[i].epoch = epoch;
+			c_members[i]._reserved2 = 0;
+		}
+
+		if (all_local)
+		{
+			memset(&c_key, 0, sizeof(c_key));
+			c_key.origin_node_id = (uint16) cluster_node_id;
+			c_key.multixact_id = multi;
+			c_key.cluster_epoch = (uint32) cluster_epoch_get_current();
+
+			if (cluster_multixact_member_overlay_install(&c_key, (uint16) nmembers, c_members))
+				cluster_tt_status_hint_emit_multixact_overlay(&c_key, (uint16) nmembers, c_members);
+		}
+	}
+#endif
 
 	return multi;
 }
