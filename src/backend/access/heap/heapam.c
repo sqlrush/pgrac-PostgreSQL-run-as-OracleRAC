@@ -5699,33 +5699,55 @@ failed:
 			cluster_will_stamp_multixact_marker = true;
 		}
 
-		if (!cluster_itl_alloc_or_reuse_lock_slot(*buffer, xid, &cluster_lock_slot_idx))
+		/*
+		 * PGRAC spec-3.6 v0.3 F16 fix:  in MultiXact case, `xid` (output
+		 * from compute_new_xmax_infomask) is a MultiXactId, NOT a real
+		 * TransactionId — cluster_tt_local_get_or_create_binding rejects
+		 * via TransactionIdIsNormal.  Skip the spec-3.4d single-xid
+		 * lock-only ITL path entirely;  stamp a MultiXact marker slot
+		 * instead.  D5 multixact.c hook will emit V4 overlay for the
+		 * actual member xids (local-all-member case).
+		 */
+		if (cluster_will_stamp_multixact_marker)
 		{
-			cluster_itl_bump_overflow_lock_count();
-			ereport(ERROR,
-					(errcode(ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW),
-					 errmsg("cluster ITL slot overflow on lock acquire"),
-					 errhint("Page ITL array (INITRANS=%d) is full, lock and"
-							 " data ITL share this capacity in spec-3.4d;"
-							 " raise INITRANS or wait for spec-3.5+ to split.",
-							 CLUSTER_ITL_INITRANS_DEFAULT)));
+			(void) cluster_itl_stamp_multixact_marker(*buffer, (MultiXactId) xid);
+			cluster_marker_multixact_id = (MultiXactId) xid;
+			/*
+			 * Don't set cluster_did_lock_stamp:  no spec-3.4d single-xid
+			 * lock-only slot was allocated.  Marker is page-format hint
+			 * only;  V4 wire carries authoritative member list.
+			 */
 		}
-
+		else
 		{
-			uint32		seg = 0;
-			uint16		off = 0;
-			uint32		tt_id = 0;
-
-			if (!cluster_tt_local_get_or_create_binding(xid, &seg, &off, &tt_id))
+			if (!cluster_itl_alloc_or_reuse_lock_slot(*buffer, xid, &cluster_lock_slot_idx))
+			{
+				cluster_itl_bump_overflow_lock_count();
 				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("cluster TT binding allocate failed for"
-								" lock_xid %u", xid)));
-			cluster_lock_uba = uba_encode(seg, 0, off, 0);
-		}
+						(errcode(ERRCODE_CLUSTER_ITL_SLOT_OVERFLOW),
+						 errmsg("cluster ITL slot overflow on lock acquire"),
+						 errhint("Page ITL array (INITRANS=%d) is full, lock and"
+								 " data ITL share this capacity in spec-3.4d;"
+								 " raise INITRANS or wait for spec-3.5+ to split.",
+								 CLUSTER_ITL_INITRANS_DEFAULT)));
+			}
 
-		cluster_lock_write_scn = cluster_scn_advance();
-		cluster_did_lock_stamp = true;
+			{
+				uint32		seg = 0;
+				uint16		off = 0;
+				uint32		tt_id = 0;
+
+				if (!cluster_tt_local_get_or_create_binding(xid, &seg, &off, &tt_id))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("cluster TT binding allocate failed for"
+									" lock_xid %u", xid)));
+				cluster_lock_uba = uba_encode(seg, 0, off, 0);
+			}
+
+			cluster_lock_write_scn = cluster_scn_advance();
+			cluster_did_lock_stamp = true;
+		}
 	}
 #endif
 
