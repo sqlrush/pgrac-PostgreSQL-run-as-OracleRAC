@@ -114,7 +114,7 @@ cluster_visibility_inject_shmem_register(void)
 bool
 cluster_test_lookup_visibility_inject(TransactionId xid, ClusterUndoTTSlotRef *ref)
 {
-	ClusterVisibilityInjectEntry *e;
+	const ClusterVisibilityInjectEntry *e;
 	bool hit = false;
 
 	if (!cluster_test_force_visibility_cluster_path || ClusterVisibilityInjectHTAB == NULL

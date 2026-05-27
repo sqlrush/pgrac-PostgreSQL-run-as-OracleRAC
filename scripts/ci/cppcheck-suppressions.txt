@@ -105,6 +105,15 @@ constParameterCallback:src/test/cluster_unit/test_cluster_visibility_fork.c
 constParameterCallback:src/backend/cluster/cluster_itl_touch.c
 constParameterCallback:src/test/cluster_unit/test_cluster_itl_touch.c
 
+# spec-3.4c/3.4d: standalone cluster_unit tests for visibility injection,
+# ITL cleanout perf, and heap lock tuple define local stubs that intentionally
+# mirror production callback/out-parameter APIs.  cppcheck suggests const-
+# widening only because the stubs are no-ops; changing signatures would stop
+# testing the real symbol contracts.
+constParameterCallback:src/test/cluster_unit/test_cluster_visibility_inject.c
+constParameterCallback:src/test/cluster_unit/test_cluster_itl_cleanout_perf.c
+constParameterCallback:src/test/cluster_unit/test_cluster_heap_lock_tuple.c
+
 # === Inline suppressions ===
 # All inline /* cppcheck-suppress xxx */ comments must include a
 # "Reason:" line on the next line.  Currently:

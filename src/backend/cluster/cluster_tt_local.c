@@ -165,9 +165,9 @@ cluster_tt_local_find_binding(TransactionId xid)
 static ClusterTTLocalBinding *
 cluster_tt_local_append_binding(void)
 {
-	MemoryContext oldcxt;
-
 	if (cluster_tt_local_bindings == NULL) {
+		MemoryContext oldcxt;
+
 		Assert(TopTransactionContext != NULL);
 		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 		cluster_tt_local_binding_capacity = 8;
@@ -209,9 +209,6 @@ bool
 cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segment_id,
 									   uint16 *out_slot_offset, uint32 *out_tt_slot_id)
 {
-	uint32 seg;
-	uint16 off;
-
 	if (!cluster_enabled || cluster_node_id < 0)
 		return false;
 	if (!TransactionIdIsNormal(top_xid))
@@ -221,7 +218,7 @@ cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segmen
 		int idx = cluster_tt_local_find_binding(top_xid);
 
 		if (idx >= 0) {
-			ClusterTTLocalBinding *b = &cluster_tt_local_bindings[idx];
+			const ClusterTTLocalBinding *b = &cluster_tt_local_bindings[idx];
 
 			/* Idempotent reuse. */
 			*out_segment_id = b->segment_id;
@@ -233,6 +230,8 @@ cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segmen
 
 	{
 		ClusterTTLocalBinding *b;
+		uint32 seg;
+		uint16 off;
 
 		seg = cluster_undo_active_segment_for_node_or_create(cluster_node_id);
 		off = cluster_tt_slot_alloc(seg, top_xid);
@@ -270,7 +269,7 @@ cluster_tt_local_peek_binding(TransactionId top_xid, uint32 *out_segment_id,
 							  uint32 *out_cluster_epoch)
 {
 	int idx;
-	ClusterTTLocalBinding *b;
+	const ClusterTTLocalBinding *b;
 
 	idx = cluster_tt_local_find_binding(top_xid);
 	if (idx < 0 || !TransactionIdIsValid(top_xid))

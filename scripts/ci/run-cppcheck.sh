@@ -151,6 +151,11 @@ UNIT_STUB_SUPP=(
   # `void *arg` callback ABI; const-widening would break production signatures.
   --suppress=constParameterCallback:src/backend/cluster/cluster_itl_touch.c
   --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_itl_touch.c
+  # spec-3.4c/3.4d: local cluster_unit stubs mirror production out-parameter
+  # APIs; const-widening the stubs would stop matching the symbol contracts.
+  --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_visibility_inject.c
+  --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_itl_cleanout_perf.c
+  --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_heap_lock_tuple.c
 )
 
 echo "## cppcheck $(cppcheck --version)"
