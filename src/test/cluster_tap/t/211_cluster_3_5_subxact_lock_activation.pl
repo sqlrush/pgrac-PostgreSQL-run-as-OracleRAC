@@ -60,7 +60,7 @@ $pair->node0->safe_psql('postgres', q{
 my ($rc2, $out2, $err2) = $pair->node0->psql('postgres', q{
 	BEGIN;
 	SAVEPOINT sp_lock;
-	SELECT count(*) FROM spec_3_5_lock_smoke WHERE id = 1 FOR UPDATE;
+	SELECT id FROM spec_3_5_lock_smoke WHERE id = 1 FOR UPDATE;
 	RELEASE SAVEPOINT sp_lock;
 	COMMIT;
 });
@@ -75,7 +75,7 @@ my ($rc3, $out3, $err3) = $pair->node0->psql('postgres', q{
 	SAVEPOINT sp1;
 	SAVEPOINT sp2;
 	SAVEPOINT sp3;
-	SELECT count(*) FROM spec_3_5_lock_smoke WHERE id = 1 FOR UPDATE;
+	SELECT id FROM spec_3_5_lock_smoke WHERE id = 1 FOR UPDATE;
 	RELEASE SAVEPOINT sp3;
 	RELEASE SAVEPOINT sp2;
 	RELEASE SAVEPOINT sp1;
