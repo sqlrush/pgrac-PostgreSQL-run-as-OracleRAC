@@ -89,6 +89,7 @@
 #include "cluster/cluster_itl_slot.h"		/* CLUSTER_ITL_SLOT_UNALLOCATED */
 #include "cluster/cluster_tt_slot.h"		/* ClusterUndoTTSlotRef */
 #include "cluster/cluster_subtrans.h"		/* spec-3.5 D8 lookup_parent */
+#include "cluster/cluster_multixact.h"		/* spec-3.6 D6 reader overlay */
 #include "cluster/cluster_tt_status.h"		/* lookup_exact / Key / Result */
 #include "cluster/cluster_visibility_inject.h"	/* D5b test-only inject helper */
 #endif
@@ -1176,6 +1177,98 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 		/* else: ref placeholder / local origin / no ITL slot →
 		 * fall through to PG-native body (v0.3 N1 silent invisible
 		 * for cross-node tuple in production). */
+
+		/*
+		 * PGRAC spec-3.6 v0.3 D6:  MultiXact xmax reader branch.
+		 *
+		 *   Scope:  HeapTupleSatisfiesMVCC() only (per OBS-1/F5).  Other
+		 *   HeapTupleSatisfies* paths remain PG-native.
+		 *
+		 *   Path:
+		 *     1. tuple xmax has HEAP_XMAX_IS_MULTI flag
+		 *     2. find page ITL marker via D7b helper (buffer content
+		 *        lock held by caller per L200 + spec-3.4d Hardening
+		 *        v1.0.1 F10 family)
+		 *     3. marker hit + origin_node_id != cluster_node_id ->
+		 *        remote multixact -> cluster overlay lookup + resolve
+		 *     4. marker miss / overlay miss -> 53R9C fail-closed (per
+		 *        L199 NO PG-native fallback)
+		 *     5. marker hit + origin_node_id == cluster_node_id ->
+		 *        local-origin multixact -> fall through to PG-native
+		 *        (PG SLRU resolves locally)
+		 *
+		 *   IN_PROGRESS authoritative state in resolve_visibility ->
+		 *   VISIBLE (per OBS-1 truth table:  uncommitted Update/
+		 *   NoKeyUpdate not yet hides tuple).  UNKNOWN -> 53R9C.
+		 */
+		if ((tuple->t_infomask & HEAP_XMAX_IS_MULTI) != 0)
+		{
+			TransactionId raw_xmax_multi = HeapTupleHeaderGetRawXmax(tuple);
+			Page page = BufferGetPage(buffer);
+			uint16 marker_origin = 0;
+
+			if (MultiXactIdIsValid((MultiXactId) raw_xmax_multi) &&
+				cluster_itl_find_multixact_origin_by_xmax(page,
+														 (MultiXactId) raw_xmax_multi,
+														 &marker_origin) &&
+				(int32) marker_origin != cluster_node_id)
+			{
+				/*
+				 * Remote-origin MultiXact tuple visible reader.  Stack-
+				 * allocate result struct with members[256] cap matching
+				 * V4 wire ceiling.
+				 */
+				ClusterMultiXactKey mxkey;
+				ClusterMultiXactMemberOverlayResult *mxres;
+				ClusterVisibilityDecision mvcc_decision;
+				Size resbuf_sz = offsetof(ClusterMultiXactMemberOverlayResult, members)
+								 + 256 * sizeof(ClusterMultiXactMember);
+
+				memset(&mxkey, 0, sizeof(mxkey));
+				mxkey.origin_node_id = marker_origin;
+				mxkey.multixact_id = (MultiXactId) raw_xmax_multi;
+				mxkey.cluster_epoch = (uint32) cluster_epoch_get_current();
+
+				mxres = (ClusterMultiXactMemberOverlayResult *) palloc0(resbuf_sz);
+
+				if (!cluster_multixact_member_overlay_lookup(&mxkey, mxres, 256))
+				{
+					pfree(mxres);
+					ereport(ERROR,
+							(errcode(ERRCODE_CLUSTER_MULTIXACT_MEMBER_OVERLAY_MISS),
+							 errmsg("cluster multixact member overlay miss for "
+									"remote multixact id %u from node %u",
+									(unsigned) mxkey.multixact_id,
+									(unsigned) mxkey.origin_node_id),
+							 errhint("Remote multixact member overlay is not "
+									 "available;  retry the transaction after "
+									 "the origin emits a fresh overlay.")));
+				}
+
+				mvcc_decision = cluster_multixact_resolve_visibility(mxres, snapshot);
+				pfree(mxres);
+
+				switch (mvcc_decision)
+				{
+					case CLUSTER_VISIBILITY_VISIBLE:
+						return true;
+					case CLUSTER_VISIBILITY_INVISIBLE:
+						return false;
+					case CLUSTER_VISIBILITY_UNKNOWN:
+					default:
+						ereport(ERROR,
+								(errcode(ERRCODE_CLUSTER_MULTIXACT_MEMBER_OVERLAY_MISS),
+								 errmsg("cluster multixact resolve visibility UNKNOWN "
+										"for multixact id %u from node %u",
+										(unsigned) mxkey.multixact_id,
+										(unsigned) mxkey.origin_node_id),
+								 errhint("Member commit_scn not yet propagated;  retry "
+										 "transaction.")));
+				}
+			}
+			/* else:  no marker / local-origin multixact / invalid mid ->
+			 * fall through to PG-native MultiXact resolution below. */
+		}
 	}
 #endif							/* USE_PGRAC_CLUSTER */
 
