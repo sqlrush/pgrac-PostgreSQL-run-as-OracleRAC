@@ -81,6 +81,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_grd.h" /* cluster_grd_* observability accessors (spec-2.14 D6) */
 #include "cluster/cluster_lmd.h" /* cluster_lmd_* observability accessors (spec-2.19 D10) */
 #include "cluster/cluster_lms.h" /* cluster_lms_* observability accessors (spec-2.18 D10) */
+#include "cluster/cluster_undo_record_api.h" /* cluster_undo_* counter accessors (spec-3.7 D10) */
 #include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_grd_pending.h"
 #include "cluster/cluster_grd_work_queue.h"
@@ -1409,6 +1410,28 @@ dump_gcs(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_tt_status_hint_get_drop_v1_compat_count()));
 }
 
+/*
+ * dump_undo -- spec-3.7 D10 + D6 真激活 counter observability.
+ *
+ *	Emits 5 rows under category='undo' for the cluster_undo_record
+ *	allocator counters.  Backs cluster_tap t/213 L2/L6/L10 verification
+ *	+ perf class 7 baseline tracking.
+ */
+static void
+dump_undo(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "undo", "record_alloc_count",
+			 fmt_int64((int64)cluster_undo_record_alloc_count()));
+	emit_row(rsinfo, "undo", "segment_claim_count",
+			 fmt_int64((int64)cluster_undo_segment_claim_count()));
+	emit_row(rsinfo, "undo", "block_write_count",
+			 fmt_int64((int64)cluster_undo_block_write_count()));
+	emit_row(rsinfo, "undo", "block_flush_count",
+			 fmt_int64((int64)cluster_undo_block_flush_count()));
+	emit_row(rsinfo, "undo", "reader_lookup_count",
+			 fmt_int64((int64)cluster_undo_reader_lookup_count()));
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -1454,6 +1477,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_grd(rsinfo);
 		dump_lmd(rsinfo);
 		dump_lms(rsinfo);
+		dump_undo(rsinfo);
 	}
 #else
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
