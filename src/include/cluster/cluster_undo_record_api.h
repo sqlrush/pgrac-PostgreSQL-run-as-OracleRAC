@@ -1,0 +1,154 @@
+/*-------------------------------------------------------------------------
+ *
+ * cluster_undo_record_api.h
+ *	  pgrac record-level allocator + reader public API (spec-3.7 D4).
+ *
+ *	  Stage 3 第 11 sub-spec — record-level API on top of spec-3.4b 已
+ *	  ship segment-level allocator(`cluster_undo_alloc.h`).
+ *
+ *	  API surface(本 header):
+ *	    - cluster_undo_record_alloc()  — write one undo record;
+ *	      durable-flush before returning UBA per W2 self-contained
+ *	      ordering(spec-3.7 §3.4)
+ *	    - cluster_undo_get_record()  — read one undo record by UBA
+ *	    - cluster_undo_shmem_register()  — register cluster_undo shmem
+ *	      region(record-level cursor state per V-6 verify)
+ *
+ *	  Critical section safety:
+ *	    - alloc + get NOT critical-section safe(may write/flush/palloc)
+ *	    - DML caller MUST invoke alloc BEFORE START_CRIT_SECTION;
+ *	      only publish returned UBA inside critical section
+ *	      (per spec-3.7 §3.3 I1 + I3 invariants)
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ * Portions Copyright (c) 2026, pgrac contributors
+ *
+ * Author: SqlRush <sqlrush@gmail.com>
+ *
+ * Spec: spec-3.7-undo-record-format-allocator.md (FROZEN v0.4)
+ *
+ * IDENTIFICATION
+ *	  src/include/cluster/cluster_undo_record_api.h
+ *
+ * NOTES
+ *	  This is a pgrac-original file (no derivation from PostgreSQL).
+ *	  Backend-only (uses palloc / shmem / smgr in implementation).
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef CLUSTER_UNDO_RECORD_API_H
+#define CLUSTER_UNDO_RECORD_API_H
+
+#ifndef FRONTEND
+
+#include "postgres.h"
+#include "access/transam.h"			/* TransactionId */
+#include "storage/relfilelocator.h" /* RelFileLocator */
+#include "storage/block.h"			/* BlockNumber */
+#include "storage/itemptr.h"		/* OffsetNumber */
+#include "common/relpath.h"			/* ForkNumber */
+#include "cluster/cluster_itl_slot.h"  /* UBA */
+#include "cluster/cluster_undo_record.h" /* UndoRecordType */
+
+
+/*
+ * ClusterUndoRecordTarget -- 24B physical target locator passed to
+ *	cluster_undo_record_alloc().  MUST NOT be omitted;  callers MUST
+ *	supply RelFileLocator + ForkNumber + BlockNumber + OffsetNumber
+ *	(per codex review F4).
+ */
+typedef struct ClusterUndoRecordTarget
+{
+	RelFileLocator	locator;
+	ForkNumber		forknum;
+	BlockNumber		blockno;
+	OffsetNumber	offnum;
+	uint16			_pad;	/* alignment */
+} ClusterUndoRecordTarget;
+
+StaticAssertDecl(sizeof(ClusterUndoRecordTarget) == 24,
+				 "ClusterUndoRecordTarget must be 24B — HC213a");
+
+
+/*
+ * cluster_undo_record_alloc -- write one undo record into per-instance
+ *	undo segment.  Returns 16B UBA on success;  InvalidUba on failure.
+ *
+ *	Args:
+ *	  record_type -- UNDO_RECORD_INSERT / UPDATE / DELETE / ITL
+ *	  target      -- physical target locator (REQUIRED, F4)
+ *	  payload     -- pointer to op-specific payload(see cluster_undo_record.h)
+ *	  payload_len -- payload byte count (payload struct + var bytes)
+ *	  prev_uba    -- backward chain (InvalidUba if first record in xid)
+ *
+ *	Returns:
+ *	  UBA(16B,encoded via spec-3.4b uba_encode):segment_id + block_no +
+ *	  tt_slot_offset(xact TT slot)+ row_offset(undo block slot-dir index).
+ *	  Returns InvalidUba on failure(segment exhaustion / oversize / I/O fail /
+ *	  durable flush fail).
+ *
+ *	Critical section safety:NOT critical-section safe.  Callers MUST
+ *	invoke before START_CRIT_SECTION and ereport(53R9D)on InvalidUba
+ *	outside critical section.  Per spec-3.7 §3.3 I1 + I3.
+ *
+ *	Durable ordering(per W2 self-contained,§3.4):returned UBA always
+ *	references a durable record(undo block bytes fsync-d to shared
+ *	storage before this function returns).  TT/ITL slot UBA publication
+ *	occurs AFTER this function returns,inside START_CRIT_SECTION.
+ */
+extern UBA cluster_undo_record_alloc(uint8 record_type,
+									 const ClusterUndoRecordTarget *target,
+									 const void *payload,
+									 uint16 payload_len,
+									 UBA prev_uba);
+
+
+/*
+ * cluster_undo_get_record -- read one undo record by UBA.  Used by:
+ *	  - cluster_undo_get_record(uba) SQL function (D8 sanity reader)
+ *	  - spec-3.X rollback apply (forward-link)
+ *	  - spec-3.9 CR construction (forward-link)
+ *
+ *	Args:
+ *	  uba         -- target record UBA (16B)
+ *	  out_buffer  -- caller-provided buffer
+ *	  buffer_size -- buffer capacity
+ *
+ *	Returns: bytes written (header + payload);  0 if UBA invalid or
+ *	buffer too small.  WARNING emitted on segment file missing.
+ *
+ *	NOT critical-section safe (may palloc internally if cross-segment read).
+ *	Own-instance read only at spec-3.7;  cross-instance read推 spec-3.9.
+ */
+extern size_t cluster_undo_get_record(UBA uba, void *out_buffer, size_t buffer_size);
+
+
+/*
+ * Shmem region API.  cluster_undo_record_alloc() uses per-instance
+ *	record-level cursor state(separate from segment-level alloc shmem
+ *	already shipped by spec-3.4b).
+ */
+extern void cluster_undo_record_shmem_register(void);
+extern Size cluster_undo_record_shmem_size(void);
+extern void cluster_undo_record_shmem_init(void);
+
+
+/*
+ * cluster_undo_record_xact_reset -- reset per-xid binding at end of xact
+ *	(commit / abort).  Called from xact.c CommitTransaction /
+ *	AbortTransaction hook (spec-3.7 D6 integration).
+ */
+extern void cluster_undo_record_xact_reset(void);
+
+
+/*
+ * cluster_undo_record_is_touched -- did current xact write any undo record?
+ *	Used by D16 PREPARE TRANSACTION guard.
+ */
+extern bool cluster_undo_record_is_touched(void);
+
+
+#endif /* !FRONTEND */
+
+#endif /* CLUSTER_UNDO_RECORD_API_H */
