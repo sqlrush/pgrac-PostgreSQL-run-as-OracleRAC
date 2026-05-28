@@ -628,6 +628,13 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 # (per OBS-1 truth table:  走 VISIBLE 路径).
 53R9C    E    ERRCODE_CLUSTER_MULTIXACT_MEMBER_OVERLAY_MISS                    cluster_multixact_member_overlay_miss
 
+# spec-3.7 v0.3 D10:  cluster undo record allocator failure (multi-branch
+# triggers per §3.2 + Q9):  segment exhaustion / oversize payload / UBA
+# decode fail / segment_id out of range / block_num exceeds segment_size_blocks
+# / undo block slot-dir index 越界 / undo block durable flush failure.  DML
+# 4 op emit must ereport BEFORE START_CRIT_SECTION (per §3.3 I1 + I3 invariants).
+53R9D    E    ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA                          cluster_undo_record_invalid_uba
+
 Section: Class 54 - Program Limit Exceeded
 
 # this is for wired-in limits, not resource exhaustion problems (class borrowed from DB2)

@@ -2089,10 +2089,12 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 			if (UBA_is_invalid(undo_uba))
 				ereport(ERROR,
-						(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+						(errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
 						 errmsg("cluster undo record alloc failed for heap_insert"),
 						 errhint("Increase cluster.undo_segments_per_instance or wait "
-								 "for spec-3.8 lifecycle autoextend.")));
+								 "for spec-3.8 lifecycle autoextend (segment exhaustion); "
+								 "or reduce row size below cluster.undo_record_inline_max_bytes "
+								 "(oversize payload).")));
 
 			cluster_itl_uba = undo_uba;
 		}
