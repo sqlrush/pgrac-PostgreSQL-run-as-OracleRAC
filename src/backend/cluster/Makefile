@@ -118,7 +118,7 @@ else
 # entirely in disable mode because nothing in pg_proc.dat references
 # it (spec-1.1 does not introduce a SRF; pg_cluster_state extension
 # lives in cluster_debug.c which is always linked).
-OBJS = cluster_conf.o cluster_debug.o cluster_ic.o cluster_inject.o \
+OBJS = cluster_conf.o cluster_debug.o cluster_ic.o cluster_inject.o cluster_undo_srf.o \
 	cluster_pgstat.o cluster_scn.o cluster_views.o
 endif
 
