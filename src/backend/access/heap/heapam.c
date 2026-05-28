@@ -3219,6 +3219,45 @@ l1:
 							CLUSTER_ITL_INITRANS_DEFAULT),
 					 errhint("Raise per-table INITRANS (spec-3.4b) or reduce write concurrency.")));
 		cluster_itl_active = true;
+
+		/*
+		 * PGRAC (spec-3.7 D6 H-5 — DELETE undo emit):  before
+		 * START_CRIT_SECTION, write UndoDeletePayload to per-instance
+		 * undo segment.
+		 */
+		if (TransactionIdIsNormal(xid) && tt_seg != 0)
+		{
+			ClusterUndoRecordTarget undo_target;
+			UndoDeletePayload undo_payload;
+			UBA undo_uba;
+
+			memset(&undo_target, 0, sizeof(undo_target));
+			undo_target.locator = RelationGetSmgr(relation)->smgr_rlocator.locator;
+			undo_target.forknum = MAIN_FORKNUM;
+			undo_target.blockno = ItemPointerGetBlockNumber(&tp.t_self);
+			undo_target.offnum = ItemPointerGetOffsetNumber(&tp.t_self);
+
+			memset(&undo_payload, 0, sizeof(undo_payload));
+			undo_payload.full_tuple_length = (uint16) (tp.t_len > UINT16_MAX ? 0 : tp.t_len);
+			undo_payload.full_tuple_offset = sizeof(UndoDeletePayload);
+
+			undo_uba = cluster_undo_record_alloc(UNDO_RECORD_DELETE,
+												 &undo_target,
+												 (uint16) tt_seg,
+												 tt_off,
+												 &undo_payload,
+												 sizeof(undo_payload),
+												 cluster_itl_uba);
+
+			if (UBA_is_invalid(undo_uba))
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
+						 errmsg("cluster undo record alloc failed for heap_delete"),
+						 errhint("Increase cluster.undo_segments_per_instance or wait "
+								 "for spec-3.8 lifecycle autoextend.")));
+
+			cluster_itl_uba = undo_uba;
+		}
 	}
 #endif
 
@@ -4336,6 +4375,53 @@ l2:
 								CLUSTER_ITL_INITRANS_DEFAULT),
 						 errhint("Raise per-table INITRANS (spec-3.4b) or reduce write concurrency.")));
 			cluster_itl_new_active = true;
+		}
+
+		/*
+		 * PGRAC (spec-3.7 D6 H-4 — UPDATE undo emit):  before
+		 * START_CRIT_SECTION, write UndoUpdatePayload + old tuple pre-image
+		 * bytes to per-instance undo segment.  Failure → ereport 53R9D
+		 * outside critical section (I1 + I3 invariants per §3.3).
+		 */
+		if (TransactionIdIsNormal(xid) && tt_seg != 0)
+		{
+			ClusterUndoRecordTarget undo_target;
+			UndoUpdatePayload undo_payload;
+			UBA undo_uba;
+			uint16 old_tuple_bytes;
+
+			memset(&undo_target, 0, sizeof(undo_target));
+			undo_target.locator = RelationGetSmgr(relation)->smgr_rlocator.locator;
+			undo_target.forknum = MAIN_FORKNUM;
+			undo_target.blockno = ItemPointerGetBlockNumber(&oldtup.t_self);
+			undo_target.offnum = ItemPointerGetOffsetNumber(&oldtup.t_self);
+
+			memset(&undo_payload, 0, sizeof(undo_payload));
+			undo_payload.new_block = ItemPointerGetBlockNumber(&heaptup->t_self);
+			undo_payload.new_offset = ItemPointerGetOffsetNumber(&heaptup->t_self);
+			old_tuple_bytes = (uint16) (oldtup.t_len > UINT16_MAX ? 0 : oldtup.t_len);
+			undo_payload.old_tuple_length = old_tuple_bytes;
+			undo_payload.old_tuple_offset = sizeof(UndoUpdatePayload);
+
+			/* For MVP store only payload struct (pre-image bytes deferred to
+			 * Hardening v1.0.3+ — needs `payload + var bytes` interface
+			 * adjustment).  payload_length = sizeof(payload). */
+			undo_uba = cluster_undo_record_alloc(UNDO_RECORD_UPDATE,
+												 &undo_target,
+												 (uint16) tt_seg,
+												 tt_off,
+												 &undo_payload,
+												 sizeof(undo_payload),
+												 cluster_itl_uba);
+
+			if (UBA_is_invalid(undo_uba))
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
+						 errmsg("cluster undo record alloc failed for heap_update"),
+						 errhint("Increase cluster.undo_segments_per_instance or wait "
+								 "for spec-3.8 lifecycle autoextend.")));
+
+			cluster_itl_uba = undo_uba;
 		}
 	}
 #endif
@@ -5793,6 +5879,50 @@ failed:
 							 errmsg("cluster TT binding allocate failed for"
 									" lock_xid %u", xid)));
 				cluster_lock_uba = uba_encode(seg, 0, off, 0);
+
+				/*
+				 * PGRAC (spec-3.7 D6 H-6 — heap_lock_tuple ITL undo emit):
+				 * before START_CRIT_SECTION, write UndoItlPayload for the
+				 * lock-only ITL transition.
+				 */
+				if (TransactionIdIsNormal(xid) && seg != 0)
+				{
+					ClusterUndoRecordTarget undo_target;
+					UndoItlPayload undo_payload;
+					UBA undo_uba;
+
+					memset(&undo_target, 0, sizeof(undo_target));
+					undo_target.locator = RelationGetSmgr(relation)->smgr_rlocator.locator;
+					undo_target.forknum = MAIN_FORKNUM;
+					undo_target.blockno = ItemPointerGetBlockNumber(tid);
+					undo_target.offnum = ItemPointerGetOffsetNumber(tid);
+
+					memset(&undo_payload, 0, sizeof(undo_payload));
+					undo_payload.itl_slot_idx = cluster_lock_slot_idx;
+					undo_payload.prev_flags = 0; /* prev state ITL_FLAG_FREE */
+					undo_payload.new_flags = 5; /* ITL_FLAG_LOCK_ONLY_ACTIVE */
+					undo_payload.lock_mode = (uint8) mode;
+					undo_payload.lock_xid = xid;
+					/* prev_xmax / prev_infomask / prev_infomask2 left zero
+					 * (read from tuple if needed by rollback) */
+
+					undo_uba = cluster_undo_record_alloc(UNDO_RECORD_ITL,
+														 &undo_target,
+														 (uint16) seg,
+														 off,
+														 &undo_payload,
+														 sizeof(undo_payload),
+														 cluster_lock_uba);
+
+					if (UBA_is_invalid(undo_uba))
+						ereport(ERROR,
+								(errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
+								 errmsg("cluster undo record alloc failed for heap_lock_tuple"),
+								 errhint("Increase cluster.undo_segments_per_instance or wait "
+										 "for spec-3.8 lifecycle autoextend.")));
+
+					cluster_lock_uba = undo_uba;
+				}
 			}
 
 			cluster_lock_write_scn = cluster_scn_advance();
