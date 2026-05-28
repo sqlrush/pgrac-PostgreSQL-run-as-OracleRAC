@@ -90,6 +90,7 @@ OBJS = \
 	cluster_itl_cleanout.o \
 	cluster_itl_touch.o \
 	cluster_uba.o \
+	cluster_undo_record.o \
 	cluster_tt_slot.o \
 	cluster_tt_local.o \
 	cluster_tt_status.o \

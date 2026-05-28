@@ -381,6 +381,16 @@ extern bool cluster_enabled;
  */
 extern int cluster_undo_segments_per_instance;
 
+/*
+ * spec-3.7 D9 NEW GUCs (Q9=A keep existing undo_segments_per_instance default 16):
+ *   cluster.undo_tablespace_path     -- relative to PGDATA (default "pg_undo")
+ *   cluster.undo_segment_size_mb     -- per segment file size (default 32)
+ *   cluster.undo_record_inline_max_bytes -- max inline pre-image (default 1024)
+ */
+extern char *cluster_undo_tablespace_path;
+extern int cluster_undo_segment_size_mb;
+extern int cluster_undo_record_inline_max_bytes;
+
 
 /*
  * cluster.allow_single_node (spec-2.1 D1; Stage 2.1 backward-compat

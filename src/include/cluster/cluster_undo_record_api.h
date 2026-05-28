@@ -99,6 +99,8 @@ StaticAssertDecl(sizeof(ClusterUndoRecordTarget) == 24,
  */
 extern UBA cluster_undo_record_alloc(uint8 record_type,
 									 const ClusterUndoRecordTarget *target,
+									 uint16 tt_slot_segment_id,
+									 uint16 tt_slot_offset,
 									 const void *payload,
 									 uint16 payload_len,
 									 UBA prev_uba);
@@ -147,6 +149,17 @@ extern void cluster_undo_record_xact_reset(void);
  *	Used by D16 PREPARE TRANSACTION guard.
  */
 extern bool cluster_undo_record_is_touched(void);
+
+
+/*
+ * Counter accessors -- for emit_row / cluster_tap verification + D10 counters.
+ *	Spec-3.7 §2.6: 5 NEW counter(per Hardening v1.0.1 + D10).
+ */
+extern uint64 cluster_undo_record_alloc_count(void);
+extern uint64 cluster_undo_segment_claim_count(void);
+extern uint64 cluster_undo_block_write_count(void);
+extern uint64 cluster_undo_block_flush_count(void);
+extern uint64 cluster_undo_reader_lookup_count(void);
 
 
 #endif /* !FRONTEND */

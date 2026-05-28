@@ -191,6 +191,16 @@ int cluster_interconnect_tcp_keepcnt = 6;
 int cluster_undo_segments_per_instance = 16;
 
 /*
+ * spec-3.7 D9: 3 NEW GUC (Q9=A keep existing undo_segments_per_instance default 16).
+ *	cluster.undo_tablespace_path        -- default "pg_undo" (relative to PGDATA)
+ *	cluster.undo_segment_size_mb        -- default 32 MB
+ *	cluster.undo_record_inline_max_bytes -- default 1024
+ */
+char *cluster_undo_tablespace_path = NULL; /* set in DefineCustomStringVariable */
+int cluster_undo_segment_size_mb = 32;
+int cluster_undo_record_inline_max_bytes = 1024;
+
+/*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
  * sweep target staleness in ms.  Range [1, 1000]; default 100ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
@@ -1302,6 +1312,36 @@ cluster_init_guc(void)
 										 "(undo retention).  See "
 										 "docs/undo-segment-design.md §3.5."),
 							&cluster_undo_segments_per_instance, 16, 1, 1024, PGC_POSTMASTER, 0,
+							NULL, NULL, NULL);
+
+	/*
+	 * spec-3.7 D9 — 3 NEW undo GUCs.
+	 */
+	DefineCustomStringVariable("cluster.undo_tablespace_path",
+							   gettext_noop("Relative path under PGDATA for the per-instance undo tablespace."),
+							   gettext_noop("Spec-3.7 D9. Default \"pg_undo\". Per-instance subdir "
+											"layout pg_undo/instance_<N>/seg_<id>.dat. PGC_POSTMASTER "
+											"because runtime change would race segment lookups; "
+											"hot-add tablespace path 推 spec-3.8 lifecycle."),
+							   &cluster_undo_tablespace_path, "pg_undo", PGC_POSTMASTER, 0,
+							   NULL, NULL, NULL);
+
+	DefineCustomIntVariable("cluster.undo_segment_size_mb",
+							gettext_noop("Per-segment file size in MB."),
+							gettext_noop("Spec-3.7 D9. Default 32 MB. Affects per-instance "
+										 "undo capacity (= undo_segments_per_instance × this). "
+										 "PGC_POSTMASTER — segment header at block 0 encodes "
+										 "segment_size_blocks at create time."),
+							&cluster_undo_segment_size_mb, 32, 8, 1024, PGC_POSTMASTER, 0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("cluster.undo_record_inline_max_bytes",
+							gettext_noop("Maximum inline payload size for a single undo record."),
+							gettext_noop("Spec-3.7 D9. Default 1024. Records with payload "
+										 "exceeding this cap are rejected with SQLSTATE 53R9D "
+										 "(cluster_undo_record_invalid_uba). Large-record / "
+										 "toast-overflow path 推 spec-3.X."),
+							&cluster_undo_record_inline_max_bytes, 1024, 16, 8192, PGC_SIGHUP, 0,
 							NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
