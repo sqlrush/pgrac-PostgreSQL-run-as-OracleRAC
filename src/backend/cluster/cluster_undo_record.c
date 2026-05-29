@@ -321,10 +321,14 @@ write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const
  *	  8. Update UndoBlockHeader(slot_count++, free_offset += rec_len)
  *	  9. Write block back to file
  *	  10. fsync segment file (durable per W2)
- *	  11. Counter bumps
- *	  12. Unlock cursor
- *	  13. Mark backend touched
- *	  14. Encode UBA and return
+ *	  11. If this is a new segment, mark header ACTIVE + tail_block=1
+ *	      after the durable record write
+ *	  12. If this is a fresh block, mark free_block_bitmap used before
+ *	      publishing cursor advance
+ *	  13. Counter bumps
+ *	  14. Unlock cursor
+ *	  15. Mark backend touched
+ *	  16. Encode UBA and return
  */
 UBA
 cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *target,
@@ -349,6 +353,9 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	int local_head_idx;
 	UBA effective_prev_uba;
 	bool first_in_tx;
+	bool lifecycle_lock_held = false;
+	bool segment_needs_activation = false;
+	bool block_was_fresh = false;
 
 	/* Input validation. */
 	if (record_type == UNDO_RECORD_INVALID || record_type > UNDO_RECORD_ITL)
@@ -425,36 +432,22 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 
 	LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
 
-	/* Publish active segment into shared cursor state if this is the first writer. */
+	/*
+	 * Select active segment.  Publish to shared cursor only after the
+	 * first undo record is durable and lifecycle metadata is updated.
+	 */
 	segment_id = UndoRecordShared->active_segment_id;
 	if (segment_id == 0) {
-		uint8 init_owner = (uint8)(cluster_node_id + 1);
-
 		segment_id = ensured_segment_id;
-		UndoRecordShared->active_segment_id = segment_id;
-		UndoRecordShared->current_block = 1; /* block 0 is segment header */
-		UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
-		UndoRecordShared->slot_count = 0;
-		UndoRecordShared->block_dirty = 0;
-		UndoRecordShared->block_first_scn = current_scn;
-		pg_atomic_fetch_add_u64(&UndoRecordShared->segment_claim_count, 1);
-
-		/*
-		 * spec-3.8 D1 + D5 真激活:  mark segment ACTIVE + init tail_block
-		 * to 1 (block 0 is segment header,  block 1 is first data block).
-		 * Helpers are idempotent — already-ACTIVE / tail_block_init re-call
-		 * is no-op.  Release cursor_lock briefly to avoid file I/O under
-		 * the hot lock (per spec §3.2).
-		 */
-		LWLockRelease(&UndoRecordShared->cursor_lock.lock);
-		(void)cluster_undo_segment_mark_active(segment_id, init_owner);
-		(void)cluster_undo_segment_tail_block_init(segment_id, init_owner, 1);
-		LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
+		current_block = 1; /* block 0 is segment header */
+		free_offset = sizeof(UndoBlockHeader);
+		slot_count = 0;
+		segment_needs_activation = true;
+	} else {
+		current_block = UndoRecordShared->current_block;
+		free_offset = UndoRecordShared->free_offset;
+		slot_count = UndoRecordShared->slot_count;
 	}
-
-	current_block = UndoRecordShared->current_block;
-	free_offset = UndoRecordShared->free_offset;
-	slot_count = UndoRecordShared->slot_count;
 
 	/* Check block fit;  advance to next block if needed. */
 	if (!cluster_undo_block_has_space(free_offset, slot_count, record_length)) {
@@ -470,9 +463,10 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 			 *   4. If race winner already extended → release lifecycle_lock
 			 *      + re-acquire cursor_lock + retry from segment_id load
 			 *   5. Otherwise call cluster_undo_segment_extend_or_create()
-			 *   6. Mark old segment full + publish NEW active_segment_id
-			 *   7. Re-acquire cursor_lock + reset cursor;  fall through
-			 *      to fresh block init below
+			 *   6. Mark old segment full
+			 *   7. Re-acquire cursor_lock + write first record into new
+			 *      segment
+			 *   8. Mark NEW segment ACTIVE and publish active_segment_id
 			 *
 			 * On hard cap → caller ereport 53R9E
 			 * On FS fail → caller ereport 53R9D
@@ -485,14 +479,18 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 			LWLockRelease(&UndoRecordShared->cursor_lock.lock);
 
 			LWLockAcquire(&UndoRecordShared->lifecycle_lock.lock, LW_EXCLUSIVE);
+			lifecycle_lock_held = true;
 
 			/* Recheck: maybe race winner already extended. */
 			if (UndoRecordShared->active_segment_id != old_segment_id) {
-				/* Race winner already extended — release lifecycle_lock
+				/*
+				 * Race winner already extended — release lifecycle_lock
 				 * + recursive retry.  The recursive call re-reads cursor
 				 * state under cursor_lock from scratch,  so we don't need
-				 * to repopulate locals here. */
+				 * to repopulate locals here.
+				 */
 				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+				lifecycle_lock_held = false;
 				return cluster_undo_record_alloc(record_type, target, tt_slot_segment_id,
 												 tt_slot_offset, payload, payload_len, prev_uba);
 			}
@@ -512,6 +510,7 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 				else
 					pg_atomic_fetch_add_u64(&UndoRecordShared->segment_create_fail_count, 1);
 				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+				lifecycle_lock_held = false;
 
 				if (at_hard_cap)
 					ereport(ERROR,
@@ -535,37 +534,32 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 			pg_atomic_fetch_add_u64(&UndoRecordShared->segment_switch_count, 1);
 
 			/* Mark old segment FULL(state remains ACTIVE per §3.3 I2). */
-			(void)cluster_undo_segment_mark_full(old_segment_id, ownerinst);
+			if (!cluster_undo_segment_mark_full(old_segment_id, ownerinst)) {
+				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+				lifecycle_lock_held = false;
+				return InvalidUba;
+			}
 
-			/* Mark NEW segment ACTIVE + init tail_block per spec-3.8 D1+D5. */
-			(void)cluster_undo_segment_mark_active(new_segment_id, ownerinst);
-			(void)cluster_undo_segment_tail_block_init(new_segment_id, ownerinst, 1);
-
-			/* Publish NEW active_segment_id under cursor_lock. */
+			/*
+			 * Prepare NEW segment cursor.  The NEW active_segment_id is
+			 * published only after its first record write and header
+			 * activation succeed.
+			 */
 			LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
-			UndoRecordShared->active_segment_id = new_segment_id;
-			UndoRecordShared->current_block = 1;
-			UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
-			UndoRecordShared->slot_count = 0;
-			UndoRecordShared->block_first_scn = current_scn;
-			pg_atomic_fetch_add_u64(&UndoRecordShared->segment_claim_count, 1);
-
-			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 
 			/* Fall through with NEW segment state. */
 			segment_id = new_segment_id;
 			current_block = 1;
 			free_offset = sizeof(UndoBlockHeader);
 			slot_count = 0;
+			segment_needs_activation = true;
 		} else {
-			UndoRecordShared->current_block = current_block;
-			UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
-			UndoRecordShared->slot_count = 0;
-			UndoRecordShared->block_first_scn = current_scn;
 			free_offset = sizeof(UndoBlockHeader);
 			slot_count = 0;
 		}
 	}
+
+	block_was_fresh = (slot_count == 0);
 
 	/* Read current block (or zeroed if first write to this block). */
 	if (slot_count == 0) {
@@ -582,6 +576,8 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	} else {
 		if (!read_undo_block(segment_id, owner_instance, current_block, block_buf)) {
 			LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+			if (lifecycle_lock_held)
+				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 			return InvalidUba; /* I/O fail */
 		}
 		blkhdr = (UndoBlockHeader *)block_buf;
@@ -623,28 +619,52 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	if (!write_undo_block(segment_id, owner_instance, current_block, block_buf,
 						  /* do_fsync = */ true)) {
 		LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+		if (lifecycle_lock_held)
+			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 		return InvalidUba; /* I/O fail */
+	}
+
+	if (segment_needs_activation) {
+		uint8 ownerinst = (uint8)(cluster_node_id + 1);
+
+		if (!cluster_undo_segment_mark_active(segment_id, ownerinst)
+			|| !cluster_undo_segment_tail_block_init(segment_id, ownerinst, 1)) {
+			LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+			if (lifecycle_lock_held)
+				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+			return InvalidUba;
+		}
+		UndoRecordShared->active_segment_id = segment_id;
+		UndoRecordShared->current_block = current_block;
+		UndoRecordShared->block_first_scn = current_scn;
+		pg_atomic_fetch_add_u64(&UndoRecordShared->segment_claim_count, 1);
+	}
+
+	if (block_was_fresh
+		&& !cluster_undo_segment_mark_block_used((uint32)segment_id, (uint8)(cluster_node_id + 1),
+												 current_block)) {
+		LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+		if (lifecycle_lock_held)
+			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+		return InvalidUba;
 	}
 
 	pg_atomic_fetch_add_u64(&UndoRecordShared->block_write_count, 1);
 	pg_atomic_fetch_add_u64(&UndoRecordShared->block_flush_count, 1);
 
 	/* Advance shared cursor. */
+	UndoRecordShared->current_block = current_block;
 	UndoRecordShared->free_offset = free_offset + record_length;
 	UndoRecordShared->slot_count = (uint16)(slot_count + 1);
+	if (block_was_fresh)
+		UndoRecordShared->block_first_scn = current_scn;
 	UndoRecordShared->block_dirty = 0; /* just flushed */
 
 	pg_atomic_fetch_add_u64(&UndoRecordShared->record_alloc_count, 1);
 
 	LWLockRelease(&UndoRecordShared->cursor_lock.lock);
-
-	/*
-	 * spec-3.8 D6:  mark block_no as used in segment's free_block_bitmap.
-	 * Called outside cursor_lock since it does its own file I/O.
-	 * Idempotent — re-mark of already-used block is no-op.
-	 */
-	cluster_undo_segment_mark_block_used((uint32)segment_id, (uint8)(cluster_node_id + 1),
-										 current_block);
+	if (lifecycle_lock_held)
+		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 
 	/* Mark backend touched for D16 PREPARE guard. */
 	cluster_undo_touched_in_xact = true;

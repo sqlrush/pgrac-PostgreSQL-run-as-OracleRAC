@@ -9,10 +9,10 @@
  *	  pg_fsync I/O pattern used inline by cluster_undo_record.c +
  *	  cluster_undo_alloc.c.
  *
- *	  Future refactor (Hardening v1.0.X):  cluster_undo_record.c inline
- *	  read_undo_block / write_undo_block should call into this layer to
- *	  centralize I/O paths.  spec-3.9 CR construction + spec-3.10 CR
- *	  cache will hook above this layer.
+ *	  The spec-3.8 hardening path wires cluster_undo_record.c and the
+ *	  lifecycle helpers through this layer so undo I/O has one block-level
+ *	  abstraction.  spec-3.9 CR construction + spec-3.10 CR cache will hook
+ *	  above this layer.
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California

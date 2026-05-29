@@ -535,23 +535,23 @@ cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
  *   Per spec §3.1: is_full() returns true when no usable block left
  *   (free count <= 1 margin for safety).
  */
-void
+bool
 cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance, uint32 block_no)
 {
 	PGAlignedBlock blockbuf;
 	UndoSegmentHeaderData *hdr;
 
 	if (block_no >= UNDO_BLOCKS_PER_SEGMENT)
-		return; /* out-of-range,  ignore */
+		return false; /* out-of-range */
 
 	if (!read_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data, &hdr))
-		return;
+		return false;
 
 	/* Pure-kernel mutator (covered by cluster_unit T13/T14). */
 	if (!UndoSegmentBitmap_mark_used(hdr->free_block_bitmap, block_no))
-		return; /* already marked */
+		return true; /* already marked; idempotent success */
 
-	(void)write_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data);
+	return write_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data);
 }
 
 

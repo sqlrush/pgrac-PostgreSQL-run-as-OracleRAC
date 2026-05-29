@@ -183,7 +183,7 @@ extern bool cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_inst
 extern bool cluster_undo_segment_mark_full(uint32 segment_id, uint8 owner_instance);
 
 /* D6 free_block_bitmap helpers (spec-3.8). */
-extern void cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
+extern bool cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
 												 uint32 block_no);
 extern bool cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance);
 
