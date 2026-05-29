@@ -391,6 +391,19 @@ extern char *cluster_undo_tablespace_path;
 extern int cluster_undo_segment_size_mb;
 extern int cluster_undo_record_inline_max_bytes;
 
+/*
+ * spec-3.8 D9 NEW GUCs (registered in Step 7):
+ *   cluster.undo_segments_max_per_instance    -- hard cap per-instance pool
+ *                                                (default 256, range 16..256
+ *                                                = CLUSTER_UNDO_SEGS_PER_INSTANCE
+ *                                                linkdb SSOT;  F2 codex review)
+ *   cluster.undo_segment_create_timeout_ms    -- segment file create + initial
+ *                                                fsync elapsed-time guard
+ *                                                (default 5000ms, range 100..60000)
+ */
+extern int cluster_undo_segments_max_per_instance;
+extern int cluster_undo_segment_create_timeout_ms;
+
 
 /*
  * cluster.allow_single_node (spec-2.1 D1; Stage 2.1 backward-compat

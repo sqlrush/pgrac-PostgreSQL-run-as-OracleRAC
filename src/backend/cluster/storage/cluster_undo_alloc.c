@@ -661,3 +661,105 @@ cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
 	}
 	return (free_count <= 1);
 }
+
+
+/* ============================================================
+ * spec-3.8 D2: Autoextend lazy at exhaustion
+ *
+ *   API: cluster_undo_segment_extend_or_create()
+ *
+ *   Per Hardening v1.0.1 H-1/H-2:  use existing segment-id encoding
+ *   ((owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + slot + 1).
+ *   Scans slot 0..max-1 to find first unused slot (file doesn't exist
+ *   OR header not yet initialized).
+ *
+ *   Hard cap source:  cluster.undo_segments_max_per_instance GUC
+ *   (declared in cluster_guc.h, registered in Step 7).  Effective cap =
+ *   min(GUC value, CLUSTER_UNDO_SEGS_PER_INSTANCE = 256 encoding limit).
+ *
+ *   Lock contract: caller holds lifecycle_lock (NOT cursor_lock).
+ *   File I/O happens under lifecycle_lock per spec §3.2.
+ * ============================================================ */
+
+uint32
+cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_cap)
+{
+	uint32 slot;
+	uint32 base_segment_id;
+	uint32 effective_cap;
+	uint32 new_segment_id;
+
+	if (out_at_hard_cap != NULL)
+		*out_at_hard_cap = false;
+
+	if (owner_instance < 1 || owner_instance > UNDO_OWNER_INSTANCE_MAX)
+		return 0;
+
+	/* effective_cap = min(GUC, encoding limit 256).  GUC variable is
+	 * declared in cluster_guc.h (Step 7 registers it);  here we just
+	 * cap at CLUSTER_UNDO_SEGS_PER_INSTANCE if GUC isn't set yet
+	 * (value 0 means use encoding limit). */
+	{
+		extern int cluster_undo_segments_max_per_instance;
+		int		   guc_val = cluster_undo_segments_max_per_instance;
+
+		if (guc_val <= 0 || guc_val > (int) CLUSTER_UNDO_SEGS_PER_INSTANCE)
+			effective_cap = CLUSTER_UNDO_SEGS_PER_INSTANCE;
+		else
+			effective_cap = (uint32) guc_val;
+	}
+
+	/* segment_id space for this owner_instance:
+	 *   [base_segment_id, base_segment_id + effective_cap)
+	 *
+	 * Per existing encoding (cluster_undo_active_segment_for_node_or_create):
+	 *   slot 0 segment_id = (owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1
+	 */
+	base_segment_id = (uint32) (owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
+
+	/* Iterate slots — find first one where the file doesn't yet exist. */
+	for (slot = 0; slot < effective_cap; slot++)
+	{
+		char path[MAXPGPATH];
+		int	 ret;
+		int	 fd;
+
+		new_segment_id = base_segment_id + slot;
+
+		ret = cluster_undo_path_resolve(owner_instance, new_segment_id, path, sizeof(path));
+		if (ret != 0)
+			continue;
+
+		fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+		if (fd >= 0)
+		{
+			/* File exists — slot is taken. */
+			close(fd);
+			continue;
+		}
+
+		if (errno != ENOENT)
+		{
+			/* Real I/O error reading slot N — abort autoextend. */
+			return 0;
+		}
+
+		/* Found free slot — create the segment file. */
+		cluster_undo_segment_allocate(new_segment_id, owner_instance);
+
+		/* Verify the file was created (cluster_undo_segment_allocate
+		 * is idempotent;  if it ereport'd ERROR we wouldn't reach here). */
+		fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+		if (fd < 0)
+			return 0; /* create silently failed */
+		close(fd);
+
+		return new_segment_id;
+	}
+
+	/* All slots taken — hard cap reached. */
+	if (out_at_hard_cap != NULL)
+		*out_at_hard_cap = true;
+
+	return 0;
+}

@@ -152,5 +152,18 @@ extern void cluster_undo_segment_allocate(uint32 segment_id, uint8 owner_instanc
  */
 extern uint32 cluster_undo_active_segment_for_node_or_create(int node_id);
 
+/*
+ * spec-3.8 D2:  autoextend lazy at exhaustion.
+ *
+ *	Allocates the next free segment slot for owner_instance.  Returns
+ *	NEW segment_id on success;  0 on failure.  Sets *out_at_hard_cap
+ *	when no free slot remains (pool exhausted within encoding limit).
+ *
+ *	Caller MUST hold lifecycle_lock (NOT cursor_lock) per spec §3.2.
+ *	NOT critical-section safe (does file I/O + fsync).
+ */
+extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance,
+													bool *out_at_hard_cap);
+
 
 #endif /* CLUSTER_UNDO_ALLOC_H */

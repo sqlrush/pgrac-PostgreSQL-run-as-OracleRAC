@@ -201,6 +201,14 @@ int cluster_undo_segment_size_mb = 32;
 int cluster_undo_record_inline_max_bytes = 1024;
 
 /*
+ * spec-3.8 D9 NEW GUCs (Step 7 真注册;Step 3 先 declare 让 build pass):
+ *   cluster.undo_segments_max_per_instance  -- default 256 = CLUSTER_UNDO_SEGS_PER_INSTANCE
+ *   cluster.undo_segment_create_timeout_ms  -- default 5000ms
+ */
+int cluster_undo_segments_max_per_instance = 256;
+int cluster_undo_segment_create_timeout_ms = 5000;
+
+/*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
  * sweep target staleness in ms.  Range [1, 1000]; default 100ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
