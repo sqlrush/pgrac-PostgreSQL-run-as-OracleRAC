@@ -163,7 +163,10 @@ like($dump, qr/ABORT.*scn:\s*\d+/s,
 $start_lsn = $primary->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $primary->safe_psql('postgres', q{
 	BEGIN;
-	  INSERT INTO t1 VALUES (10);
+	  -- Assign a top XID without writing heap undo records.  spec-3.7
+	  -- rejects PREPARE after cluster undo writes; this test only needs
+	  -- WAL 2PC records for SCN sub-record assertions.
+	  SELECT txid_current();
 	PREPARE TRANSACTION 'tx1';
 });
 my $prepare_end_lsn = $primary->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
@@ -188,7 +191,9 @@ like($dump, qr/COMMIT.*scn:\s*\d+/s,
 # ----------
 $primary->safe_psql('postgres', q{
 	BEGIN;
-	  INSERT INTO t1 VALUES (20);
+	  -- See L3: avoid cluster undo writes so the rollback-prepared SCN
+	  -- assertion stays outside the spec-3.7 prepared-undo guard.
+	  SELECT txid_current();
 	PREPARE TRANSACTION 'tx2';
 });
 $start_lsn = $primary->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');

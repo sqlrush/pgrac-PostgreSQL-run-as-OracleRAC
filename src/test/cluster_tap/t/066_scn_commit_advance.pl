@@ -196,7 +196,10 @@ is($abort_after, $abort_before,
 $commit_before = counter('scn_commit_advance_count');
 $node->safe_psql('postgres', q{
 	BEGIN;
-	  INSERT INTO t1 VALUES (30);
+	  -- Assign a top XID without writing heap undo records.  spec-3.7
+	  -- intentionally rejects PREPARE after cluster undo writes; this
+	  -- test is about SCN 2PC semantics, not prepared-undo durability.
+	  SELECT txid_current();
 	PREPARE TRANSACTION 'tx1';
 });
 my $commit_after_prepare = counter('scn_commit_advance_count');
@@ -216,7 +219,9 @@ $commit_before = counter('scn_commit_advance_count');
 $abort_before  = counter('scn_abort_advance_count');
 $node->safe_psql('postgres', q{
 	BEGIN;
-	  INSERT INTO t1 VALUES (40);
+	  -- See L7: top-XID-only prepared xact keeps this SCN test out of
+	  -- the spec-3.7 undo PREPARE guard path.
+	  SELECT txid_current();
 	PREPARE TRANSACTION 'tx2';
 });
 is(counter('scn_commit_advance_count'), $commit_before,
