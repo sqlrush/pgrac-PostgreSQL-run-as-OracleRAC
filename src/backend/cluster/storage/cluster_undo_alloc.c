@@ -401,3 +401,263 @@ cluster_undo_active_segment_for_node_or_create(int node_id)
 
 	return segment_id;
 }
+
+
+/* ============================================================
+ * spec-3.8 D1+D5+D6: Lifecycle state machine + tail_block + bitmap
+ *
+ *   Hardening v1.0.1:
+ *	   H-1 first_active_block ≡ tail_block (linkdb SSOT field name)
+ *	   H-2 wrap_count field doesn't exist;  TT slot wrap (per-slot)
+ *	       preserved as-is per spec-1.20 SSOT;  segment-level
+ *	       wrap_count deferred to spec-3.12 真 recycle
+ *
+ *   I/O pattern: open segment file → pread block 0 (8KB header) →
+ *   modify field → pwrite block 0 → fsync.  Per spec §3.2 lock contract,
+ *   these are lifecycle work and OK to perform under lifecycle_lock
+ *   (caller's concern).
+ * ============================================================ */
+
+static int
+open_segment_for_rmw(uint8 owner_instance, uint32 segment_id)
+{
+	char path[MAXPGPATH];
+	int	 ret;
+	int	 fd;
+
+	ret = cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path));
+	if (ret != 0)
+		return -1;
+
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	return fd;
+}
+
+
+static bool
+read_segment_header(int fd, UndoSegmentHeaderData *out_hdr)
+{
+	ssize_t nread;
+
+	nread = pg_pread(fd, out_hdr, sizeof(UndoSegmentHeaderData), 0);
+	return (nread == (ssize_t) sizeof(UndoSegmentHeaderData));
+}
+
+
+static bool
+write_segment_header(int fd, const UndoSegmentHeaderData *hdr)
+{
+	ssize_t nwritten;
+
+	nwritten = pg_pwrite(fd, hdr, sizeof(UndoSegmentHeaderData), 0);
+	if (nwritten != (ssize_t) sizeof(UndoSegmentHeaderData))
+		return false;
+
+	return (pg_fsync(fd) == 0);
+}
+
+
+/*
+ * cluster_undo_segment_mark_active -- D1 ALLOCATED → ACTIVE transition.
+ *
+ *	Called on first successful record write into the segment.  Reads
+ *	segment header,  flips segment_state to SEGMENT_ACTIVE,  writes back
+ *	+ fsync.  Idempotent (already-ACTIVE returns true without rewrite).
+ */
+bool
+cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance)
+{
+	int						fd;
+	UndoSegmentHeaderData	hdr;
+	bool					ok;
+
+	fd = open_segment_for_rmw(owner_instance, segment_id);
+	if (fd < 0)
+		return false;
+
+	if (!read_segment_header(fd, &hdr))
+	{
+		close(fd);
+		return false;
+	}
+
+	if (hdr.segment_state == SEGMENT_ACTIVE)
+	{
+		close(fd);
+		return true; /* idempotent — already ACTIVE */
+	}
+
+	if (hdr.segment_state != SEGMENT_ALLOCATED)
+	{
+		/* Per spec §3.3 I3:  not ALLOCATED/ACTIVE means COMMITTED /
+		 * RECYCLABLE / INVALID — fail-closed,  do not silent reuse. */
+		close(fd);
+		return false;
+	}
+
+	hdr.segment_state = SEGMENT_ACTIVE;
+	ok = write_segment_header(fd, &hdr);
+	close(fd);
+	return ok;
+}
+
+
+/*
+ * cluster_undo_segment_mark_full -- D1 set UNDO_SEGMENT_FLAG_FULL.
+ *
+ *	Called when free_block_bitmap shows segment exhausted.  Per spec
+ *	§3.3 I2:  state remains ACTIVE — fullness is a flag,  not a state
+ *	transition.  Idempotent.
+ */
+bool
+cluster_undo_segment_mark_full(uint32 segment_id, uint8 owner_instance)
+{
+	int						fd;
+	UndoSegmentHeaderData	hdr;
+	bool					ok;
+
+	fd = open_segment_for_rmw(owner_instance, segment_id);
+	if (fd < 0)
+		return false;
+
+	if (!read_segment_header(fd, &hdr))
+	{
+		close(fd);
+		return false;
+	}
+
+	if ((hdr.segment_flags & UNDO_SEGMENT_FLAG_FULL) != 0)
+	{
+		close(fd);
+		return true; /* idempotent — already FULL */
+	}
+
+	hdr.segment_flags |= UNDO_SEGMENT_FLAG_FULL;
+	ok = write_segment_header(fd, &hdr);
+	close(fd);
+	return ok;
+}
+
+
+/*
+ * cluster_undo_segment_tail_block_init -- D5 initial tail_block setup.
+ *
+ *	Per Hardening v1.0.1 H-1:  spec terminology first_active_block ≡
+ *	linkdb tail_block (offset 48,  retention base).  Called after
+ *	ALLOCATED → ACTIVE transition to set initial retention base to
+ *	block 1 (block 0 is segment header).  Single update;  later
+ *	advances are driven by cleaner (spec-3.12).
+ */
+bool
+cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
+									 BlockNumber initial_tail)
+{
+	int						fd;
+	UndoSegmentHeaderData	hdr;
+	bool					ok;
+
+	fd = open_segment_for_rmw(owner_instance, segment_id);
+	if (fd < 0)
+		return false;
+
+	if (!read_segment_header(fd, &hdr))
+	{
+		close(fd);
+		return false;
+	}
+
+	hdr.tail_block = initial_tail;
+	ok = write_segment_header(fd, &hdr);
+	close(fd);
+	return ok;
+}
+
+
+/*
+ * D6 free_block_bitmap helpers
+ *
+ *   Per spec §3.7 free_block_bitmap layout: 1024 bytes at offset 1656
+ *   of UndoSegmentHeaderData (8192 blocks / 8 bits-per-byte = 1024 B).
+ *   Bit set = block is in-use;  bit clear = block free.  Block 0 (segment
+ *   header) bit always set (reserved).
+ *
+ *   Per spec §3.1: is_full() returns true when no usable block left
+ *   (free count <= 1 margin for safety).
+ */
+void
+cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
+									 uint32 block_no)
+{
+	int						fd;
+	UndoSegmentHeaderData	hdr;
+	uint32					byte_idx;
+	uint8					bit_mask;
+
+	if (block_no >= UNDO_BLOCKS_PER_SEGMENT)
+		return; /* out-of-range,  ignore */
+
+	fd = open_segment_for_rmw(owner_instance, segment_id);
+	if (fd < 0)
+		return;
+
+	if (!read_segment_header(fd, &hdr))
+	{
+		close(fd);
+		return;
+	}
+
+	byte_idx = block_no / 8;
+	bit_mask = (uint8) (1u << (block_no % 8));
+
+	if ((hdr.free_block_bitmap[byte_idx] & bit_mask) != 0)
+	{
+		close(fd);
+		return; /* already marked */
+	}
+
+	hdr.free_block_bitmap[byte_idx] |= bit_mask;
+	(void) write_segment_header(fd, &hdr);
+	close(fd);
+}
+
+
+bool
+cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
+{
+	int						fd;
+	UndoSegmentHeaderData	hdr;
+	uint32					free_count;
+	uint32					i;
+
+	fd = open_segment_for_rmw(owner_instance, segment_id);
+	if (fd < 0)
+		return false;
+
+	if (!read_segment_header(fd, &hdr))
+	{
+		close(fd);
+		return false;
+	}
+
+	close(fd);
+
+	/* Count free bits (clear).  Per spec §3.7,  return true if
+	 * free count <= 1 (margin). */
+	free_count = 0;
+	for (i = 0; i < UNDO_FREE_BITMAP_BYTES; i++)
+	{
+		uint8 byte = hdr.free_block_bitmap[i];
+		uint8 j;
+
+		for (j = 0; j < 8; j++)
+		{
+			if ((byte & ((uint8) 1u << j)) == 0)
+			{
+				free_count++;
+				if (free_count > 1)
+					return false; /* still has space */
+			}
+		}
+	}
+	return (free_count <= 1);
+}

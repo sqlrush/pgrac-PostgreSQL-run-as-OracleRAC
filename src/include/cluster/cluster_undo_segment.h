@@ -143,7 +143,53 @@ typedef enum UndoSegmentState {
 #define UNDO_OWNER_INSTANCE_INVALID ((uint8)0)
 #define UNDO_OWNER_INSTANCE_MAX ((uint8)128) /* matches cluster.node_id 0..127 + 1 */
 
-#define UNDO_SEGMENT_FLAGS_RESERVED ((uint8)0)
+#define UNDO_SEGMENT_FLAGS_RESERVED ((uint8) 0)
+
+/*
+ * UndoSegmentHeaderData.segment_flags bitfield (spec-3.8 D1 真激活).
+ *
+ *   UNDO_SEGMENT_FLAG_FULL (0x01): segment is write-closed — all blocks
+ *   exhausted (free_block_bitmap full).  State remains ACTIVE per spec
+ *   §3.3 I2 — 仅 fullness ≠ SEGMENT_COMMITTED (F3 codex review).  Set
+ *   by cluster_undo_segment_mark_full() when bitmap shows no usable
+ *   block left;  cleared on segment recycle (spec-3.12).
+ */
+#define UNDO_SEGMENT_FLAG_FULL ((uint8) 0x01)
+
+
+/*
+ * State machine helper API (spec-3.8 D1):
+ *   - cluster_undo_segment_mark_active() — ALLOCATED → ACTIVE
+ *     transition on first successful record write
+ *   - cluster_undo_segment_mark_full() — set UNDO_SEGMENT_FLAG_FULL
+ *     when free_block_bitmap shows segment exhausted;  state remains
+ *     ACTIVE (per spec §3.3 I2)
+ *
+ *   Per Hardening v1.0.1 H-1: spec-3.8 §3.3 I5 / §3.7 use
+ *   "first_active_block" name;  linkdb SSOT field is tail_block
+ *   (UndoSegmentHeaderData offset 48, 4B, spec-1.21 ship).
+ *   Semantic: "oldest unrecycled block" = retention base.
+ *   Implementation uses tail_block;  spec terminology maps:
+ *   first_active_block ≡ tail_block (retention base).
+ *
+ *   Per Hardening v1.0.1 H-2: spec-3.8 §3.5 wrap_count text 暗示 field
+ *   already exists;  linkdb SSOT has no segment-level wrap_count field.
+ *   TT slot wrap (per-slot, spec-1.20) preserved as-is;  segment-level
+ *   wrap_count field introduction deferred to spec-3.12 真 recycle.
+ *   D4 changed to "TT slot wrap invariant preserve" (no-op per spec-1.20
+ *   SSOT).
+ */
+extern bool cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance);
+extern bool cluster_undo_segment_mark_full(uint32 segment_id, uint8 owner_instance);
+
+/* D6 free_block_bitmap helpers (spec-3.8). */
+extern void cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
+												 uint32 block_no);
+extern bool cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance);
+
+/* D5 retention base (tail_block) update (spec-3.8). */
+extern bool cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
+												 BlockNumber initial_tail);
 
 
 /*
