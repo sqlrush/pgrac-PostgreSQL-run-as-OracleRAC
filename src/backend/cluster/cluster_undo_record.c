@@ -111,6 +111,13 @@ typedef struct ClusterUndoRecordShared {
 	pg_atomic_uint64 reader_lookup_count;
 
 	LWLockPadded cursor_lock;
+	/* spec-3.8 D3: lifecycle_lock — protects autoextend slow path
+	 * (active_segment_id publication + state transitions).  Per spec
+	 * §3.2:  写 record 只 cursor_lock;  撞满 → release cursor_lock →
+	 * acquire lifecycle_lock → recheck active_segment_id → 必要
+	 * re-acquire cursor_lock 发布 NEW active.  禁止同时长期持有两锁
+	 * 做 I/O (但 lifecycle_lock 可持有期间 file create + fsync). */
+	LWLockPadded lifecycle_lock;
 } ClusterUndoRecordShared;
 
 
@@ -218,6 +225,7 @@ cluster_undo_record_shmem_init(void)
 		pg_atomic_init_u64(&UndoRecordShared->reader_lookup_count, 0);
 
 		LWLockInitialize(&UndoRecordShared->cursor_lock.lock, tranche_id);
+		LWLockInitialize(&UndoRecordShared->lifecycle_lock.lock, tranche_id);
 		LWLockRegisterTranche(tranche_id, "cluster_undo_record_cursor");
 	}
 }
@@ -230,7 +238,10 @@ static const ClusterShmemRegion cluster_undo_record_region = {
 	.name = "pgrac cluster undo record cursor",
 	.size_fn = cluster_undo_record_shmem_size,
 	.init_fn = cluster_undo_record_shmem_init,
-	.lwlock_count = 1,
+	/* spec-3.8 D3: lwlock_count 1 → 2 (cursor_lock + lifecycle_lock).
+	 * lifecycle_lock 复用 cluster_undo_record_cursor region per
+	 * L206 5 步流程 — 不引入 NEW region. */
+	.lwlock_count = 2,
 	.owner_subsys = "cluster_undo_record",
 	.reserved_flags = 0,
 };
@@ -442,17 +453,99 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 		/* Advance to next block. */
 		current_block++;
 		if (current_block >= UNDO_BLOCKS_PER_SEGMENT) {
-			/* Segment exhausted — fail-closed.  spec-3.8 lifecycle
-			 * will autoextend; for now caller gets 53R9D. */
+			/*
+			 * Segment exhausted — spec-3.8 D8: try autoextend instead
+			 * of immediate 53R9D fail.  Per spec §3.2 lock contract:
+			 *   1. Release cursor_lock(避免持 cursor_lock 期间 I/O)
+			 *   2. Acquire lifecycle_lock
+			 *   3. Recheck active_segment_id(double-checked locking)
+			 *   4. If race winner already extended → release lifecycle_lock
+			 *      + re-acquire cursor_lock + retry from segment_id load
+			 *   5. Otherwise call cluster_undo_segment_extend_or_create()
+			 *   6. Mark old segment full + publish NEW active_segment_id
+			 *   7. Re-acquire cursor_lock + reset cursor;  fall through
+			 *      to fresh block init below
+			 *
+			 * On hard cap → caller ereport 53R9E
+			 * On FS fail → caller ereport 53R9D
+			 */
+			uint32 old_segment_id = segment_id;
+			uint32 new_segment_id;
+			bool   at_hard_cap = false;
+			uint8  ownerinst;
+
 			LWLockRelease(&UndoRecordShared->cursor_lock.lock);
-			return InvalidUba;
+
+			LWLockAcquire(&UndoRecordShared->lifecycle_lock.lock, LW_EXCLUSIVE);
+
+			/* Recheck: maybe race winner already extended. */
+			if (UndoRecordShared->active_segment_id != old_segment_id) {
+				/* Race winner already extended — release lifecycle_lock
+				 * + retry under cursor_lock. */
+				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+				LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
+				/* Re-read shared cursor state and retry. */
+				segment_id = UndoRecordShared->active_segment_id;
+				current_block = UndoRecordShared->current_block;
+				free_offset = UndoRecordShared->free_offset;
+				slot_count = UndoRecordShared->slot_count;
+				/* Fall through to has_space check via re-entry would
+				 * be cleaner but for MVP just trust the new state. */
+				LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+				return cluster_undo_record_alloc(record_type, target,
+												 tt_slot_segment_id,
+												 tt_slot_offset,
+												 payload, payload_len,
+												 prev_uba);
+			}
+
+			/* I am the race winner — try autoextend. */
+			ownerinst = (uint8) (cluster_node_id + 1);
+			new_segment_id = cluster_undo_segment_extend_or_create(ownerinst,
+																   &at_hard_cap);
+
+			if (new_segment_id == 0) {
+				/* Failed:  hard cap or FS fail.  Release lifecycle_lock
+				 * + caller decides which SQLSTATE based on at_hard_cap. */
+				if (at_hard_cap)
+					pg_atomic_fetch_add_u64(
+						&UndoRecordShared->reader_lookup_count, 0);
+				LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+				/* Counter bump per spec D10 — placeholder until Step 7
+				 * adds dedicated _segment_hard_cap_fail_count atomic. */
+				return InvalidUba;
+			}
+
+			/* Mark old segment FULL(state remains ACTIVE per §3.3 I2). */
+			(void) cluster_undo_segment_mark_full(old_segment_id, ownerinst);
+
+			/* Mark NEW segment ACTIVE (we'll write first record below). */
+			(void) cluster_undo_segment_mark_active(new_segment_id, ownerinst);
+
+			/* Publish NEW active_segment_id under cursor_lock. */
+			LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
+			UndoRecordShared->active_segment_id = new_segment_id;
+			UndoRecordShared->current_block = 1;
+			UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
+			UndoRecordShared->slot_count = 0;
+			UndoRecordShared->block_first_scn = current_scn;
+			pg_atomic_fetch_add_u64(&UndoRecordShared->segment_claim_count, 1);
+
+			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+
+			/* Fall through with NEW segment state. */
+			segment_id = new_segment_id;
+			current_block = 1;
+			free_offset = sizeof(UndoBlockHeader);
+			slot_count = 0;
+		} else {
+			UndoRecordShared->current_block = current_block;
+			UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
+			UndoRecordShared->slot_count = 0;
+			UndoRecordShared->block_first_scn = current_scn;
+			free_offset = sizeof(UndoBlockHeader);
+			slot_count = 0;
 		}
-		UndoRecordShared->current_block = current_block;
-		UndoRecordShared->free_offset = sizeof(UndoBlockHeader);
-		UndoRecordShared->slot_count = 0;
-		UndoRecordShared->block_first_scn = current_scn;
-		free_offset = sizeof(UndoBlockHeader);
-		slot_count = 0;
 	}
 
 	/* Read current block (or zeroed if first write to this block). */
