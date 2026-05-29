@@ -143,7 +143,7 @@ typedef enum UndoSegmentState {
 #define UNDO_OWNER_INSTANCE_INVALID ((uint8)0)
 #define UNDO_OWNER_INSTANCE_MAX ((uint8)128) /* matches cluster.node_id 0..127 + 1 */
 
-#define UNDO_SEGMENT_FLAGS_RESERVED ((uint8) 0)
+#define UNDO_SEGMENT_FLAGS_RESERVED ((uint8)0)
 
 /*
  * UndoSegmentHeaderData.segment_flags bitfield (spec-3.8 D1 真激活).
@@ -154,7 +154,7 @@ typedef enum UndoSegmentState {
  *   by cluster_undo_segment_mark_full() when bitmap shows no usable
  *   block left;  cleared on segment recycle (spec-3.12).
  */
-#define UNDO_SEGMENT_FLAG_FULL ((uint8) 0x01)
+#define UNDO_SEGMENT_FLAG_FULL ((uint8)0x01)
 
 
 /*

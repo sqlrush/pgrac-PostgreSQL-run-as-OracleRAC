@@ -1432,14 +1432,13 @@ dump_undo(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_undo_reader_lookup_count()));
 
 	/* spec-3.8 D11: 4 NEW lifecycle counters. */
-	emit_row(rsinfo, "undo", "autoextend_count",
-			 fmt_int64((int64) cluster_undo_autoextend_count()));
+	emit_row(rsinfo, "undo", "autoextend_count", fmt_int64((int64)cluster_undo_autoextend_count()));
 	emit_row(rsinfo, "undo", "segment_switch_count",
-			 fmt_int64((int64) cluster_undo_segment_switch_count()));
+			 fmt_int64((int64)cluster_undo_segment_switch_count()));
 	emit_row(rsinfo, "undo", "segment_create_fail_count",
-			 fmt_int64((int64) cluster_undo_segment_create_fail_count()));
+			 fmt_int64((int64)cluster_undo_segment_create_fail_count()));
 	emit_row(rsinfo, "undo", "segment_hard_cap_fail_count",
-			 fmt_int64((int64) cluster_undo_segment_hard_cap_fail_count()));
+			 fmt_int64((int64)cluster_undo_segment_hard_cap_fail_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */

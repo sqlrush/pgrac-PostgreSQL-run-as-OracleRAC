@@ -1364,8 +1364,7 @@ cluster_init_guc(void)
 					 "pool size results in WARNING + effective floor at current pool "
 					 "(no retro-shrink). Hard cap reached → SQLSTATE 53R9E "
 					 "(cluster_undo_segments_hard_cap_reached)."),
-		&cluster_undo_segments_max_per_instance, 256, 16, 256, PGC_SIGHUP, 0, NULL, NULL,
-		NULL);
+		&cluster_undo_segments_max_per_instance, 256, 16, 256, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
 		"cluster.undo_segment_create_timeout_ms",
@@ -1374,8 +1373,7 @@ cluster_init_guc(void)
 					 "create + fsync completes; exceeding this threshold raises "
 					 "SQLSTATE 53R9D with errhint to check storage latency. "
 					 "Not an asynchronous I/O cancellation/preemption mechanism."),
-		&cluster_undo_segment_create_timeout_ms, 5000, 100, 60000, PGC_SIGHUP, 0,
-		NULL, NULL, NULL);
+		&cluster_undo_segment_create_timeout_ms, 5000, 100, 60000, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
 		"cluster.boc_sweep_interval_ms",

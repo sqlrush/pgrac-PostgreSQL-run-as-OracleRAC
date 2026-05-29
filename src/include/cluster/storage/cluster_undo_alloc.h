@@ -162,8 +162,7 @@ extern uint32 cluster_undo_active_segment_for_node_or_create(int node_id);
  *	Caller MUST hold lifecycle_lock (NOT cursor_lock) per spec §3.2.
  *	NOT critical-section safe (does file I/O + fsync).
  */
-extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance,
-													bool *out_at_hard_cap);
+extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_cap);
 
 
 #endif /* CLUSTER_UNDO_ALLOC_H */

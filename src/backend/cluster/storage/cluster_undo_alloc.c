@@ -422,8 +422,8 @@ static int
 open_segment_for_rmw(uint8 owner_instance, uint32 segment_id)
 {
 	char path[MAXPGPATH];
-	int	 ret;
-	int	 fd;
+	int ret;
+	int fd;
 
 	ret = cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path));
 	if (ret != 0)
@@ -440,7 +440,7 @@ read_segment_header(int fd, UndoSegmentHeaderData *out_hdr)
 	ssize_t nread;
 
 	nread = pg_pread(fd, out_hdr, sizeof(UndoSegmentHeaderData), 0);
-	return (nread == (ssize_t) sizeof(UndoSegmentHeaderData));
+	return (nread == (ssize_t)sizeof(UndoSegmentHeaderData));
 }
 
 
@@ -450,7 +450,7 @@ write_segment_header(int fd, const UndoSegmentHeaderData *hdr)
 	ssize_t nwritten;
 
 	nwritten = pg_pwrite(fd, hdr, sizeof(UndoSegmentHeaderData), 0);
-	if (nwritten != (ssize_t) sizeof(UndoSegmentHeaderData))
+	if (nwritten != (ssize_t)sizeof(UndoSegmentHeaderData))
 		return false;
 
 	return (pg_fsync(fd) == 0);
@@ -467,28 +467,25 @@ write_segment_header(int fd, const UndoSegmentHeaderData *hdr)
 bool
 cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance)
 {
-	int						fd;
-	UndoSegmentHeaderData	hdr;
-	bool					ok;
+	int fd;
+	UndoSegmentHeaderData hdr;
+	bool ok;
 
 	fd = open_segment_for_rmw(owner_instance, segment_id);
 	if (fd < 0)
 		return false;
 
-	if (!read_segment_header(fd, &hdr))
-	{
+	if (!read_segment_header(fd, &hdr)) {
 		close(fd);
 		return false;
 	}
 
-	if (hdr.segment_state == SEGMENT_ACTIVE)
-	{
+	if (hdr.segment_state == SEGMENT_ACTIVE) {
 		close(fd);
 		return true; /* idempotent — already ACTIVE */
 	}
 
-	if (hdr.segment_state != SEGMENT_ALLOCATED)
-	{
+	if (hdr.segment_state != SEGMENT_ALLOCATED) {
 		/* Per spec §3.3 I3:  not ALLOCATED/ACTIVE means COMMITTED /
 		 * RECYCLABLE / INVALID — fail-closed,  do not silent reuse. */
 		close(fd);
@@ -512,22 +509,20 @@ cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance)
 bool
 cluster_undo_segment_mark_full(uint32 segment_id, uint8 owner_instance)
 {
-	int						fd;
-	UndoSegmentHeaderData	hdr;
-	bool					ok;
+	int fd;
+	UndoSegmentHeaderData hdr;
+	bool ok;
 
 	fd = open_segment_for_rmw(owner_instance, segment_id);
 	if (fd < 0)
 		return false;
 
-	if (!read_segment_header(fd, &hdr))
-	{
+	if (!read_segment_header(fd, &hdr)) {
 		close(fd);
 		return false;
 	}
 
-	if ((hdr.segment_flags & UNDO_SEGMENT_FLAG_FULL) != 0)
-	{
+	if ((hdr.segment_flags & UNDO_SEGMENT_FLAG_FULL) != 0) {
 		close(fd);
 		return true; /* idempotent — already FULL */
 	}
@@ -552,16 +547,15 @@ bool
 cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
 									 BlockNumber initial_tail)
 {
-	int						fd;
-	UndoSegmentHeaderData	hdr;
-	bool					ok;
+	int fd;
+	UndoSegmentHeaderData hdr;
+	bool ok;
 
 	fd = open_segment_for_rmw(owner_instance, segment_id);
 	if (fd < 0)
 		return false;
 
-	if (!read_segment_header(fd, &hdr))
-	{
+	if (!read_segment_header(fd, &hdr)) {
 		close(fd);
 		return false;
 	}
@@ -585,13 +579,12 @@ cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
  *   (free count <= 1 margin for safety).
  */
 void
-cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
-									 uint32 block_no)
+cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance, uint32 block_no)
 {
-	int						fd;
-	UndoSegmentHeaderData	hdr;
-	uint32					byte_idx;
-	uint8					bit_mask;
+	int fd;
+	UndoSegmentHeaderData hdr;
+	uint32 byte_idx;
+	uint8 bit_mask;
 
 	if (block_no >= UNDO_BLOCKS_PER_SEGMENT)
 		return; /* out-of-range,  ignore */
@@ -600,23 +593,21 @@ cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
 	if (fd < 0)
 		return;
 
-	if (!read_segment_header(fd, &hdr))
-	{
+	if (!read_segment_header(fd, &hdr)) {
 		close(fd);
 		return;
 	}
 
 	byte_idx = block_no / 8;
-	bit_mask = (uint8) (1u << (block_no % 8));
+	bit_mask = (uint8)(1u << (block_no % 8));
 
-	if ((hdr.free_block_bitmap[byte_idx] & bit_mask) != 0)
-	{
+	if ((hdr.free_block_bitmap[byte_idx] & bit_mask) != 0) {
 		close(fd);
 		return; /* already marked */
 	}
 
 	hdr.free_block_bitmap[byte_idx] |= bit_mask;
-	(void) write_segment_header(fd, &hdr);
+	(void)write_segment_header(fd, &hdr);
 	close(fd);
 }
 
@@ -624,17 +615,16 @@ cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
 bool
 cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
 {
-	int						fd;
-	UndoSegmentHeaderData	hdr;
-	uint32					free_count;
-	uint32					i;
+	int fd;
+	UndoSegmentHeaderData hdr;
+	uint32 free_count;
+	uint32 i;
 
 	fd = open_segment_for_rmw(owner_instance, segment_id);
 	if (fd < 0)
 		return false;
 
-	if (!read_segment_header(fd, &hdr))
-	{
+	if (!read_segment_header(fd, &hdr)) {
 		close(fd);
 		return false;
 	}
@@ -644,15 +634,12 @@ cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
 	/* Count free bits (clear).  Per spec §3.7,  return true if
 	 * free count <= 1 (margin). */
 	free_count = 0;
-	for (i = 0; i < UNDO_FREE_BITMAP_BYTES; i++)
-	{
+	for (i = 0; i < UNDO_FREE_BITMAP_BYTES; i++) {
 		uint8 byte = hdr.free_block_bitmap[i];
 		uint8 j;
 
-		for (j = 0; j < 8; j++)
-		{
-			if ((byte & ((uint8) 1u << j)) == 0)
-			{
+		for (j = 0; j < 8; j++) {
+			if ((byte & ((uint8)1u << j)) == 0) {
 				free_count++;
 				if (free_count > 1)
 					return false; /* still has space */
@@ -701,12 +688,12 @@ cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_ca
 	 * (value 0 means use encoding limit). */
 	{
 		extern int cluster_undo_segments_max_per_instance;
-		int		   guc_val = cluster_undo_segments_max_per_instance;
+		int guc_val = cluster_undo_segments_max_per_instance;
 
-		if (guc_val <= 0 || guc_val > (int) CLUSTER_UNDO_SEGS_PER_INSTANCE)
+		if (guc_val <= 0 || guc_val > (int)CLUSTER_UNDO_SEGS_PER_INSTANCE)
 			effective_cap = CLUSTER_UNDO_SEGS_PER_INSTANCE;
 		else
-			effective_cap = (uint32) guc_val;
+			effective_cap = (uint32)guc_val;
 	}
 
 	/* segment_id space for this owner_instance:
@@ -715,14 +702,13 @@ cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_ca
 	 * Per existing encoding (cluster_undo_active_segment_for_node_or_create):
 	 *   slot 0 segment_id = (owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1
 	 */
-	base_segment_id = (uint32) (owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
+	base_segment_id = (uint32)(owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
 
 	/* Iterate slots — find first one where the file doesn't yet exist. */
-	for (slot = 0; slot < effective_cap; slot++)
-	{
+	for (slot = 0; slot < effective_cap; slot++) {
 		char path[MAXPGPATH];
-		int	 ret;
-		int	 fd;
+		int ret;
+		int fd;
 
 		new_segment_id = base_segment_id + slot;
 
@@ -731,15 +717,13 @@ cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_ca
 			continue;
 
 		fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
-		if (fd >= 0)
-		{
+		if (fd >= 0) {
 			/* File exists — slot is taken. */
 			close(fd);
 			continue;
 		}
 
-		if (errno != ENOENT)
-		{
+		if (errno != ENOENT) {
 			/* Real I/O error reading slot N — abort autoextend. */
 			return 0;
 		}
