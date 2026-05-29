@@ -714,6 +714,27 @@ cluster_undo_reader_lookup_count(void)
 {
 	return 0;
 }
+/* spec-3.8 D11 stubs: 4 NEW lifecycle counters referenced by dump_undo. */
+uint64
+cluster_undo_autoextend_count(void)
+{
+	return 0;
+}
+uint64
+cluster_undo_segment_switch_count(void)
+{
+	return 0;
+}
+uint64
+cluster_undo_segment_create_fail_count(void)
+{
+	return 0;
+}
+uint64
+cluster_undo_segment_hard_cap_fail_count(void)
+{
+	return 0;
+}
 
 Size
 cluster_shmem_get_total_bytes(void)

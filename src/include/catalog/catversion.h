@@ -567,7 +567,10 @@
  *   PGRAC MODIFICATIONS in heapam.c heap_insert path (other 3 op +
  *   multi_insert deferred per Hardening v1.0.2 H-4/5/6/7).
  */
-#define CATALOG_VERSION_NO 202605550
+/* spec-3.8 Fix 6 (2026-05-29):  cluster_undo_test_force_segment_end TEST-ONLY
+ * SQL function (oid 8929) to make autoextend / hard-cap path TAP-testable
+ * deterministically.  Bumps CATALOG_VERSION_NO; pg_proc.dat gets one row. */
+#define CATALOG_VERSION_NO 202605590
 
 /* spec-2.39 D10 (2026-05-21):  SI Broadcaster production activation —
  * DDL commit hook (AtEOXact_Inval + COMMIT PREPARED via cluster-aware

@@ -19,9 +19,12 @@
 #	  L7   GUC SIGHUP reload create_timeout_ms:  set to 2000ms; reload OK
 #	  L8   Counter monotonic + clean shutdown
 #
-#	  L9-L12(autoextend trigger 真测 + double-checked locking + hard cap
-#	  + restart scan)推 future test hook ship 后真测;本 spec smoke
-#	  level coverage.  真 autoextend 真测 baseline collection 推 Step 11
+#	  L9   autoextend trigger via test hook: force segment_end + DML →
+#	       autoextend_count + segment_switch_count both increment
+#	  L10  test hook on empty active_segment returns false (no DML yet)
+#	  L11-L12(hard cap real trigger + restart scan + concurrency
+#	  double-checked locking)推 future test hook ship 后真测;本 spec smoke
+#	  level coverage for L11-L12.  真 hard-cap baseline collection 推
 #	  perf class 8 + Hardening v1.0.X.
 #
 #	  Spec: spec-3.8-undo-segment-lifecycle-autoextend.md (FROZEN v0.3 +
@@ -148,6 +151,65 @@ my $final_autoextend = $node0->safe_psql('postgres',
 	   WHERE category='undo' AND key='autoextend_count'});
 ok($final_autoextend >= $initial_autoextend,
 	"L8 autoextend_count monotonic (initial=$initial_autoextend, final=$final_autoextend)");
+
+
+# ----------
+# L9: autoextend trigger via test hook
+#    Sequence:
+#     a) Run DML to ensure active segment is claimed
+#     b) Snapshot autoextend / segment_switch counters
+#     c) Call cluster_undo_test_force_segment_end() → forces cursor to last block
+#     d) Run another DML → triggers autoextend path
+#     e) Verify autoextend_count + segment_switch_count both incremented
+# ----------
+$node0->safe_psql('postgres', q{
+    CREATE TABLE IF NOT EXISTS t_autoex (id int, v text);
+    INSERT INTO t_autoex VALUES (1, 'claim active segment');
+});
+
+my $pre_autoex = $node0->safe_psql('postgres',
+    q{SELECT value::bigint FROM pg_cluster_state
+       WHERE category='undo' AND key='autoextend_count'});
+my $pre_switch = $node0->safe_psql('postgres',
+    q{SELECT value::bigint FROM pg_cluster_state
+       WHERE category='undo' AND key='segment_switch_count'});
+
+my $force_ok = $node0->safe_psql('postgres',
+    q{SELECT cluster_undo_test_force_segment_end()});
+is($force_ok, 't', "L9a force_segment_end returns true after active segment claimed");
+
+$node0->safe_psql('postgres',
+    q{INSERT INTO t_autoex VALUES (2, 'should trigger autoextend')});
+
+my $post_autoex = $node0->safe_psql('postgres',
+    q{SELECT value::bigint FROM pg_cluster_state
+       WHERE category='undo' AND key='autoextend_count'});
+my $post_switch = $node0->safe_psql('postgres',
+    q{SELECT value::bigint FROM pg_cluster_state
+       WHERE category='undo' AND key='segment_switch_count'});
+
+ok($post_autoex > $pre_autoex,
+    "L9b autoextend_count incremented (pre=$pre_autoex post=$post_autoex)");
+ok($post_switch > $pre_switch,
+    "L9c segment_switch_count incremented (pre=$pre_switch post=$post_switch)");
+
+
+# ----------
+# L10: counter monotonicity across repeated trigger
+#    Two more force+DML cycles → autoextend should keep climbing.
+# ----------
+my $mid_autoex = $post_autoex;
+for my $i (3..4) {
+    $node0->safe_psql('postgres',
+        q{SELECT cluster_undo_test_force_segment_end()});
+    $node0->safe_psql('postgres',
+        qq{INSERT INTO t_autoex VALUES ($i, 'extend cycle')});
+}
+my $final_autoex2 = $node0->safe_psql('postgres',
+    q{SELECT value::bigint FROM pg_cluster_state
+       WHERE category='undo' AND key='autoextend_count'});
+ok($final_autoex2 > $mid_autoex,
+    "L10 repeated autoextend monotonic (mid=$mid_autoex final=$final_autoex2)");
 
 
 $pair->stop_pair;

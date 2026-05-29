@@ -34,6 +34,7 @@
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(cluster_undo_get_record_srf);
+PG_FUNCTION_INFO_V1(cluster_undo_test_force_segment_end_srf);
 
 #ifdef USE_PGRAC_CLUSTER
 
@@ -94,6 +95,29 @@ cluster_undo_get_record_srf(PG_FUNCTION_ARGS)
 	PG_RETURN_BYTEA_P(result);
 }
 
+
+/*
+ * cluster_undo_test_force_segment_end() → bool — spec-3.8 Fix 6.
+ *
+ *	Test-only hook for TAP L9-L12: advances the active-segment cursor to
+ *	UNDO_BLOCKS_PER_SEGMENT - 1 so the next DML record write triggers
+ *	the autoextend / hard-cap path deterministically.  Permission:
+ *	superuser only (parity with cluster_inject.c hooks).
+ *
+ *	Returns true if a forced cursor was published;  false if no active
+ *	segment yet (caller must run any DML first).
+ */
+Datum
+cluster_undo_test_force_segment_end_srf(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	if (!superuser())
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						errmsg("cluster_undo_test_force_segment_end is superuser-only")));
+
+	PG_RETURN_BOOL(cluster_undo_test_force_segment_end());
+}
+
+
 #else /* !USE_PGRAC_CLUSTER */
 
 /*
@@ -105,6 +129,14 @@ cluster_undo_get_record_srf(PG_FUNCTION_ARGS pg_attribute_unused())
 {
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					errmsg("cluster_undo_get_record requires --enable-cluster")));
+	PG_RETURN_NULL();
+}
+
+Datum
+cluster_undo_test_force_segment_end_srf(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cluster_undo_test_force_segment_end requires --enable-cluster")));
 	PG_RETURN_NULL();
 }
 

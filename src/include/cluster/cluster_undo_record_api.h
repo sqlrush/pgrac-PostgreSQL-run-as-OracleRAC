@@ -162,6 +162,9 @@ extern uint64 cluster_undo_segment_switch_count(void);
 extern uint64 cluster_undo_segment_create_fail_count(void);
 extern uint64 cluster_undo_segment_hard_cap_fail_count(void);
 
+/* spec-3.8 Fix 6: deterministic autoextend trigger test hook. */
+extern bool cluster_undo_test_force_segment_end(void);
+
 
 #endif /* !FRONTEND */
 

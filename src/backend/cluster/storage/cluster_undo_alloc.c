@@ -682,18 +682,55 @@ cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_ca
 	if (owner_instance < 1 || owner_instance > UNDO_OWNER_INSTANCE_MAX)
 		return 0;
 
-	/* effective_cap = min(GUC, encoding limit 256).  GUC variable is
-	 * declared in cluster_guc.h (Step 7 registers it);  here we just
-	 * cap at CLUSTER_UNDO_SEGS_PER_INSTANCE if GUC isn't set yet
-	 * (value 0 means use encoding limit). */
+	/*
+	 * effective_cap = min(GUC, encoding limit 256).  Per spec-3.8 §3.6 F6
+	 * SIGHUP race-safe contract:  if reloaded GUC value < current pool
+	 * size,  use current pool as effective floor + WARNING (no retro-shrink).
+	 *
+	 * Caller MUST hold lifecycle_lock per spec §3.2 — this probe happens
+	 * within that lock so current_pool_size is non-stale.
+	 */
 	{
 		extern int cluster_undo_segments_max_per_instance;
-		int guc_val = cluster_undo_segments_max_per_instance;
+		int		   guc_val = cluster_undo_segments_max_per_instance;
+		uint32	   current_pool_size = 0;
+		uint32	   probe_slot;
 
-		if (guc_val <= 0 || guc_val > (int)CLUSTER_UNDO_SEGS_PER_INSTANCE)
+		if (guc_val <= 0 || guc_val > (int) CLUSTER_UNDO_SEGS_PER_INSTANCE)
 			effective_cap = CLUSTER_UNDO_SEGS_PER_INSTANCE;
 		else
-			effective_cap = (uint32)guc_val;
+			effective_cap = (uint32) guc_val;
+
+		/* Probe current pool size by counting existing segment files. */
+		for (probe_slot = 0; probe_slot < CLUSTER_UNDO_SEGS_PER_INSTANCE; probe_slot++) {
+			char path[MAXPGPATH];
+			int	 path_ret;
+			int	 probe_fd;
+			uint32 probe_segment_id = (uint32) (owner_instance - 1)
+									 * CLUSTER_UNDO_SEGS_PER_INSTANCE + probe_slot + 1;
+
+			path_ret = cluster_undo_path_resolve(owner_instance, probe_segment_id, path,
+												 sizeof(path));
+			if (path_ret != 0)
+				break;
+
+			probe_fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+			if (probe_fd < 0)
+				break;
+			close(probe_fd);
+			current_pool_size++;
+		}
+
+		/* No retro-shrink:  if configured GUC < current pool size,
+		 * use current pool as floor + WARNING per spec §3.6 + R9. */
+		if (guc_val > 0 && (uint32) guc_val < current_pool_size) {
+			ereport(WARNING,
+					(errmsg("cluster.undo_segments_max_per_instance (%d) is less than "
+							"current pool size (%u); using current pool size as effective floor",
+							guc_val, current_pool_size),
+					 errhint("Reload value will not retro-shrink existing pool.")));
+			effective_cap = current_pool_size;
+		}
 	}
 
 	/* segment_id space for this owner_instance:
@@ -746,4 +783,49 @@ cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_ca
 		*out_at_hard_cap = true;
 
 	return 0;
+}
+
+
+/*
+ * cluster_undo_segment_scan_max_existing -- spec-3.8 restart scan helper.
+ *
+ *	Scans owner_instance's segment pool to find the highest segment_id
+ *	that has an existing file on disk.  Used by cluster_undo_record.c
+ *	at post-restart first claim to resume to the most-recent active
+ *	segment rather than going back to segment_id = 1.
+ *
+ *	Returns: highest segment_id whose file exists;  0 if no files
+ *	(fresh init).  Caller MUST hold lifecycle_lock per spec §3.2.
+ */
+uint32
+cluster_undo_segment_scan_max_existing(uint8 owner_instance)
+{
+	uint32 base_segment_id;
+	uint32 slot;
+	uint32 max_found = 0;
+
+	if (owner_instance < 1 || owner_instance > UNDO_OWNER_INSTANCE_MAX)
+		return 0;
+
+	base_segment_id = (uint32) (owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
+
+	for (slot = 0; slot < CLUSTER_UNDO_SEGS_PER_INSTANCE; slot++) {
+		char path[MAXPGPATH];
+		int	 ret;
+		int	 fd;
+		uint32 probe_id = base_segment_id + slot;
+
+		ret = cluster_undo_path_resolve(owner_instance, probe_id, path, sizeof(path));
+		if (ret != 0)
+			break;
+
+		fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+		if (fd < 0)
+			break; /* gap or end of pool */
+		close(fd);
+
+		max_found = probe_id;
+	}
+
+	return max_found;
 }

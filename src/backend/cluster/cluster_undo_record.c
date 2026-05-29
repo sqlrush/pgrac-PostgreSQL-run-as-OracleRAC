@@ -420,6 +420,25 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	if (ensured_segment_id == 0)
 		return InvalidUba;
 
+	/*
+	 * spec-3.8 Fix 4: post-restart resume.  If shared cursor is fresh
+	 * (active_segment_id == 0) but on-disk pool already has higher segments
+	 * from a previous incarnation's autoextend, resume to the highest
+	 * existing segment instead of overwriting segment 1.  Cheap probe:
+	 * BasicOpenFile + close in a tight loop, bounded by
+	 * CLUSTER_UNDO_SEGS_PER_INSTANCE.
+	 *
+	 * Lock-free check is acceptable here: we are still pre-cursor_lock,
+	 * and the worst case (race with another resuming backend) is that we
+	 * both compute the same max -- the cursor_lock-protected first-claim
+	 * block below picks one winner via active_segment_id publication.
+	 */
+	if (UndoRecordShared->active_segment_id == 0) {
+		uint32 max_existing = cluster_undo_segment_scan_max_existing(owner_instance);
+		if (max_existing > ensured_segment_id)
+			ensured_segment_id = max_existing;
+	}
+
 	if (!cluster_undo_local_head_ensure(tt_slot_segment_id, tt_slot_offset, &local_head_idx))
 		return InvalidUba;
 	effective_prev_uba = cluster_undo_local_heads[local_head_idx].head;
@@ -446,6 +465,8 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	/* Publish active segment into shared cursor state if this is the first writer. */
 	segment_id = UndoRecordShared->active_segment_id;
 	if (segment_id == 0) {
+		uint8 init_owner = (uint8) (cluster_node_id + 1);
+
 		segment_id = ensured_segment_id;
 		UndoRecordShared->active_segment_id = segment_id;
 		UndoRecordShared->current_block = 1; /* block 0 is segment header */
@@ -454,6 +475,18 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 		UndoRecordShared->block_dirty = 0;
 		UndoRecordShared->block_first_scn = current_scn;
 		pg_atomic_fetch_add_u64(&UndoRecordShared->segment_claim_count, 1);
+
+		/*
+		 * spec-3.8 D1 + D5 真激活:  mark segment ACTIVE + init tail_block
+		 * to 1 (block 0 is segment header,  block 1 is first data block).
+		 * Helpers are idempotent — already-ACTIVE / tail_block_init re-call
+		 * is no-op.  Release cursor_lock briefly to avoid file I/O under
+		 * the hot lock (per spec §3.2).
+		 */
+		LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+		(void) cluster_undo_segment_mark_active(segment_id, init_owner);
+		(void) cluster_undo_segment_tail_block_init(segment_id, init_owner, 1);
+		LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
 	}
 
 	current_block = UndoRecordShared->current_block;
@@ -530,8 +563,9 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 			/* Mark old segment FULL(state remains ACTIVE per §3.3 I2). */
 			(void)cluster_undo_segment_mark_full(old_segment_id, ownerinst);
 
-			/* Mark NEW segment ACTIVE (we'll write first record below). */
-			(void)cluster_undo_segment_mark_active(new_segment_id, ownerinst);
+			/* Mark NEW segment ACTIVE + init tail_block per spec-3.8 D1+D5. */
+			(void) cluster_undo_segment_mark_active(new_segment_id, ownerinst);
+			(void) cluster_undo_segment_tail_block_init(new_segment_id, ownerinst, 1);
 
 			/* Publish NEW active_segment_id under cursor_lock. */
 			LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
@@ -804,4 +838,43 @@ cluster_undo_segment_hard_cap_fail_count(void)
 	if (UndoRecordShared == NULL)
 		return 0;
 	return pg_atomic_read_u64(&UndoRecordShared->segment_hard_cap_fail_count);
+}
+
+
+/*
+ * spec-3.8 Fix 6: deterministic autoextend trigger test hook.
+ *
+ *	Forces the active segment cursor to point at the last data block,
+ *	then sets free_offset to the block-tail boundary so the next
+ *	record write triggers cluster_undo_block_has_space() == false and
+ *	current_block++ pushes past UNDO_BLOCKS_PER_SEGMENT — same path the
+ *	natural exhaustion runs through, so autoextend / hard-cap / 53R9E
+ *	behaviors get exercised without writing 64 MB of records.
+ *
+ *	Returns true if the hook published a forced cursor;  false if no
+ *	active segment yet (caller must allocate one first).
+ *
+ *	Caller MUST be superuser (TAP test wraps with security definer
+ *	function or runs as initdb superuser).  cursor_lock taken EXCLUSIVE.
+ */
+bool
+cluster_undo_test_force_segment_end(void)
+{
+	if (UndoRecordShared == NULL)
+		return false;
+
+	LWLockAcquire(&UndoRecordShared->cursor_lock.lock, LW_EXCLUSIVE);
+
+	if (UndoRecordShared->active_segment_id == 0) {
+		LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+		return false;
+	}
+
+	UndoRecordShared->current_block = UNDO_BLOCKS_PER_SEGMENT - 1;
+	UndoRecordShared->free_offset = BLCKSZ; /* triggers has_space() == false */
+	UndoRecordShared->slot_count = 0;
+	UndoRecordShared->block_dirty = 0;
+
+	LWLockRelease(&UndoRecordShared->cursor_lock.lock);
+	return true;
 }

@@ -165,4 +165,16 @@ extern uint32 cluster_undo_active_segment_for_node_or_create(int node_id);
 extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *out_at_hard_cap);
 
 
+/*
+ * spec-3.8 Fix 4: restart scan helper.
+ *
+ *	  Scans owner_instance's segment pool to find the highest segment_id
+ *	  whose file exists on disk.  Returns 0 if no segments exist
+ *	  (fresh init).  Used by cluster_undo_record_shmem_init() to resume
+ *	  active_segment_id to the most-recent segment rather than going
+ *	  back to segment_id = 1 on restart.
+ */
+extern uint32 cluster_undo_segment_scan_max_existing(uint8 owner_instance);
+
+
 #endif /* CLUSTER_UNDO_ALLOC_H */

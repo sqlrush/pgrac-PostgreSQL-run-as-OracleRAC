@@ -12455,4 +12455,15 @@
   proargnames => '{uba}',
   prosrc => 'cluster_undo_get_record_srf' },
 
+# spec-3.8 Fix 6 (2026-05-29) -- TEST-ONLY: force active segment cursor to
+# last block so the next DML write triggers autoextend / hard-cap / 53R9E
+# path deterministically.  Superuser-only.  Returns true on success;  false
+# if no active segment yet (caller must run DML first).
+{ oid => '8929', descr => 'TEST-ONLY: force undo segment cursor to last block (spec-3.8)',
+  proname => 'cluster_undo_test_force_segment_end',
+  provolatile => 'v', proparallel => 'u',
+  prorettype => 'bool',
+  proargtypes => '',
+  prosrc => 'cluster_undo_test_force_segment_end_srf' },
+
 ]
