@@ -1,0 +1,14 @@
+-- spec-3.9 D12 — perf class 9 workload: own-instance CR construction pressure.
+--
+-- Drives the CR construction entry path (cluster_cr_construct_block via the
+-- TEST-ONLY cluster_cr_test_construct SRF), bypassing the default-off MVCC
+-- gate so the path is measurable deterministically.
+--
+-- Single-node note: cluster ITL pages require a 2-node cluster
+-- (cluster_conf_has_peers()); on a single node the construct takes the
+-- early "no ITL" fail-closed path, so this measures CR-entry overhead, not
+-- full chain-replay construct-success TPS.  The 2-node construct-success
+-- baseline is deferred with the MVCC-gate firing-condition codereview.
+--
+-- pgbench var :read_scn (high so the walk stops immediately on a real chain).
+SELECT cluster_cr_test_construct('t_cr_perf'::regclass, 0, 0, 9223372036854775807);
