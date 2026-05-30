@@ -13,9 +13,9 @@
  *	  53R9G / data_corrupted) when a cr_* injection point is armed or the
  *	  undo chain is genuinely unreconstructable.  Superuser-only.
  *
- *	  This bypasses the (default-off, codereview-pending) MVCC gate so the
- *	  CR read path is exercisable without depending on the gate's firing
- *	  condition.  Mirrors spec-3.8's cluster_undo_test_force_segment_end.
+ *	  This bypasses ordinary scan setup so the CR read path is exercisable
+ *	  deterministically from TAP and cluster_unit fixtures.  Mirrors spec-3.8's
+ *	  cluster_undo_test_force_segment_end.
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -86,6 +86,13 @@ cluster_cr_test_construct(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/*
+		 * PG_CATCH restores the pre-try interrupt holdoff count, but the
+		 * buffer content lock is still held.  Match LWLockReleaseAll()'s error
+		 * cleanup pattern so LockBuffer(...UNLOCK)'s internal RESUME_INTERRUPTS
+		 * does not underflow in cassert builds.
+		 */
+		HOLD_INTERRUPTS();
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(buf);
 		relation_close(rel, AccessShareLock);
