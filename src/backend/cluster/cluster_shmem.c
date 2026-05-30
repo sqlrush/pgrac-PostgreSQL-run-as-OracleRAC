@@ -85,6 +85,7 @@
 #include "cluster/cluster_subtrans.h"		/* cluster_subtrans_shmem_register (spec-3.5 D5) */
 #include "cluster/cluster_multixact.h"		/* cluster_multixact_shmem_register (spec-3.6 D2) */
 #include "cluster/cluster_undo_record_api.h" /* cluster_undo_record_shmem_register (spec-3.7 D5) */
+#include "cluster/cluster_cr.h"				 /* cluster_cr_shmem_register (spec-3.9 D2) */
 #include "cluster/cluster_visibility_inject.h" /* cluster_visibility_inject_shmem_register (spec-3.2 D5b) */
 #include "cluster/cluster_itl.h"			   /* cluster_lock_path_shmem_register (spec-3.4e D6) */
 #include "cluster/cluster_qvotec.h" /* cluster_qvotec_shmem_register (spec-2.6 Sprint A Step 1) */
@@ -463,6 +464,12 @@ cluster_init_shmem_module(void)
 	 * spec-3.4b segment-level allocator).
 	 */
 	cluster_undo_record_shmem_register();
+
+	/*
+	 * PGRAC spec-3.9 D2:  register cluster_cr counters shmem region
+	 * (own-instance CR block construction; 9 atomic counters, 0 LWLock).
+	 */
+	cluster_cr_shmem_register();
 
 	/*
 	 * spec-3.2 D5b: register test-only visibility inject shmem.  The

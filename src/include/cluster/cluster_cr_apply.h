@@ -65,24 +65,18 @@
 #include "storage/off.h"
 
 
-extern bool cluster_cr_apply_insert_inverse(char *scratch_page,
-											const UndoRecordHeader *hdr,
+extern bool cluster_cr_apply_insert_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 											const UndoInsertPayload *payload);
 
-extern bool cluster_cr_apply_update_inverse(char *scratch_page,
-											const UndoRecordHeader *hdr,
+extern bool cluster_cr_apply_update_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 											const UndoUpdatePayload *payload,
-											const char *old_tuple_bytes,
-											uint16 old_tuple_length);
+											const char *old_tuple_bytes, uint16 old_tuple_length);
 
-extern bool cluster_cr_apply_delete_inverse(char *scratch_page,
-											const UndoRecordHeader *hdr,
+extern bool cluster_cr_apply_delete_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 											const UndoDeletePayload *payload,
-											const char *old_tuple_bytes,
-											uint16 old_tuple_length);
+											const char *old_tuple_bytes, uint16 old_tuple_length);
 
-extern bool cluster_cr_apply_itl_inverse(char *scratch_page,
-										 const UndoRecordHeader *hdr,
+extern bool cluster_cr_apply_itl_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 										 int itl_idx);
 
 #endif /* !FRONTEND */

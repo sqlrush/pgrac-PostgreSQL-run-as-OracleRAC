@@ -101,8 +101,7 @@ extern const char *cluster_cr_construct_block(Buffer buf, SCN read_scn, int itl_
  *   and is valid only while cr_page is valid.  Returns false if off is
  *   out-of-range or the ItemId is LP_UNUSED (CR-removed via inverse INSERT).
  */
-extern bool cluster_cr_remap_tuple(const char *cr_page, OffsetNumber off,
-								   HeapTupleData *out_htup);
+extern bool cluster_cr_remap_tuple(const char *cr_page, OffsetNumber off, HeapTupleData *out_htup);
 
 /*
  * cluster_visibility_decide_tuple -- tuple-level cluster visibility helper.
@@ -112,8 +111,7 @@ extern bool cluster_cr_remap_tuple(const char *cr_page, OffsetNumber off,
  *   TransactionIdDidCommit(), or any CLOG/ProcArray fallback (AD-012 例外 9).
  *   Generic helper; implemented in the cluster visibility helper layer.
  */
-extern ClusterVisibilityDecision cluster_visibility_decide_tuple(HeapTuple htup,
-																 Snapshot snapshot,
+extern ClusterVisibilityDecision cluster_visibility_decide_tuple(HeapTuple htup, Snapshot snapshot,
 																 Buffer buffer);
 
 /*
@@ -140,6 +138,7 @@ extern uint64 cluster_cr_inverse_itl_count(void);
 /* Shmem region register / size / init (L206 5-step). */
 extern Size cluster_cr_shmem_size(void);
 extern void cluster_cr_shmem_init(void);
+extern void cluster_cr_shmem_register(void);
 
 #endif /* !FRONTEND */
 

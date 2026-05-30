@@ -451,6 +451,13 @@ void
 cluster_undo_record_shmem_register(void)
 {}
 
+/* spec-3.9 D2 stub: cluster_init_shmem_module also calls
+ * cluster_cr_shmem_register (cluster_cr.c).  cluster_unit test binary
+ * doesn't link cluster_cr.o;  provide no-op stub. */
+void
+cluster_cr_shmem_register(void)
+{}
+
 /* Spec-2.5 Sprint A stub: same for CSSD. */
 void
 cluster_cssd_shmem_register(void)
