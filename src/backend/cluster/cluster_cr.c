@@ -411,6 +411,25 @@ cluster_cr_construct_block(Buffer buf, SCN read_scn, int itl_idx)
 	}
 	PG_CATCH();
 	{
+		/*
+		 * spec-3.9 Step 6: centralized error-taxonomy counter bump.  Every
+		 * failure path in cr_walk_and_apply ereports with a precise SQLSTATE
+		 * (53R9F / 53R9G / data_corrupted, I-fail-1); reading it here with
+		 * geterrcode() bumps the matching counter exactly once per failed
+		 * construction without touching the ~15 ereport sites.  Injection-
+		 * forced failures (Step 7) flow through here too.
+		 */
+		if (CRShared != NULL) {
+			int sqlerr = geterrcode();
+
+			if (sqlerr == ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD)
+				pg_atomic_fetch_add_u64(&CRShared->cr_snapshot_too_old_count, 1);
+			else if (sqlerr == ERRCODE_CLUSTER_CR_CROSS_INSTANCE_UNSUPPORTED)
+				pg_atomic_fetch_add_u64(&CRShared->cr_cross_instance_unsupported_count, 1);
+			else if (sqlerr == ERRCODE_DATA_CORRUPTED)
+				pg_atomic_fetch_add_u64(&CRShared->cr_corruption_count, 1);
+		}
+
 		pgstat_report_wait_end();
 		cr_in_progress = false;
 		PG_RE_THROW();
