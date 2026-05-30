@@ -77,10 +77,11 @@ extern const char *cluster_cr_lookup_or_construct(Buffer buf, SCN read_scn, int 
  *
  *   1. Assert caller holds >= BUFFER_LOCK_SHARE + non-reentrant guard.
  *   2. memcpy(scratch, BufferGetPage(buf), BLCKSZ).
- *   3. Walk ITL[itl_idx].uba_head backward; for each undo record with
- *      write_scn > read_scn, inverse-apply to scratch page.
- *   4. Stop when record.write_scn <= read_scn (normal) — reaching chain end
- *      without a reconstructable base state is an ERROR, not silent success.
+ *   3. Walk ITL[itl_idx].uba_head backward; for each undo record newer than
+ *      read_scn, inverse-apply to scratch page.
+ *   4. Stop when record.write_scn is not later than read_scn (normal) —
+ *      reaching chain end without a reconstructable base state is an ERROR,
+ *      not silent success.
  *
  *   Return:
  *     - success: const char * to the backend-local scratch page; VALID only
@@ -129,8 +130,8 @@ extern ClusterVisibilityDecision cluster_visibility_decide_cr_tuple(HeapTuple ht
  *
  *   Called additively at the top of HeapTupleSatisfiesMVCC's cluster path.
  *   Returns true and sets *out_visible when the own-instance historical-CR
- *   case applies (block_scn > read_scn AND the tuple's ITL write_scn >
- *   read_scn AND the tuple is local-origin); the caller then returns
+ *   case applies (block_scn is newer than read_scn AND the tuple's ITL
+ *   write_scn is newer than read_scn AND the tuple is local-origin); the caller then returns
  *   *out_visible.  Returns false (gate did not fire) for every other case —
  *   the caller continues to the existing spec-3.2/3.3 remote-xid path /
  *   PG-native body unchanged.

@@ -229,16 +229,17 @@ cr_check_error_injections(void)
  *	inverse-apply every undo record newer than read_scn onto scratch_page.
  *
  *	Stop conditions + chain terminal taxonomy (spec-3.9 §3.1 I-chain-1..4):
- *	  - I-chain-1  write_scn <= read_scn : the unconditional normal stop;
- *	               this record + everything older is already in the snapshot.
+ *	  - I-chain-1  write_scn not later than read_scn: the unconditional
+ *	               normal stop; this record + everything older is already in
+ *	               the snapshot.
  *	  - I-chain-2  invalid prev_uba (chain end) is a legal base state ONLY
  *	               when no record was applied (empty chain) or the last
  *	               applied record was an INSERT (the row was created after
  *	               read_scn and inverse-INSERT made it LP_UNUSED).
- *	  - I-chain-3  reaching chain end while still write_scn > read_scn after
- *	               an UPDATE/DELETE/ITL record => the older base needed to
- *	               reach read_scn is unreachable (most likely retention
- *	               recycled) => 53R9F snapshot_too_old (fail-closed, NEVER
+ *	  - I-chain-3  reaching chain end while still newer than read_scn after an
+ *	               UPDATE/DELETE/ITL record => the older base needed to reach
+ *	               read_scn is unreachable (most likely retention recycled)
+ *	               => 53R9F snapshot_too_old (fail-closed, NEVER
  *	               silent-success).
  *	  - missing record (reader returns 0) => 53R9F.
  *	  - cross-instance origin => 53R9G.
@@ -326,7 +327,7 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 									"is Stage 4 (Cache Fusion CR coordinator).")));
 
 		/* I-chain-1: normal SCN stop. */
-		if (hdr->write_scn <= read_scn)
+		if (scn_time_cmp(hdr->write_scn, read_scn) <= 0)
 			break;
 
 		switch (hdr->record_type) {
@@ -411,7 +412,7 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 	 *   undo record written under that ITL slot's xact), NOT per-row.  Each
 	 *   record fully restores the prior physical state of its target tuple,
 	 *   so once we have inverse-applied every record on this chain whose
-	 *   write_scn > read_scn, the scratch page reflects the read_scn state
+	 *   only records newer than read_scn, the scratch page reflects the read_scn state
 	 *   for the tuples this xact touched — and a clean `invalid prev_uba`
 	 *   simply means the xact's undo is exhausted.  That is a LEGITIMATE
 	 *   terminal, NOT "older base unreachable".
@@ -632,7 +633,7 @@ cluster_visibility_decide_cr_tuple(HeapTuple htup, Snapshot snapshot)
 
 	/*
 	 * The CR image tuple is the row as of read_scn: the chain walker has
-	 * undone every change with write_scn > read_scn.  Reasoning about
+	 * undone every change newer than read_scn.  Reasoning about
 	 * visibility on the reconstructed image:
 	 *
 	 *   - A tuple that was INSERTED after read_scn was inverse-INSERTed to
@@ -756,13 +757,14 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 	 * after" case.
 	 *
 	 * The tuple's own ITL slot is the writer that produced this version, and
-	 * the tier-2 gate above already established slot.write_scn > read_scn.  If
+	 * the tier-2 gate above already established slot.write_scn is newer than read_scn.  If
 	 * that post-snapshot writer IS the image tuple's creator (slot.xid ==
 	 * xmin) the row was CREATED after the snapshot -> invisible.  We key off
 	 * write_scn, NOT commit_scn: under delayed cleanout a just-committed slot
 	 * is still ACTIVE with commit_scn = InvalidScn, but write_scn is always
-	 * stamped at write time, and commit_scn >= write_scn, so write_scn >
-	 * read_scn already implies the creator committed after the snapshot.  For
+	 * stamped at write time, and commit_scn is not earlier than write_scn, so a
+	 * write_scn newer than read_scn already implies the creator committed after
+	 * the snapshot.  For
 	 * a delete-marked old tuple slot.xid == xmax (the deleter), not xmin, so a
 	 * genuine inverse-DELETE / inverse-UPDATE restore is left untouched.
 	 */
