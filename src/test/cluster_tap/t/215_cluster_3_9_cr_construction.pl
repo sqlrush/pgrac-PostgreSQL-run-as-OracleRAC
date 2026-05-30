@@ -69,7 +69,7 @@ my $node0 = $pair->node0;
 
 	my $gate = $node0->safe_psql('postgres',
 		q{SELECT setting FROM pg_settings WHERE name='cluster.cr_mvcc_gate'});
-	is($gate, 'off', 'L1c cr_mvcc_gate default off');
+	is($gate, 'on', 'L1c cr_mvcc_gate default on (spec-3.9 真激活)');
 
 	my $points = $node0->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections
@@ -196,6 +196,67 @@ is($inv, '4', 'L7 4 per-record-type inverse counters exposed');
 	$bg->query_safe("SELECT 1");
 	$bg->query_safe("SELECT cluster_inject_fault('cr_construct_delay_us','none',0)");
 	$bg->quit;
+}
+
+
+# ----------
+# L9: REAL end-to-end CR via the MVCC gate (no test SRF).
+#
+#   Session A holds a REPEATABLE READ snapshot (read_scn_A).  Session B
+#   DELETEs a row and commits (the tuple's xmax is set in place, the ITL
+#   slot write_scn + the page pd_block_scn advance past read_scn_A).  When
+#   A re-reads, the 3-tier gate fires (pd_block_scn > read_scn_A, ITL
+#   write_scn > read_scn_A, local origin) and CR reconstructs the
+#   read_scn_A image, so A still sees the row.  A fresh snapshot (read_scn
+#   past the delete) does NOT fire the gate and sees the row gone.
+#
+#   Asserts the gate path is genuinely taken: cr_construct_count++,
+#   cr_chain_walk_steps_sum > 0, cr_inverse_delete_count++.
+# ----------
+{
+	$node0->safe_psql('postgres',
+		'CREATE TABLE t_e2e (id int);
+		 INSERT INTO t_e2e SELECT g FROM generate_series(1,3) g;');
+
+	my $val = sub {
+		my ($k) = @_;
+		return $node0->safe_psql('postgres',
+			qq{SELECT value::bigint FROM pg_cluster_state WHERE category='cr' AND key='$k'});
+	};
+
+	my $pre_construct = $val->('cr_construct_count');
+	my $pre_steps     = $val->('cr_chain_walk_steps_sum');
+	my $pre_del       = $val->('cr_inverse_delete_count');
+
+	# Session A: open a REPEATABLE READ snapshot and see all 3 rows.
+	my $sa = $node0->background_psql('postgres', on_error_stop => 0);
+	$sa->query_safe('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+	my $a_before = $sa->query_safe('SELECT count(*) FROM t_e2e');
+	chomp $a_before;
+	is($a_before, '3', 'L9a session A snapshot sees 3 rows');
+
+	# Session B: delete one row and commit (in-place xmax + SCN advance).
+	$node0->safe_psql('postgres', 'DELETE FROM t_e2e WHERE id = 1');
+
+	# A fresh snapshot sees the delete (2 rows) -- gate does not fire.
+	my $fresh = $node0->safe_psql('postgres', 'SELECT count(*) FROM t_e2e');
+	is($fresh, '2', 'L9b fresh snapshot sees the delete (2 rows)');
+
+	# Session A re-reads under its old snapshot: CR reconstructs -> 3 rows.
+	my $a_after = $sa->query_safe('SELECT count(*) FROM t_e2e');
+	chomp $a_after;
+	is($a_after, '3', 'L9c session A still sees 3 rows via CR reconstruction');
+
+	$sa->query_safe('COMMIT');
+	$sa->quit;
+
+	# The gate path was genuinely taken (counters are shmem, read fresh).
+	ok($val->('cr_construct_count') > $pre_construct,
+		'L9d cr_construct_count incremented via the MVCC gate');
+	ok($val->('cr_chain_walk_steps_sum') > $pre_steps,
+		'L9e cr_chain_walk_steps_sum > 0 (real undo chain walked)');
+	ok($val->('cr_inverse_delete_count') > $pre_del,
+		'L9f cr_inverse_delete_count incremented (DELETE inverse-applied)');
 }
 
 

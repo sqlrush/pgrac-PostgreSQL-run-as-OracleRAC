@@ -231,7 +231,7 @@ int cluster_cr_chain_walk_max_steps = 4096;
  *   exercise the end-to-end CR read path.  PGC_USERSET so a test session can
  *   scope it without a reload.
  */
-bool cluster_cr_mvcc_gate = false;
+bool cluster_cr_mvcc_gate = true;
 
 /*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
@@ -1414,12 +1414,14 @@ cluster_init_guc(void)
 	DefineCustomBoolVariable(
 		"cluster.cr_mvcc_gate",
 		gettext_noop("Enable the own-instance CR 3-tier MVCC short-circuit gate."),
-		gettext_noop("Spec-3.9 D5. DEFAULT OFF. When on, a local-origin tuple whose "
-					 "block and ITL write_scn are both newer than the snapshot read_scn "
-					 "is read through a reconstructed historical block image. Off keeps "
-					 "spec-3.2/3.3 SCN visibility behavior unchanged. The firing-condition "
-					 "semantics are pending user codereview; treat as experimental."),
-		&cluster_cr_mvcc_gate, false, PGC_USERSET, 0, NULL, NULL, NULL);
+		gettext_noop("Spec-3.9 D5. DEFAULT ON. When on, a cluster-source snapshot reading "
+					 "a local-origin tuple whose block (pd_block_scn) and ITL write_scn are "
+					 "both newer than the snapshot read_scn is resolved through a "
+					 "reconstructed read_scn-consistent block image. Only meaningful in a "
+					 "multi-node cluster (cluster_conf_has_peers); single-node snapshots are "
+					 "LOCAL-source and never reach this path. Set off to fall back to the "
+					 "spec-3.2/3.3 SCN/PG-native visibility path."),
+		&cluster_cr_mvcc_gate, true, PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
 		"cluster.boc_sweep_interval_ms",

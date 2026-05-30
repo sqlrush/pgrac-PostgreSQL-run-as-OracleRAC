@@ -672,6 +672,20 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	slot->write_scn = write_scn;
 	/* spec-3.4b D5: real UBA from xact-local binding (F11). */
 	slot->undo_segment_head = undo_segment_head;
+
+	/*
+	 * spec-3.9 D5 foundation: stamp the page-level block SCN watermark so the
+	 * own-instance CR 3-tier page gate (cluster_cr_satisfies_mvcc tier 1) can
+	 * cheaply skip blocks with no post-snapshot change.  write_scn comes from
+	 * cluster_scn_advance() and is monotonically newer than any prior stamp on
+	 * this page, so a plain assignment keeps pd_block_scn = "last modified at".
+	 * Already inside the heap op's critical section + MarkBufferDirty below;
+	 * the page change is WAL-protected by the surrounding heap record (full
+	 * pd_block_scn WAL/redo parity is deferred to the Stage 4 recovery spec,
+	 * tracked by spec-1.4's pd_block_scn placeholder).
+	 */
+	if (SCN_VALID(write_scn))
+		((PageHeader)page)->pd_block_scn = write_scn;
 	/*
 	 * spec-3.4c A2 / L194:  first_change_lsn is intentionally NOT populated.
 	 * The intended value is the LSN of the WAL record about to be emitted

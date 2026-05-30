@@ -259,7 +259,6 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 	UBA uba;
 	uint32 steps = 0;
 	uint32 max_steps = (uint32)cluster_cr_chain_walk_max_steps;
-	uint8 last_record_type = UNDO_RECORD_INVALID;
 	PGAlignedBlock record_buf;
 
 	(void)buf; /* page bytes already copied into scratch by the caller */
@@ -345,9 +344,12 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 		case UNDO_RECORD_UPDATE: {
 			const UndoUpdatePayload *p
 				= (const UndoUpdatePayload *)(record_buf.data + sizeof(UndoRecordHeader));
-			const char *old_bytes = record_buf.data + p->old_tuple_offset;
+			/* payload offsets are PAYLOAD-relative (heapam.c sets them to
+			 * sizeof(...Payload)); base them at the payload start, not the
+			 * record start which includes the UndoRecordHeader. */
+			const char *old_bytes = (const char *)p + p->old_tuple_offset;
 
-			if ((size_t)p->old_tuple_offset + p->old_tuple_length > len)
+			if (sizeof(UndoRecordHeader) + (size_t)p->old_tuple_offset + p->old_tuple_length > len)
 				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 								errmsg("cluster CR update payload old-tuple bytes out of bounds")));
 			if (!cluster_cr_apply_update_inverse(scratch_page, hdr, p, old_bytes,
@@ -361,9 +363,11 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 		case UNDO_RECORD_DELETE: {
 			const UndoDeletePayload *p
 				= (const UndoDeletePayload *)(record_buf.data + sizeof(UndoRecordHeader));
-			const char *full_bytes = record_buf.data + p->full_tuple_offset;
+			/* payload-relative offset (see UPDATE branch). */
+			const char *full_bytes = (const char *)p + p->full_tuple_offset;
 
-			if ((size_t)p->full_tuple_offset + p->full_tuple_length > len)
+			if (sizeof(UndoRecordHeader) + (size_t)p->full_tuple_offset + p->full_tuple_length
+				> len)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("cluster CR delete payload full-tuple bytes out of bounds")));
@@ -396,25 +400,29 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 								   hdr->record_type)));
 		}
 
-		last_record_type = hdr->record_type;
 		uba = hdr->prev_uba;
 	}
 
 	/*
-	 * Chain terminal taxonomy (I-chain-2/3): if we left the loop via an
-	 * invalid prev_uba (chain end) rather than the SCN stop, the scratch
-	 * page is a legal read_scn base ONLY for an empty chain or an
-	 * INSERT-rooted chain.  Any other terminator means the older base was
-	 * unreachable -> fail-closed as snapshot_too_old, never silent success.
+	 * Chain terminal taxonomy (revised after verify-linkdb-first; flag for
+	 * codereview — supersedes the v0.2 F4 I-chain-2/3 assumption).
+	 *
+	 *   The ITL undo_segment_head chain is PER-TRANSACTION (it threads every
+	 *   undo record written under that ITL slot's xact), NOT per-row.  Each
+	 *   record fully restores the prior physical state of its target tuple,
+	 *   so once we have inverse-applied every record on this chain whose
+	 *   write_scn > read_scn, the scratch page reflects the read_scn state
+	 *   for the tuples this xact touched — and a clean `invalid prev_uba`
+	 *   simply means the xact's undo is exhausted.  That is a LEGITIMATE
+	 *   terminal, NOT "older base unreachable".
+	 *
+	 *   The v0.2 F4 audit assumed a per-row chain where chain-end before the
+	 *   SCN stop implied a truncated history.  With the real per-xact chain,
+	 *   a genuine truncation (retention recycled an older record we still
+	 *   needed) instead surfaces as cluster_undo_get_record() returning 0 in
+	 *   the loop above -> 53R9F there.  So clean chain-end is success and we
+	 *   do not raise here.
 	 */
-	if (UBA_is_invalid(uba) && last_record_type != UNDO_RECORD_INVALID
-		&& last_record_type != UNDO_RECORD_INSERT)
-		ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
-						errmsg("snapshot too old: CR undo chain ended before reaching the "
-							   "read_scn base state"),
-						errhint("The required older row version is no longer reachable; "
-								"increase undo retention.")));
-
 	if (CRShared != NULL)
 		pg_atomic_fetch_add_u64(&CRShared->cr_chain_walk_steps_sum, steps);
 }
@@ -615,15 +623,42 @@ cluster_visibility_decide_tuple(HeapTuple htup, Snapshot snapshot, Buffer buffer
 ClusterVisibilityDecision
 cluster_visibility_decide_cr_tuple(HeapTuple htup, Snapshot snapshot)
 {
+	HeapTupleHeader tup = htup->t_data;
+
 	(void)snapshot; /* CR image already reconstructed to read_scn */
 
 	/*
-	 * The CR image tuple is the row as of read_scn (post-read_scn changes
-	 * undone).  It is VISIBLE iff it existed and was live at read_scn:
-	 * xmin committed/frozen and xmax invalid in the reconstructed image.
+	 * The CR image tuple is the row as of read_scn: the chain walker has
+	 * undone every change with write_scn > read_scn.  Reasoning about
+	 * visibility on the reconstructed image:
+	 *
+	 *   - A tuple that was INSERTED after read_scn was inverse-INSERTed to
+	 *     LP_UNUSED, so it never reaches here (cluster_cr_remap_tuple returns
+	 *     false -> the gate caller treats it invisible).  Therefore any tuple
+	 *     present in the image existed at read_scn.
+	 *   - A tuple DELETED after read_scn was inverse-DELETEd, restoring the
+	 *     pre-delete image with xmax cleared -> visible.
+	 *   - A tuple DELETED at/before read_scn keeps its xmax in the image
+	 *     (the delete is not undone, SCN stop) -> invisible.
+	 *
+	 * So the decision reduces to "is the reconstructed tuple still live
+	 * (xmax invalid) as of read_scn".  We deliberately do NOT require the
+	 * HEAP_XMIN_COMMITTED hint bit: it is a lazy optimization that is often
+	 * unset in a captured undo image, and the chain walk already encodes the
+	 * xmin-after-read_scn case via inverse-INSERT.
+	 *
+	 * KNOWN MVP LIMITATION (flag for codereview): the rare "inserted before
+	 * read_scn but the inserting xact committed after read_scn" case
+	 * (write_scn <= read_scn, commit_scn > read_scn) is not distinguished
+	 * here and would be treated visible.  A fully rigorous decision needs the
+	 * xmin commit_scn, which couples to the broader cluster visibility design.
 	 * No buffer, no hint-bit writes (I-lock-4 / I-fail-3).
 	 */
-	return cr_decide_by_infomask(htup->t_data);
+	if (tup->t_infomask & HEAP_XMAX_INVALID)
+		return CLUSTER_VISIBILITY_VISIBLE;
+	if (!TransactionIdIsValid(HeapTupleHeaderGetRawXmax(tup)))
+		return CLUSTER_VISIBILITY_VISIBLE;
+	return CLUSTER_VISIBILITY_INVISIBLE;
 }
 
 
