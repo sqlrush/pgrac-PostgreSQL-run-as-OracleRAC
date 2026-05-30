@@ -47,6 +47,13 @@
 
 UT_DEFINE_GLOBALS();
 
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
+}
 
 /* ============================================================
  *	Synthetic 8 KB heap page with an ITL special area + one tuple
