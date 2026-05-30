@@ -736,6 +736,54 @@ cluster_undo_segment_hard_cap_fail_count(void)
 	return 0;
 }
 
+/* spec-3.9 D8 stubs: dump_cr() references 9 cluster_cr counter accessors
+ * from cluster_cr.o which test_cluster_debug doesn't link. */
+uint64
+cluster_cr_construct_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_snapshot_too_old_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_cross_instance_unsupported_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_corruption_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_chain_walk_steps_sum(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_inverse_insert_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_inverse_update_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_inverse_delete_count(void)
+{
+	return 0;
+}
+uint64
+cluster_cr_inverse_itl_count(void)
+{
+	return 0;
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {

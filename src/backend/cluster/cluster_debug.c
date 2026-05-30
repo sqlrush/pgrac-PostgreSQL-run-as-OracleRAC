@@ -82,6 +82,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_lmd.h" /* cluster_lmd_* observability accessors (spec-2.19 D10) */
 #include "cluster/cluster_lms.h" /* cluster_lms_* observability accessors (spec-2.18 D10) */
 #include "cluster/cluster_undo_record_api.h" /* cluster_undo_* counter accessors (spec-3.7 D10) */
+#include "cluster/cluster_cr.h"				 /* cluster_cr_* counter accessors (spec-3.9 D8) */
 #include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_grd_pending.h"
 #include "cluster/cluster_grd_work_queue.h"
@@ -1441,6 +1442,33 @@ dump_undo(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_undo_segment_hard_cap_fail_count()));
 }
 
+/*
+ * dump_cr -- spec-3.9 D8 own-instance CR counter observability.
+ *
+ *	Emits 9 rows under category='cr' for the cluster_cr counters.  Backs
+ *	cluster_tap t/215 L2/L3/L7 verification + perf class 9 baseline.
+ */
+static void
+dump_cr(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "cr", "cr_construct_count", fmt_int64((int64)cluster_cr_construct_count()));
+	emit_row(rsinfo, "cr", "cr_snapshot_too_old_count",
+			 fmt_int64((int64)cluster_cr_snapshot_too_old_count()));
+	emit_row(rsinfo, "cr", "cr_cross_instance_unsupported_count",
+			 fmt_int64((int64)cluster_cr_cross_instance_unsupported_count()));
+	emit_row(rsinfo, "cr", "cr_corruption_count", fmt_int64((int64)cluster_cr_corruption_count()));
+	emit_row(rsinfo, "cr", "cr_chain_walk_steps_sum",
+			 fmt_int64((int64)cluster_cr_chain_walk_steps_sum()));
+	emit_row(rsinfo, "cr", "cr_inverse_insert_count",
+			 fmt_int64((int64)cluster_cr_inverse_insert_count()));
+	emit_row(rsinfo, "cr", "cr_inverse_update_count",
+			 fmt_int64((int64)cluster_cr_inverse_update_count()));
+	emit_row(rsinfo, "cr", "cr_inverse_delete_count",
+			 fmt_int64((int64)cluster_cr_inverse_delete_count()));
+	emit_row(rsinfo, "cr", "cr_inverse_itl_count",
+			 fmt_int64((int64)cluster_cr_inverse_itl_count()));
+}
+
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -1487,6 +1515,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_lmd(rsinfo);
 		dump_lms(rsinfo);
 		dump_undo(rsinfo);
+		dump_cr(rsinfo);
 	}
 #else
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
