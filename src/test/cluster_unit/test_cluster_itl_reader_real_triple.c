@@ -610,10 +610,9 @@ UT_TEST(test_t21_lock_scan_chooses_highest_wrap)
 static char redo_delta_buf[256];
 
 static const char *
-make_v2_active_delta(uint8 slot_idx, ClusterItlFlags flags_after,
-					 TransactionId xid, SCN write_scn)
+make_v2_active_delta(uint8 slot_idx, ClusterItlFlags flags_after, TransactionId xid, SCN write_scn)
 {
-	xl_heap_itl_delta_block *hdr = (xl_heap_itl_delta_block *) redo_delta_buf;
+	xl_heap_itl_delta_block *hdr = (xl_heap_itl_delta_block *)redo_delta_buf;
 	xl_heap_itl_delta_v2 *d;
 
 	memset(redo_delta_buf, 0, sizeof(redo_delta_buf));
@@ -621,10 +620,9 @@ make_v2_active_delta(uint8 slot_idx, ClusterItlFlags flags_after,
 	hdr->reserved = 0;
 	hdr->format_version = CLUSTER_ITL_DELTA_FORMAT_V2;
 
-	d = (xl_heap_itl_delta_v2 *) (redo_delta_buf
-								  + offsetof(xl_heap_itl_delta_block, deltas));
+	d = (xl_heap_itl_delta_v2 *)(redo_delta_buf + offsetof(xl_heap_itl_delta_block, deltas));
 	d->slot_idx = slot_idx;
-	d->flags_after = (uint16) flags_after;
+	d->flags_after = (uint16)flags_after;
 	d->xid = xid;
 	d->write_scn = write_scn;
 	d->commit_scn = InvalidScn;
@@ -637,45 +635,46 @@ UT_TEST(test_t22_redo_parity_sets_pd_block_scn_on_fresh_page)
 	/* A crash-recovered / standby page arrives with pd_block_scn = 0. */
 	Page page = build_itl_page();
 
-	((PageHeader) page)->pd_block_scn = InvalidScn;
-	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
-		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 1000));
+	((PageHeader)page)->pd_block_scn = InvalidScn;
+	(void)cluster_itl_redo_apply_block_local_delta(
+		page, NULL, make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId)12345, (SCN)1000));
 	/* Parity: redo reproduced the primary's pd_block_scn = write_scn. */
-	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 1000), 1);
+	UT_ASSERT_EQ((int)(((PageHeader)page)->pd_block_scn == (SCN)1000), 1);
 }
 
 UT_TEST(test_t23_redo_parity_monotonic_older_write_scn_noop)
 {
 	Page page = build_itl_page();
 
-	((PageHeader) page)->pd_block_scn = (SCN) 2000;
-	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
-		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 1000));
+	((PageHeader)page)->pd_block_scn = (SCN)2000;
+	(void)cluster_itl_redo_apply_block_local_delta(
+		page, NULL, make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId)12345, (SCN)1000));
 	/* Older write_scn must NOT lower the "last modified at" watermark. */
-	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 2000), 1);
+	UT_ASSERT_EQ((int)(((PageHeader)page)->pd_block_scn == (SCN)2000), 1);
 }
 
 UT_TEST(test_t24_redo_parity_invalid_write_scn_noop)
 {
 	Page page = build_itl_page();
 
-	((PageHeader) page)->pd_block_scn = (SCN) 1500;
+	((PageHeader)page)->pd_block_scn = (SCN)1500;
 	/* Lock-only delta carries InvalidScn write_scn -> SCN_VALID guard no-op,
 	 * exactly mirroring stamp_active which only writes on a valid write_scn. */
-	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
-		make_v2_active_delta(0, ITL_FLAG_LOCK_ONLY_ACTIVE, (TransactionId) 12345, InvalidScn));
-	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 1500), 1);
+	(void)cluster_itl_redo_apply_block_local_delta(
+		page, NULL,
+		make_v2_active_delta(0, ITL_FLAG_LOCK_ONLY_ACTIVE, (TransactionId)12345, InvalidScn));
+	UT_ASSERT_EQ((int)(((PageHeader)page)->pd_block_scn == (SCN)1500), 1);
 }
 
 UT_TEST(test_t25_redo_parity_newer_write_scn_advances)
 {
 	Page page = build_itl_page();
 
-	((PageHeader) page)->pd_block_scn = (SCN) 1000;
-	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
-		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 3000));
+	((PageHeader)page)->pd_block_scn = (SCN)1000;
+	(void)cluster_itl_redo_apply_block_local_delta(
+		page, NULL, make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId)12345, (SCN)3000));
 	/* Newer write_scn advances the watermark. */
-	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 3000), 1);
+	UT_ASSERT_EQ((int)(((PageHeader)page)->pd_block_scn == (SCN)3000), 1);
 }
 
 

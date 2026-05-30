@@ -849,9 +849,9 @@ cluster_itl_redo_apply_block_local_delta(Page page, HeapTupleHeader htup,
 		 * carry InvalidScn or an unchanged write_scn) a no-op -- exactly
 		 * mirroring the stamp_active side, which only writes pd_block_scn
 		 * on a valid write_scn. */
-		if (SCN_VALID(d_write_scn) &&
-			(!SCN_VALID(((PageHeader)page)->pd_block_scn) ||
-			 scn_time_cmp(d_write_scn, ((PageHeader)page)->pd_block_scn) > 0))
+		if (SCN_VALID(d_write_scn)
+			&& (!SCN_VALID(((PageHeader)page)->pd_block_scn)
+				|| scn_time_cmp(d_write_scn, ((PageHeader)page)->pd_block_scn) > 0))
 			((PageHeader)page)->pd_block_scn = d_write_scn;
 
 		/* L187 patch tuple pointer to the last applied slot_idx.  Same

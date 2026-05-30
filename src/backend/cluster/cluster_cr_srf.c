@@ -59,7 +59,8 @@ cluster_cr_test_construct(PG_FUNCTION_ARGS)
 	int64 read_scn_in;
 	Relation rel;
 	Buffer buf;
-	const char *cr_page = NULL; /* init: assigned in PG_TRY, PG_CATCH RE_THROWs (cppcheck longjmp blind spot) */
+	const char *cr_page
+		= NULL; /* init: assigned in PG_TRY, PG_CATCH RE_THROWs (cppcheck longjmp blind spot) */
 	SCN read_scn;
 
 	if (!superuser())
