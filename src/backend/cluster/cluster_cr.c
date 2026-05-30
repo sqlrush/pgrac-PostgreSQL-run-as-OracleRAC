@@ -44,6 +44,7 @@
 #include "cluster/cluster_cr.h"
 #include "cluster/cluster_cr_apply.h"
 #include "cluster/cluster_guc.h" /* cluster_cr_chain_walk_max_steps, cluster_node_id */
+#include "cluster/cluster_inject.h"
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_uba.h"
@@ -175,6 +176,51 @@ cr_scratch_ensure(void)
 
 
 /* ============================================================
+ * Test injection hooks (spec-3.9 Step 7; SKIP-style precondition)
+ * ============================================================ */
+
+#ifdef ENABLE_INJECTION
+/*
+ * cr_check_error_injections -- if a CR error injection point is armed, raise
+ *	the CR code's OWN precise SQLSTATE (NOT the framework's generic XX000).
+ *	Called at the top of the chain walker so it fires deterministically
+ *	regardless of the actual undo chain (spec-3.9 v0.4 F8/F10).
+ */
+static void
+cr_check_error_injections(void)
+{
+	uint64 param = 0;
+
+	if (cluster_cr_injection_armed("cr_snapshot_too_old", &param))
+		ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+						errmsg("snapshot too old: CR cannot reconstruct (injected; segment %u)",
+							   (uint32)param),
+						errhint("test injection cr_snapshot_too_old; disarm with "
+								"cluster_inject_fault('cr_snapshot_too_old','none',0).")));
+
+	if (cluster_cr_injection_armed("cr_cross_instance", &param))
+		ereport(ERROR,
+				(errcode(ERRCODE_CLUSTER_CR_CROSS_INSTANCE_UNSUPPORTED),
+				 errmsg("cluster CR cross-instance UBA (injected; origin_node_id=%u, local=%d)",
+						(uint32)param, cluster_node_id),
+				 errhint("test injection cr_cross_instance; spec-3.9 is own-instance only.")));
+
+	if (cluster_cr_injection_armed("cr_corruption", &param)) {
+		const char *kind = (param == 1)	  ? "uba_decode"
+						   : (param == 2) ? "crc"
+						   : (param == 3) ? "unknown_record_type"
+						   : (param == 4) ? "chain_break"
+										  : "unknown";
+
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("cluster CR undo chain corruption (injected; kind=%s)", kind),
+						errhint("test injection cr_corruption param 1..4.")));
+	}
+}
+#endif /* ENABLE_INJECTION */
+
+
+/* ============================================================
  * Chain walker driver (body lands in Step 3)
  * ============================================================ */
 
@@ -226,6 +272,11 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 	if (!PageHasItl(page))
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 						errmsg("cluster CR target page has no ITL special area")));
+
+#ifdef ENABLE_INJECTION
+	/* spec-3.9 Step 7: deterministic error injection (raises CR's own SQLSTATE). */
+	cr_check_error_injections();
+#endif
 
 	slots = ClusterPageGetItlSlots(page);
 	uba = slots[itl_idx].undo_segment_head;
@@ -397,6 +448,17 @@ cluster_cr_construct_block(Buffer buf, SCN read_scn, int itl_idx)
 		 * no dirty.  The wait event covers the undo I/O of the chain walk
 		 * so it is observable in pg_stat_activity (spec-3.9 §2 / TAP L8). */
 		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_CR_CONSTRUCT);
+
+#ifdef ENABLE_INJECTION
+		/* spec-3.9 Step 7: deterministic wait-event window for TAP L8.
+		 * pg_usleep with the armed microsecond param under the wait event. */
+		{
+			uint64 delay_us = 0;
+
+			if (cluster_cr_injection_armed("cr_construct_delay_us", &delay_us) && delay_us > 0)
+				pg_usleep((long)delay_us);
+		}
+#endif
 
 		memcpy(cr_scratch, BufferGetPage(buf), BLCKSZ);
 

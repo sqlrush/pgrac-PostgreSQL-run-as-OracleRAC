@@ -114,6 +114,14 @@ extern void cluster_injection_run(const char *name);
 
 extern bool cluster_injection_should_skip(const char *name);
 
+/*
+ * cluster_cr_injection_armed -- spec-3.9 D7 CR-specific armed-state peek.
+ *	Returns true iff the named CR injection point is armed; sets *out_param
+ *	to its armed_param.  Non-consuming (stays armed until disarmed).  The CR
+ *	code raises its own SQLSTATE / runs its own delay from the param.
+ */
+extern bool cluster_cr_injection_armed(const char *name, uint64 *out_param);
+
 extern void cluster_injection_init_from_guc(void);
 
 /* assign_hook for cluster.injection_points (registered by cluster_init_guc) */

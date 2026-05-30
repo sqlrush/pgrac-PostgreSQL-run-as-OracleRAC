@@ -389,6 +389,26 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	 */
 	{ .name = "cluster-sinval-ack-drop-send" },
 	{ .name = "cluster-sinval-ack-skip-validate" },
+
+	/*
+	 * spec-3.9 D7 own-instance CR injection points (4 entries).  These are
+	 * SKIP-style precondition providers, NOT generic error/sleep dispatch:
+	 * the CR code reads the armed state + param via cluster_cr_injection_armed()
+	 * and raises its OWN SQLSTATE / runs its own pg_usleep so the taxonomy TAP
+	 * asserts the CR code's precise 53R9F/53R9G/data_corrupted, not the
+	 * framework's generic XX000 (spec-3.9 v0.4 F8/F9/F10).
+	 *
+	 *   cr_snapshot_too_old   (param = segment_id)  -> CR raises 53R9F
+	 *   cr_corruption         (param 1..4 subkind)  -> CR raises data_corrupted
+	 *   cr_cross_instance     (param = origin node) -> CR raises 53R9G
+	 *   cr_construct_delay_us (param = delay us)    -> CR pg_usleep under the
+	 *                                                  ClusterCRConstruct wait
+	 *                                                  event (deterministic L8)
+	 */
+	{ .name = "cr_snapshot_too_old" },
+	{ .name = "cr_corruption" },
+	{ .name = "cr_cross_instance" },
+	{ .name = "cr_construct_delay_us" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)
@@ -648,6 +668,39 @@ cluster_injection_should_skip(const char *name)
 		return false;
 
 	return pg_atomic_exchange_u32(&p->skip_pending, 0) != 0;
+}
+
+
+/*
+ * cluster_cr_injection_armed -- spec-3.9 D7 CR-specific armed-state peek.
+ *
+ *	Returns true iff the named CR injection point is armed (any non-NONE
+ *	fault type), and sets *out_param to its armed_param.  Unlike
+ *	cluster_injection_should_skip, this does NOT consume / reset state: the
+ *	point stays armed until disarmed with cluster_inject_fault(name,'none',0),
+ *	matching the TAP arm -> trigger -> disarm pattern.  The CR code uses the
+ *	param to raise its own precise SQLSTATE / run its own pg_usleep, so the
+ *	taxonomy is the CR code's, not the framework's generic dispatch (F8/F9).
+ *
+ *	Bumps the lifetime hit counter so pg_stat_cluster_injections reflects use.
+ */
+bool
+cluster_cr_injection_armed(const char *name, uint64 *out_param)
+{
+	ClusterInjectPoint *p;
+
+	cluster_injection_initialise();
+
+	p = cluster_injection_lookup(name);
+	if (p == NULL)
+		return false;
+	if (pg_atomic_read_u32(&p->armed_type) == CLUSTER_FAULT_NONE)
+		return false;
+
+	if (out_param != NULL)
+		*out_param = pg_atomic_read_u64(&p->armed_param);
+	pg_atomic_fetch_add_u64(&p->hits, 1);
+	return true;
 }
 
 
