@@ -76,8 +76,17 @@ extern bool cluster_cr_apply_delete_inverse(char *scratch_page, const UndoRecord
 											const UndoDeletePayload *payload,
 											const char *old_tuple_bytes, uint16 old_tuple_length);
 
+/*
+ * spec-3.9 Step 4 signature correction (flag for user codereview):
+ *   the spec §2.2 sketch declared itl_inverse(scratch_page, hdr, int itl_idx),
+ *   but restoring the lock-only ITL transition needs the captured prior state
+ *   in UndoItlPayload (prev tuple header fields + prev ITL slot fields incl.
+ *   the slot's own itl_slot_idx).  The chain-root itl_idx is insufficient, so
+ *   the real signature takes the payload.  Verify-linkdb-first against
+ *   UndoItlPayload (cluster_undo_record.h) drove this.
+ */
 extern bool cluster_cr_apply_itl_inverse(char *scratch_page, const UndoRecordHeader *hdr,
-										 int itl_idx);
+										 const UndoItlPayload *payload);
 
 #endif /* !FRONTEND */
 

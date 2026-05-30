@@ -324,7 +324,13 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 			break;
 		}
 		case UNDO_RECORD_ITL: {
-			if (!cluster_cr_apply_itl_inverse(scratch_page, hdr, itl_idx))
+			const UndoItlPayload *p
+				= (const UndoItlPayload *)(record_buf.data + sizeof(UndoRecordHeader));
+
+			if (len < sizeof(UndoRecordHeader) + sizeof(UndoItlPayload))
+				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+								errmsg("cluster CR ITL undo record too short")));
+			if (!cluster_cr_apply_itl_inverse(scratch_page, hdr, p))
 				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 								errmsg("cluster CR ITL inverse-apply failed")));
 			if (CRShared != NULL)
