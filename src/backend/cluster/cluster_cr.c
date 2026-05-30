@@ -435,7 +435,10 @@ cr_walk_and_apply(char *scratch_page, Buffer buf, SCN read_scn, int itl_idx)
 const char *
 cluster_cr_construct_block(Buffer buf, SCN read_scn, int itl_idx)
 {
-	const char *result;
+	/* Init silences cppcheck uninitvar: the only non-throwing exit assigns
+	 * result in the PG_TRY body; PG_CATCH always PG_RE_THROWs, but cppcheck
+	 * cannot reason through the longjmp. */
+	const char *result = NULL;
 
 	Assert(BufferIsValid(buf));
 	Assert(!cr_in_progress); /* I-lock-3 non-reentrant */
@@ -641,18 +644,18 @@ cluster_visibility_decide_cr_tuple(HeapTuple htup, Snapshot snapshot)
 	 *   - A tuple DELETED at/before read_scn keeps its xmax in the image
 	 *     (the delete is not undone, SCN stop) -> invisible.
 	 *
-	 * So the decision reduces to "is the reconstructed tuple still live
-	 * (xmax invalid) as of read_scn".  We deliberately do NOT require the
-	 * HEAP_XMIN_COMMITTED hint bit: it is a lazy optimization that is often
-	 * unset in a captured undo image, and the chain walk already encodes the
-	 * xmin-after-read_scn case via inverse-INSERT.
+	 * So this image-level decision reduces to "is the reconstructed tuple
+	 * still live (xmax invalid) as of read_scn".  We deliberately do NOT
+	 * require the HEAP_XMIN_COMMITTED hint bit: it is a lazy optimization that
+	 * is often unset in a captured undo image, and the chain walk already
+	 * encodes the xmin-after-read_scn case via inverse-INSERT.
 	 *
-	 * KNOWN MVP LIMITATION (flag for codereview): the rare "inserted before
-	 * read_scn but the inserting xact committed after read_scn" case
-	 * (write_scn <= read_scn, commit_scn > read_scn) is not distinguished
-	 * here and would be treated visible.  A fully rigorous decision needs the
-	 * xmin commit_scn, which couples to the broader cluster visibility design.
-	 * No buffer, no hint-bit writes (I-lock-4 / I-fail-3).
+	 * The xmin-side (creation) check — a tuple still present in the image whose
+	 * inserting xact committed AFTER read_scn (the UPDATE new-version and the
+	 * H6 insert-then-late-commit cases) — is handled by the caller gate
+	 * (cluster_cr_satisfies_mvcc, spec-3.9 Hardening L214) using the tuple's
+	 * live ITL slot write_scn, because that needs the buffer/slot which this
+	 * image-only helper deliberately does not take (I-lock-4 / I-fail-3).
 	 */
 	if (tup->t_infomask & HEAP_XMAX_INVALID)
 		return CLUSTER_VISIBILITY_VISIBLE;
@@ -679,10 +682,10 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 	ClusterVisibilityDecision decision;
 
 	/*
-	 * Master switch (default off).  The firing-condition semantics are
-	 * pending user codereview (spec-3.9 Step 5 NOTE); with the gate off the
-	 * CR read path is never taken from visibility and spec-3.2/3.3 behavior
-	 * is unchanged.
+	 * Master switch (default on after spec-3.9 Hardening v1.0.1).  Turning it
+	 * off is a diagnostic escape hatch; normal cluster snapshots take the CR
+	 * path when the page/ITL SCN gates prove the tuple was modified after
+	 * read_scn.
 	 */
 	if (!cluster_cr_mvcc_gate)
 		return false;
@@ -735,6 +738,41 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 		 * exist at read_scn -> invisible. */
 		*out_visible = false;
 		return true;
+	}
+
+	/*
+	 * spec-3.9 Hardening (L214): xmin-side (creation) visibility.
+	 *
+	 * cluster_visibility_decide_cr_tuple is xmax-only and assumes every tuple
+	 * still present in the CR image existed at read_scn.  That holds for a
+	 * fresh INSERT (inverse-INSERTed to LP_UNUSED -> remap false above) and a
+	 * DELETE (inverse-DELETE clears xmax), but NOT for the NEW physical
+	 * version produced by an UPDATE: the walker inverse-applies the update
+	 * onto the OLD tuple's slot, leaving the new version present in the image
+	 * with xmin = the updating xact.  If that xact committed after read_scn
+	 * the new version did not exist at the snapshot and must be invisible, or
+	 * the snapshot would see BOTH the old and the new value (caught by t/215
+	 * L10).  This also closes the H6 "inserted-before-read_scn-but-committed-
+	 * after" case.
+	 *
+	 * The tuple's own ITL slot is the writer that produced this version, and
+	 * the tier-2 gate above already established slot.write_scn > read_scn.  If
+	 * that post-snapshot writer IS the image tuple's creator (slot.xid ==
+	 * xmin) the row was CREATED after the snapshot -> invisible.  We key off
+	 * write_scn, NOT commit_scn: under delayed cleanout a just-committed slot
+	 * is still ACTIVE with commit_scn = InvalidScn, but write_scn is always
+	 * stamped at write time, and commit_scn >= write_scn, so write_scn >
+	 * read_scn already implies the creator committed after the snapshot.  For
+	 * a delete-marked old tuple slot.xid == xmax (the deleter), not xmin, so a
+	 * genuine inverse-DELETE / inverse-UPDATE restore is left untouched.
+	 */
+	{
+		TransactionId cr_xmin = HeapTupleHeaderGetRawXmin(cr_htup.t_data);
+
+		if (TransactionIdIsValid(cr_xmin) && cr_xmin == slot->xid) {
+			*out_visible = false;
+			return true;
+		}
 	}
 
 	decision = cluster_visibility_decide_cr_tuple(&cr_htup, snapshot);

@@ -52,7 +52,7 @@ my $has_visibility_inject =
 	  'postgres',
 	  q{SELECT count(*) FROM pg_cluster_shmem
 	     WHERE name = 'pgrac cluster visibility inject'}) eq '1';
-my $expected_region_count = $has_visibility_inject ? '42' : '41';
+my $expected_region_count = $has_visibility_inject ? '43' : '42';
 
 
 # ----------
@@ -184,8 +184,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-   '114',
-   'L11 pg_stat_cluster_injections is 114 after spec-3.1');
+   '118',
+   'L11 pg_stat_cluster_injections is 118 (+4 spec-3.9 CR injection points)');
 
 
 # ----------

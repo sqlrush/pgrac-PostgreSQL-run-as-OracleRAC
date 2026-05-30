@@ -680,9 +680,10 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	 * cluster_scn_advance() and is monotonically newer than any prior stamp on
 	 * this page, so a plain assignment keeps pd_block_scn = "last modified at".
 	 * Already inside the heap op's critical section + MarkBufferDirty below;
-	 * the page change is WAL-protected by the surrounding heap record (full
-	 * pd_block_scn WAL/redo parity is deferred to the Stage 4 recovery spec,
-	 * tracked by spec-1.4's pd_block_scn placeholder).
+	 * the page change is WAL-protected by the surrounding heap record.  Redo
+	 * parity is provided by cluster_itl_redo_apply_block_local_delta (spec-3.9
+	 * Hardening L213), which re-applies this watermark from the ITL delta on
+	 * crash recovery / standby replay; FPI redo restores it verbatim.
 	 */
 	if (SCN_VALID(write_scn))
 		((PageHeader)page)->pd_block_scn = write_scn;
@@ -831,6 +832,27 @@ cluster_itl_redo_apply_block_local_delta(Page page, HeapTupleHeader htup,
 		 * (e.g., legacy v1 record OR v2 finish delta that did not re-bind). */
 		if (!UBA_is_invalid(d_uba))
 			slot->undo_segment_head = d_uba;
+
+		/*
+		 * spec-3.9 Hardening (L213): redo parity for pd_block_scn -- the
+		 * own-instance CR page-gate watermark (cluster_cr_satisfies_mvcc
+		 * tier 1).  cluster_itl_stamp_active sets pd_block_scn = write_scn
+		 * on the primary; the matching delta replay MUST reproduce it or a
+		 * crash-recovered / standby page keeps pd_block_scn = InvalidScn,
+		 * the CR page gate never fires there, and historical visibility on
+		 * the recovered node silently falls back to the PG-native body
+		 * (wrong for genuine cross-snapshot CR cases).  A full-page-image
+		 * redo already restores pd_block_scn verbatim; this covers the
+		 * incremental delta path only.  Monotonic max keeps the "last
+		 * modified at" semantic regardless of delta replay order, and the
+		 * SCN_VALID guard makes lock-only / commit / abort deltas (which
+		 * carry InvalidScn or an unchanged write_scn) a no-op -- exactly
+		 * mirroring the stamp_active side, which only writes pd_block_scn
+		 * on a valid write_scn. */
+		if (SCN_VALID(d_write_scn) &&
+			(!SCN_VALID(((PageHeader)page)->pd_block_scn) ||
+			 scn_time_cmp(d_write_scn, ((PageHeader)page)->pd_block_scn) > 0))
+			((PageHeader)page)->pd_block_scn = d_write_scn;
 
 		/* L187 patch tuple pointer to the last applied slot_idx.  Same
 		 * semantic as spec-3.4a A9. */

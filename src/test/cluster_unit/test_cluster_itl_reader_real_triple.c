@@ -30,6 +30,10 @@
  *	    T19  lock-only raw_xmax scan ignores data ACTIVE slot for same xid
  *	    T20  lock-only raw_xmax scan rejects ambiguous duplicate same wrap
  *	    T21  lock-only raw_xmax scan chooses highest-wrap unique match
+ *	    T22  spec-3.9 L213 redo parity: fresh page gets pd_block_scn = write_scn
+ *	    T23  spec-3.9 L213 redo parity: older write_scn is a monotonic no-op
+ *	    T24  spec-3.9 L213 redo parity: InvalidScn write_scn (lock-only) no-op
+ *	    T25  spec-3.9 L213 redo parity: newer write_scn advances the watermark
  *
  *	  Spec: spec-3.4b-real-tt-allocator-uba-encoding-production-cross-node.md
  *	        (v0.3 FROZEN 2026-05-24)
@@ -52,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "access/heapam_xlog.h" /* xl_heap_itl_delta_v2 / _block (spec-3.9 L213 redo parity) */
 #include "access/transam.h"
 #include "cluster/cluster_itl.h"
 #include "cluster/cluster_itl_slot.h"
@@ -175,6 +180,27 @@ uint64
 cluster_epoch_get_current(void)
 {
 	return 42;
+}
+
+
+/*
+ * scn_time_cmp -- spec-3.9 Hardening L213: the redo pd_block_scn parity
+ * branch in cluster_itl_redo_apply_block_local_delta calls scn_time_cmp.
+ * Linking the full cluster_scn.o would drag in shmem/atomic state, so we
+ * provide a byte-faithful local stub using the header-only scn_local()
+ * inline (identical to the real impl in cluster_scn.c).
+ */
+int
+scn_time_cmp(SCN a, SCN b)
+{
+	uint64 la = scn_local(a);
+	uint64 lb = scn_local(b);
+
+	if (la < lb)
+		return -1;
+	if (la > lb)
+		return 1;
+	return 0;
 }
 
 
@@ -571,6 +597,88 @@ UT_TEST(test_t21_lock_scan_chooses_highest_wrap)
 }
 
 
+/* ---------- spec-3.9 Hardening L213: pd_block_scn redo parity ----------
+ *
+ *	cluster_itl_redo_apply_block_local_delta must re-apply the page-level
+ *	pd_block_scn watermark (own-instance CR page gate) from a v2 ITL delta,
+ *	exactly mirroring cluster_itl_stamp_active on the primary.  Without it a
+ *	crash-recovered / standby page keeps pd_block_scn = InvalidScn and the
+ *	CR page gate never fires there.  These tests drive the REAL apply fn on a
+ *	synthetic ITL page and assert the watermark.
+ */
+
+static char redo_delta_buf[256];
+
+static const char *
+make_v2_active_delta(uint8 slot_idx, ClusterItlFlags flags_after,
+					 TransactionId xid, SCN write_scn)
+{
+	xl_heap_itl_delta_block *hdr = (xl_heap_itl_delta_block *) redo_delta_buf;
+	xl_heap_itl_delta_v2 *d;
+
+	memset(redo_delta_buf, 0, sizeof(redo_delta_buf));
+	hdr->ndeltas = 1;
+	hdr->reserved = 0;
+	hdr->format_version = CLUSTER_ITL_DELTA_FORMAT_V2;
+
+	d = (xl_heap_itl_delta_v2 *) (redo_delta_buf
+								  + offsetof(xl_heap_itl_delta_block, deltas));
+	d->slot_idx = slot_idx;
+	d->flags_after = (uint16) flags_after;
+	d->xid = xid;
+	d->write_scn = write_scn;
+	d->commit_scn = InvalidScn;
+	d->undo_segment_head = uba_encode(1, 0, slot_idx, 0);
+	return redo_delta_buf;
+}
+
+UT_TEST(test_t22_redo_parity_sets_pd_block_scn_on_fresh_page)
+{
+	/* A crash-recovered / standby page arrives with pd_block_scn = 0. */
+	Page page = build_itl_page();
+
+	((PageHeader) page)->pd_block_scn = InvalidScn;
+	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
+		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 1000));
+	/* Parity: redo reproduced the primary's pd_block_scn = write_scn. */
+	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 1000), 1);
+}
+
+UT_TEST(test_t23_redo_parity_monotonic_older_write_scn_noop)
+{
+	Page page = build_itl_page();
+
+	((PageHeader) page)->pd_block_scn = (SCN) 2000;
+	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
+		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 1000));
+	/* Older write_scn must NOT lower the "last modified at" watermark. */
+	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 2000), 1);
+}
+
+UT_TEST(test_t24_redo_parity_invalid_write_scn_noop)
+{
+	Page page = build_itl_page();
+
+	((PageHeader) page)->pd_block_scn = (SCN) 1500;
+	/* Lock-only delta carries InvalidScn write_scn -> SCN_VALID guard no-op,
+	 * exactly mirroring stamp_active which only writes on a valid write_scn. */
+	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
+		make_v2_active_delta(0, ITL_FLAG_LOCK_ONLY_ACTIVE, (TransactionId) 12345, InvalidScn));
+	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 1500), 1);
+}
+
+UT_TEST(test_t25_redo_parity_newer_write_scn_advances)
+{
+	Page page = build_itl_page();
+
+	((PageHeader) page)->pd_block_scn = (SCN) 1000;
+	(void) cluster_itl_redo_apply_block_local_delta(page, NULL,
+		make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId) 12345, (SCN) 3000));
+	/* Newer write_scn advances the watermark. */
+	UT_ASSERT_EQ((int) (((PageHeader) page)->pd_block_scn == (SCN) 3000), 1);
+}
+
+
 int
 main(void)
 {
@@ -595,6 +703,10 @@ main(void)
 	UT_RUN(test_t19_lock_scan_ignores_data_active_same_xid);
 	UT_RUN(test_t20_lock_scan_rejects_ambiguous_same_wrap);
 	UT_RUN(test_t21_lock_scan_chooses_highest_wrap);
+	UT_RUN(test_t22_redo_parity_sets_pd_block_scn_on_fresh_page);
+	UT_RUN(test_t23_redo_parity_monotonic_older_write_scn_noop);
+	UT_RUN(test_t24_redo_parity_invalid_write_scn_noop);
+	UT_RUN(test_t25_redo_parity_newer_write_scn_advances);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

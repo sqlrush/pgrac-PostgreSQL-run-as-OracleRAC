@@ -5,7 +5,7 @@
 #	  spec-3.9 D11 — own-instance CR block construction behavioral TAP.
 #
 #	  L1  ClusterPair up + GUC cluster.cr_chain_walk_max_steps default 4096
-#	      + cluster.cr_mvcc_gate default off + 53R9F/53R9G registered + the
+#	      + cluster.cr_mvcc_gate default on + 53R9F/53R9G registered + the
 #	      4 CR injection points present in pg_stat_cluster_injections
 #	  L2  pg_cluster_state cr category has 9 rows (the 9 cluster_cr counters)
 #	  L3  cluster_cr_test_construct on a real ITL heap block succeeds
@@ -16,12 +16,18 @@
 #	      cr_cross_instance_unsupported_count++
 #	  L6  data_corrupted: arm cr_corruption 1..4 + invoke ×4 → XX001 each +
 #	      cr_corruption_count += 4
-#	  L7  per-record-type counter reachability: the inverse counters are
-#	      exposed + non-negative (mutation correctness is cluster_unit-
-#	      covered; real-chain replay needs a deterministic SCN fixture
-#	      deferred with the MVCC gate codereview)
+#	  L7  per-record-type counter reachability: the 4 inverse counters are
+#	      exposed (delete/update/insert are proven end-to-end in L9-L11;
+#	      cr_inverse_itl is cluster_unit-covered — see note at L11)
 #	  L8  wait event: arm cr_construct_delay_us=3s + background invoke →
 #	      pg_stat_activity.wait_event = 'ClusterCRConstruct' observed
+#	  L9  REAL e2e DELETE: A's REPEATABLE READ snapshot still sees a row that
+#	      B deleted+committed → cr_construct_count++ / chain_walk_steps_sum>0 /
+#	      cr_inverse_delete_count++ (gate genuinely fired, no test SRF)
+#	  L10 REAL e2e UPDATE: A still sees the OLD value after B updates+commits
+#	      → cr_inverse_update_count++ (value assertion forces correctness)
+#	  L11 REAL e2e INSERT: A still sees 3 rows after B inserts a 4th+commits
+#	      → cr_inverse_insert_count++
 #
 #	  Injection registry is process-local, so arm + invoke MUST share one
 #	  backend: the injection tests use a single background_psql session.
@@ -258,6 +264,119 @@ is($inv, '4', 'L7 4 per-record-type inverse counters exposed');
 	ok($val->('cr_inverse_delete_count') > $pre_del,
 		'L9f cr_inverse_delete_count incremented (DELETE inverse-applied)');
 }
+
+
+# ----------
+# L10: REAL end-to-end CR for UPDATE (cr_inverse_update path).
+#
+#   Session A snapshots and reads v='x' for id=2.  Session B UPDATEs id=2 to
+#   v='y' and commits: the OLD tuple gets xmax + an ITL stamp (write_scn >
+#   read_scn_A), the NEW tuple is inserted.  When A re-reads under its old
+#   snapshot, the gate fires on the old tuple, the walker inverse-applies the
+#   UPDATE (clearing the in-place xmax in the CR image) so A still sees the
+#   OLD value 'x'.  The UPDATE-created new version remains physically present
+#   in the CR image, so the xmin-side gate must hide it.  The value assertion
+#   (not just a count) forces both paths to be genuinely correct.
+# ----------
+{
+	$node0->safe_psql('postgres',
+		"CREATE TABLE t_upd (id int, v text);
+		 INSERT INTO t_upd VALUES (1,'a'),(2,'x'),(3,'c');");
+
+	my $val = sub {
+		my ($k) = @_;
+		return $node0->safe_psql('postgres',
+			qq{SELECT value::bigint FROM pg_cluster_state WHERE category='cr' AND key='$k'});
+	};
+
+	my $pre_upd   = $val->('cr_inverse_update_count');
+	my $pre_steps = $val->('cr_chain_walk_steps_sum');
+
+	my $sa = $node0->background_psql('postgres', on_error_stop => 0);
+	$sa->query_safe('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+	my $a_before = $sa->query_safe(q{SELECT v FROM t_upd WHERE id = 2});
+	chomp $a_before;
+	is($a_before, 'x', 'L10a session A snapshot sees old value x');
+
+	# Session B updates the value in place (old tuple xmax + ITL SCN advance).
+	$node0->safe_psql('postgres', q{UPDATE t_upd SET v = 'y' WHERE id = 2});
+
+	# A fresh snapshot sees the new value -- gate does not fire.
+	my $fresh = $node0->safe_psql('postgres', q{SELECT v FROM t_upd WHERE id = 2});
+	is($fresh, 'y', 'L10b fresh snapshot sees new value y');
+
+	# Session A re-reads under its old snapshot: CR inverse-applies the UPDATE
+	# so A still sees exactly one row for id=2 with the OLD value x.
+	my $a_after = $sa->query_safe(q{SELECT v FROM t_upd WHERE id = 2});
+	chomp $a_after;
+	is($a_after, 'x', 'L10c session A still sees old value x via CR inverse-update');
+
+	my $a_count = $sa->query_safe(q{SELECT count(*) FROM t_upd WHERE id = 2});
+	chomp $a_count;
+	is($a_count, '1', 'L10d session A sees exactly one version of id=2 (new version hidden by xmin gate)');
+
+	$sa->query_safe('COMMIT');
+	$sa->quit;
+
+	ok($val->('cr_inverse_update_count') > $pre_upd,
+		'L10e cr_inverse_update_count incremented (UPDATE inverse-applied)');
+	ok($val->('cr_chain_walk_steps_sum') > $pre_steps,
+		'L10f cr_chain_walk_steps_sum advanced for the UPDATE chain');
+}
+
+
+# ----------
+# L11: REAL end-to-end CR for INSERT (cr_inverse_insert path).
+#
+#   Session A snapshots (sees 3 rows).  Session B INSERTs a 4th row and
+#   commits.  When A re-reads, the gate fires on the new tuple (write_scn >
+#   read_scn_A) and the walker inverse-applies the INSERT (LP_UNUSED in the
+#   CR image), so A's snapshot still sees exactly 3 rows.
+# ----------
+{
+	$node0->safe_psql('postgres',
+		'CREATE TABLE t_ins (id int);
+		 INSERT INTO t_ins SELECT g FROM generate_series(1,3) g;');
+
+	my $val = sub {
+		my ($k) = @_;
+		return $node0->safe_psql('postgres',
+			qq{SELECT value::bigint FROM pg_cluster_state WHERE category='cr' AND key='$k'});
+	};
+
+	my $pre_ins = $val->('cr_inverse_insert_count');
+
+	my $sa = $node0->background_psql('postgres', on_error_stop => 0);
+	$sa->query_safe('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+	my $a_before = $sa->query_safe('SELECT count(*) FROM t_ins');
+	chomp $a_before;
+	is($a_before, '3', 'L11a session A snapshot sees 3 rows');
+
+	# Session B inserts a 4th row after A's snapshot.
+	$node0->safe_psql('postgres', 'INSERT INTO t_ins VALUES (4)');
+
+	my $fresh = $node0->safe_psql('postgres', 'SELECT count(*) FROM t_ins');
+	is($fresh, '4', 'L11b fresh snapshot sees the new row (4 rows)');
+
+	# Session A re-reads: the post-snapshot INSERT is inverse-applied away.
+	my $a_after = $sa->query_safe('SELECT count(*) FROM t_ins');
+	chomp $a_after;
+	is($a_after, '3', 'L11c session A still sees 3 rows (INSERT inverse-applied)');
+
+	$sa->query_safe('COMMIT');
+	$sa->quit;
+
+	ok($val->('cr_inverse_insert_count') > $pre_ins,
+		'L11d cr_inverse_insert_count incremented (INSERT inverse-applied)');
+}
+
+# NOTE on cr_inverse_itl: unlike insert/update/delete, an ITL undo record is
+# only emitted when an ITL slot is reused while still referenced by a live
+# undo chain (slot pressure beyond INITRANS under concurrency).  That is not
+# reachable deterministically from a 2-session SQL script, so the ITL inverse
+# helper is proven at the cluster_unit layer (test_cluster_cr.c, synthetic
+# page) rather than here.  Its real-chain replay is exercised indirectly
+# whenever a walked chain crosses a reused slot.
 
 
 $pair->stop_pair;

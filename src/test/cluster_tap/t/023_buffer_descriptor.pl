@@ -55,7 +55,7 @@ my $has_visibility_inject =
 	  'postgres',
 	  q{SELECT count(*) FROM pg_cluster_shmem
 	     WHERE name = 'pgrac cluster visibility inject'}) eq '1';
-my $expected_region_count = $has_visibility_inject ? '42' : '41';
+my $expected_region_count = $has_visibility_inject ? '43' : '42';
 
 
 # ----------
@@ -152,8 +152,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-   '114',
-   'L11 pg_stat_cluster_injections is 114 after spec-3.1');
+   '118',
+   'L11 pg_stat_cluster_injections is 114 (+4 spec-3.9 CR injection points) = 118');
 
 
 # ----------
@@ -163,8 +163,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT category) FROM pg_cluster_state}),
-   '26',
-   'L12 pg_cluster_state has 26 distinct categories (undo_record added in spec-3.7)');
+   '27',
+   'L12 pg_cluster_state has 27 categories (spec-3.9 adds cr) (undo_record added in spec-3.7)');
 
 
 # ----------
@@ -227,7 +227,7 @@ is($node->safe_psql('postgres',
 my $smoke_categories = $node->safe_psql(
 	'postgres',
 	q{SELECT count(DISTINCT category) FROM pg_cluster_state});
-is($smoke_categories, '26', 'L16 cluster_smoke surface integrates buffer_format + pcm + gcs + tt_status + tt_status_hint categories (26 categories;spec-3.2 added tt_status_hint)');
+is($smoke_categories, '27', 'L16 cluster_smoke surface integrates buffer_format + pcm + gcs + tt_status + tt_status_hint categories (27 categories;spec-3.2 added tt_status_hint)');
 
 
 # ----------

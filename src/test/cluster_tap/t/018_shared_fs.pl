@@ -130,8 +130,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'114',
-	'L9 total injection registry size is 114 after spec-3.1');
+	'118',
+	'L9 total injection registry size is 114 after spec-3.1 (+4 spec-3.9 CR injection points) = 118');
 
 
 # ----------

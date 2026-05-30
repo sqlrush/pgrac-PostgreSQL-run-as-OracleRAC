@@ -291,7 +291,9 @@ UT_TEST(test_delete_inverse_zero_len_false)
 {
 	UndoRecordHeader hdr;
 	UndoDeletePayload p;
-	char full_image[TEST_TUPLE_LEN];
+	/* const + init: zero-len call never reads the image; satisfies cppcheck
+	 * constVariable + uninitvar. */
+	const char full_image[TEST_TUPLE_LEN] = { 0 };
 
 	build_page_with_tuple();
 	memset(&hdr, 0, sizeof(hdr));
@@ -312,7 +314,7 @@ UT_TEST(test_itl_inverse_restores_header_and_slot)
 	UndoRecordHeader hdr;
 	UndoItlPayload p;
 	HeapTupleHeader live;
-	ClusterItlSlotData *slot;
+	const ClusterItlSlotData *slot; /* read-only assertion access (cppcheck constVariablePointer) */
 
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.target_offset = TEST_TUPLE_OFFSET;
