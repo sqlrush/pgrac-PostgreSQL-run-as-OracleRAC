@@ -51,6 +51,7 @@
 #include "storage/shmem.h"
 
 #include "cluster/cluster_conf.h"
+#include "cluster/cluster_mode.h" /* cluster_peer_mode_enabled (single-node skips peer hint emit) */
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_ic_envelope.h"
@@ -242,6 +243,12 @@ cluster_tt_status_hint_emit(const ClusterTTStatusKey *key, ClusterTTStatus statu
 	if (!cluster_enabled || ClusterTTHintOutbound == NULL || key == NULL)
 		return;
 
+	/* P0 perf hardening: outbound TT status hints are PEER work (enqueue + LMON
+	 * wakeup).  A single-node storage deployment installs the local overlay but
+	 * emits no peer hint -- gate on peer mode, not just cluster_enabled. */
+	if (!cluster_peer_mode_enabled())
+		return;
+
 	/* GUC gate:  disabled mode is a no-op. */
 	if (cluster_tt_status_hint_emit_mode == CLUSTER_TT_STATUS_HINT_EMIT_DISABLED)
 		return;
@@ -307,6 +314,10 @@ cluster_tt_status_hint_emit_subcommitted(const ClusterTTStatusKey *child_key,
 		|| parent_key == NULL)
 		return;
 
+	/* P0 perf hardening: peer hint emit only in peer mode (see _emit). */
+	if (!cluster_peer_mode_enabled())
+		return;
+
 	if (cluster_tt_status_hint_emit_mode == CLUSTER_TT_STATUS_HINT_EMIT_DISABLED)
 		return;
 
@@ -352,6 +363,9 @@ cluster_tt_status_hint_emit_multixact_overlay(const ClusterMultiXactKey *key, ui
 	uint32 next_tail;
 
 	if (!cluster_enabled || ClusterMultiXactHintOutbound == NULL || key == NULL || members == NULL)
+		return;
+	/* P0 perf hardening: peer hint emit only in peer mode (see _emit). */
+	if (!cluster_peer_mode_enabled())
 		return;
 	if (cluster_tt_status_hint_emit_mode == CLUSTER_TT_STATUS_HINT_EMIT_DISABLED)
 		return;
