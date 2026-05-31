@@ -897,6 +897,9 @@ cluster_undo_record_xact_reset(void)
 	memset(cluster_undo_local_heads, 0, sizeof(cluster_undo_local_heads));
 	cluster_undo_local_head_count = 0;
 	cluster_undo_touched_seg_count = 0;
+	/* P0 perf hardening: drop the cached undo segment fd at xact end to bound
+	 * stale-fd exposure (e.g. a recycled segment) across transactions. */
+	cluster_undo_smgr_fd_cache_reset();
 }
 
 

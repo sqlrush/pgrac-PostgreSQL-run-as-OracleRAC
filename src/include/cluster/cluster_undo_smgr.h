@@ -107,6 +107,13 @@ extern int cluster_undo_smgr_create_segment_file(uint32 segment_id, uint8 owner_
  */
 extern bool cluster_undo_smgr_fsync_segment_file(uint32 segment_id, uint8 owner_instance);
 
+/*
+ * cluster_undo_smgr_fd_cache_reset -- close the per-backend cached undo
+ *	segment fd (P0 perf hardening).  Called at xact end (via
+ *	cluster_undo_record_xact_reset) to bound stale-fd exposure across xacts.
+ */
+extern void cluster_undo_smgr_fd_cache_reset(void);
+
 
 #endif /* !FRONTEND */
 

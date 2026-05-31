@@ -38,6 +38,7 @@
 
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "storage/ipc.h" /* before_shmem_exit (fd cache cleanup) */
 #include "utils/elog.h"
 
 #include "cluster/cluster_undo_record_api.h" /* smgr syscall counter bumps */
@@ -46,31 +47,84 @@
 #include "cluster/storage/cluster_undo_alloc.h"
 
 
-static int
-open_segment_rdonly(uint32 segment_id, uint8 owner_instance)
+/*
+ * P0 perf hardening (2026-05-31): per-backend undo segment fd cache.
+ *
+ *	The hot undo write path called open()+pread/pwrite()+close() per record
+ *	(8.5 open + 8.5 close per TPC-B txn).  Cache ONE O_RDWR fd for the
+ *	most-recently-used (segment, owner) — O_RDWR serves both read_block and
+ *	write_block.  Self-heals on (segment, owner) mismatch (close old + open
+ *	new), bounding stale-fd exposure (e.g. a recycled segment) further by an
+ *	xact-end reset (cluster_undo_record_xact_reset -> _fd_cache_reset) and a
+ *	before_shmem_exit close.  Per-backend fds to a shared segment file are
+ *	independent; each pwrites its own offset range, so no cross-backend hazard.
+ */
+static uint32 cached_fd_segment = 0; /* 0 = empty */
+static uint8 cached_fd_owner = 0;
+static int cached_fd = -1;
+static bool cached_fd_exit_registered = false;
+
+static void
+fd_cache_close(void)
 {
-	char path[MAXPGPATH];
-	int ret;
-
-	ret = cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path));
-	if (ret != 0)
-		return -1;
-
-	return BasicOpenFile(path, O_RDONLY | PG_BINARY);
+	if (cached_fd >= 0) {
+		close(cached_fd);
+		cluster_undo_record_note_smgr_close();
+		cached_fd = -1;
+		cached_fd_segment = 0;
+		cached_fd_owner = 0;
+	}
 }
 
+static void
+fd_cache_on_exit(int code, Datum arg)
+{
+	(void)code;
+	(void)arg;
+	fd_cache_close();
+}
 
+/*
+ * get_segment_fd -- return a cached O_RDWR fd for (segment, owner), opening
+ *	(and caching) one on a miss.  Returns -1 on open failure.  The caller MUST
+ *	NOT close the returned fd (the cache owns it).
+ */
 static int
-open_segment_rdwr(uint32 segment_id, uint8 owner_instance)
+get_segment_fd(uint32 segment_id, uint8 owner_instance)
 {
 	char path[MAXPGPATH];
-	int ret;
+	int fd;
 
-	ret = cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path));
-	if (ret != 0)
+	if (cached_fd >= 0 && cached_fd_segment == segment_id && cached_fd_owner == owner_instance)
+		return cached_fd; /* hit */
+
+	fd_cache_close(); /* miss: drop the stale fd first */
+
+	if (cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path)) != 0)
 		return -1;
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0)
+		return -1;
+	cluster_undo_record_note_smgr_open();
 
-	return BasicOpenFile(path, O_RDWR | PG_BINARY);
+	cached_fd = fd;
+	cached_fd_segment = segment_id;
+	cached_fd_owner = owner_instance;
+	if (!cached_fd_exit_registered) {
+		before_shmem_exit(fd_cache_on_exit, (Datum)0);
+		cached_fd_exit_registered = true;
+	}
+	return fd;
+}
+
+/*
+ * cluster_undo_smgr_fd_cache_reset -- close the cached fd (xact end / segment
+ *	recycle).  Called from cluster_undo_record_xact_reset.
+ */
+void
+cluster_undo_smgr_fd_cache_reset(void)
+{
+	fd_cache_close();
 }
 
 
@@ -85,18 +139,14 @@ cluster_undo_smgr_read_block(uint32 segment_id, uint8 owner_instance, uint32 blo
 	if (buf == NULL || block_no >= UNDO_BLOCKS_PER_SEGMENT)
 		return false;
 
-	fd = open_segment_rdonly(segment_id, owner_instance);
+	fd = get_segment_fd(segment_id, owner_instance);
 	if (fd < 0)
 		return false;
-	cluster_undo_record_note_smgr_open();
 
 	offset = (off_t)block_no * BLCKSZ;
 	nread = pg_pread(fd, buf, BLCKSZ, offset);
 	cluster_undo_record_note_smgr_pread();
 	ok = (nread == BLCKSZ);
-
-	close(fd);
-	cluster_undo_record_note_smgr_close();
 	return ok;
 }
 
@@ -113,10 +163,9 @@ cluster_undo_smgr_write_block(uint32 segment_id, uint8 owner_instance, uint32 bl
 	if (buf == NULL || block_no >= UNDO_BLOCKS_PER_SEGMENT)
 		return false;
 
-	fd = open_segment_rdwr(segment_id, owner_instance);
+	fd = get_segment_fd(segment_id, owner_instance);
 	if (fd < 0)
 		return false;
-	cluster_undo_record_note_smgr_open();
 
 	offset = (off_t)block_no * BLCKSZ;
 	nwritten = pg_pwrite(fd, buf, BLCKSZ, offset);
@@ -128,9 +177,6 @@ cluster_undo_smgr_write_block(uint32 segment_id, uint8 owner_instance, uint32 bl
 		if (pg_fsync(fd) != 0)
 			ok = false;
 	}
-
-	close(fd);
-	cluster_undo_record_note_smgr_close();
 	return ok;
 }
 
@@ -172,14 +218,10 @@ bool
 cluster_undo_smgr_fsync_segment_file(uint32 segment_id, uint8 owner_instance)
 {
 	int fd;
-	bool ok;
 
-	fd = open_segment_rdwr(segment_id, owner_instance);
+	fd = get_segment_fd(segment_id, owner_instance);
 	if (fd < 0)
 		return false;
 
-	ok = (pg_fsync(fd) == 0);
-
-	close(fd);
-	return ok;
+	return (pg_fsync(fd) == 0);
 }
