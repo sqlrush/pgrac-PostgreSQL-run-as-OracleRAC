@@ -80,7 +80,7 @@ extern const char *cluster_cr_lookup_or_construct(Buffer buf, SCN read_scn);
  *
  *   1. Assert caller holds >= BUFFER_LOCK_SHARE + non-reentrant guard.
  *   2. memcpy(scratch, BufferGetPage(buf), BLCKSZ).
- *   3. Snapshot every ITL slot with write_scn > read_scn (candidate chains),
+ *   3. Snapshot every ITL slot with write_scn newer than read_scn (candidate chains),
  *      then inverse-apply each chain newest-transaction-first (write_scn DESC)
  *      until each record's write_scn is not later than read_scn.
  *   4. Reaching a chain end without a reconstructable base state surfaces as

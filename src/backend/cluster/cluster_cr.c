@@ -416,7 +416,7 @@ cr_walk_chain(char *scratch_page, UBA start_uba, SCN read_scn, uint32 *steps, ui
  * cluster_cr_construct_block_into -- full-block CR into a caller-provided
  *	BLCKSZ destination (the CR cache victim slot in spec-3.10, or the backend
  *	scratch via the public wrapper).  memcpy the live page, then inverse-apply
- *	EVERY candidate ITL chain (write_scn > read_scn) in write_scn-DESC order so
+ *	EVERY candidate ITL chain (write_scn newer than read_scn) in write_scn-DESC order so
  *	the whole block is rolled back to read_scn (Oracle block-level CR).
  *
  *	Candidate chains are snapshotted BEFORE any inverse-apply (cluster_cr_apply
