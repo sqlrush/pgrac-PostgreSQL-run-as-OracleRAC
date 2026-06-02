@@ -326,7 +326,7 @@ check: all
 	@total=0; failed=0; \
 	for t in $(TESTS); do \
 		echo "# Running $$t"; \
-		./$$t || failed=$$((failed + 1)); \
+		./$$t || { failed=$$((failed + 1)); echo "# FAILED-BINARY: $$t (exit $$?)"; }; \
 		total=$$((total + 1)); \
 	done; \
 	if [ $$failed -ne 0 ]; then \
