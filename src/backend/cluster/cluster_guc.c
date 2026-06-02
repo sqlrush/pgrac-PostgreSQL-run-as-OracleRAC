@@ -1421,7 +1421,7 @@ cluster_init_guc(void)
 					 "reconstructed read_scn-consistent block image. Active whenever cluster "
 					 "storage mode is on (cluster.enabled + a valid cluster.node_id), INCLUDING a "
 					 "single-node cluster deployment (cluster snapshots are CLUSTER-source "
-						 "there too). Set off to fall back to the "
+					 "there too). Set off to fall back to the "
 					 "spec-3.2/3.3 SCN/PG-native visibility path."),
 		&cluster_cr_mvcc_gate, true, PGC_USERSET, 0, NULL, NULL, NULL);
 

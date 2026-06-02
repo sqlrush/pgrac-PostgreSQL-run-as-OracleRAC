@@ -691,12 +691,12 @@ cluster_itl_recycle_watermark_contribution(uint8 old_flags, TransactionId old_xi
 	 * cluster_unit E4-E6 + the ACTIVE-different-xid no-contribution case.
 	 */
 	switch (old_flags) {
-		case ITL_FLAG_COMMITTED:
-		case ITL_FLAG_ABORTED:
-		case ITL_FLAG_NEEDS_CLEANOUT:
-			break; /* completed data slot -- eligible */
-		default:
-			return InvalidScn; /* FREE / ACTIVE / lock-only-* -- never */
+	case ITL_FLAG_COMMITTED:
+	case ITL_FLAG_ABORTED:
+	case ITL_FLAG_NEEDS_CLEANOUT:
+		break; /* completed data slot -- eligible */
+	default:
+		return InvalidScn; /* FREE / ACTIVE / lock-only-* -- never */
 	}
 	if (old_xid == new_xid)
 		return InvalidScn; /* defensive: a completed slot should not hold new_xid */
@@ -754,9 +754,8 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	 * surrounding heap record; redo parity in
 	 * cluster_itl_redo_apply_block_local_delta via the same shared helper.
 	 */
-	cluster_itl_block_watermark_advance(page,
-										cluster_itl_recycle_watermark_contribution(
-											slot->flags, slot->xid, slot->write_scn, xid));
+	cluster_itl_block_watermark_advance(page, cluster_itl_recycle_watermark_contribution(
+												  slot->flags, slot->xid, slot->write_scn, xid));
 	if (slot->flags != ITL_FLAG_FREE && !(slot->flags == ITL_FLAG_ACTIVE && slot->xid == xid))
 		slot->wrap++;
 	slot->xid = xid;

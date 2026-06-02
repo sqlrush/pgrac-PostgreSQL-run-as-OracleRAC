@@ -706,14 +706,14 @@ UT_TEST(test_t27_watermark_same_xid_no_contribution)
 UT_TEST(test_t28_watermark_lock_only_no_contribution)
 {
 	/* E6: completed lock-only slots never anchor a visibility-affecting undo. */
-	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
-					 ITL_FLAG_LOCK_ONLY_COMMITTED, (TransactionId)100, (SCN)5000,
-					 (TransactionId)200)),
-				 0);
-	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
-					 ITL_FLAG_LOCK_ONLY_ABORTED, (TransactionId)100, (SCN)5000,
-					 (TransactionId)200)),
-				 0);
+	UT_ASSERT_EQ(
+		(int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+			ITL_FLAG_LOCK_ONLY_COMMITTED, (TransactionId)100, (SCN)5000, (TransactionId)200)),
+		0);
+	UT_ASSERT_EQ(
+		(int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+			ITL_FLAG_LOCK_ONLY_ABORTED, (TransactionId)100, (SCN)5000, (TransactionId)200)),
+		0);
 }
 
 UT_TEST(test_t29_watermark_active_diff_xid_no_contribution)
@@ -737,9 +737,9 @@ UT_TEST(test_t30_watermark_completed_data_contributes)
 						   ITL_FLAG_ABORTED, (TransactionId)100, (SCN)5000, (TransactionId)200)
 					   == (SCN)5000),
 				 1);
-	UT_ASSERT_EQ((int)(cluster_itl_recycle_watermark_contribution(
-						   ITL_FLAG_NEEDS_CLEANOUT, (TransactionId)100, (SCN)5000,
-						   (TransactionId)200)
+	UT_ASSERT_EQ((int)(cluster_itl_recycle_watermark_contribution(ITL_FLAG_NEEDS_CLEANOUT,
+																  (TransactionId)100, (SCN)5000,
+																  (TransactionId)200)
 					   == (SCN)5000),
 				 1);
 	/* Completed data but InvalidScn write_scn -> nothing. */
@@ -758,16 +758,13 @@ UT_TEST(test_t31_watermark_advance_monotone)
 	UT_ASSERT_EQ((int)SCN_VALID(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn), 0);
 	/* First valid contrib -> set. */
 	cluster_itl_block_watermark_advance(page, (SCN)5000);
-	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
-				 1);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000), 1);
 	/* Older contrib -> no-op (monotone). */
 	cluster_itl_block_watermark_advance(page, (SCN)3000);
-	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
-				 1);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000), 1);
 	/* Newer contrib -> advances. */
 	cluster_itl_block_watermark_advance(page, (SCN)7000);
-	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)7000),
-				 1);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)7000), 1);
 }
 
 UT_TEST(test_t32_redo_recomputes_recycle_watermark)
@@ -787,8 +784,7 @@ UT_TEST(test_t32_redo_recomputes_recycle_watermark)
 	(void)cluster_itl_redo_apply_block_local_delta(
 		page, NULL, make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId)200, (SCN)6000));
 	/* Watermark folded the EVICTED COMMITTED write_scn (5000), not the new 6000. */
-	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
-				 1);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000), 1);
 	/* And the slot is now the new ACTIVE writer. */
 	UT_ASSERT_EQ((int)(slot->flags == ITL_FLAG_ACTIVE), 1);
 	UT_ASSERT_EQ((int)(slot->write_scn == (SCN)6000), 1);

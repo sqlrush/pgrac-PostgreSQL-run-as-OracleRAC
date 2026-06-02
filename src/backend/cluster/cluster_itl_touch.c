@@ -51,7 +51,7 @@
 #include "cluster/cluster_itl.h" /* stamp_committed / stamp_aborted */
 #include "cluster/cluster_itl_touch.h"
 #include "cluster/cluster_mode.h" /* cluster_storage_mode_enabled */
-#include "storage/bufmgr.h" /* ReadBufferWithoutRelcache / ReleaseBuffer */
+#include "storage/bufmgr.h"		  /* ReadBufferWithoutRelcache / ReleaseBuffer */
 #include "storage/buf_internals.h"
 #include "utils/memutils.h"
 

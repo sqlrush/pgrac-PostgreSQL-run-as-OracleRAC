@@ -489,11 +489,10 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 			SCN recycle_wm = ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn;
 
 			if (SCN_VALID(recycle_wm) && scn_time_cmp(recycle_wm, read_scn) > 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
-						 errmsg("cluster CR cannot reconstruct block: ITL slot reused "
-								"after snapshot"),
-						 errhint("retry the transaction with a fresh snapshot")));
+				ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+								errmsg("cluster CR cannot reconstruct block: ITL slot reused "
+									   "after snapshot"),
+								errhint("retry the transaction with a fresh snapshot")));
 		}
 
 		/* Snapshot candidate chains BEFORE mutation, then peel newest-first. */
