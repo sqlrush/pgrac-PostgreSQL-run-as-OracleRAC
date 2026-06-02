@@ -43,6 +43,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
+#include "cluster/cluster_tt_durable.h"	  /* spec-3.11: redo decision predicate */
 #include "cluster/cluster_undo_segment.h" /* UNDO_SEGMENT_SIZE_BYTES */
 #include "cluster/storage/cluster_undo_xlog.h"
 #include "miscadmin.h"
@@ -369,13 +370,28 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 	hdr = (UndoSegmentHeaderData *)blockbuf.data;
 	slot = &hdr->tt_slots[rec->slot_offset];
 
-	/* Status validity guard (spec-3.11 §2.3): legal live status is [0,4]. */
-	if (slot->status > TT_SLOT_RECYCLABLE)
+	/* Decide via the shared pure predicate (cluster_unit-tested; spec-3.11 §2.3). */
+	switch (
+		cluster_tt_durable_redo_decide(slot->status, slot->xid, slot->wrap, rec->xid, rec->wrap)) {
+	case CLUSTER_TT_REDO_BADSTATUS:
+		close(fd);
 		ereport(PANIC, (errcode(ERRCODE_DATA_CORRUPTED),
 						errmsg("undo segment \"%s\" TT slot %u has invalid status %u during redo",
 							   path, rec->slot_offset, slot->status)));
-
-	if (rec->wrap > slot->wrap || (rec->wrap == slot->wrap && slot->xid == rec->xid)) {
+		break;
+	case CLUSTER_TT_REDO_CORRUPT:
+		/* same generation, different owner = corruption (规则 8.A; never guess). */
+		close(fd);
+		ereport(PANIC,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("undo segment \"%s\" TT slot %u redo conflict: record xid %u wrap %u "
+						"vs on-disk xid %u wrap %u",
+						path, rec->slot_offset, rec->xid, rec->wrap, slot->xid, slot->wrap)));
+		break;
+	case CLUSTER_TT_REDO_SKIP:
+		/* stale record; a newer commit is already durable -> no write. */
+		break;
+	case CLUSTER_TT_REDO_APPLY: {
 		ssize_t written;
 
 		/* overwrite (recycle-then-commit) or idempotent same-owner. */
@@ -404,16 +420,9 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after TT slot commit: %m", path)));
 		}
-	} else if (rec->wrap == slot->wrap && slot->xid != rec->xid) {
-		/* same generation, different owner = corruption (规则 8.A; never guess). */
-		close(fd);
-		ereport(PANIC,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("undo segment \"%s\" TT slot %u redo conflict: record xid %u wrap %u "
-						"vs on-disk xid %u wrap %u",
-						path, rec->slot_offset, rec->xid, rec->wrap, slot->xid, slot->wrap)));
+		break;
 	}
-	/* else rec->wrap < slot->wrap: stale record; a newer commit is already durable -> skip. */
+	}
 
 	if (close(fd) != 0)
 		ereport(PANIC, (errcode_for_file_access(),

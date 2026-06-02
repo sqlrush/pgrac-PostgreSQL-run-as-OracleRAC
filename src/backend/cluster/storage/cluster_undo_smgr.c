@@ -181,6 +181,59 @@ cluster_undo_smgr_write_block(uint32 segment_id, uint8 owner_instance, uint32 bl
 }
 
 
+/*
+ * cluster_undo_smgr_read_header_bytes / _write_header_bytes (spec-3.11 D2)
+ *
+ *   Targeted read/write of a byte range within segment header block 0 (e.g.
+ *   one 32-byte TTSlot at offset 112 + slot*32).  Used by the durable TT slot
+ *   commit/lookup path: each committing xact owns a DISTINCT slot, so per-slot
+ *   writes hit non-overlapping byte ranges and need NO lock (POSIX concurrent
+ *   pwrite to disjoint ranges is safe; lifecycle writes the header prefix at
+ *   offset 32-111, also disjoint from the slot array).  The write does NOT
+ *   fsync: the durable TT commit is WAL-protected (XLOG_UNDO_TT_SLOT_COMMIT),
+ *   so a torn data-file write is recovered by redo (spec-3.11 C10).  offset+len
+ *   must stay inside block 0 (BLCKSZ).
+ */
+bool
+cluster_undo_smgr_read_header_bytes(uint32 segment_id, uint8 owner_instance, uint32 offset,
+									char *buf, uint32 len)
+{
+	int fd;
+	ssize_t nread;
+
+	if (buf == NULL || len == 0 || (uint64)offset + (uint64)len > (uint64)BLCKSZ)
+		return false;
+
+	fd = get_segment_fd(segment_id, owner_instance);
+	if (fd < 0)
+		return false;
+
+	nread = pg_pread(fd, buf, len, (off_t)offset);
+	cluster_undo_record_note_smgr_pread();
+	return (nread == (ssize_t)len);
+}
+
+bool
+cluster_undo_smgr_write_header_bytes(uint32 segment_id, uint8 owner_instance, uint32 offset,
+									 const char *buf, uint32 len)
+{
+	int fd;
+	ssize_t nwritten;
+
+	if (buf == NULL || len == 0 || (uint64)offset + (uint64)len > (uint64)BLCKSZ)
+		return false;
+
+	fd = get_segment_fd(segment_id, owner_instance);
+	if (fd < 0)
+		return false;
+
+	nwritten = pg_pwrite(fd, buf, len, (off_t)offset);
+	cluster_undo_record_note_smgr_pwrite();
+	/* No fsync: WAL-protected (spec-3.11 C10). */
+	return (nwritten == (ssize_t)len);
+}
+
+
 int
 cluster_undo_smgr_create_segment_file(uint32 segment_id, uint8 owner_instance)
 {

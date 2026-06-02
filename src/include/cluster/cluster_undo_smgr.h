@@ -79,6 +79,23 @@ extern bool cluster_undo_smgr_write_block(uint32 segment_id, uint8 owner_instanc
 
 
 /*
+ * cluster_undo_smgr_read_header_bytes / _write_header_bytes (spec-3.11 D2)
+ *
+ *	Targeted read/write of a byte range within segment header block 0 (e.g. one
+ *	32-byte TTSlot at offset 112 + slot*32).  Lock-free per-slot durable TT
+ *	writes (each xact owns a distinct slot = non-overlapping range).  The write
+ *	does NOT fsync (WAL-protected by XLOG_UNDO_TT_SLOT_COMMIT; torn write
+ *	recovered by redo -- spec-3.11 C10).  offset+len must be within BLCKSZ.
+ *	Returns true on success, false on bad args / I/O error / short transfer.
+ *	NOT critical-section safe.
+ */
+extern bool cluster_undo_smgr_read_header_bytes(uint32 segment_id, uint8 owner_instance,
+												uint32 offset, char *buf, uint32 len);
+extern bool cluster_undo_smgr_write_header_bytes(uint32 segment_id, uint8 owner_instance,
+												 uint32 offset, const char *buf, uint32 len);
+
+
+/*
  * cluster_undo_smgr_create_segment_file -- create + WAL-protect a new
  *	segment file for owner_instance.
  *

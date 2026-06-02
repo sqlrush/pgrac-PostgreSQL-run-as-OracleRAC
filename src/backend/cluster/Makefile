@@ -97,6 +97,7 @@ OBJS = \
 	cluster_cr_cache.o \
 	cluster_cr_srf.o \
 	cluster_tt_slot.o \
+	cluster_tt_durable.o \
 	cluster_tt_local.o \
 	cluster_tt_status.o \
 	cluster_tt_status_hint.o \
