@@ -16,8 +16,23 @@
  *	  place (only the header xmax / ctid / infomask change); the new
  *	  version goes elsewhere.  So inverse-update / inverse-delete restore
  *	  the full pre-change tuple image captured in the undo record over the
- *	  tuple bytes at target_offset — a length-preserving overwrite.
- *	  Inverse-insert removes the inserted line pointer (LP_UNUSED).
+ *	  tuple bytes at target_offset.
+ *
+ *	  spec-3.10 §v0.6: that restore is NO LONGER always a length-preserving
+ *	  in-place overwrite.  PG's prune horizon (OldestXmin / heap_page_prune)
+ *	  is decoupled from the cluster CR read_scn (AD-012): a committed-dead old
+ *	  version below OldestXmin can be freed (VACUUM / opportunistic prune) and
+ *	  its line pointer reused, even though a reader with an older read_scn
+ *	  still needs the old image.  The driver therefore prunes post-read_scn
+ *	  versions FIRST and compacts (cluster_cr.c), so at restore time the
+ *	  target offnum is either (a) the original old tuple still in place ->
+ *	  length-preserving overwrite, or (b) UNUSED (reuser pruned / freed) ->
+ *	  variable-length-safe re-add at that offnum (cr_readd_at_offnum), or
+ *	  (c) a NORMAL tuple of a DIFFERENT length -> unreachable after the
+ *	  watermark gate + prune-first (spec-3.10 §v0.6 B5), failed closed rather
+ *	  than overwriting a foreign identity (规则 8.A).
+ *	  Inverse-insert removes the inserted line pointer (LP_UNUSED), or is an
+ *	  idempotent no-op if prune-first already freed it (§v0.6 B2).
  *	  Inverse-ITL restores the lock-only tuple-header fields + ITL slot
  *	  fields captured in UndoItlPayload.
  *
@@ -28,6 +43,7 @@
  * Author: SqlRush <sqlrush@gmail.com>
  *
  * Spec: spec-3.9-own-instance-cr-block-construction.md (FROZEN v0.4)
+ * Spec: spec-3.10-cr-block-cache.md (§v0.6 — line-pointer-reuse rebuild)
  *
  * IDENTIFICATION
  *	  src/backend/cluster/cluster_cr_apply.c
@@ -173,10 +189,25 @@ bool
 cluster_cr_apply_insert_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 								const UndoInsertPayload *payload)
 {
-	ItemId itemid = cr_target_itemid(scratch_page, hdr->target_offset);
+	Page page = (Page)scratch_page;
+	OffsetNumber off = hdr->target_offset;
+	ItemId itemid;
 
-	if (itemid == NULL || !ItemIdIsNormal(itemid))
-		return false;
+	if (off < FirstOffsetNumber)
+		return false; /* genuinely malformed */
+
+	/*
+	 * spec-3.10 §v0.6 B2: prune-first may already have removed the inserted
+	 * tuple (its xmin is a post-read_scn candidate) -- the slot is LP_UNUSED,
+	 * or was truncated past the end by PageRepairFragmentation.  An already
+	 * removed insert is the intended end state, so treat it as an idempotent
+	 * no-op rather than a failure.
+	 */
+	if (off > PageGetMaxOffsetNumber(page))
+		return true;
+	itemid = PageGetItemId(page, off);
+	if (!ItemIdIsNormal(itemid))
+		return true;
 
 	/* Optional sanity: the recorded inserted length matches the live tuple. */
 	if (payload->inserted_tuple_len != 0 && ItemIdGetLength(itemid) != payload->inserted_tuple_len)
@@ -188,28 +219,87 @@ cluster_cr_apply_insert_inverse(char *scratch_page, const UndoRecordHeader *hdr,
 
 
 /*
- * Shared body for inverse-update / inverse-delete: overwrite the tuple at
- * target_offset with the captured pre-change full image.  The overwrite is
- * length-preserving (PG keeps the old tuple physically in place across an
- * update/delete), so the captured length must equal the live item length.
+ * cr_readd_at_offnum -- place a full heap-tuple image at EXACTLY `off` on the
+ *	scratch page, reusing/growing the line-pointer array as needed (spec-3.10
+ *	§v0.6 B4).  Called when prune-first freed the slot the inverse-apply must
+ *	restore, or PageRepairFragmentation truncated the trailing slot.  Returns
+ *	false on any failure (no space / placement rejected) so the caller fails
+ *	closed; it never silently mis-places a tuple.
+ *
+ *	Keeping the tuple at its read_scn offnum preserves ctid stability for index
+ *	fetches of the CR image.  PageAddItemExtended rejects an offnum past max+1,
+ *	so when the array was truncated below `off` we first append LP_UNUSED
+ *	placeholders up to off-1 (only trailing UNUSED slots are truncated, so
+ *	those offsets held no live tuple at read_scn).
+ */
+static bool
+cr_readd_at_offnum(Page page, OffsetNumber off, const char *image_bytes, uint16 image_length)
+{
+	PageHeader phdr = (PageHeader)page;
+	OffsetNumber placed;
+
+	if (off <= PageGetMaxOffsetNumber(page)) {
+		/* In range: clear any LP_DEAD/LP_UNUSED so OVERWRITE accepts the slot. */
+		ItemIdSetUnused(PageGetItemId(page, off));
+	} else {
+		/* Truncated trailing slot: re-grow the linp array with UNUSED entries
+		 * up to off-1 so `off` becomes the append position (== max+1). */
+		while (PageGetMaxOffsetNumber(page) + 1 < off) {
+			ItemId newlp;
+
+			if ((int)phdr->pd_lower + (int)sizeof(ItemIdData) > (int)phdr->pd_upper)
+				return false; /* no room to grow the line-pointer array */
+			newlp = (ItemId)((char *)page + phdr->pd_lower);
+			phdr->pd_lower += sizeof(ItemIdData);
+			ItemIdSetUnused(newlp);
+		}
+	}
+
+	placed = PageAddItemExtended(page, (Item)image_bytes, image_length, off,
+								 PAI_OVERWRITE | PAI_IS_HEAP);
+	return placed == off;
+}
+
+/*
+ * Shared body for inverse-update / inverse-delete: restore the captured
+ * pre-change full image at target_offset.  spec-3.10 §v0.6 makes this
+ * offset-aware (the prune horizon is decoupled from read_scn; see the file
+ * banner):
+ *   (a) NORMAL, same length  -> in-place length-preserving overwrite (the old
+ *       version is still physically in place: ordinary CR).
+ *   (b) UNUSED / LP_DEAD / truncated -> variable-length-safe re-add at the
+ *       offnum (reuser pruned, or old version freed by VACUUM).
+ *   (c) NORMAL, different length -> a foreign identity, which the watermark
+ *       gate + prune-first make unreachable (§v0.6 B5); fail closed (false ->
+ *       caller ereports XX001) rather than overwrite it (规则 8.A).
  */
 static bool
 cr_restore_full_image(char *scratch_page, OffsetNumber off, const char *image_bytes,
 					  uint16 image_length)
 {
-	ItemId itemid = cr_target_itemid(scratch_page, off);
-	char *item;
+	Page page = (Page)scratch_page;
+	ItemId itemid;
 
-	if (itemid == NULL || !ItemIdIsNormal(itemid))
+	if (off < FirstOffsetNumber)
 		return false;
 	if (image_bytes == NULL || image_length == 0)
 		return false;
-	if (ItemIdGetLength(itemid) != image_length)
-		return false; /* in-place overwrite must be length-preserving */
 
-	item = (char *)PageGetItem((Page)scratch_page, itemid);
-	memcpy(item, image_bytes, image_length);
-	return true;
+	/* Target past the (possibly truncated) array -> a freed/trailing slot. */
+	if (off > PageGetMaxOffsetNumber(page))
+		return cr_readd_at_offnum(page, off, image_bytes, image_length);
+
+	itemid = PageGetItemId(page, off);
+	if (ItemIdIsNormal(itemid)) {
+		if (ItemIdGetLength(itemid) == image_length) {
+			memcpy(PageGetItem(page, itemid), image_bytes, image_length);
+			return true;
+		}
+		return false; /* §v0.6 B5/C4: foreign identity -> fail closed */
+	}
+
+	/* UNUSED / LP_DEAD slot (reuser pruned / old version freed) -> re-add. */
+	return cr_readd_at_offnum(page, off, image_bytes, image_length);
 }
 
 

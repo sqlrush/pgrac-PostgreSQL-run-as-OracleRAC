@@ -73,6 +73,55 @@ scn_time_cmp(SCN a, SCN b)
 	return 0;
 }
 
+/*
+ * PageAddItemExtended -- test-local faithful mirror of the bufpage primitive,
+ * limited to the subset cr_readd_at_offnum (spec-3.10 §v0.6) exercises: place a
+ * heap-tuple image at a specific offnum, overwriting an LP_UNUSED slot in range
+ * or appending at max+1.  Linking the real bufpage.o would drag in
+ * elog/palloc/checksum machinery; the REAL primitive is exercised end-to-end in
+ * cluster_tap t/218.  Returns the offnum on success, InvalidOffsetNumber if the
+ * item does not fit or the placement is rejected (mirrors PG's WARNING paths).
+ */
+OffsetNumber
+PageAddItemExtended(Page page, Item item, Size size, OffsetNumber offsetNumber, int flags)
+{
+	PageHeader phdr = (PageHeader)page;
+	OffsetNumber limit = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+	ItemId itemId;
+	Size alignedSize;
+	int lower;
+	int upper;
+
+	(void)flags; /* OVERWRITE/IS_HEAP semantics coincide for this subset */
+
+	if (offsetNumber == InvalidOffsetNumber)
+		offsetNumber = limit;
+	if (offsetNumber > limit)
+		return InvalidOffsetNumber; /* no gap allowed (real bufpage WARNINGs) */
+
+	if (offsetNumber < limit) {
+		itemId = PageGetItemId(page, offsetNumber);
+		if (ItemIdIsUsed(itemId) || ItemIdHasStorage(itemId))
+			return InvalidOffsetNumber; /* will not overwrite a used ItemId */
+		lower = phdr->pd_lower;			/* reuse the existing line pointer */
+	} else {
+		lower = (int)phdr->pd_lower + (int)sizeof(ItemIdData); /* new line ptr */
+	}
+
+	alignedSize = MAXALIGN(size);
+	upper = (int)phdr->pd_upper - (int)alignedSize;
+	if (lower > upper)
+		return InvalidOffsetNumber; /* not enough space */
+
+	itemId = PageGetItemId(page, offsetNumber);
+	ItemIdSetNormal(itemId, (unsigned)upper, size);
+	memcpy((char *)page + upper, item, size);
+	phdr->pd_lower = (LocationIndex)lower;
+	phdr->pd_upper = (LocationIndex)upper;
+	return offsetNumber;
+}
+
+
 /* ============================================================
  *	Synthetic 8 KB heap page with an ITL special area + one tuple
  * ============================================================ */
@@ -195,27 +244,37 @@ UT_TEST(test_insert_inverse_offset_out_of_range_false)
 	UndoRecordHeader hdr;
 	UndoInsertPayload p;
 
+	/* spec-3.10 §v0.6 B2: only an offnum below FirstOffsetNumber is a genuine
+	 * inconsistency; a target PAST max-off is an idempotent no-op (covered by
+	 * test_insert_inverse_pruned_idempotent). */
 	build_page_with_tuple();
 	memset(&hdr, 0, sizeof(hdr));
-	hdr.target_offset = 9999; /* past max offset */
+	hdr.target_offset = 0; /* below FirstOffsetNumber */
 	memset(&p, 0, sizeof(p));
 
 	UT_ASSERT_EQ((int)cluster_cr_apply_insert_inverse(synthetic_page, &hdr, &p), 0);
 }
 
-UT_TEST(test_insert_inverse_unused_itemid_false)
+UT_TEST(test_insert_inverse_pruned_idempotent)
 {
 	Page page = build_page_with_tuple();
 	UndoRecordHeader hdr;
 	UndoInsertPayload p;
 
-	/* mark the slot unused first; inverse should refuse a non-normal id */
+	/*
+	 * spec-3.10 §v0.6 B2 (flips the old fail-on-non-normal behavior):
+	 * prune-first may already have freed the inserted tuple's slot (LP_UNUSED)
+	 * or truncated it past max-off.  INSERT-inverse is then an idempotent no-op
+	 * (success), since the inserted tuple is already gone.
+	 */
 	ItemIdSetUnused(PageGetItemId(page, TEST_TUPLE_OFFSET));
 	memset(&hdr, 0, sizeof(hdr));
-	hdr.target_offset = TEST_TUPLE_OFFSET;
+	hdr.target_offset = TEST_TUPLE_OFFSET; /* in-range LP_UNUSED */
 	memset(&p, 0, sizeof(p));
+	UT_ASSERT_EQ((int)cluster_cr_apply_insert_inverse(synthetic_page, &hdr, &p), 1);
 
-	UT_ASSERT_EQ((int)cluster_cr_apply_insert_inverse(synthetic_page, &hdr, &p), 0);
+	hdr.target_offset = (OffsetNumber)(PageGetMaxOffsetNumber(page) + 5); /* truncated */
+	UT_ASSERT_EQ((int)cluster_cr_apply_insert_inverse(synthetic_page, &hdr, &p), 1);
 }
 
 
@@ -250,6 +309,13 @@ UT_TEST(test_update_inverse_len_mismatch_false)
 	UndoUpdatePayload p;
 	char old_image[TEST_TUPLE_LEN];
 
+	/*
+	 * spec-3.10 §v0.6 B5/C4 (P7): a NORMAL tuple of a DIFFERENT length at the
+	 * target offnum is a foreign identity (unreachable after the watermark gate
+	 * + prune-first in the real path); restore fails closed (false -> caller
+	 * ereports XX001) rather than overwriting it.  Only same-length NORMAL is an
+	 * in-place overwrite; everything else re-adds onto a freed slot.
+	 */
 	build_page_with_tuple();
 	memset(old_image, 0xAB, sizeof(old_image));
 	memset(&hdr, 0, sizeof(hdr));
@@ -457,25 +523,43 @@ UT_TEST(test_insert_inverse_zero_len_skips_sanity)
 }
 
 
-UT_TEST(test_update_inverse_offset_out_of_range_false)
+UT_TEST(test_update_inverse_truncated_readds)
 {
+	/*
+	 * spec-3.10 §v0.6 B4 (P6, flips the old out-of-range failure): a target
+	 * offnum past max-off means PageRepairFragmentation truncated the trailing
+	 * slot the restore must re-create.  cr_readd_at_offnum re-extends the
+	 * line-pointer array with LP_UNUSED placeholders up to off-1, then places
+	 * the old image AT off (ctid-stable).  Succeeds; off is NORMAL; the gap
+	 * offsets are UNUSED.
+	 */
+	Page page = build_page_with_tuple();
 	UndoRecordHeader hdr;
 	UndoUpdatePayload p;
 	char old_image[TEST_TUPLE_LEN];
+	OffsetNumber target = (OffsetNumber)(PageGetMaxOffsetNumber(page) + 3);
 
-	build_page_with_tuple();
 	memset(old_image, 0xAB, sizeof(old_image));
 	memset(&hdr, 0, sizeof(hdr));
-	hdr.target_offset = 9999;
+	hdr.target_offset = target;
 	memset(&p, 0, sizeof(p));
 
 	UT_ASSERT_EQ(
 		(int)cluster_cr_apply_update_inverse(synthetic_page, &hdr, &p, old_image, TEST_TUPLE_LEN),
-		0);
+		1);
+	UT_ASSERT_EQ((int)ItemIdIsNormal(PageGetItemId(page, target)), 1);
+	UT_ASSERT_EQ(((unsigned char *)tuple_at(page, target))[0], 0xAB);
+	/* a gap offset between the old max and target is an UNUSED placeholder */
+	UT_ASSERT_EQ((int)ItemIdIsNormal(PageGetItemId(page, (OffsetNumber)(target - 1))), 0);
 }
 
-UT_TEST(test_update_inverse_unused_itemid_false)
+UT_TEST(test_update_inverse_unused_itemid_readds)
 {
+	/*
+	 * spec-3.10 §v0.6 B3 (flips the old fail-on-unused): an in-range LP_UNUSED
+	 * target means prune-first freed the reuser / VACUUM freed the old version;
+	 * the restore re-adds the old image at that offnum (variable-length safe).
+	 */
 	Page page = build_page_with_tuple();
 	UndoRecordHeader hdr;
 	UndoUpdatePayload p;
@@ -489,28 +573,41 @@ UT_TEST(test_update_inverse_unused_itemid_false)
 
 	UT_ASSERT_EQ(
 		(int)cluster_cr_apply_update_inverse(synthetic_page, &hdr, &p, old_image, TEST_TUPLE_LEN),
-		0);
+		1);
+	UT_ASSERT_EQ((int)ItemIdIsNormal(PageGetItemId(page, TEST_TUPLE_OFFSET)), 1);
+	UT_ASSERT_EQ(((unsigned char *)tuple_at(page, TEST_TUPLE_OFFSET))[0], 0xAB);
 }
 
-UT_TEST(test_delete_inverse_offset_out_of_range_false)
+UT_TEST(test_inverse_readd_no_space_failclosed)
 {
+	/*
+	 * spec-3.10 §v0.6 B4 (P8): if the page has no room to re-add the old image
+	 * at a freed offnum, cr_readd_at_offnum fails closed (false -> caller
+	 * ereports XX001) rather than mis-placing.  Force it by shrinking pd_upper
+	 * down to pd_lower so PageAddItemExtended has zero free space.
+	 */
+	Page page = build_page_with_tuple();
+	PageHeader phdr = (PageHeader)page;
 	UndoRecordHeader hdr;
-	UndoDeletePayload p;
-	char full_image[TEST_TUPLE_LEN];
+	UndoUpdatePayload p;
+	char old_image[TEST_TUPLE_LEN];
 
-	build_page_with_tuple();
-	memset(full_image, 0xCD, sizeof(full_image));
+	ItemIdSetUnused(PageGetItemId(page, TEST_TUPLE_OFFSET));
+	phdr->pd_upper = phdr->pd_lower; /* no contiguous free space */
+	memset(old_image, 0xAB, sizeof(old_image));
 	memset(&hdr, 0, sizeof(hdr));
-	hdr.target_offset = 9999;
+	hdr.target_offset = TEST_TUPLE_OFFSET;
 	memset(&p, 0, sizeof(p));
 
 	UT_ASSERT_EQ(
-		(int)cluster_cr_apply_delete_inverse(synthetic_page, &hdr, &p, full_image, TEST_TUPLE_LEN),
+		(int)cluster_cr_apply_update_inverse(synthetic_page, &hdr, &p, old_image, TEST_TUPLE_LEN),
 		0);
 }
 
-UT_TEST(test_delete_inverse_unused_itemid_false)
+UT_TEST(test_delete_inverse_unused_itemid_readds)
 {
+	/* spec-3.10 §v0.6 B3: DELETE-inverse mirrors UPDATE-inverse -- a freed slot
+	 * (deleted-at-read_scn row, line pointer reused then pruned) is re-added. */
 	Page page = build_page_with_tuple();
 	UndoRecordHeader hdr;
 	UndoDeletePayload p;
@@ -524,7 +621,9 @@ UT_TEST(test_delete_inverse_unused_itemid_false)
 
 	UT_ASSERT_EQ(
 		(int)cluster_cr_apply_delete_inverse(synthetic_page, &hdr, &p, full_image, TEST_TUPLE_LEN),
-		0);
+		1);
+	UT_ASSERT_EQ((int)ItemIdIsNormal(PageGetItemId(page, TEST_TUPLE_OFFSET)), 1);
+	UT_ASSERT_EQ(((unsigned char *)tuple_at(page, TEST_TUPLE_OFFSET))[0], 0xCD);
 }
 
 UT_TEST(test_itl_inverse_slot_zero_and_max_minus_one)
@@ -789,7 +888,7 @@ main(int argc, char **argv)
 	UT_RUN(test_insert_inverse_removes_tuple);
 	UT_RUN(test_insert_inverse_len_mismatch_false);
 	UT_RUN(test_insert_inverse_offset_out_of_range_false);
-	UT_RUN(test_insert_inverse_unused_itemid_false);
+	UT_RUN(test_insert_inverse_pruned_idempotent);
 
 	UT_RUN(test_update_inverse_restores_old_image);
 	UT_RUN(test_update_inverse_len_mismatch_false);
@@ -803,10 +902,10 @@ main(int argc, char **argv)
 	UT_RUN(test_itl_inverse_no_itl_page_false);
 	UT_RUN(test_itl_inverse_offset_out_of_range_false);
 
-	UT_RUN(test_update_inverse_offset_out_of_range_false);
-	UT_RUN(test_update_inverse_unused_itemid_false);
-	UT_RUN(test_delete_inverse_offset_out_of_range_false);
-	UT_RUN(test_delete_inverse_unused_itemid_false);
+	UT_RUN(test_update_inverse_truncated_readds);
+	UT_RUN(test_update_inverse_unused_itemid_readds);
+	UT_RUN(test_inverse_readd_no_space_failclosed);
+	UT_RUN(test_delete_inverse_unused_itemid_readds);
 	UT_RUN(test_itl_inverse_slot_zero_and_max_minus_one);
 
 	UT_RUN(test_insert_then_update_inverse_sequence);

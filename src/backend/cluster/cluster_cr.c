@@ -502,17 +502,36 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 		if (nchains > 1)
 			qsort(chains, nchains, sizeof(chains[0]), cluster_cr_chain_cmp_by_write_scn_desc);
 
+		/*
+		 * spec-3.10 §v0.6: prune post-read_scn versions BOTH before and after
+		 * the inverse-apply (v0.4 pruned only after).
+		 *
+		 * Chain revert clears xmax but does not remove the new physical version
+		 * an UPDATE produced (heap_update emits only UNDO_RECORD_UPDATE, no
+		 * INSERT-undo for the new version); the prune marks LP_UNUSED every
+		 * tuple whose xmin is a post-read_scn candidate (new versions, reusing
+		 * INSERTs, standalone INSERTs -- see its header + §3.3).
+		 *
+		 * prune-FIRST + PageRepairFragmentation (§v0.6): frees the line pointer
+		 * a later INSERT reused for one of those tuples and reclaims its space,
+		 * so the inverse-apply can re-add the old image at its read_scn offnum
+		 * even though PG's prune horizon (decoupled from read_scn -- AD-012)
+		 * reused that offset after the snapshot.  INSERT-inverse is idempotent
+		 * on the already-freed slot.  See cluster_cr_apply.c
+		 * cr_restore_full_image / cr_readd_at_offnum (§v0.6 B1-B5).
+		 *
+		 * prune-AFTER (retained from v0.4): a row updated more than once on this
+		 * block has intermediate versions whose pre-images the walk restores
+		 * (the older txn's UNDO_RECORD_UPDATE old image IS the newer version);
+		 * those carry a candidate xmin, so a second prune strips them, leaving
+		 * exactly the read_scn version (Q10 write_scn-DESC peel -- t/216 L4b).
+		 */
+		(void)cluster_cr_prune_post_snapshot_versions(dst_page, chains, nchains);
+		PageRepairFragmentation((Page)dst_page);
+
 		for (i = 0; i < nchains; i++)
 			cr_walk_chain(dst_page, chains[i].undo_segment_head, read_scn, &steps, max_steps);
 
-		/*
-		 * spec-3.10 D1 (L4b): remove NEW tuple versions created after read_scn.
-		 * Chain revert clears xmax but does not remove the new physical version
-		 * an UPDATE produced (heap_update emits only UNDO_RECORD_UPDATE, no
-		 * INSERT-undo for the new version); the helper marks LP_UNUSED every
-		 * tuple whose xmin is a candidate (post-read_scn) transaction.  See its
-		 * header for the correctness invariant + the slot-reuse edge (§3.3).
-		 */
 		(void)cluster_cr_prune_post_snapshot_versions(dst_page, chains, nchains);
 
 		pgstat_report_wait_end();

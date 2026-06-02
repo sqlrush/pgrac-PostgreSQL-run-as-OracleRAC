@@ -12478,4 +12478,13 @@
   proargnames => '{rel,blockno,itl_idx,read_scn}',
   prosrc => 'cluster_cr_test_construct' },
 
+{ oid => '8931',
+  descr => 'TEST-ONLY: CR block image rows as-of read_scn (spec-3.10 v0.6)',
+  proname => 'cluster_cr_test_image', prorows => '100', proretset => 't',
+  provolatile => 'v', proparallel => 'u',
+  prorettype => 'record',
+  proargtypes => 'regclass int4 int8',
+  proargnames => '{rel,blockno,read_scn}',
+  prosrc => 'cluster_cr_test_image' },
+
 ]
