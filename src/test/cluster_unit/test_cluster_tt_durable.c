@@ -119,6 +119,30 @@ cluster_undo_emit_tt_slot_commit(uint8 instance pg_attribute_unused(),
 	return InvalidXLogRecPtr;
 }
 
+/*
+ * Observability hooks (cluster_tt_durable_stat.c) stubbed as no-ops: the pure
+ * logic under test bumps counters / brackets wait events through these, but the
+ * shmem region + wait-event backend symbols are not linked into cluster_unit.
+ */
+void
+cluster_tt_durable_count_commit(void)
+{}
+void
+cluster_tt_durable_count_lookup(bool hit pg_attribute_unused())
+{}
+void
+cluster_tt_durable_count_by_xid_scan(void)
+{}
+void
+cluster_tt_durable_count_redo_apply(void)
+{}
+void
+cluster_tt_durable_io_wait_start(void)
+{}
+void
+cluster_tt_durable_io_wait_end(void)
+{}
+
 bool
 cluster_undo_smgr_read_header_bytes(uint32 segment_id pg_attribute_unused(),
 									uint8 owner_instance pg_attribute_unused(), uint32 offset,

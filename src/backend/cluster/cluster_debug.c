@@ -83,6 +83,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_lms.h" /* cluster_lms_* observability accessors (spec-2.18 D10) */
 #include "cluster/cluster_undo_record_api.h" /* cluster_undo_* counter accessors (spec-3.7 D10) */
 #include "cluster/cluster_cr.h"				 /* cluster_cr_* counter accessors (spec-3.9 D8) */
+#include "cluster/cluster_tt_durable.h"		 /* cluster_tt_durable_* counters (spec-3.11 D8) */
 #include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_grd_pending.h"
 #include "cluster/cluster_grd_work_queue.h"
@@ -1414,11 +1415,12 @@ dump_gcs(ReturnSetInfo *rsinfo)
 /*
  * dump_undo -- spec-3.7 D10 + D6 真激活 counter observability.
  *
- *	Emits 16 rows under category='undo': 5 record-level allocator counters
+ *	Emits 21 rows under category='undo': 5 record-level allocator counters
  *	(spec-3.7) + 4 segment-lifecycle counters (spec-3.8) + 3 commit-fsync +
  *	4 smgr counters (the latter 7 added by the perf-merge undo
- *	instrumentation).  Backs cluster_tap t/213 + t/214 L2 verification
- *	+ perf class 7 baseline tracking.
+ *	instrumentation) + 5 durable TT slot counters (spec-3.11 D8).  Backs
+ *	cluster_tap t/213 + t/214 + t/219 L2 verification + perf class 7 baseline
+ *	tracking.
  */
 static void
 dump_undo(ReturnSetInfo *rsinfo)
@@ -1455,6 +1457,18 @@ dump_undo(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "undo", "smgr_pread_count", fmt_int64((int64)cluster_undo_smgr_pread_count()));
 	emit_row(rsinfo, "undo", "smgr_pwrite_count",
 			 fmt_int64((int64)cluster_undo_smgr_pwrite_count()));
+
+	/* spec-3.11 D8: 5 NEW durable TT slot counters. */
+	emit_row(rsinfo, "undo", "tt_durable_commit_count",
+			 fmt_int64((int64)cluster_tt_durable_commit_count()));
+	emit_row(rsinfo, "undo", "tt_durable_lookup_hit_count",
+			 fmt_int64((int64)cluster_tt_durable_lookup_hit_count()));
+	emit_row(rsinfo, "undo", "tt_durable_lookup_miss_count",
+			 fmt_int64((int64)cluster_tt_durable_lookup_miss_count()));
+	emit_row(rsinfo, "undo", "tt_durable_by_xid_scan_count",
+			 fmt_int64((int64)cluster_tt_durable_by_xid_scan_count()));
+	emit_row(rsinfo, "undo", "tt_durable_redo_apply_count",
+			 fmt_int64((int64)cluster_tt_durable_redo_apply_count()));
 }
 
 /*

@@ -462,6 +462,13 @@ void
 cluster_cr_shmem_register(void)
 {}
 
+/* spec-3.11 D7 stub: cluster_init_shmem_module also calls
+ * cluster_tt_durable_shmem_register (cluster_tt_durable_stat.c).  cluster_unit
+ * test binary doesn't link that object;  provide no-op stub. */
+void
+cluster_tt_durable_shmem_register(void)
+{}
+
 /* Spec-2.5 Sprint A stub: same for CSSD. */
 void
 cluster_cssd_shmem_register(void)

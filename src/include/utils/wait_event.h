@@ -421,12 +421,14 @@ typedef enum {
 	WAIT_EVENT_CLUSTER_IC_HEARTBEAT_WAIT,
 	WAIT_EVENT_CLUSTER_IC_RECONNECT,
 
-	/* Cluster: Undo (5 events) -- AD-010; spec-3.9 adds CR_CONSTRUCT */
+	/* Cluster: Undo (6 events) -- AD-010; spec-3.9 adds CR_CONSTRUCT;
+	 * spec-3.11 adds TT_DURABLE_IO */
 	WAIT_EVENT_UNDO_REMOTE_READ = PG_WAIT_CLUSTER_UNDO,
 	WAIT_EVENT_UNDO_TT_LOOKUP_REMOTE,
 	WAIT_EVENT_UNDO_SEGMENT_FETCH,
 	WAIT_EVENT_UNDO_RETENTION_WAIT,
 	WAIT_EVENT_CLUSTER_CR_CONSTRUCT, /* spec-3.9: own-instance CR block construction */
+	WAIT_EVENT_UNDO_TT_DURABLE_IO,	 /* spec-3.11: durable TT slot header I/O */
 
 	/* Cluster: ADG (4 events) -- #95 */
 	WAIT_EVENT_ADG_MRP_APPLY_WAIT = PG_WAIT_CLUSTER_ADG,

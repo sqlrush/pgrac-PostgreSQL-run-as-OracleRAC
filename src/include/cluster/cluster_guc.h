@@ -420,6 +420,10 @@ extern int cluster_cr_chain_walk_max_steps;
  */
 extern bool cluster_cr_mvcc_gate;
 
+/* cluster.tt_durable_lookup (spec-3.11 D7): durable TT slot read-side resolve
+ * on overlay miss / watermark gate (default on; PGC_USERSET). */
+extern bool cluster_tt_durable_lookup;
+
 
 /*
  * cluster.allow_single_node (spec-2.1 D1; Stage 2.1 backward-compat

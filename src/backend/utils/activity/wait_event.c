@@ -1242,6 +1242,9 @@ pgstat_get_wait_cluster_undo(WaitEventCluster w)
 	case WAIT_EVENT_CLUSTER_CR_CONSTRUCT:
 		event_name = "ClusterCRConstruct"; /* spec-3.9 */
 		break;
+	case WAIT_EVENT_UNDO_TT_DURABLE_IO:
+		event_name = "ClusterTTDurableIO"; /* spec-3.11 */
+		break;
 	default:
 		break;
 	}

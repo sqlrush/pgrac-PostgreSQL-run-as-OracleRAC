@@ -235,6 +235,16 @@ int cluster_cr_chain_walk_max_steps = 4096;
 bool cluster_cr_mvcc_gate = true;
 
 /*
+ * cluster.tt_durable_lookup (spec-3.11 D7).  When on (default), visibility / CR
+ * resolve commit_scn from the durable undo-segment-header TT slot on overlay
+ * miss (D5) and resolve the watermark gate by xid (D6).  Off falls back to the
+ * spec-3.10 overlay-only behavior: an overlay miss / watermark>read_scn fails
+ * closed (53R97 / 53R9F).  Durability writes (commit stamp + redo) are NOT
+ * gated -- only the read-side resolution -- so toggling off never loses data.
+ */
+bool cluster_tt_durable_lookup = true;
+
+/*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
  * sweep target staleness in ms.  Range [1, 1000]; default 100ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
@@ -1424,6 +1434,20 @@ cluster_init_guc(void)
 					 "there too). Set off to fall back to the "
 					 "spec-3.2/3.3 SCN/PG-native visibility path."),
 		&cluster_cr_mvcc_gate, true, PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		"cluster.tt_durable_lookup",
+		gettext_noop("Resolve commit_scn from the durable undo-header TT slot on overlay miss."),
+		gettext_noop("Spec-3.11 D7. DEFAULT ON. When on, a visibility / CR lookup that misses "
+					 "the in-memory TT status overlay (eviction / restart) falls through to the "
+					 "durable TT slot in the undo segment header (D5), and the CR watermark gate "
+					 "resolves an evicted post-snapshot writer by xid (D6), retiring the "
+					 "spec-3.10 fail-closed for the still-bound case. Off falls back to the "
+					 "spec-3.10 overlay-only path: an overlay miss / recycle watermark newer than "
+					 "the snapshot fails closed (53R97 / 53R9F). Durability writes (commit stamp "
+					 "+ crash redo) are never gated; toggling off only disables read-side "
+					 "resolution and never loses durable commit_scn."),
+		&cluster_tt_durable_lookup, true, PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
 		"cluster.cr_cache_max_blocks",

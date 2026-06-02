@@ -843,6 +843,34 @@ cluster_cr_cache_install_count(void)
 	return 0;
 }
 
+/* spec-3.11 D8: durable TT slot counters (cluster_tt_durable_stat.c) are not
+ * linked here; stub the 5 accessors dump_undo reads. */
+uint64
+cluster_tt_durable_commit_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_durable_lookup_hit_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_durable_lookup_miss_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_durable_by_xid_scan_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_durable_redo_apply_count(void)
+{
+	return 0;
+}
+
 Size
 cluster_shmem_get_total_bytes(void)
 {

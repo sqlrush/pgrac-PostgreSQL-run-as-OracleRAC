@@ -122,10 +122,14 @@ cluster_tt_slot_durable_commit(uint32 segment_id, uint16 slot_offset, Transactio
 	 * first_undo_block), set the commit fields, write 32B back.  Lock-free --
 	 * this xact is the sole owner of this slot (spec-3.11 §2.2).
 	 */
-	if (!cluster_undo_smgr_read_header_bytes(segment_id, owner, off, (char *)&slot, sizeof(slot)))
+	cluster_tt_durable_io_wait_start();
+
+	if (!cluster_undo_smgr_read_header_bytes(segment_id, owner, off, (char *)&slot, sizeof(slot))) {
+		cluster_tt_durable_io_wait_end();
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 						errmsg("cluster durable TT: cannot read slot %u of undo segment %u",
 							   slot_offset, segment_id)));
+	}
 
 	slot.xid = xid;
 	slot.wrap = wrap;
@@ -133,10 +137,15 @@ cluster_tt_slot_durable_commit(uint32 segment_id, uint16 slot_offset, Transactio
 	slot.commit_scn = commit_scn;
 
 	if (!cluster_undo_smgr_write_header_bytes(segment_id, owner, off, (const char *)&slot,
-											  sizeof(slot)))
+											  sizeof(slot))) {
+		cluster_tt_durable_io_wait_end();
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 						errmsg("cluster durable TT: cannot write slot %u of undo segment %u",
 							   slot_offset, segment_id)));
+	}
+
+	cluster_tt_durable_io_wait_end();
+	cluster_tt_durable_count_commit();
 }
 
 
@@ -154,18 +163,26 @@ cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset, Transactio
 	owner = tt_owner_instance_for_segment(segment_id);
 	off = tt_slot_file_offset(slot_offset);
 
-	if (!cluster_undo_smgr_read_header_bytes(segment_id, owner, off, (char *)&slot, sizeof(slot)))
+	cluster_tt_durable_io_wait_start();
+	if (!cluster_undo_smgr_read_header_bytes(segment_id, owner, off, (char *)&slot, sizeof(slot))) {
+		cluster_tt_durable_io_wait_end();
+		cluster_tt_durable_count_lookup(false);
 		return false; /* segment absent / I/O -> miss (caller fail-closes) */
+	}
+	cluster_tt_durable_io_wait_end();
 
 	/*
 	 * spec-3.11 C5 (规则 8.A): the slot must still be bound to this xid and be
 	 * COMMITTED with a valid commit_scn.  xid mismatch = the slot was recycled
 	 * by a later owner; never return that owner's commit_scn.
 	 */
-	if (!cluster_tt_durable_slot_match(slot.status, slot.xid, slot.commit_scn, xid))
+	if (!cluster_tt_durable_slot_match(slot.status, slot.xid, slot.commit_scn, xid)) {
+		cluster_tt_durable_count_lookup(false);
 		return false;
+	}
 
 	*commit_scn = slot.commit_scn;
+	cluster_tt_durable_count_lookup(true);
 	return true;
 }
 
@@ -192,6 +209,8 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 	seg_lo = (uint32)node * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
 	seg_hi = seg_lo + CLUSTER_UNDO_SEGS_PER_INSTANCE - 1;
 
+	cluster_tt_durable_count_by_xid_scan();
+
 	/*
 	 * spec-3.11 §2.2 / C4 / 规则 8.A: scan the local node's segment headers for a
 	 * COMMITTED slot owned by xid.  Exactly one match resolves precisely; zero
@@ -202,6 +221,7 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 	 * xid; xid wraparound is bounded by PG freeze well before reuse.  spec-3.12
 	 * retention + spec-3.13 xid index tighten this (§6 risk).
 	 */
+	cluster_tt_durable_io_wait_start();
 	for (segment_id = seg_lo; segment_id <= seg_hi; segment_id++) {
 		UndoSegmentHeaderData *hdr;
 		uint16 i;
@@ -217,11 +237,14 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 				&& SCN_VALID(s->commit_scn)) {
 				matches++;
 				found = s->commit_scn;
-				if (matches > 1)
+				if (matches > 1) {
+					cluster_tt_durable_io_wait_end();
 					return false; /* ambiguous -> fail-closed (规则 8.A) */
+				}
 			}
 		}
 	}
+	cluster_tt_durable_io_wait_end();
 
 	if (matches != 1)
 		return false; /* 0 = not found (recycled/overwritten) */

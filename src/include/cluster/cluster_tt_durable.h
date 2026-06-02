@@ -105,4 +105,33 @@ extern bool cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset
  */
 extern bool cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn);
 
+
+/*
+ * Observability (spec-3.11 D7/D8) -- implemented in cluster_tt_durable_stat.c
+ * so the pure logic above links into cluster_unit without shmem / wait-event
+ * backend symbols (the unit test stubs the hooks below as no-ops).
+ */
+
+/* shmem counter region (5 atomic counters, 0 LWLock). */
+extern Size cluster_tt_durable_shmem_size(void);
+extern void cluster_tt_durable_shmem_init(void);
+extern void cluster_tt_durable_shmem_register(void);
+
+/* counter bump hooks. */
+extern void cluster_tt_durable_count_commit(void);
+extern void cluster_tt_durable_count_lookup(bool hit);
+extern void cluster_tt_durable_count_by_xid_scan(void);
+extern void cluster_tt_durable_count_redo_apply(void);
+
+/* wait-event bracket hooks (WAIT_EVENT_UNDO_TT_DURABLE_IO). */
+extern void cluster_tt_durable_io_wait_start(void);
+extern void cluster_tt_durable_io_wait_end(void);
+
+/* counter accessors (dump_undo / pg_cluster_state). */
+extern uint64 cluster_tt_durable_commit_count(void);
+extern uint64 cluster_tt_durable_lookup_hit_count(void);
+extern uint64 cluster_tt_durable_lookup_miss_count(void);
+extern uint64 cluster_tt_durable_by_xid_scan_count(void);
+extern uint64 cluster_tt_durable_redo_apply_count(void);
+
 #endif /* CLUSTER_TT_DURABLE_H */

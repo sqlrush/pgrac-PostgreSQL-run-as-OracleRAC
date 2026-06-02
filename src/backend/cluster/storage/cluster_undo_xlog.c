@@ -420,6 +420,7 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after TT slot commit: %m", path)));
 		}
+		cluster_tt_durable_count_redo_apply(); /* spec-3.11 D8 observability */
 		break;
 	}
 	}

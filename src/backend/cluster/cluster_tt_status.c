@@ -279,8 +279,9 @@ cluster_tt_status_lookup_exact(const ClusterTTStatusKey *key, ClusterTTStatusRes
 		 * (TransactionIdDidCommit) before reporting COMMITTED.  A pre-commit
 		 * stamp left by an xact that then aborted thus does not become visible.
 		 */
-		if (cluster_node_id >= 0 && key->origin_node_id == (uint16)cluster_node_id
-			&& key->tt_slot_id >= 1 && key->tt_slot_id <= TT_SLOTS_PER_SEGMENT) {
+		if (cluster_tt_durable_lookup && cluster_node_id >= 0
+			&& key->origin_node_id == (uint16)cluster_node_id && key->tt_slot_id >= 1
+			&& key->tt_slot_id <= TT_SLOTS_PER_SEGMENT) {
 			SCN durable_scn;
 
 			if (cluster_tt_slot_durable_lookup(key->undo_segment_id,

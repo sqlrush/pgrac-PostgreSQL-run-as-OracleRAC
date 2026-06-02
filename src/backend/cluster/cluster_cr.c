@@ -637,9 +637,20 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 		 * Resolve every kept tuple whose xmin is not a live candidate against the
 		 * durable TT by xid, pruning evicted post-read_scn versions and failing
 		 * closed only on an unresolvable (recycled) slot.
+		 *
+		 * cluster.tt_durable_lookup=off (C6 fallback) reverts to the spec-3.10
+		 * overlay-only behavior: any watermark > read_scn fails the whole block
+		 * closed (53R9F) without consulting the durable TT.
 		 */
-		if (watermark_exceeds)
-			cr_resolve_kept_tuples_durable(dst_page, read_scn, chains, nchains);
+		if (watermark_exceeds) {
+			if (cluster_tt_durable_lookup)
+				cr_resolve_kept_tuples_durable(dst_page, read_scn, chains, nchains);
+			else
+				ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+								errmsg("cluster CR cannot reconstruct block: ITL slot reused "
+									   "after snapshot"),
+								errhint("retry the transaction with a fresh snapshot")));
+		}
 
 		pgstat_report_wait_end();
 
