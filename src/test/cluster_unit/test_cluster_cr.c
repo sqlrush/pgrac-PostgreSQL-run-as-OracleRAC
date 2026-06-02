@@ -726,10 +726,18 @@ UT_TEST(test_prune_removes_candidate_xmin)
 
 UT_TEST(test_prune_keeps_noncandidate_xmin)
 {
-	/* slot-reuse-shaped: a tuple whose creator is NOT among the candidates is
-	 * KEPT.  Correct for a pre-read_scn creator; the slot-reuse edge (a
-	 * post-read_scn creator whose ITL slot was recycled so it is not a
-	 * candidate) is exactly this kept case (spec-3.10 §3.3). */
+	/* A tuple whose creator is NOT among the candidates is KEPT -- correct for
+	 * a legitimate pre-read_scn creator.  spec-3.10 §v0.5 NOTE (supersedes the
+	 * old "exactly this kept case" framing): the slot-reuse false-visible edge
+	 * (a post-read_scn creator whose ITL slot was recycled, so it is absent
+	 * from the candidates and a kept tuple here would be wrongly visible) is no
+	 * longer ACCEPTED at prune.  It is now PREVENTED upstream --
+	 * cluster_cr_construct_block_into fails closed (53R9F) when the per-page
+	 * itl_recycle_watermark_scn is newer than read_scn, so a block that lost a
+	 * post-snapshot writer to slot reuse never reaches prune.  Prune-in-
+	 * isolation keeping non-candidate xmin therefore stays correct; the
+	 * fail-closed is covered by test_cluster_itl_reader_real_triple t26-t32 +
+	 * the §v0.5 e2e TAP. */
 	TransactionId xmins[1] = { 999 };
 	Page page = build_page_with_tuples(xmins, 1);
 	ClusterCRCandidateChain chains[1];

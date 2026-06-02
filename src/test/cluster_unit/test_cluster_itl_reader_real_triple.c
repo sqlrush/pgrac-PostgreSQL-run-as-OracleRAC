@@ -261,7 +261,10 @@ build_itl_page(void)
 	memset(synthetic_page, 0, BLCKSZ);
 	hdr = (PageHeader)synthetic_page;
 	hdr->pd_flags = PD_HAS_ITL;
-	hdr->pd_special = (LocationIndex)(BLCKSZ - CLUSTER_ITL_ARRAY_SIZE);
+	/* spec-3.10 §v0.5: special area is now 392B (384B slot array + 8B ITL
+	 * header).  Reserve the full special size so ClusterPageGetItlHeader (at
+	 * special offset 384) stays in-bounds. */
+	hdr->pd_special = (LocationIndex)(BLCKSZ - CLUSTER_ITL_SPECIAL_SIZE);
 	hdr->pd_upper = hdr->pd_special;
 	hdr->pd_lower = SizeOfPageHeaderData;
 	hdr->pd_pagesize_version = BLCKSZ | PG_PAGE_LAYOUT_VERSION;
@@ -678,6 +681,120 @@ UT_TEST(test_t25_redo_parity_newer_write_scn_advances)
 }
 
 
+/* ============================================================
+ *	spec-3.10 §v0.5 slot-reuse fail-closed:  recycle watermark
+ *	contribution predicate (E4-E6 + ACTIVE-diff-xid + positive),
+ *	monotone advance, and redo-derived parity (E7 unit level).
+ * ============================================================ */
+
+UT_TEST(test_t26_watermark_free_slot_no_contribution)
+{
+	/* E4: a FREE slot evicts nothing. */
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_FREE, InvalidTransactionId, InvalidScn, (TransactionId)200)),
+				 0);
+}
+
+UT_TEST(test_t27_watermark_same_xid_no_contribution)
+{
+	/* E5: the same xid reusing its own (COMMITTED) slot contributes nothing. */
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_COMMITTED, (TransactionId)100, (SCN)5000, (TransactionId)100)),
+				 0);
+}
+
+UT_TEST(test_t28_watermark_lock_only_no_contribution)
+{
+	/* E6: completed lock-only slots never anchor a visibility-affecting undo. */
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_LOCK_ONLY_COMMITTED, (TransactionId)100, (SCN)5000,
+					 (TransactionId)200)),
+				 0);
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_LOCK_ONLY_ABORTED, (TransactionId)100, (SCN)5000,
+					 (TransactionId)200)),
+				 0);
+}
+
+UT_TEST(test_t29_watermark_active_diff_xid_no_contribution)
+{
+	/* User tightening 2026-06-02: an ACTIVE slot owned by a DIFFERENT xid must
+	 * never be recycled, so the predicate must NOT silently mask it. */
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_ACTIVE, (TransactionId)100, (SCN)5000, (TransactionId)200)),
+				 0);
+}
+
+UT_TEST(test_t30_watermark_completed_data_contributes)
+{
+	/* Positive: COMMITTED / ABORTED / NEEDS_CLEANOUT (different xid, valid
+	 * write_scn) all contribute their write_scn. */
+	UT_ASSERT_EQ((int)(cluster_itl_recycle_watermark_contribution(
+						   ITL_FLAG_COMMITTED, (TransactionId)100, (SCN)5000, (TransactionId)200)
+					   == (SCN)5000),
+				 1);
+	UT_ASSERT_EQ((int)(cluster_itl_recycle_watermark_contribution(
+						   ITL_FLAG_ABORTED, (TransactionId)100, (SCN)5000, (TransactionId)200)
+					   == (SCN)5000),
+				 1);
+	UT_ASSERT_EQ((int)(cluster_itl_recycle_watermark_contribution(
+						   ITL_FLAG_NEEDS_CLEANOUT, (TransactionId)100, (SCN)5000,
+						   (TransactionId)200)
+					   == (SCN)5000),
+				 1);
+	/* Completed data but InvalidScn write_scn -> nothing. */
+	UT_ASSERT_EQ((int)SCN_VALID(cluster_itl_recycle_watermark_contribution(
+					 ITL_FLAG_COMMITTED, (TransactionId)100, InvalidScn, (TransactionId)200)),
+				 0);
+}
+
+UT_TEST(test_t31_watermark_advance_monotone)
+{
+	Page page = build_itl_page();
+
+	ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn = InvalidScn;
+	/* InvalidScn contrib -> no-op. */
+	cluster_itl_block_watermark_advance(page, InvalidScn);
+	UT_ASSERT_EQ((int)SCN_VALID(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn), 0);
+	/* First valid contrib -> set. */
+	cluster_itl_block_watermark_advance(page, (SCN)5000);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
+				 1);
+	/* Older contrib -> no-op (monotone). */
+	cluster_itl_block_watermark_advance(page, (SCN)3000);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
+				 1);
+	/* Newer contrib -> advances. */
+	cluster_itl_block_watermark_advance(page, (SCN)7000);
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)7000),
+				 1);
+}
+
+UT_TEST(test_t32_redo_recomputes_recycle_watermark)
+{
+	/* E7 (unit level): redo of an ACTIVE delta that recycles a COMMITTED slot
+	 * folds the evicted COMMITTED writer's write_scn into the page watermark --
+	 * the non-FPI incremental delta path restores the fail-closed guard. */
+	Page page = build_itl_page();
+	ClusterItlSlotData *slot = slot_at(page, 0);
+
+	ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn = InvalidScn;
+	/* Pre-state: slot 0 holds a COMMITTED data writer xid=100, write_scn=5000. */
+	slot->flags = ITL_FLAG_COMMITTED;
+	slot->xid = (TransactionId)100;
+	slot->write_scn = (SCN)5000;
+	/* Redo a NEW ACTIVE writer (xid=200, write_scn=6000) recycling slot 0. */
+	(void)cluster_itl_redo_apply_block_local_delta(
+		page, NULL, make_v2_active_delta(0, ITL_FLAG_ACTIVE, (TransactionId)200, (SCN)6000));
+	/* Watermark folded the EVICTED COMMITTED write_scn (5000), not the new 6000. */
+	UT_ASSERT_EQ((int)(ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn == (SCN)5000),
+				 1);
+	/* And the slot is now the new ACTIVE writer. */
+	UT_ASSERT_EQ((int)(slot->flags == ITL_FLAG_ACTIVE), 1);
+	UT_ASSERT_EQ((int)(slot->write_scn == (SCN)6000), 1);
+}
+
+
 int
 main(void)
 {
@@ -706,6 +823,14 @@ main(void)
 	UT_RUN(test_t23_redo_parity_monotonic_older_write_scn_noop);
 	UT_RUN(test_t24_redo_parity_invalid_write_scn_noop);
 	UT_RUN(test_t25_redo_parity_newer_write_scn_advances);
+	/* spec-3.10 §v0.5 slot-reuse fail-closed watermark. */
+	UT_RUN(test_t26_watermark_free_slot_no_contribution);
+	UT_RUN(test_t27_watermark_same_xid_no_contribution);
+	UT_RUN(test_t28_watermark_lock_only_no_contribution);
+	UT_RUN(test_t29_watermark_active_diff_xid_no_contribution);
+	UT_RUN(test_t30_watermark_completed_data_contributes);
+	UT_RUN(test_t31_watermark_advance_monotone);
+	UT_RUN(test_t32_redo_recomputes_recycle_watermark);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

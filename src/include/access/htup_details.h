@@ -665,18 +665,18 @@ StaticAssertDecl(MaxOffsetNumber < SpecTokenOffsetNumber,
  * then PANIC inside the critical section when they don't fit on the
  * page (PANIC: tuple is too big at heapam.c:9854).
  *
- * MaxHeapTupleSize for pgrac heap pages =
- *     BLCKSZ - CLUSTER_ITL_ARRAY_SIZE - MAXALIGN(SizeOfPageHeaderData + sizeof(ItemIdData))
- *   = 8192 - 384 - MAXALIGN(32 + 4)
- *   = 8192 - 384 - 40
- *   = 7768
+ * MaxHeapTupleSize for pgrac heap pages =     (spec-3.10 §v0.5: 384 -> 392)
+ *     BLCKSZ - CLUSTER_ITL_SPECIAL_SIZE - MAXALIGN(SizeOfPageHeaderData + sizeof(ItemIdData))
+ *   = 8192 - 392 - MAXALIGN(32 + 4)
+ *   = 8192 - 392 - 40
+ *   = 7760
  *
  * Index pages don't subtract ITL (their special area is btree opaque
  * etc.); MaxHeapTupleSize only governs heap_insert / heap_update.
  * btree's own checks (e.g. BTMaxItemSize) are independent.
  */
 #define MaxHeapTupleSize  \
-	(BLCKSZ - CLUSTER_ITL_ARRAY_SIZE - \
+	(BLCKSZ - CLUSTER_ITL_SPECIAL_SIZE - \
 	 MAXALIGN(SizeOfPageHeaderData + sizeof(ItemIdData)))
 #else
 #define MaxHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + sizeof(ItemIdData)))
@@ -694,13 +694,13 @@ StaticAssertDecl(MaxOffsetNumber < SpecTokenOffsetNumber,
  * pointers to this anyway, to avoid excessive line-pointer bloat and not
  * require increases in the size of work arrays.
  *
- * PGRAC (stage 1.5): heap pages reserve CLUSTER_ITL_ARRAY_SIZE bytes
- * at the page tail (special area), so the usable space for tuples +
- * ItemIds is reduced by that amount.
+ * PGRAC (stage 1.5; spec-3.10 §v0.5: 384 -> 392): heap pages reserve
+ * CLUSTER_ITL_SPECIAL_SIZE bytes at the page tail (special area), so the
+ * usable space for tuples + ItemIds is reduced by that amount.
  */
 #ifdef USE_PGRAC_CLUSTER
 #define MaxHeapTuplesPerPage	\
-	((int) ((BLCKSZ - CLUSTER_ITL_ARRAY_SIZE - SizeOfPageHeaderData) / \
+	((int) ((BLCKSZ - CLUSTER_ITL_SPECIAL_SIZE - SizeOfPageHeaderData) / \
 			(MAXALIGN(SizeofHeapTupleHeader) + sizeof(ItemIdData))))
 #else
 #define MaxHeapTuplesPerPage	\

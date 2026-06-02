@@ -575,7 +575,11 @@
  * cluster_tap t/215.  One pg_proc row → catversion bump.  (The 2 NEW
  * SQLSTATEs 53R9F/53R9G are in errcodes.h, not catalog, and do not by
  * themselves require a bump.) */
-#define CATALOG_VERSION_NO 202605600
+/* spec-3.10 §v0.5 (2026-06-02):  slot-reuse fail-closed -- ITL special area
+ * grows 384 -> 392B (8B ClusterItlPageHeader.itl_recycle_watermark_scn placed
+ * after the 384B slot array).  Heap page on-disk layout change -> bump forces
+ * re-initdb (no in-place upgrade; Stage 3 dev only). */
+#define CATALOG_VERSION_NO 202606020
 
 /* spec-2.39 D10 (2026-05-21):  SI Broadcaster production activation —
  * DDL commit hook (AtEOXact_Inval + COMMIT PREPARED via cluster-aware
@@ -609,6 +613,6 @@
  * cluster_grd_pending + cluster_grd_outbound + cluster_grd_work_queue
  * shmem regions + LWLock tranches;  cluster.ges_request_timeout_ms GUC;
  * 53R70/53R71 SQLSTATE.  catversion bump for catalog tooling. */
-#define CATALOG_VERSION_NO_PRIOR 202605410
+#define CATALOG_VERSION_NO_PRIOR 202605600
 
 #endif

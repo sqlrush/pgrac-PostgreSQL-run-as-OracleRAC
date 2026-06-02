@@ -698,8 +698,23 @@ static inline ClusterItlSlotData *
 ClusterPageGetItlSlots(Page page)
 {
 	Assert(PageHasItl(page));
-	Assert(PageGetSpecialSize(page) >= CLUSTER_ITL_ARRAY_SIZE);
+	Assert(PageGetSpecialSize(page) >= CLUSTER_ITL_SPECIAL_SIZE);
 	return (ClusterItlSlotData *) PageGetSpecialPointer(page);
+}
+
+/*
+ * ClusterPageGetItlHeader -- pointer to the 8-byte per-page ITL header
+ *	(spec-3.10 §v0.5), which lives at the END of the special area, right
+ *	after the 384-byte slot array (special offset CLUSTER_ITL_ARRAY_SIZE).
+ *	Carries itl_recycle_watermark_scn (slot-reuse fail-closed guard).
+ */
+static inline ClusterItlPageHeader *
+ClusterPageGetItlHeader(Page page)
+{
+	Assert(PageHasItl(page));
+	Assert(PageGetSpecialSize(page) >= CLUSTER_ITL_SPECIAL_SIZE);
+	return (ClusterItlPageHeader *) ((char *) PageGetSpecialPointer(page)
+									 + CLUSTER_ITL_ARRAY_SIZE);
 }
 
 /*

@@ -235,6 +235,22 @@ extern void cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId x
 									 UBA undo_segment_head);
 
 /*
+ * spec-3.10 §v0.5 slot-reuse fail-closed helpers.
+ *
+ *	cluster_itl_recycle_watermark_contribution -- pure function: write_scn an
+ *	evicted slot contributes to the per-page itl_recycle_watermark_scn, or
+ *	InvalidScn when the recycle is not watermark-relevant (FREE / same-xid /
+ *	lock-only / invalid write_scn).  Shared by stamp_active (primary) and the
+ *	ITL delta redo so they cannot diverge.  Exposed for cluster_unit (E4-E6).
+ *
+ *	cluster_itl_block_watermark_advance -- monotonically max `contrib` into
+ *	the page ITL header watermark (no-op on InvalidScn / not-newer).
+ */
+extern SCN cluster_itl_recycle_watermark_contribution(uint8 old_flags, TransactionId old_xid,
+													  SCN old_write_scn, TransactionId new_xid);
+extern void cluster_itl_block_watermark_advance(Page page, SCN contrib);
+
+/*
  * cluster_itl_stamp_committed -- transition ACTIVE → COMMITTED with
  * the supplied `commit_scn` (must be valid; L181).
  *

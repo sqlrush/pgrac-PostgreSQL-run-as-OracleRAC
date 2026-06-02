@@ -24,16 +24,17 @@
 /*
  * PGRAC (stage 1.5 hardening, codex review 2026-05-02 P2 #3):
  *
- * Heap pages reserve CLUSTER_ITL_ARRAY_SIZE (384B) bytes of special
- * space for the ITL slot array (PIVOT A: ITL lives in PG special area
- * at page tail).  All heap-only capacity formulas must subtract this
- * reserved area; index am pages have separate special areas and are
- * not affected by this macro.
+ * Heap pages reserve CLUSTER_ITL_SPECIAL_SIZE (spec-3.10 §v0.5: 392B =
+ * 384B slot array + 8B ITL page header) bytes of special space (PIVOT A:
+ * ITL lives in PG special area at page tail).  All heap-only capacity
+ * formulas must subtract this reserved area; index am pages have separate
+ * special areas and are not affected by this macro.
  *
  * Spec: spec-stage1-codex-fixes.md §1.2 Deliverable 2 + spec-1.5 §11
+ *       + spec-3.10 §v0.5 (header grows special 384 -> 392)
  */
 #ifdef USE_PGRAC_CLUSTER
-#define HeapPageSpecialSize CLUSTER_ITL_ARRAY_SIZE
+#define HeapPageSpecialSize CLUSTER_ITL_SPECIAL_SIZE
 #else
 #define HeapPageSpecialSize 0
 #endif

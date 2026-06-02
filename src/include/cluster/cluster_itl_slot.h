@@ -202,6 +202,33 @@ typedef struct ClusterItlSlotData {
 
 
 /*
+ * ClusterItlPageHeader -- 8-byte per-page ITL header (spec-3.10 §v0.5).
+ *
+ *	Stored at the END of the heap page special area, immediately AFTER the
+ *	384-byte slot array (special layout: slots[8] (384B) || header (8B) =
+ *	392B).  Placing the header after the slots keeps slot 0 at
+ *	PageGetSpecialPointer(page), so every existing ClusterPageGetItlSlots
+ *	caller and the 26 CLUSTER_ITL_ARRAY_SIZE slot-access sites are
+ *	unchanged; only the special-area SIZE grows 384 -> 392.
+ *
+ *	itl_recycle_watermark_scn:  the maximum write_scn of any *completed
+ *	data* ITL slot evicted from this page by slot reuse (i.e. recycled by
+ *	cluster_itl_alloc_or_reuse_slot when no FREE slot was available).  CR
+ *	construction fails closed (53R9F SNAPSHOT_TOO_OLD) when this watermark
+ *	is newer than a reader's read_scn: a post-read_scn writer's undo-chain
+ *	anchor may have been overwritten and is therefore absent from the
+ *	candidate set, and page-level prune cannot distinguish that case from a
+ *	legitimate pre-read_scn creator (spec-3.10 §v0.5.A).  Monotone
+ *	non-decreasing; restored by ITL delta WAL redo (NOT FPI-only).
+ *	InvalidScn at page init.  spec-3.11 durable TT replaces the fail-closed
+ *	with precise per-writer commit_scn resolution.
+ */
+typedef struct ClusterItlPageHeader {
+	SCN itl_recycle_watermark_scn; /* offset 0; InvalidScn at init */
+} ClusterItlPageHeader;
+
+
+/*
  * Compile-time invariants.
  *
  *	cluster_unit test_cluster_itl_slot enforces these via UT_ASSERT_EQ
@@ -212,6 +239,16 @@ typedef struct ClusterItlSlotData {
 #define CLUSTER_ITL_SLOT_SIZE 48
 #define CLUSTER_ITL_INITRANS_DEFAULT 8
 #define CLUSTER_ITL_ARRAY_SIZE (CLUSTER_ITL_SLOT_SIZE * CLUSTER_ITL_INITRANS_DEFAULT) /* 384 */
+
+/*
+ * spec-3.10 §v0.5: heap page special area = 384-byte slot array + 8-byte
+ * ClusterItlPageHeader (recycle watermark) = 392 bytes.  CLUSTER_ITL_ARRAY_SIZE
+ * (384) is still the slot-array size (slots stay at special offset 0);
+ * CLUSTER_ITL_SPECIAL_SIZE (392) is the total reserved special area and is what
+ * PageInitHeapPage / MaxHeapTupleSize / HeapPageSpecialSize must use.
+ */
+#define CLUSTER_ITL_PAGE_HEADER_SIZE 8
+#define CLUSTER_ITL_SPECIAL_SIZE (CLUSTER_ITL_ARRAY_SIZE + CLUSTER_ITL_PAGE_HEADER_SIZE) /* 392 */
 
 
 /*

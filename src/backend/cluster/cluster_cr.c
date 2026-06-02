@@ -474,6 +474,28 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 							errmsg("cluster CR target page has no ITL special area")));
 
+		/*
+		 * spec-3.10 §v0.5: slot-reuse fail-closed.  If a completed DATA ITL
+		 * slot whose write_scn is newer than this reader's snapshot was
+		 * recycled out of this block (its undo-chain anchor overwritten), the
+		 * per-page candidate set may be incomplete and a post-read_scn tuple
+		 * version could survive prune as a false-visible.  Page-level
+		 * construction cannot distinguish that evicted writer from a
+		 * legitimate pre-read_scn creator (§v0.5 A), so fail closed (53R9F)
+		 * rather than risk returning a wrong CR image.  spec-3.11 durable TT
+		 * will instead resolve the evicted writer's commit_scn precisely.
+		 */
+		{
+			SCN recycle_wm = ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn;
+
+			if (SCN_VALID(recycle_wm) && scn_time_cmp(recycle_wm, read_scn) > 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+						 errmsg("cluster CR cannot reconstruct block: ITL slot reused "
+								"after snapshot"),
+						 errhint("retry the transaction with a fresh snapshot")));
+		}
+
 		/* Snapshot candidate chains BEFORE mutation, then peel newest-first. */
 		slots = ClusterPageGetItlSlots(page);
 		nchains = cluster_cr_collect_candidate_chains(slots, read_scn, chains,

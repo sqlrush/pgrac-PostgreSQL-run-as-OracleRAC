@@ -221,13 +221,15 @@ PageInitHeapPage(Page page, Size pageSize, Size specialSize)
 	Assert(specialSize == 0);
 
 	/*
-	 * Delegate to base PageInit, but reserve CLUSTER_ITL_ARRAY_SIZE
-	 * bytes at the page tail as PG special area.  After this:
+	 * Delegate to base PageInit, but reserve CLUSTER_ITL_SPECIAL_SIZE
+	 * (spec-3.10 §v0.5: 384B slot array + 8B ClusterItlPageHeader = 392B)
+	 * at the page tail as PG special area.  After this:
 	 *    pd_lower = SizeOfPageHeaderData (32)
-	 *    pd_upper = pageSize - CLUSTER_ITL_ARRAY_SIZE
-	 *    pd_special = pd_upper (= start of ITL array)
+	 *    pd_upper = pageSize - CLUSTER_ITL_SPECIAL_SIZE
+	 *    pd_special = pd_upper (= start of ITL slot array; header follows
+	 *                 the 384B array at special offset CLUSTER_ITL_ARRAY_SIZE)
 	 */
-	PageInit(page, pageSize, CLUSTER_ITL_ARRAY_SIZE);
+	PageInit(page, pageSize, CLUSTER_ITL_SPECIAL_SIZE);
 
 	/* Mark the page so readers know special area is ITL (not btree etc.). */
 	p->pd_flags |= PD_HAS_ITL;
@@ -254,6 +256,15 @@ PageInitHeapPage(Page page, Size pageSize, Size specialSize)
 		itl[i].write_scn = InvalidScn;
 		itl[i].first_change_lsn = InvalidXLogRecPtr;
 	}
+
+	/*
+	 * spec-3.10 §v0.5: initialize the ITL page header (8 B after the slot
+	 * array).  itl_recycle_watermark_scn = InvalidScn -- no completed data
+	 * slot has been recycled yet, so a CR reader is never blocked on a fresh
+	 * page (cluster_cr_construct_block_into only fail-closes when the
+	 * watermark is newer than its read_scn).
+	 */
+	ClusterPageGetItlHeader(page)->itl_recycle_watermark_scn = InvalidScn;
 }
 
 /*

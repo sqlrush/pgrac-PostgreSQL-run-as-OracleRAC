@@ -650,6 +650,80 @@ cluster_itl_stamp_multixact_marker(Buffer buf, MultiXactId multixact_id)
 	}
 }
 
+/*
+ * cluster_itl_recycle_watermark_contribution -- spec-3.10 §v0.5.
+ *
+ *	Given the PRE-overwrite state of an ITL slot about to be recycled by a
+ *	new data writer (new_xid), return the write_scn that must be folded into
+ *	the page's itl_recycle_watermark_scn, or InvalidScn if this is not a
+ *	watermark-relevant recycle.
+ *
+ *	A recycle contributes its old write_scn iff the evicted slot was a
+ *	*completed data* slot (not FREE, not lock-only, owned by a different xid)
+ *	with a valid write_scn -- i.e. a committed/aborted/needs-cleanout DATA
+ *	writer whose undo-chain anchor is about to be overwritten and thereby
+ *	dropped from the per-page CR candidate set.  FREE slots, the same xid
+ *	reusing its own slot, and lock-only slots (which create no tuple versions
+ *	and carry InvalidScn write_scn) contribute nothing (§v0.5 B2 / Q1).
+ *
+ *	Shared by cluster_itl_stamp_active (primary) and
+ *	cluster_itl_redo_apply_block_local_delta (redo) so a primary and a
+ *	crash-recovered / standby node can never diverge on which recycles bump
+ *	the watermark (refinement of §v0.5 B5: redo recomputes the watermark from
+ *	the same inputs the primary used, mirroring the existing pd_block_scn
+ *	redo-parity pattern, instead of carrying a byte the 7 emit sites could
+ *	forget to set).
+ */
+SCN
+cluster_itl_recycle_watermark_contribution(uint8 old_flags, TransactionId old_xid,
+										   SCN old_write_scn, TransactionId new_xid)
+{
+	/*
+	 * §v0.5 (user tightening 2026-06-02):  ONLY a completed DATA slot
+	 * (COMMITTED / ABORTED / NEEDS_CLEANOUT) whose undo anchor is about to be
+	 * overwritten contributes its write_scn.  FREE, lock-only, the same xid
+	 * reusing its own slot, and -- explicitly -- an ACTIVE slot owned by a
+	 * DIFFERENT xid contribute nothing.  An ACTIVE-different-xid slot must
+	 * NEVER be recycled (cluster_itl_alloc_or_reuse_slot only recycles
+	 * completed slots); if one ever reaches a recycle that is an allocator /
+	 * state-machine bug and must surface as such (stamp_active Asserts it),
+	 * not be silently masked by the watermark.  Exercised directly by
+	 * cluster_unit E4-E6 + the ACTIVE-different-xid no-contribution case.
+	 */
+	switch (old_flags) {
+		case ITL_FLAG_COMMITTED:
+		case ITL_FLAG_ABORTED:
+		case ITL_FLAG_NEEDS_CLEANOUT:
+			break; /* completed data slot -- eligible */
+		default:
+			return InvalidScn; /* FREE / ACTIVE / lock-only-* -- never */
+	}
+	if (old_xid == new_xid)
+		return InvalidScn; /* defensive: a completed slot should not hold new_xid */
+	if (!SCN_VALID(old_write_scn))
+		return InvalidScn;
+	return old_write_scn;
+}
+
+/*
+ * cluster_itl_block_watermark_advance -- spec-3.10 §v0.5.  Monotonically fold
+ *	`contrib` into the page's itl_recycle_watermark_scn (no-op on InvalidScn
+ *	or a not-newer value).  Caller holds the buffer content lock (primary: in
+ *	the heap op critical section; redo: single-threaded apply).
+ */
+void
+cluster_itl_block_watermark_advance(Page page, SCN contrib)
+{
+	ClusterItlPageHeader *h;
+
+	if (!SCN_VALID(contrib))
+		return;
+	h = ClusterPageGetItlHeader(page);
+	if (!SCN_VALID(h->itl_recycle_watermark_scn)
+		|| scn_time_cmp(contrib, h->itl_recycle_watermark_scn) > 0)
+		h->itl_recycle_watermark_scn = contrib;
+}
+
 void
 cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN write_scn,
 						 UBA undo_segment_head)
@@ -664,6 +738,25 @@ cluster_itl_stamp_active(Buffer buf, uint8 slot_idx, TransactionId xid, SCN writ
 	Assert(PageHasItl(page));
 
 	slot = &ClusterPageGetItlSlots(page)[slot_idx];
+	/*
+	 * §v0.5 invariant: cluster_itl_alloc_or_reuse_slot only ever hands
+	 * stamp_active a FREE slot, this xid's own ACTIVE slot, or a COMPLETED
+	 * slot -- never an ACTIVE slot owned by a different xid.  Recycling a
+	 * live ACTIVE writer would be an allocator/state-machine bug, not a
+	 * watermark case.
+	 */
+	Assert(!(slot->flags == ITL_FLAG_ACTIVE && slot->xid != xid));
+	/*
+	 * spec-3.10 §v0.5: fold the evicted (recycled) data slot's write_scn into
+	 * the per-page recycle watermark BEFORE overwriting the slot, so own-
+	 * instance CR fails closed (53R9F) when a post-snapshot writer's undo
+	 * anchor has been dropped from the candidate set.  WAL-protected by the
+	 * surrounding heap record; redo parity in
+	 * cluster_itl_redo_apply_block_local_delta via the same shared helper.
+	 */
+	cluster_itl_block_watermark_advance(page,
+										cluster_itl_recycle_watermark_contribution(
+											slot->flags, slot->xid, slot->write_scn, xid));
 	if (slot->flags != ITL_FLAG_FREE && !(slot->flags == ITL_FLAG_ACTIVE && slot->xid == xid))
 		slot->wrap++;
 	slot->xid = xid;
@@ -824,6 +917,20 @@ cluster_itl_redo_apply_block_local_delta(Page page, HeapTupleHeader htup,
 			elog(PANIC, "spec-3.4a D9: ITL COMMITTED delta with InvalidScn at heap redo");
 
 		slot = &ClusterPageGetItlSlots(page)[slot_idx];
+		/*
+		 * spec-3.10 §v0.5: redo parity for itl_recycle_watermark_scn.
+		 * Recompute the recycle contribution from the PRE-overwrite slot
+		 * state via the SAME shared helper the primary used, before
+		 * overwriting the slot below.  Only ACTIVE stamps recycle a prior
+		 * occupant; commit/abort/lock deltas carry the same xid (or a
+		 * lock-only old flag) so the helper returns InvalidScn.  FPI redo
+		 * restores the watermark verbatim (it is a page field); this covers
+		 * the incremental-delta path -- NOT FPI-dependent (§v0.5 B5).
+		 */
+		if (flags_after == ITL_FLAG_ACTIVE)
+			cluster_itl_block_watermark_advance(
+				page, cluster_itl_recycle_watermark_contribution(slot->flags, slot->xid,
+																 slot->write_scn, d_xid));
 		slot->xid = d_xid;
 		slot->flags = (ClusterItlFlags)flags_after;
 		slot->write_scn = d_write_scn;
