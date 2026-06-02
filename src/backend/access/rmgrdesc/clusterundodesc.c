@@ -48,6 +48,15 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 						 (unsigned)hdr->instance, (unsigned)hdr->segment_id, BLCKSZ);
 		break;
 	}
+	case XLOG_UNDO_TT_SLOT_COMMIT: {
+		xl_undo_tt_slot_commit *rec = (xl_undo_tt_slot_commit *)payload;
+
+		appendStringInfo(
+			buf, "instance %u segment %u slot %u wrap %u xid %u commit_scn " UINT64_FORMAT,
+			(unsigned)rec->instance, (unsigned)rec->segment_id, (unsigned)rec->slot_offset,
+			(unsigned)rec->wrap, (unsigned)rec->xid, (uint64)rec->commit_scn);
+		break;
+	}
 	default:
 		appendStringInfo(buf, "unknown op %u", info);
 		break;
@@ -61,6 +70,8 @@ cluster_undo_identify(uint8 info)
 	switch (info & ~XLR_INFO_MASK) {
 	case XLOG_UNDO_SEGMENT_INIT:
 		return "UNDO_SEGMENT_INIT";
+	case XLOG_UNDO_TT_SLOT_COMMIT:
+		return "UNDO_TT_SLOT_COMMIT";
 	default:
 		return NULL;
 	}

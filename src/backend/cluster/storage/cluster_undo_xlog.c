@@ -148,6 +148,42 @@ cluster_undo_emit_segment_init(uint8 instance, uint32 segment_id, const char *pa
 
 
 /*
+ * cluster_undo_emit_tt_slot_commit (spec-3.11 D3)
+ *
+ *   Emit a 24-byte delta record durably stamping commit_scn on one TT slot.
+ *   No page image (unlike segment_init): redo does a block-0 RMW.  Caller
+ *   inserts this BEFORE the commit XLOG record (spec-3.11 C1); group commit /
+ *   the commit record's XLogFlush make it durable (no independent fsync --
+ *   spec-3.11 C10).
+ */
+XLogRecPtr
+cluster_undo_emit_tt_slot_commit(uint8 instance, uint32 segment_id, uint16 slot_offset, uint16 wrap,
+								 TransactionId xid, SCN commit_scn)
+{
+	xl_undo_tt_slot_commit rec;
+	XLogRecPtr lsn;
+
+	Assert(instance >= 1);
+	Assert(slot_offset < TT_SLOTS_PER_SEGMENT);
+
+	memset(&rec, 0, sizeof(rec));
+	rec.segment_id = segment_id;
+	rec.slot_offset = slot_offset;
+	rec.wrap = wrap;
+	rec.xid = xid;
+	rec.instance = instance;
+	rec.commit_scn = commit_scn;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&rec, sizeof(rec));
+
+	lsn = XLogInsert(RM_CLUSTER_UNDO_ID, XLOG_UNDO_TT_SLOT_COMMIT);
+
+	return lsn;
+}
+
+
+/*
  * Replay XLOG_UNDO_SEGMENT_INIT.
  *
  *   Spec-1.22 Hardening v1.0.3: full idempotent create + size + restore
@@ -266,6 +302,126 @@ cluster_undo_redo_segment_init(XLogReaderState *record)
 
 
 /*
+ * Replay XLOG_UNDO_TT_SLOT_COMMIT (spec-3.11 D3).
+ *
+ *   Block-0 read-modify-write of one TTSlot.commit_scn, gated by the wrap-
+ *   comparison table (spec-3.11 §2.3).  The segment + header block are created
+ *   by the preceding XLOG_UNDO_SEGMENT_INIT in WAL order, so this delta record
+ *   requires the segment file to exist (open without O_CREAT; missing = WAL
+ *   ordering violation = PANIC).
+ *
+ *   Wrap table:
+ *     rec.wrap >  slot.wrap                       -> overwrite (recycle-then-
+ *                                                    commit; normal path, BIND
+ *                                                    not WAL-logged -- Q1)
+ *     rec.wrap == slot.wrap && rec.xid == slot.xid -> idempotent overwrite
+ *     rec.wrap == slot.wrap && rec.xid != slot.xid -> corruption (PANIC, 8.A)
+ *     rec.wrap <  slot.wrap                       -> stale, skip
+ *
+ *   L47 idempotence: same-record re-replay reaches the same on-disk state.
+ *   fsync makes the replayed slot durable (recovery contract).  No buffer
+ *   manager -- pg_undo files are outside RelFileLocator namespace (no FPI /
+ *   page-LSN skip), so the wrap table is the stale-safety mechanism.
+ */
+static void
+cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
+{
+	xl_undo_tt_slot_commit *rec;
+	char path[MAXPGPATH];
+	int fd;
+	PGAlignedBlock blockbuf;
+	UndoSegmentHeaderData *hdr;
+	TTSlot *slot;
+	ssize_t nread;
+
+	if (XLogRecGetDataLen(record) != sizeof(*rec))
+		ereport(PANIC, (errmsg("invalid XLOG_UNDO_TT_SLOT_COMMIT record length: %u",
+							   XLogRecGetDataLen(record))));
+	rec = (xl_undo_tt_slot_commit *)XLogRecGetData(record);
+
+	if (rec->slot_offset >= TT_SLOTS_PER_SEGMENT)
+		ereport(PANIC, (errmsg("XLOG_UNDO_TT_SLOT_COMMIT slot_offset %u out of range (max %d)",
+							   rec->slot_offset, TT_SLOTS_PER_SEGMENT - 1)));
+
+	if (build_undo_segment_path(rec->instance, rec->segment_id, path, sizeof(path)) != 0)
+		ereport(PANIC, (errmsg("undo segment path too long: instance=%u seg=%u", rec->instance,
+							   rec->segment_id)));
+
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0)
+		ereport(
+			PANIC,
+			(errcode_for_file_access(),
+			 errmsg("could not open undo segment file \"%s\" for TT slot commit redo: %m", path),
+			 errhint("XLOG_UNDO_SEGMENT_INIT must precede XLOG_UNDO_TT_SLOT_COMMIT in WAL.")));
+
+	nread = pg_pread(fd, blockbuf.data, BLCKSZ, 0);
+	if (nread != BLCKSZ) {
+		int save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+		ereport(PANIC, (errcode_for_file_access(),
+						errmsg("could not read undo segment header \"%s\": read %zd of %d bytes",
+							   path, nread, BLCKSZ)));
+	}
+
+	hdr = (UndoSegmentHeaderData *)blockbuf.data;
+	slot = &hdr->tt_slots[rec->slot_offset];
+
+	/* Status validity guard (spec-3.11 §2.3): legal live status is [0,4]. */
+	if (slot->status > TT_SLOT_RECYCLABLE)
+		ereport(PANIC, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("undo segment \"%s\" TT slot %u has invalid status %u during redo",
+							   path, rec->slot_offset, slot->status)));
+
+	if (rec->wrap > slot->wrap || (rec->wrap == slot->wrap && slot->xid == rec->xid)) {
+		ssize_t written;
+
+		/* overwrite (recycle-then-commit) or idempotent same-owner. */
+		slot->xid = rec->xid;
+		slot->wrap = rec->wrap;
+		slot->status = TT_SLOT_COMMITTED;
+		slot->commit_scn = rec->commit_scn;
+
+		written = pg_pwrite(fd, blockbuf.data, BLCKSZ, 0);
+		if (written != BLCKSZ) {
+			int save_errno = errno;
+
+			close(fd);
+			errno = save_errno;
+			ereport(PANIC, (errcode_for_file_access(),
+							errmsg("could not write undo segment \"%s\" TT slot commit: "
+								   "wrote %zd of %d bytes",
+								   path, written, BLCKSZ)));
+		}
+		if (pg_fsync(fd) != 0) {
+			int save_errno = errno;
+
+			close(fd);
+			errno = save_errno;
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not fsync undo segment \"%s\" after TT slot commit: %m", path)));
+		}
+	} else if (rec->wrap == slot->wrap && slot->xid != rec->xid) {
+		/* same generation, different owner = corruption (规则 8.A; never guess). */
+		close(fd);
+		ereport(PANIC,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("undo segment \"%s\" TT slot %u redo conflict: record xid %u wrap %u "
+						"vs on-disk xid %u wrap %u",
+						path, rec->slot_offset, rec->xid, rec->wrap, slot->xid, slot->wrap)));
+	}
+	/* else rec->wrap < slot->wrap: stale record; a newer commit is already durable -> skip. */
+
+	if (close(fd) != 0)
+		ereport(PANIC, (errcode_for_file_access(),
+						errmsg("could not close undo segment file \"%s\": %m", path)));
+}
+
+
+/*
  * cluster_undo_redo -- RM_CLUSTER_UNDO redo handler entry point.
  *
  *   Dispatches by xl_info & XLR_INFO_MASK after stripping the framework
@@ -279,6 +435,9 @@ cluster_undo_redo(XLogReaderState *record)
 	switch (info) {
 	case XLOG_UNDO_SEGMENT_INIT:
 		cluster_undo_redo_segment_init(record);
+		break;
+	case XLOG_UNDO_TT_SLOT_COMMIT:
+		cluster_undo_redo_tt_slot_commit(record);
 		break;
 	default:
 		ereport(PANIC, (errmsg("cluster_undo_redo: unknown op code %u", info)));

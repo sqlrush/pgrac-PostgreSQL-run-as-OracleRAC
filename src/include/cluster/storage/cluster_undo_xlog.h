@@ -39,6 +39,8 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
+#include "cluster/cluster_scn.h" /* SCN typedef (spec-3.11 D3 xl_undo_tt_slot_commit) */
+
 
 /*
  * RM info bit values for RM_CLUSTER_UNDO records.
@@ -50,6 +52,7 @@
  *     ... up to 0xF0 (low nibble used for XLR_INFO_MASK by xlog framework).
  */
 #define XLOG_UNDO_SEGMENT_INIT 0x10
+#define XLOG_UNDO_TT_SLOT_COMMIT 0x30 /* spec-3.11 D3: durable TT slot commit_scn */
 
 
 /*
@@ -96,6 +99,44 @@ StaticAssertDecl(offsetof(xl_cluster_undo_segment_init, segment_id) == 8,
 
 
 /*
+ * On-disk WAL payload for XLOG_UNDO_TT_SLOT_COMMIT (spec-3.11 D3).
+ *
+ *   24-byte fixed delta record (NO page image): identifies one TTSlot in the
+ *   undo segment header block 0 and the commit_scn to durably stamp.  Unlike
+ *   XLOG_UNDO_SEGMENT_INIT (full page image), this is a delta -- redo does a
+ *   block-0 read-modify-write of the single slot, gated by the wrap-comparison
+ *   table (spec-3.11 §2.3): rec.wrap > slot.wrap overwrites (recycle-then-commit,
+ *   the normal path because BIND is not WAL-logged -- Q1 commit-only); rec.wrap
+ *   == slot.wrap && same xid is idempotent; rec.wrap == slot.wrap && different
+ *   xid is corruption (PANIC); rec.wrap < slot.wrap is stale (skip).
+ *
+ *   `instance` is carried in-record (like xl_cluster_undo_segment_init) so the
+ *   redo handler resolves pg_undo/instance_<N>/seg_<id>.dat without depending on
+ *   cluster_node_id (path-based, outside RelFileLocator namespace).
+ *
+ *   spec-3.11 v0.2.1 §2.3 carried no instance field; coding (step 1) found redo
+ *   path resolution requires it -- folded into the 24B layout's pad slot (规则 10
+ *   sync: spec §2.3 to amend at step-7 review).
+ */
+typedef struct xl_undo_tt_slot_commit {
+	uint32 segment_id;	  /* offset 0;  4 B */
+	uint16 slot_offset;	  /* offset 4;  2 B; [0, TT_SLOTS_PER_SEGMENT-1] raw (L48) */
+	uint16 wrap;		  /* offset 6;  2 B; reuse generation */
+	TransactionId xid;	  /* offset 8;  4 B; slot owner xid */
+	uint8 instance;		  /* offset 12; 1 B; owner instance (1..128) */
+	uint8 _pad[3];		  /* offset 13; 3 B; pad up to SCN 8-byte alignment */
+	SCN commit_scn;		  /* offset 16; 8 B */
+} xl_undo_tt_slot_commit; /* total 24 B */
+
+StaticAssertDecl(sizeof(xl_undo_tt_slot_commit) == 24,
+				 "xl_undo_tt_slot_commit must be exactly 24 bytes (WAL ABI lock; "
+				 "spec-3.11 §2.3 + L45/L48)");
+StaticAssertDecl(offsetof(xl_undo_tt_slot_commit, commit_scn) == 16,
+				 "xl_undo_tt_slot_commit.commit_scn must be at offset 16 "
+				 "(SCN 8-byte alignment slot; spec-3.11 L45)");
+
+
+/*
  * Public API.
  */
 
@@ -109,6 +150,17 @@ StaticAssertDecl(offsetof(xl_cluster_undo_segment_init, segment_id) == 8,
  */
 extern XLogRecPtr cluster_undo_emit_segment_init(uint8 instance, uint32 segment_id,
 												 const char *page_image);
+
+/*
+ * cluster_undo_emit_tt_slot_commit (spec-3.11 D3)
+ *	  Backend: emit XLOG_UNDO_TT_SLOT_COMMIT for a durable commit_scn stamp on
+ *	  one TT slot.  Caller emits this BEFORE the transaction's commit XLOG
+ *	  record (spec-3.11 C1); the commit record's XLogFlush / group commit makes
+ *	  it durable -- no independent fsync (spec-3.11 C10).  Returns the LSN.
+ */
+extern XLogRecPtr cluster_undo_emit_tt_slot_commit(uint8 instance, uint32 segment_id,
+												   uint16 slot_offset, uint16 wrap,
+												   TransactionId xid, SCN commit_scn);
 
 /*
  * cluster_undo_redo
