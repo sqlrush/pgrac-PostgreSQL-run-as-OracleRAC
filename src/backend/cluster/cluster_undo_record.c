@@ -614,8 +614,9 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 							 errmsg("cluster undo segment pool hard cap reached for instance %u",
 									(unsigned)(cluster_node_id + 1)),
 							 errhint("Increase cluster.undo_segments_max_per_instance "
-									 "(current limit reached);  or wait for spec-3.12 "
-									 "segment recycle to free slots.")));
+									 "(current limit reached);  end the long-running reader "
+									 "holding the retention horizon, or wait for the spec-3.13 "
+									 "cleaner to reclaim recyclable segments.")));
 				else
 					ereport(ERROR, (errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
 									errmsg("cluster undo segment autoextend failed "

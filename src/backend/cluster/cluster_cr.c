@@ -300,8 +300,10 @@ cr_walk_chain(char *scratch_page, UBA start_uba, SCN read_scn, uint32 *steps, ui
 					 errmsg("snapshot too old: CR cannot read undo record at segment %u block %u "
 							"(recycled or retention exceeded)",
 							seg, blk),
-					 errhint("Increase undo retention; spec-3.11 will enforce snapshot-age "
-							 "retention policy.")));
+					 errhint("Own-instance retention (cluster.undo_retention_horizon_enabled) "
+							 "keeps undo for active readers; this fires only past the best-"
+							 "effort capacity bound or when the reader's read_scn predates the "
+							 "horizon.")));
 		if (len < sizeof(UndoRecordHeader))
 			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
 							errmsg("cluster CR read a short undo record (%zu < %zu bytes)", len,

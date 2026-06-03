@@ -228,10 +228,16 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 	 * COMMITTED slot owned by xid.  Exactly one match resolves precisely; zero
 	 * (recycled / overwritten) or >1 (raw-xid wrap residue) fails closed.
 	 *
-	 * Single-match soundness (pre-spec-3.12): no retention/recycle yet means a
-	 * committed xid's slot is not reused, so at most one COMMITTED slot per live
-	 * xid; xid wraparound is bounded by PG freeze well before reuse.  spec-3.12
-	 * retention + spec-3.13 xid index tighten this (§6 risk).
+	 * Single-match soundness under spec-3.12 retention: an xid commits exactly
+	 * once, so it stamps at most one durable COMMITTED slot across all segments.
+	 * Recycle (D2) only OVERWRITES a slot with a new owner xid (the old xid then
+	 * resolves to 0 matches -> fail-closed), and rollover (D2b) keeps a rolled-
+	 * away segment's durable slots intact while never reusing their offsets, so
+	 * recycle can never raise the count to >1.  C4: this lookup is reached only
+	 * for a post-read_scn writer (its ITL was recycled with watermark > read_scn,
+	 * i.e. write_scn > read_scn => commit_scn >= horizon), whose slot retention
+	 * keeps alive -> the match is guaranteed to hit.  spec-3.13 xid index is a
+	 * scan-cost optimization (§6 risk), not a correctness change.
 	 */
 	cluster_tt_durable_io_wait_start();
 	for (segment_id = seg_lo; segment_id <= seg_hi; segment_id++) {
