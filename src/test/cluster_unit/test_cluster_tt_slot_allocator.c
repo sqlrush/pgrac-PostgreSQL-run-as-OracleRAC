@@ -210,6 +210,11 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 SCN mock_retention_horizon = InvalidScn;
 bool cluster_undo_retention_horizon_enabled = true;
 
+/* spec-3.12: the shmem size/init now gate on cluster being enabled (so bootstrap
+ * skips the ~96 KB region); the standalone test runs as an enabled node. */
+bool cluster_enabled = true;
+int cluster_node_id = 0;
+
 SCN
 cluster_undo_retention_horizon(void)
 {

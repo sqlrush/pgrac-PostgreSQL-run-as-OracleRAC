@@ -588,9 +588,19 @@ cluster_tt_slot_get_wrap(uint32 segment_id, uint16 slot_offset)
 
 /* ===== shmem lifecycle ===== */
 
+/*
+ * The allocator is only used when this node participates in the cluster
+ * (cluster_tt_local_get_or_create_binding gates on the same condition), so size
+ * to 0 when disabled.  This matters in bootstrap / single-user (cluster_init_guc
+ * never runs, leaving cluster_node_id == -1): the per-node array is ~96 KB, and
+ * allocating it from the small bootstrap shared-memory slop would exhaust it
+ * (spec-3.12 D2 grew the entry 8 -> 16 bytes, doubling the region).
+ */
 Size
 cluster_tt_slot_shmem_size(void)
 {
+	if (!cluster_enabled || cluster_node_id < 0)
+		return 0;
 	return MAXALIGN(sizeof(ClusterTTSlotShmem));
 }
 
@@ -599,6 +609,9 @@ void
 cluster_tt_slot_shmem_init(void)
 {
 	bool found;
+
+	if (!cluster_enabled || cluster_node_id < 0)
+		return; /* disabled: no allocator region (see cluster_tt_slot_shmem_size) */
 
 	ClusterTTSlotShm = (ClusterTTSlotShmem *)ShmemInitStruct("ClusterTTSlotShmem",
 															 cluster_tt_slot_shmem_size(), &found);
