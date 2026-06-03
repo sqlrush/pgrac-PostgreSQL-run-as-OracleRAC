@@ -171,4 +171,76 @@ TT_DURABLE_ACCESSOR(cluster_tt_durable_lookup_miss_count, durable_lookup_miss_co
 TT_DURABLE_ACCESSOR(cluster_tt_durable_by_xid_scan_count, by_xid_scan_count)
 TT_DURABLE_ACCESSOR(cluster_tt_durable_redo_apply_count, redo_apply_count)
 
+#else /* !USE_PGRAC_CLUSTER */
+
+Size
+cluster_tt_durable_shmem_size(void)
+{
+	return 0;
+}
+
+void
+cluster_tt_durable_shmem_init(void)
+{}
+
+void
+cluster_tt_durable_shmem_register(void)
+{}
+
+void
+cluster_tt_durable_count_commit(void)
+{}
+
+void
+cluster_tt_durable_count_lookup(bool hit)
+{
+	(void)hit;
+}
+
+void
+cluster_tt_durable_count_by_xid_scan(void)
+{}
+
+void
+cluster_tt_durable_count_redo_apply(void)
+{}
+
+void
+cluster_tt_durable_io_wait_start(void)
+{}
+
+void
+cluster_tt_durable_io_wait_end(void)
+{}
+
+uint64
+cluster_tt_durable_commit_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_tt_durable_lookup_hit_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_tt_durable_lookup_miss_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_tt_durable_by_xid_scan_count(void)
+{
+	return 0;
+}
+
+uint64
+cluster_tt_durable_redo_apply_count(void)
+{
+	return 0;
+}
+
 #endif /* USE_PGRAC_CLUSTER */

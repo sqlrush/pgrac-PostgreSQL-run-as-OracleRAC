@@ -243,7 +243,7 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 
 		hdr = (UndoSegmentHeaderData *)blockbuf.data;
 		for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
-			TTSlot *s = &hdr->tt_slots[i];
+			const TTSlot *s = &hdr->tt_slots[i];
 
 			if (s->status == (uint8)TT_SLOT_COMMITTED && s->xid == xid
 				&& SCN_VALID(s->commit_scn)) {

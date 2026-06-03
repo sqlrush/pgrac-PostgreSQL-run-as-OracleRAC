@@ -305,19 +305,17 @@ cluster_undo_redo_segment_init(XLogReaderState *record)
 /*
  * Replay XLOG_UNDO_TT_SLOT_COMMIT (spec-3.11 D3).
  *
- *   Block-0 read-modify-write of one TTSlot.commit_scn, gated by the wrap-
- *   comparison table (spec-3.11 §2.3).  The segment + header block are created
- *   by the preceding XLOG_UNDO_SEGMENT_INIT in WAL order, so this delta record
- *   requires the segment file to exist (open without O_CREAT; missing = WAL
- *   ordering violation = PANIC).
+ *   Block-0 read-modify-write of one TTSlot.commit_scn, gated by the shared
+ *   last-writer-wins wrap predicate (spec-3.11 v0.3 F1).  The segment + header
+ *   block are created by the preceding XLOG_UNDO_SEGMENT_INIT in WAL order, so
+ *   this delta record requires the segment file to exist (open without O_CREAT;
+ *   missing = WAL ordering violation = PANIC).
  *
- *   Wrap table:
- *     rec.wrap >  slot.wrap                       -> overwrite (recycle-then-
- *                                                    commit; normal path, BIND
- *                                                    not WAL-logged -- Q1)
- *     rec.wrap == slot.wrap && rec.xid == slot.xid -> idempotent overwrite
- *     rec.wrap == slot.wrap && rec.xid != slot.xid -> corruption (PANIC, 8.A)
- *     rec.wrap <  slot.wrap                       -> stale, skip
+ *   Redo decision:
+ *     rec.wrap >= slot.wrap -> APPLY (fresh UNUSED slot, FREE-path same-wrap
+ *                              reuse, recycle, or idempotent replay)
+ *     rec.wrap <  slot.wrap -> SKIP  (newer generation already durable)
+ *     invalid slot.status   -> PANIC (garbage byte, not a legal TTSlot state)
  *
  *   L47 idempotence: same-record re-replay reaches the same on-disk state.
  *   fsync makes the replayed slot durable (recovery contract).  No buffer

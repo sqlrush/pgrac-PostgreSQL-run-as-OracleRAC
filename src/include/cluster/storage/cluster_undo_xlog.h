@@ -104,11 +104,12 @@ StaticAssertDecl(offsetof(xl_cluster_undo_segment_init, segment_id) == 8,
  *   24-byte fixed delta record (NO page image): identifies one TTSlot in the
  *   undo segment header block 0 and the commit_scn to durably stamp.  Unlike
  *   XLOG_UNDO_SEGMENT_INIT (full page image), this is a delta -- redo does a
- *   block-0 read-modify-write of the single slot, gated by the wrap-comparison
- *   table (spec-3.11 §2.3): rec.wrap > slot.wrap overwrites (recycle-then-commit,
- *   the normal path because BIND is not WAL-logged -- Q1 commit-only); rec.wrap
- *   == slot.wrap && same xid is idempotent; rec.wrap == slot.wrap && different
- *   xid is corruption (PANIC); rec.wrap < slot.wrap is stale (skip).
+ *   block-0 read-modify-write of the single slot, gated by the last-writer-wins
+ *   wrap predicate (spec-3.11 v0.3 F1): rec.wrap >= slot.wrap applies (fresh
+ *   UNUSED slot, FREE-path same-wrap reuse, recycle, or idempotent replay);
+ *   rec.wrap < slot.wrap is stale and skipped.  A legal same-wrap/different-xid
+ *   record can occur because BIND is not WAL-logged and FREE-path slot reuse
+ *   does not bump wrap.
  *
  *   `instance` is carried in-record (like xl_cluster_undo_segment_init) so the
  *   redo handler resolves pg_undo/instance_<N>/seg_<id>.dat without depending on

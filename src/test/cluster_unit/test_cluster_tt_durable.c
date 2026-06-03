@@ -46,6 +46,7 @@
 #include "cluster/cluster_tt_durable.h"
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_segment.h"
+#include "cluster/cluster_undo_smgr.h"
 #include "cluster/storage/cluster_undo_xlog.h"
 
 #undef printf
