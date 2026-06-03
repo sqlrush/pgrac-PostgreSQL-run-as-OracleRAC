@@ -387,6 +387,15 @@ extern void cluster_tt_slot_shmem_register(void);
 
 
 /*
+ * spec-3.12 D5 retention observability accessors.  retention_horizon_scn is a
+ * gauge (last sampled horizon); the others are monotonic event counters.
+ */
+extern uint64 cluster_tt_slot_retention_horizon_scn(void);
+extern uint64 cluster_tt_slot_retain_skip_count(void);
+extern uint64 cluster_tt_slot_retention_recycle_count(void);
+
+
+/*
  * Test-only: wipe all per-node allocator state back to zeroes.  Used by
  * cluster_unit harness to set a clean baseline between cases.  Production
  * code MUST NOT call this.

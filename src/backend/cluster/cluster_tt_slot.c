@@ -52,6 +52,7 @@
 #include "cluster/cluster_undo_retention.h"		/* horizon + recyclable predicate */
 #include "cluster/storage/cluster_undo_alloc.h" /* CLUSTER_UNDO_SEGS_PER_INSTANCE */
 #include "miscadmin.h"
+#include "port/atomics.h" /* spec-3.12 D5 retention counters */
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/elog.h"
@@ -96,6 +97,16 @@ typedef struct ClusterTTSlotAllocPerSegment {
 #define CLUSTER_TT_SLOT_MAX_NODES 128 /* matches SCN_MAX_VALID_NODE_ID + 1 */
 
 typedef struct ClusterTTSlotShmem {
+	/*
+	 * spec-3.12 D5 retention observability (lock-free atomics; updated on the
+	 * alloc slow path, not per-DML).  retention_horizon_scn is a GAUGE sampled
+	 * at the recycle-decision point (C16); the others are monotonic event
+	 * counters.
+	 */
+	pg_atomic_uint64 retention_horizon_scn;		/* last sampled horizon (gauge) */
+	pg_atomic_uint64 tt_slot_retain_skip_count; /* COMMITTED slot kept (>= horizon) */
+	pg_atomic_uint64 retention_recycle_count;	/* COMMITTED slot recycled (< horizon) */
+
 	ClusterTTSlotAllocPerSegment per_node[CLUSTER_TT_SLOT_MAX_NODES];
 } ClusterTTSlotShmem;
 
@@ -205,6 +216,7 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 	bool gate_enabled;
 	SCN horizon = InvalidScn;
 	uint16 chosen;
+	uint64 retain_skip_seen = 0; /* spec-3.12 D5 */
 	int i;
 
 	if (out_retained_pressure)
@@ -219,8 +231,12 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 	 * GUC is off we skip the scan entirely and bypass the gate.
 	 */
 	gate_enabled = cluster_undo_retention_horizon_enabled;
-	if (gate_enabled)
+	if (gate_enabled) {
 		horizon = cluster_undo_retention_horizon();
+		/* spec-3.12 D5 / C16: sample the horizon gauge at the decision point. */
+		if (ClusterTTSlotShm != NULL)
+			pg_atomic_write_u64(&ClusterTTSlotShm->retention_horizon_scn, (uint64)horizon);
+	}
 
 	seg = cluster_tt_slot_get_or_init(segment_id);
 
@@ -248,10 +264,14 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 			} else {
 				/* COMMITTED & commit_scn >= horizon: retention keeps it alive. */
 				retained_pressure = true;
+				retain_skip_seen++; /* C16: per skip event, not de-duped */
 			}
 		}
 		/* CTS_ACTIVE not owned by top_xid: in-flight; nothing to do. */
 	}
+
+	if (retain_skip_seen > 0 && ClusterTTSlotShm != NULL)
+		pg_atomic_fetch_add_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count, retain_skip_seen);
 
 	/* Pass 2: prefer FREE over a retention-eligible recyclable slot. */
 	if (free_idx >= 0) {
@@ -264,6 +284,7 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 		chosen = (uint16)free_idx;
 	} else if (reusable_idx >= 0) {
 		ClusterTTSlotAllocEntry *e = &seg->slots[reusable_idx];
+		bool was_committed = (e->status == CTS_COMMITTED);
 
 		e->xid = top_xid;
 		e->status = CTS_ACTIVE;
@@ -272,6 +293,11 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 		if (e->wrap < TT_WRAP_MAX)
 			e->wrap++;
 		chosen = (uint16)reusable_idx;
+
+		/* spec-3.12 D5: a COMMITTED slot recycled past the horizon (ABORTED was
+		 * never retention-gated, so it does not count). */
+		if (was_committed && ClusterTTSlotShm != NULL)
+			pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_recycle_count, 1);
 	} else {
 		/*
 		 * No FREE and no retention-eligible slot.  Hand the reason back so the
@@ -581,9 +607,39 @@ cluster_tt_slot_shmem_init(void)
 		int i;
 
 		memset(ClusterTTSlotShm, 0, sizeof(ClusterTTSlotShmem));
+		pg_atomic_init_u64(&ClusterTTSlotShm->retention_horizon_scn, 0);
+		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count, 0);
+		pg_atomic_init_u64(&ClusterTTSlotShm->retention_recycle_count, 0);
 		for (i = 0; i < CLUSTER_TT_SLOT_MAX_NODES; i++)
 			LWLockInitialize(&ClusterTTSlotShm->per_node[i].lock, LWTRANCHE_CLUSTER_TT_SLOT);
 	}
+}
+
+
+/* ===== spec-3.12 D5 retention counter accessors ===== */
+
+uint64
+cluster_tt_slot_retention_horizon_scn(void)
+{
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	return pg_atomic_read_u64(&ClusterTTSlotShm->retention_horizon_scn);
+}
+
+uint64
+cluster_tt_slot_retain_skip_count(void)
+{
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	return pg_atomic_read_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count);
+}
+
+uint64
+cluster_tt_slot_retention_recycle_count(void)
+{
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	return pg_atomic_read_u64(&ClusterTTSlotShm->retention_recycle_count);
 }
 
 

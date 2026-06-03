@@ -184,6 +184,7 @@ extern uint64 cluster_undo_segment_hard_cap_fail_count(void);
 extern uint32 cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id,
 											  bool *out_at_hard_cap);
 extern uint64 cluster_undo_tt_retention_rollover_count(void);
+extern uint64 cluster_undo_segment_retain_skip_count(void);
 
 /* P0 perf hardening: per-commit undo fsync counters. */
 extern uint64 cluster_undo_commit_fsync_count(void);

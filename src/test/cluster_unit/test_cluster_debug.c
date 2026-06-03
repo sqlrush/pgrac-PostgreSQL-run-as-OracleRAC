@@ -870,6 +870,32 @@ cluster_tt_durable_redo_apply_count(void)
 {
 	return 0;
 }
+/* spec-3.12 D5 retention counter stubs (dump_undo references these). */
+uint64
+cluster_tt_slot_retention_horizon_scn(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_slot_retain_skip_count(void)
+{
+	return 0;
+}
+uint64
+cluster_tt_slot_retention_recycle_count(void)
+{
+	return 0;
+}
+uint64
+cluster_undo_segment_retain_skip_count(void)
+{
+	return 0;
+}
+uint64
+cluster_undo_tt_retention_rollover_count(void)
+{
+	return 0;
+}
 
 Size
 cluster_shmem_get_total_bytes(void)

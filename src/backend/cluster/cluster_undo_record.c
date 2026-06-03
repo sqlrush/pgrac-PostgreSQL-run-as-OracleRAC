@@ -126,6 +126,12 @@ typedef struct ClusterUndoRecordShared {
 	 * allocator rebound to a fresh one instead of erroring "48 slots full"). */
 	pg_atomic_uint64 tt_retention_rollover_count;
 
+	/* spec-3.12 D5: undo segments skipped for recycle because their retention
+	 * watermark was >= the horizon.  In this lazy MVP the active segment is the
+	 * one skipped at each retention rollover; spec-3.13's proactive scan will
+	 * also bump this. */
+	pg_atomic_uint64 segment_retain_skip_count;
+
 	/* P0 perf hardening (2026-05-31): per-commit (group) undo fsync.
 	 * Durability ordering unchanged (undo durable BEFORE commit visible), but
 	 * fsync granularity moved from per-record (inside cursor_lock) to per-xact
@@ -328,6 +334,7 @@ cluster_undo_record_shmem_init(void)
 		pg_atomic_init_u64(&UndoRecordShared->segment_create_fail_count, 0);
 		pg_atomic_init_u64(&UndoRecordShared->segment_hard_cap_fail_count, 0);
 		pg_atomic_init_u64(&UndoRecordShared->tt_retention_rollover_count, 0);
+		pg_atomic_init_u64(&UndoRecordShared->segment_retain_skip_count, 0);
 
 		/* P0 perf hardening: per-commit undo fsync counters. */
 		pg_atomic_init_u64(&UndoRecordShared->commit_fsync_count, 0);
@@ -1041,6 +1048,12 @@ cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at
 	}
 
 	pg_atomic_fetch_add_u64(&UndoRecordShared->tt_retention_rollover_count, 1);
+	/*
+	 * spec-3.12 D5: the rolled-away segment's committed slots all have
+	 * commit_scn >= horizon (that retention is exactly why the rollover fired),
+	 * so its retention watermark >= horizon -> it was skipped for recycle.
+	 */
+	pg_atomic_fetch_add_u64(&UndoRecordShared->segment_retain_skip_count, 1);
 
 	LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 	return new_segment_id;
@@ -1052,6 +1065,14 @@ cluster_undo_tt_retention_rollover_count(void)
 	if (UndoRecordShared == NULL)
 		return 0;
 	return pg_atomic_read_u64(&UndoRecordShared->tt_retention_rollover_count);
+}
+
+uint64
+cluster_undo_segment_retain_skip_count(void)
+{
+	if (UndoRecordShared == NULL)
+		return 0;
+	return pg_atomic_read_u64(&UndoRecordShared->segment_retain_skip_count);
 }
 
 uint64
