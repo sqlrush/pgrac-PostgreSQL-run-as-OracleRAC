@@ -74,6 +74,7 @@
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_mode.h"
 #include "cluster/cluster_scn.h"
+#include "cluster/cluster_undo_retention.h" /* spec-3.12 D1: retention horizon */
 #endif
 
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
@@ -714,6 +715,8 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 
 		proc->lxid = InvalidLocalTransactionId;
 		proc->xmin = InvalidTransactionId;
+		/* PGRAC: spec-3.12 D1 — clear retention read_scn safety net. */
+		pg_atomic_write_u64(&proc->cluster_read_scn_atomic, 0);
 
 		/* be sure this is cleared in abort */
 		proc->delayChkptFlags = 0;
@@ -756,6 +759,9 @@ ProcArrayEndTransactionInternal(PGPROC *proc, TransactionId latestXid)
 	proc->xid = InvalidTransactionId;
 	proc->lxid = InvalidLocalTransactionId;
 	proc->xmin = InvalidTransactionId;
+	/* PGRAC: spec-3.12 D1 — clear retention read_scn safety net (snapmgr
+	 * already publishes InvalidScn on last snapshot release). */
+	pg_atomic_write_u64(&proc->cluster_read_scn_atomic, 0);
 
 	/* be sure this is cleared in abort */
 	proc->delayChkptFlags = 0;
@@ -942,6 +948,8 @@ ProcArrayClearTransaction(PGPROC *proc)
 
 	proc->lxid = InvalidLocalTransactionId;
 	proc->xmin = InvalidTransactionId;
+	/* PGRAC: spec-3.12 D1 — clear retention read_scn safety net. */
+	pg_atomic_write_u64(&proc->cluster_read_scn_atomic, 0);
 	proc->recoveryConflictPending = false;
 
 	Assert(!(proc->statusFlags & PROC_VACUUM_STATE_MASK));
@@ -2150,6 +2158,43 @@ ClusterSnapshotRefreshFields(Snapshot snapshot)
 		snapshot->read_epoch = 0;
 	}
 	memset(snapshot->_pad, 0, sizeof(snapshot->_pad));
+}
+
+/*
+ * cluster_undo_retention_horizon -- spec-3.12 D1.
+ *
+ * Own-instance undo/TT-slot retention lower bound: the min CLUSTER-source
+ * read_scn over all backends' live snapshots (each backend publishes its min
+ * into PGPROC->cluster_read_scn_atomic via snapmgr).  TT slots / undo segments
+ * whose commit_scn is strictly below this are needed by no live reader and may
+ * be recycled (spec-3.12 C1/C3/C5).  No live cluster reader -> cluster_scn_current()
+ * (everything recyclable).  Mirrors GetOldestXmin's ProcArray scan under a
+ * SHARED ProcArrayLock; callers must NOT hold seg->lock / undo lifecycle_lock
+ * when calling (C17 lock ordering: compute horizon first).
+ */
+SCN
+cluster_undo_retention_horizon(void)
+{
+	ProcArrayStruct *arrayP = procArray;
+	SCN			min = InvalidScn;
+	int			index;
+
+	if (cluster_node_id < 0)
+		return InvalidScn;		/* cluster disabled */
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		int			pgprocno = arrayP->pgprocnos[index];
+		PGPROC	   *proc = &allProcs[pgprocno];
+		SCN			r = (SCN) pg_atomic_read_u64(&proc->cluster_read_scn_atomic);
+
+		if (SCN_VALID(r) && (!SCN_VALID(min) || scn_time_cmp(r, min) < 0))
+			min = r;
+	}
+	LWLockRelease(ProcArrayLock);
+
+	return SCN_VALID(min) ? min : cluster_scn_current();
 }
 #endif
 

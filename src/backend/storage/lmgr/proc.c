@@ -280,6 +280,8 @@ InitProcGlobal(void)
 		pg_atomic_init_u32(&(proc->procArrayGroupNext), INVALID_PGPROCNO);
 		pg_atomic_init_u32(&(proc->clogGroupNext), INVALID_PGPROCNO);
 		pg_atomic_init_u64(&(proc->waitStart), 0);
+		/* PGRAC: spec-3.12 D1 — retention horizon read_scn (InvalidScn == 0). */
+		pg_atomic_init_u64(&(proc->cluster_read_scn_atomic), 0);
 	}
 
 	/*

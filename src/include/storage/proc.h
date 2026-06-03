@@ -315,6 +315,18 @@ struct PGPROC {
 	 * path 补发 GES_RELEASE.
 	 */
 	bool cluster_grd_bast_pending;
+
+	/*
+	 * spec-3.12 D1 — undo/TT-slot retention horizon.  Min CLUSTER-source
+	 * read_scn over this backend's live snapshots (active stack + registered);
+	 * InvalidScn when this backend holds no live cluster snapshot.  Published in
+	 * snapmgr (GetSnapshotData / recompute on push/pop/register/unregister) and
+	 * cleared at xact end; cluster_undo_retention_horizon() scans the ProcArray
+	 * for the min of these to gate undo/TT-slot recycle.  Atomic because SCN is
+	 * 64-bit and snapmgr updates happen outside ProcArrayLock (mirrors xmin but
+	 * torn-read-safe).
+	 */
+	pg_atomic_uint64 cluster_read_scn_atomic;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */

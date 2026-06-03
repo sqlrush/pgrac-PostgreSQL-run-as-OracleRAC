@@ -178,6 +178,7 @@ static TimestampTz AlignTimestampToMinuteBoundary(TimestampTz ts);
 static Snapshot CopySnapshot(Snapshot snapshot);
 static void FreeSnapshot(Snapshot snapshot);
 static void SnapshotResetXmin(void);
+static void cluster_recompute_proc_read_scn(void); /* PGRAC: spec-3.12 D1 */
 
 /*
  * Snapshot fields to be serialized.
@@ -759,6 +760,9 @@ PushActiveSnapshotWithLevel(Snapshot snapshot, int snap_level)
 	ActiveSnapshot = newactive;
 	if (OldestActiveSnapshot == NULL)
 		OldestActiveSnapshot = ActiveSnapshot;
+
+	/* PGRAC: spec-3.12 D1 — a newly live snapshot may lower the retention min. */
+	cluster_recompute_proc_read_scn();
 }
 
 /*
@@ -895,6 +899,9 @@ RegisterSnapshotOnOwner(Snapshot snapshot, ResourceOwner owner)
 	if (snap->regd_count == 1)
 		pairingheap_add(&RegisteredSnapshots, &snap->ph_node);
 
+	/* PGRAC: spec-3.12 D1 — a newly registered snapshot may lower retention min. */
+	cluster_recompute_proc_read_scn();
+
 	return snap;
 }
 
@@ -978,10 +985,70 @@ xmin_cmp(const pairingheap_node *a, const pairingheap_node *b, void *arg)
  * stack entry has the oldest xmin.  (Current uses of GetOldestSnapshot() are
  * not actually critical, but this would be.)
  */
+/*
+ * PGRAC: spec-3.12 D1 — recompute this backend's retention read_scn.
+ *
+ * Publishes min(CLUSTER read_scn) over the backend's live snapshots (active
+ * stack + registered heap) into MyProc->cluster_read_scn_atomic; InvalidScn
+ * when none.  cluster_undo_retention_horizon() (procarray.c) takes the min of
+ * these across the ProcArray to gate undo/TT-slot recycle.
+ *
+ * Unlike SnapshotResetXmin's xmin (which uses the heap's min-xmin node), we
+ * cannot piggyback the min-xmin snapshot: read_scn and xmin can tie-break
+ * differently (two snapshots may share xmin but differ in read_scn), so a
+ * stale min-xmin pick could publish a read_scn ABOVE the true min and let
+ * retention recycle undo a live reader still needs (规则 8.A false-recycle).
+ * We therefore walk every live snapshot for the true min read_scn.  Atomic
+ * write because the helper runs outside ProcArrayLock.
+ */
+static void
+cluster_min_read_scn_heap_walk(pairingheap_node *node, SCN *minp)
+{
+	while (node != NULL)
+	{
+		Snapshot	s = pairingheap_container(SnapshotData, ph_node, node);
+
+		if (SCN_VALID(s->read_scn)
+			&& (!SCN_VALID(*minp) || scn_time_cmp(s->read_scn, *minp) < 0))
+			*minp = s->read_scn;
+		if (node->first_child != NULL)
+			cluster_min_read_scn_heap_walk(node->first_child, minp);
+		node = node->next_sibling;
+	}
+}
+
+static void
+cluster_recompute_proc_read_scn(void)
+{
+	SCN			min = InvalidScn;
+	ActiveSnapshotElt *ae;
+
+	/* Storage-mode gate: matches ClusterSnapshotRefreshFields read_scn gate. */
+	if (!cluster_enabled || cluster_node_id < 0 || MyProc == NULL)
+		return;
+
+	for (ae = ActiveSnapshot; ae != NULL; ae = ae->as_next)
+	{
+		Snapshot	s = ae->as_snap;
+
+		if (SCN_VALID(s->read_scn)
+			&& (!SCN_VALID(min) || scn_time_cmp(s->read_scn, min) < 0))
+			min = s->read_scn;
+	}
+	if (!pairingheap_is_empty(&RegisteredSnapshots))
+		cluster_min_read_scn_heap_walk(RegisteredSnapshots.ph_root, &min);
+
+	pg_atomic_write_u64(&MyProc->cluster_read_scn_atomic, (uint64) min);
+}
+
 static void
 SnapshotResetXmin(void)
 {
 	Snapshot	minSnapshot;
+
+	/* PGRAC: spec-3.12 D1 — always recompute retention read_scn (must run even
+	 * when ActiveSnapshot != NULL below short-circuits the xmin recompute). */
+	cluster_recompute_proc_read_scn();
 
 	if (ActiveSnapshot != NULL)
 		return;
