@@ -45,9 +45,11 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "cluster/cluster_guc.h"   /* cluster_undo_retention_horizon_enabled */
 #include "cluster/cluster_scn.h"   /* SCN_MAX_VALID_NODE_ID */
 #include "cluster/cluster_shmem.h" /* ClusterShmemRegion */
 #include "cluster/cluster_tt_slot.h"
+#include "cluster/cluster_undo_retention.h"		/* horizon + recyclable predicate */
 #include "cluster/storage/cluster_undo_alloc.h" /* CLUSTER_UNDO_SEGS_PER_INSTANCE */
 #include "miscadmin.h"
 #include "storage/lwlock.h"
@@ -58,26 +60,30 @@
 /*
  * Per-slot allocator state.  Distinct from the on-disk TTSlot ABI (see
  * cluster_tt_slot.h); allocator state tracks only what's needed to pick
- * the next free slot and recycle completed ones.  The on-disk TTSlot
- * fields (commit_scn, first_undo_block, …) are wired by spec-3.4c+.
+ * the next free slot and recycle completed ones.
+ *
+ * The ClusterTTSlotAllocStatus enum (CTS_FREE / ACTIVE / COMMITTED / ABORTED)
+ * now lives in cluster_tt_slot.h so the pure retention predicate
+ * cluster_tt_slot_recyclable() can name its values (spec-3.12 D2).
+ *
+ * spec-3.12 D2: commit_scn is recorded here at commit so the retention gate
+ * (cluster_tt_slot_alloc Pass 2) can keep a COMMITTED slot alive while a
+ * reader's read_scn still needs the durable segment-header TT slot.  It is
+ * InvalidScn for every status other than CTS_COMMITTED.  This is shmem-only
+ * allocator state, NOT the on-disk TTSlot ABI, so growing the entry does not
+ * change any on-disk format or catversion.
  */
-typedef enum ClusterTTSlotAllocStatus {
-	CTS_FREE = 0,	   /* available for allocation */
-	CTS_ACTIVE = 1,	   /* owned by an in-flight xact */
-	CTS_COMMITTED = 2, /* committed; recyclable */
-	CTS_ABORTED = 3	   /* aborted; recyclable */
-} ClusterTTSlotAllocStatus;
-
-
 typedef struct ClusterTTSlotAllocEntry {
 	TransactionId xid; /* InvalidTransactionId when CTS_FREE */
 	uint16 wrap;	   /* reuse counter (L189) */
 	uint8 status;	   /* ClusterTTSlotAllocStatus */
-	uint8 _pad;		   /* explicit padding to 8 bytes */
+	uint8 _pad;		   /* explicit padding before commit_scn */
+	SCN commit_scn;	   /* spec-3.12 D2: commit_scn when CTS_COMMITTED; else InvalidScn */
 } ClusterTTSlotAllocEntry;
 
-StaticAssertDecl(sizeof(ClusterTTSlotAllocEntry) == 8,
-				 "spec-3.4b D3: allocator entry must be 8 bytes for predictable shmem sizing");
+StaticAssertDecl(sizeof(ClusterTTSlotAllocEntry) == 16,
+				 "spec-3.12 D2: allocator entry is 16 bytes (8B header + 8B commit_scn) "
+				 "for predictable shmem sizing");
 
 
 typedef struct ClusterTTSlotAllocPerSegment {
@@ -167,29 +173,60 @@ cluster_tt_slot_get_or_init(uint32 segment_id)
 
 
 /*
- * cluster_tt_slot_alloc
+ * cluster_tt_slot_alloc_ext
  *
- *	Three-tier fallback (L189 recycle policy).  See header for the
- *	contract.
+ *	Three-tier fallback (L189 recycle policy) with the spec-3.12 retention
+ *	gate layered on Pass 2:
+ *	    1) reuse a slot already owned by `top_xid` (idempotent)
+ *	    2) take any FREE slot
+ *	    3) recycle a *retention-eligible* COMMITTED / ABORTED slot, wrap++
+ *	A COMMITTED slot is retention-eligible only when commit_scn < horizon
+ *	(cluster_tt_slot_recyclable); ABORTED is always eligible (C7).  When the
+ *	retention GUC is off, the gate is bypassed (spec-3.11 immediate recycle, C6).
+ *
+ *	Returns INVALID_TT_SLOT_OFFSET when no slot can be handed out.  In that
+ *	case *out_retained_pressure (when non-NULL) distinguishes the two reasons:
+ *	    true  -> at least one COMMITTED slot is being kept alive by retention
+ *	             (not all-ACTIVE); the caller may roll over to a new active
+ *	             segment instead of failing (spec-3.12 D2b).
+ *	    false -> every slot is ACTIVE (genuine in-flight concurrency limit).
+ *
+ *	spec-3.12 C17 lock ordering: the horizon is computed (taking ProcArrayLock
+ *	SHARED) BEFORE seg->lock is acquired, so seg->lock is never held while
+ *	ProcArrayLock is taken.
  */
 uint16
-cluster_tt_slot_alloc(uint32 segment_id, TransactionId top_xid)
+cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_retained_pressure)
 {
 	ClusterTTSlotAllocPerSegment *seg;
 	int reusable_idx = -1;
 	int free_idx = -1;
+	bool retained_pressure = false;
+	bool gate_enabled;
+	SCN horizon = InvalidScn;
 	uint16 chosen;
 	int i;
+
+	if (out_retained_pressure)
+		*out_retained_pressure = false;
 
 	if (!TransactionIdIsValid(top_xid))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("cluster_tt_slot_alloc: top_xid must be valid")));
 
+	/*
+	 * C17: compute the retention horizon before taking seg->lock.  When the
+	 * GUC is off we skip the scan entirely and bypass the gate.
+	 */
+	gate_enabled = cluster_undo_retention_horizon_enabled;
+	if (gate_enabled)
+		horizon = cluster_undo_retention_horizon();
+
 	seg = cluster_tt_slot_get_or_init(segment_id);
 
 	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
 
-	/* Pass 1: idempotent reuse of own ACTIVE slot. */
+	/* Pass 1: classify slots (idempotent reuse short-circuits). */
 	for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
 		const ClusterTTSlotAllocEntry *e = &seg->slots[i];
 
@@ -197,18 +234,32 @@ cluster_tt_slot_alloc(uint32 segment_id, TransactionId top_xid)
 			LWLockRelease(&seg->lock);
 			return (uint16)i;
 		}
-		if (e->status == CTS_FREE && free_idx < 0)
-			free_idx = i;
-		else if ((e->status == CTS_COMMITTED || e->status == CTS_ABORTED) && reusable_idx < 0)
-			reusable_idx = i;
+		if (e->status == CTS_FREE) {
+			if (free_idx < 0)
+				free_idx = i;
+		} else if (e->status == CTS_COMMITTED || e->status == CTS_ABORTED) {
+			bool recyclable = gate_enabled
+								  ? cluster_tt_slot_recyclable(e->status, e->commit_scn, horizon)
+								  : true; /* GUC off: spec-3.11 immediate recycle (C6) */
+
+			if (recyclable) {
+				if (reusable_idx < 0)
+					reusable_idx = i;
+			} else {
+				/* COMMITTED & commit_scn >= horizon: retention keeps it alive. */
+				retained_pressure = true;
+			}
+		}
+		/* CTS_ACTIVE not owned by top_xid: in-flight; nothing to do. */
 	}
 
-	/* Pass 2: prefer FREE over recyclable. */
+	/* Pass 2: prefer FREE over a retention-eligible recyclable slot. */
 	if (free_idx >= 0) {
 		ClusterTTSlotAllocEntry *e = &seg->slots[free_idx];
 
 		e->xid = top_xid;
 		e->status = CTS_ACTIVE;
+		e->commit_scn = InvalidScn;
 		/* wrap unchanged on FREE → ACTIVE; first allocation keeps wrap=0 */
 		chosen = (uint16)free_idx;
 	} else if (reusable_idx >= 0) {
@@ -216,18 +267,38 @@ cluster_tt_slot_alloc(uint32 segment_id, TransactionId top_xid)
 
 		e->xid = top_xid;
 		e->status = CTS_ACTIVE;
+		e->commit_scn = InvalidScn;
 		/* L189 wrap++ on recycle (saturate at TT_WRAP_MAX, defends ABA) */
 		if (e->wrap < TT_WRAP_MAX)
 			e->wrap++;
 		chosen = (uint16)reusable_idx;
 	} else {
-		/* All 48 slots ACTIVE → OVERFLOW. */
+		/*
+		 * No FREE and no retention-eligible slot.  Hand the reason back so the
+		 * caller can decide rollover (retained pressure) vs hard error (all
+		 * ACTIVE) -- spec-3.12 D2b / C3b.
+		 */
 		LWLockRelease(&seg->lock);
+		if (out_retained_pressure)
+			*out_retained_pressure = retained_pressure;
 		return INVALID_TT_SLOT_OFFSET;
 	}
 
 	LWLockRelease(&seg->lock);
 	return chosen;
+}
+
+
+/*
+ * cluster_tt_slot_alloc
+ *
+ *	Back-compat 2-arg wrapper (drops the retained-pressure signal).  See
+ *	cluster_tt_slot_alloc_ext for the contract.
+ */
+uint16
+cluster_tt_slot_alloc(uint32 segment_id, TransactionId top_xid)
+{
+	return cluster_tt_slot_alloc_ext(segment_id, top_xid, NULL);
 }
 
 
@@ -255,7 +326,83 @@ cluster_tt_slot_free(uint32 segment_id, uint16 slot_offset)
 	e = &seg->slots[slot_offset];
 	e->status = CTS_FREE;
 	e->xid = InvalidTransactionId;
+	e->commit_scn = InvalidScn;
 	/* wrap is preserved across FREE → next ACTIVE; only recycle bumps it */
+	LWLockRelease(&seg->lock);
+}
+
+
+/*
+ * cluster_tt_slot_mark_committed -- spec-3.12 D2.
+ *
+ *	ACTIVE -> COMMITTED, retaining owner xid + wrap + commit_scn.  The slot is
+ *	NOT freed at commit (unlike the spec-3.4b MVP); the retention gate in
+ *	cluster_tt_slot_alloc keeps it (and therefore the durable segment-header TT
+ *	slot at this offset) addressable until commit_scn drops below the horizon.
+ *	Defensive: only an ACTIVE slot owned by `xid` transitions, so a double
+ *	end-of-xact callback (or a slot already recycled by a later xact) is a
+ *	no-op rather than corrupting another owner's retention state.
+ */
+void
+cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset, TransactionId xid,
+							   SCN commit_scn)
+{
+	ClusterTTSlotAllocPerSegment *seg;
+	ClusterTTSlotAllocEntry *e;
+
+	if (slot_offset >= TT_SLOTS_PER_SEGMENT)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cluster_tt_slot_mark_committed: slot_offset %u out of range [0, %d)",
+						slot_offset, TT_SLOTS_PER_SEGMENT)));
+
+	/*
+	 * rule 8.A: a COMMITTED slot without a real commit_scn would be retained
+	 * forever (the gate cannot prove it recyclable) and could stall the
+	 * horizon.  Commit always advances the SCN first, so this must hold.
+	 */
+	Assert(SCN_VALID(commit_scn));
+
+	seg = cluster_tt_slot_get_or_init(segment_id);
+
+	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
+	e = &seg->slots[slot_offset];
+	if (e->status == CTS_ACTIVE && e->xid == xid) {
+		e->status = CTS_COMMITTED;
+		e->commit_scn = commit_scn;
+		/* keep xid + wrap so the durable header slot stays addressable. */
+	}
+	LWLockRelease(&seg->lock);
+}
+
+
+/*
+ * cluster_tt_slot_mark_aborted -- spec-3.12 D2 / C7.
+ *
+ *	ACTIVE -> ABORTED.  Aborted versions are invisible to every read_scn (abort
+ *	already rolled the row back in place; CR rebuilds committed history only),
+ *	so the slot is immediately recyclable -- no horizon retention.  commit_scn
+ *	is cleared.  Same defensive ownership guard as mark_committed.
+ */
+void
+cluster_tt_slot_mark_aborted(uint32 segment_id, uint16 slot_offset, TransactionId xid)
+{
+	ClusterTTSlotAllocPerSegment *seg;
+	ClusterTTSlotAllocEntry *e;
+
+	if (slot_offset >= TT_SLOTS_PER_SEGMENT)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cluster_tt_slot_mark_aborted: slot_offset %u out of range [0, %d)",
+							   slot_offset, TT_SLOTS_PER_SEGMENT)));
+
+	seg = cluster_tt_slot_get_or_init(segment_id);
+
+	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
+	e = &seg->slots[slot_offset];
+	if (e->status == CTS_ACTIVE && e->xid == xid) {
+		e->status = CTS_ABORTED;
+		e->commit_scn = InvalidScn;
+	}
 	LWLockRelease(&seg->lock);
 }
 

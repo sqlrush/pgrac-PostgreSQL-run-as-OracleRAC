@@ -65,6 +65,7 @@
 #include "access/transam.h"
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_slot.h"
+#include "cluster/cluster_undo_retention.h"
 #include "cluster/storage/cluster_undo_alloc.h"
 #include "storage/lwlock.h"
 
@@ -198,6 +199,38 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 
 
 /* ============================================================
+ *	spec-3.12 D2 retention gate stubs
+ *
+ *	cluster_tt_slot.o now computes the retention horizon (procarray.c) and
+ *	reads the cluster.undo_retention_horizon_enabled GUC; cluster_undo_
+ *	retention.o needs scn_time_cmp.  Stub all three so the allocator's gate
+ *	runs in this standalone binary with a test-controlled horizon.
+ * ============================================================ */
+
+SCN mock_retention_horizon = InvalidScn;
+bool cluster_undo_retention_horizon_enabled = true;
+
+SCN
+cluster_undo_retention_horizon(void)
+{
+	return mock_retention_horizon;
+}
+
+int
+scn_time_cmp(SCN a, SCN b)
+{
+	uint64 la = scn_local(a);
+	uint64 lb = scn_local(b);
+
+	if (la < lb)
+		return -1;
+	if (la > lb)
+		return 1;
+	return 0;
+}
+
+
+/* ============================================================
  *	Test harness helpers
  * ============================================================ */
 
@@ -214,6 +247,10 @@ reset_allocator(void)
 	mock_lwlock_acquire_excl_count = 0;
 	mock_lwlock_acquire_shared_count = 0;
 	mock_lwlock_release_count = 0;
+
+	/* Default: no retention constraint (cluster-disabled sentinel), gate on. */
+	mock_retention_horizon = InvalidScn;
+	cluster_undo_retention_horizon_enabled = true;
 }
 
 
@@ -573,6 +610,109 @@ UT_TEST(test_t30_free_offset_overflow_raises)
 }
 
 
+/* ============================================================
+ *	spec-3.12 D2 — commit-retain + retention gate (U9)
+ * ============================================================ */
+
+UT_TEST(test_t31_mark_committed_below_horizon_recycled)
+{
+	/* commit_scn < horizon -> the COMMITTED slot is retention-eligible and is
+	 * recycled (wrap++) once no FREE slot remains. */
+	uint16 off, recycled, wrap_before, wrap_after;
+	int i;
+
+	reset_allocator();
+	off = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	wrap_before = cluster_tt_slot_get_wrap(NODE0_SEG, off);
+	cluster_tt_slot_mark_committed(NODE0_SEG, off, (TransactionId)100, (SCN)5);
+	mock_retention_horizon = (SCN)10;
+
+	for (i = 1; i < TT_SLOTS_PER_SEGMENT; i++)
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(2000 + i));
+
+	recycled = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)99999);
+	UT_ASSERT_EQ((int)recycled, (int)off);
+	wrap_after = cluster_tt_slot_get_wrap(NODE0_SEG, recycled);
+	UT_ASSERT_EQ((int)(wrap_after > wrap_before), 1);
+}
+
+UT_TEST(test_t32_mark_committed_above_horizon_retained)
+{
+	/* commit_scn >= horizon -> retained; alloc returns OVERFLOW with the
+	 * retained-pressure signal set (a reader still needs this slot). */
+	uint16 off, result;
+	bool retained = false;
+	int i;
+
+	reset_allocator();
+	off = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	cluster_tt_slot_mark_committed(NODE0_SEG, off, (TransactionId)100, (SCN)15);
+	mock_retention_horizon = (SCN)10;
+
+	for (i = 1; i < TT_SLOTS_PER_SEGMENT; i++)
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(2000 + i));
+
+	result = cluster_tt_slot_alloc_ext(NODE0_SEG, (TransactionId)99999, &retained);
+	UT_ASSERT_EQ((int)result, (int)INVALID_TT_SLOT_OFFSET);
+	UT_ASSERT_EQ((int)retained, 1);
+}
+
+UT_TEST(test_t33_mark_aborted_recycled_regardless_of_horizon)
+{
+	/* C7: ABORTED is immediately recyclable; horizon irrelevant. */
+	uint16 off, recycled;
+	int i;
+
+	reset_allocator();
+	off = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	cluster_tt_slot_mark_aborted(NODE0_SEG, off, (TransactionId)100);
+	mock_retention_horizon = (SCN)10;
+
+	for (i = 1; i < TT_SLOTS_PER_SEGMENT; i++)
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(2000 + i));
+
+	recycled = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)99999);
+	UT_ASSERT_EQ((int)recycled, (int)off);
+}
+
+UT_TEST(test_t34_guc_off_bypasses_retention)
+{
+	/* C6: GUC off -> immediate recycle (spec-3.11), even commit_scn>=horizon. */
+	uint16 off, recycled;
+	int i;
+
+	reset_allocator();
+	off = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	cluster_tt_slot_mark_committed(NODE0_SEG, off, (TransactionId)100, (SCN)15);
+	mock_retention_horizon = (SCN)10;
+	cluster_undo_retention_horizon_enabled = false;
+
+	for (i = 1; i < TT_SLOTS_PER_SEGMENT; i++)
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(2000 + i));
+
+	recycled = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)99999);
+	UT_ASSERT_EQ((int)recycled, (int)off);
+
+	cluster_undo_retention_horizon_enabled = true;
+}
+
+UT_TEST(test_t35_all_active_overflow_not_retained_pressure)
+{
+	/* All 48 ACTIVE -> genuine concurrency limit, NOT retained pressure. */
+	uint16 result;
+	bool retained = true;
+	int i;
+
+	reset_allocator();
+	for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++)
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(1000 + i));
+
+	result = cluster_tt_slot_alloc_ext(NODE0_SEG, (TransactionId)99999, &retained);
+	UT_ASSERT_EQ((int)result, (int)INVALID_TT_SLOT_OFFSET);
+	UT_ASSERT_EQ((int)retained, 0);
+}
+
+
 int
 main(void)
 {
@@ -609,6 +749,11 @@ main(void)
 	UT_RUN(test_t28_segment_over_uint16max_raises);
 	UT_RUN(test_t29_invalid_xid_raises);
 	UT_RUN(test_t30_free_offset_overflow_raises);
+	UT_RUN(test_t31_mark_committed_below_horizon_recycled);
+	UT_RUN(test_t32_mark_committed_above_horizon_retained);
+	UT_RUN(test_t33_mark_aborted_recycled_regardless_of_horizon);
+	UT_RUN(test_t34_guc_off_bypasses_retention);
+	UT_RUN(test_t35_all_active_overflow_not_retained_pressure);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

@@ -245,6 +245,18 @@ bool cluster_cr_mvcc_gate = true;
 bool cluster_tt_durable_lookup = true;
 
 /*
+ * cluster.undo_retention_horizon_enabled (spec-3.12 D5).  When on (default),
+ * the TT-slot / undo-segment allocators keep COMMITTED slots/segments alive
+ * while a live reader's read_scn still needs the durable pre-image (own-
+ * instance retention horizon gate; retires the spec-3.11 L4 watermark
+ * fail-closed).  Off bypasses the gate and recycles COMMITTED/ABORTED
+ * immediately (spec-3.11 behavior) -- debug / rollback escape hatch (C6).
+ * Read on the allocation slow path only, so SIGHUP toggling is race-free
+ * (each alloc re-reads the GUC + recomputes the horizon).
+ */
+bool cluster_undo_retention_horizon_enabled = true;
+
+/*
  * cluster.boc_sweep_interval_ms (spec-1.17 D4 v0.2).  walwriter BOC
  * sweep target staleness in ms.  Range [1, 1000]; default 100ms.  Actual
  * sweep frequency is bounded by Min(WalWriterDelay, this); user must
@@ -687,6 +699,25 @@ cluster_init_guc(void)
 		NULL,			/* check_hook */
 		NULL,			/* assign_hook */
 		NULL);			/* show_hook */
+
+	/*
+	 * cluster.undo_retention_horizon_enabled (spec-3.12 D5).  Own-instance
+	 * retention gate for TT slots / undo segments; default on (correctness
+	 * benefit -- retires spec-3.11 L4).  PGC_SIGHUP so it can be flipped off
+	 * at runtime for debugging / rollback to spec-3.11 immediate recycle.
+	 */
+	DefineCustomBoolVariable(
+		"cluster.undo_retention_horizon_enabled",
+		gettext_noop("Retain committed undo / TT slots until no live reader needs them."),
+		gettext_noop("When on, the TT-slot and undo-segment allocators keep a COMMITTED "
+					 "slot/segment alive while a live snapshot's read_scn is at or below its "
+					 "commit_scn (own-instance retention horizon).  Off recycles COMMITTED / "
+					 "ABORTED state immediately (spec-3.11 behavior); a reader that then needs "
+					 "the recycled pre-image fails with 53R9F."),
+		&cluster_undo_retention_horizon_enabled, true, PGC_SIGHUP, 0, /* flags */
+		NULL,														  /* check_hook */
+		NULL,														  /* assign_hook */
+		NULL);														  /* show_hook */
 
 	/*
 	 * cluster.shmem_max_regions (spec-1.3): capacity of the cluster shmem

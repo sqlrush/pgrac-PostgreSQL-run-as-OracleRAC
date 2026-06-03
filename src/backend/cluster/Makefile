@@ -91,6 +91,7 @@ OBJS = \
 	cluster_itl_touch.o \
 	cluster_uba.o \
 	cluster_undo_record.o \
+	cluster_undo_retention.o \
 	cluster_undo_srf.o \
 	cluster_cr.o \
 	cluster_cr_apply.o \

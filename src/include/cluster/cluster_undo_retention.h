@@ -47,4 +47,33 @@
  */
 extern SCN cluster_undo_retention_horizon(void);
 
+
+/*
+ * Pure retention predicates (spec-3.12 D2/D3).  No shmem / no LWLock / no I/O;
+ * implemented in cluster_undo_retention.c and cluster_unit-tested
+ * (test_cluster_retention).  SCN comparisons go through scn_time_cmp().
+ *
+ *	cluster_tt_slot_recyclable:
+ *	  Given a TT-slot allocator status (ClusterTTSlotAllocStatus value), its
+ *	  commit_scn, and the current horizon, decide whether the slot may be
+ *	  recycled.  ABORTED -> always (C7); COMMITTED -> only when
+ *	  commit_scn < horizon (strict; a reader at read_scn == commit_scn still
+ *	  needs the pre-image).  InvalidScn horizon (cluster disabled) -> the gate
+ *	  carries no constraint, so COMMITTED is recyclable.  A COMMITTED slot with
+ *	  an unresolved (InvalidScn) commit_scn is retained (rule 8.A fail-closed).
+ *
+ *	cluster_undo_segment_recyclable:
+ *	  An undo segment may be recycled only when it is SEGMENT_COMMITTED AND its
+ *	  retention watermark (= max commit_scn over the header's COMMITTED TT
+ *	  slots) is strictly below the horizon.  ACTIVE / ALLOCATED / FULL-but-
+ *	  ACTIVE are never recyclable (C5), even when they carry no COMMITTED slot.
+ *	  A SEGMENT_COMMITTED segment with no live COMMITTED slot is recyclable; one
+ *	  carrying a COMMITTED slot with an unresolved commit_scn is retained
+ *	  (rule 8.A fail-closed).
+ */
+struct UndoSegmentHeaderData;
+
+extern bool cluster_tt_slot_recyclable(uint8 cts_status, SCN commit_scn, SCN horizon);
+extern bool cluster_undo_segment_recyclable(const struct UndoSegmentHeaderData *hdr, SCN horizon);
+
 #endif /* CLUSTER_UNDO_RETENTION_H */

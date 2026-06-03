@@ -254,6 +254,24 @@ StaticAssertDecl(sizeof(ClusterUndoTTSlotRef) == 32,
 
 
 /*
+ * ClusterTTSlotAllocStatus -- per-slot allocator state (shmem-only; distinct
+ * from the on-disk TTSlotStatus ABI above).  spec-3.4b tracked only what the
+ * allocator needs to pick / recycle slots; spec-3.12 D2 promotes this enum to
+ * the header so the pure retention predicate cluster_tt_slot_recyclable()
+ * (cluster_undo_retention.c) and its cluster_unit tests can name the values.
+ *
+ *   Values are wire-stable with cluster_tt_slot_test_force_status (2 =
+ *   COMMITTED, 3 = ABORTED) and MUST NOT be reassigned.
+ */
+typedef enum ClusterTTSlotAllocStatus {
+	CTS_FREE = 0,	   /* available for allocation */
+	CTS_ACTIVE = 1,	   /* owned by an in-flight xact */
+	CTS_COMMITTED = 2, /* committed; recyclable once commit_scn < horizon */
+	CTS_ABORTED = 3	   /* aborted; immediately recyclable (spec-3.12 C7) */
+} ClusterTTSlotAllocStatus;
+
+
+/*
  * cluster_tt_slot_offset_to_id / _id_to_offset
  *
  *	spec-3.4b F1: on-disk slot offset and exact-key tt_slot_id are
@@ -307,8 +325,40 @@ cluster_tt_slot_id_to_offset(uint32 tt_slot_id)
  *	  encoded.
  */
 extern uint16 cluster_tt_slot_alloc(uint32 segment_id, TransactionId top_xid);
+
+/*
+ * spec-3.12 D2b — alloc variant that reports WHY it failed.  On
+ * INVALID_TT_SLOT_OFFSET, *out_retained_pressure (when non-NULL) is true iff
+ * the segment is blocked by retained COMMITTED slots (not all-ACTIVE), so the
+ * caller may roll over to a new active segment instead of erroring.  The 2-arg
+ * cluster_tt_slot_alloc is a wrapper that passes NULL.
+ */
+extern uint16 cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid,
+										bool *out_retained_pressure);
 extern void cluster_tt_slot_free(uint32 segment_id, uint16 slot_offset);
 extern uint16 cluster_tt_slot_get_wrap(uint32 segment_id, uint16 slot_offset);
+
+/*
+ * spec-3.12 D2 — end-of-xact allocator state transitions.
+ *
+ *	cluster_tt_slot_mark_committed:
+ *	  ACTIVE -> COMMITTED, retaining owner xid + wrap + commit_scn so the
+ *	  durable segment-header TT slot is NOT overwritten by a later writer
+ *	  while a reader's read_scn still needs the pre-image.  The slot becomes
+ *	  recyclable only once commit_scn < the retention horizon (gate in
+ *	  cluster_tt_slot_alloc; predicate cluster_tt_slot_recyclable).  Replaces
+ *	  the spec-3.4b commit-time cluster_tt_slot_free().
+ *
+ *	cluster_tt_slot_mark_aborted:
+ *	  ACTIVE -> ABORTED.  Aborted versions are invisible to every read_scn so
+ *	  the slot is immediately recyclable (spec-3.12 C7); commit_scn is cleared.
+ *
+ *	Both are idempotent / defensive: a slot not currently ACTIVE-owned by
+ *	`xid` is left unchanged (guards against double end-of-xact callbacks).
+ */
+extern void cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset, TransactionId xid,
+										   SCN commit_scn);
+extern void cluster_tt_slot_mark_aborted(uint32 segment_id, uint16 slot_offset, TransactionId xid);
 
 
 /*

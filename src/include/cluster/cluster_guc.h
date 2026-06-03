@@ -367,6 +367,9 @@ extern int cluster_boc_sweep_interval_ms;
  */
 extern bool cluster_enabled;
 
+/* spec-3.12 D5: own-instance undo/TT-slot retention horizon gate (default on). */
+extern bool cluster_undo_retention_horizon_enabled;
+
 
 /*
  * cluster.undo_segments_per_instance (spec-1.22 D7).

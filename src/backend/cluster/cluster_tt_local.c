@@ -293,27 +293,48 @@ cluster_tt_local_has_binding(TransactionId top_xid)
 /*
  * cluster_tt_local_reset_binding
  *
- *	Free every backend-local TT slot binding and clear the table.
- *	Idempotent.  Called from record_commit / record_abort after the final
- *	status for the top xid is installed.  Child/subxact bindings are freed
- *	here too; their overlay entries already carry exact keys and remain
- *	valid because local_xid is part of ClusterTTStatusKey.
+ *	Clear the backend-local TT slot binding table.  Idempotent.  Does NOT
+ *	transition the shmem allocator slots: spec-3.12 D2 moved the end-of-xact
+ *	slot state machine (commit -> retain COMMITTED, abort -> ABORTED) into
+ *	cluster_tt_local_finish_bindings(), which runs just before this.  The
+ *	binding-table array itself lives in TopTransactionContext and is reclaimed
+ *	when that context resets at xact end, so dropping the pointer is enough.
  */
 void
 cluster_tt_local_reset_binding(void)
 {
-	uint32 i;
-
-	for (i = 0; i < cluster_tt_local_binding_count; i++) {
-		if (!TransactionIdIsValid(cluster_tt_local_bindings[i].top_xid))
-			continue;
-		cluster_tt_slot_free(cluster_tt_local_bindings[i].segment_id,
-							 cluster_tt_local_bindings[i].slot_offset);
-	}
-
 	cluster_tt_local_bindings = NULL;
 	cluster_tt_local_binding_count = 0;
 	cluster_tt_local_binding_capacity = 0;
+}
+
+/*
+ * cluster_tt_local_finish_bindings -- spec-3.12 D2.
+ *
+ *	Transition every backend-local binding's shmem TT slot at top-level xact
+ *	end: commit retains the slot as COMMITTED + commit_scn (so the durable
+ *	segment-header TT slot is not overwritten while a reader needs it); abort
+ *	marks it ABORTED (immediately recyclable, C7).  Then clears the binding
+ *	table.  Child/subxact bindings are transitioned here too; their overlay
+ *	entries keep exact keys because local_xid is part of ClusterTTStatusKey.
+ */
+static void
+cluster_tt_local_finish_bindings(bool committed, SCN commit_scn)
+{
+	uint32 i;
+
+	for (i = 0; i < cluster_tt_local_binding_count; i++) {
+		const ClusterTTLocalBinding *b = &cluster_tt_local_bindings[i];
+
+		if (!TransactionIdIsValid(b->top_xid))
+			continue;
+		if (committed)
+			cluster_tt_slot_mark_committed(b->segment_id, b->slot_offset, b->top_xid, commit_scn);
+		else
+			cluster_tt_slot_mark_aborted(b->segment_id, b->slot_offset, b->top_xid);
+	}
+
+	cluster_tt_local_reset_binding();
 }
 
 /*
@@ -457,21 +478,23 @@ cluster_tt_local_record_commit(TransactionId xid, SCN commit_scn)
 {
 	install_status(xid, CLUSTER_TT_STATUS_COMMITTED, commit_scn);
 	/*
-	 * spec-3.4b D4 / F11: free the binding's TT slot once the overlay
-	 * entry has been installed.  Subsequent xacts on this backend will
-	 * allocate a fresh binding via get_or_create_binding().  The overlay
-	 * entry's key references the just-freed slot offset, but the
-	 * ClusterTTStatusKey includes local_xid, so a future xact that
-	 * recycles the same slot offset will produce a different key.
+	 * spec-3.12 D2: retain the binding's TT slot as COMMITTED + commit_scn
+	 * (replaces the spec-3.4b commit-time free).  Retention keeps the durable
+	 * segment-header TT slot at this offset addressable -- so a reader whose
+	 * read_scn is at/below commit_scn can still resolve it by-xid -- until the
+	 * horizon advances past commit_scn.  The overlay entry's key references the
+	 * same slot offset, but ClusterTTStatusKey includes local_xid, so a future
+	 * xact that recycles the offset produces a different key.
 	 */
-	cluster_tt_local_reset_binding();
+	cluster_tt_local_finish_bindings(true /* committed */, commit_scn);
 }
 
 void
 cluster_tt_local_record_abort(TransactionId xid)
 {
 	install_status(xid, CLUSTER_TT_STATUS_ABORTED, InvalidScn);
-	cluster_tt_local_reset_binding();
+	/* spec-3.12 D2 / C7: aborted slots are immediately recyclable. */
+	cluster_tt_local_finish_bindings(false /* aborted */, InvalidScn);
 }
 
 /*
