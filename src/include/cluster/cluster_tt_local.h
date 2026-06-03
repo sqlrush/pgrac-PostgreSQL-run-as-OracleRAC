@@ -129,10 +129,10 @@ extern uint32 cluster_tt_local_slot_seq_peek(void);
 extern bool cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segment_id,
 												   uint16 *out_slot_offset, uint32 *out_tt_slot_id);
 
-/* Read-only accessor; does not allocate. */
+/* Read-only accessor; does not allocate.  out_wrap (spec-3.12 D2b) is nullable. */
 extern bool cluster_tt_local_peek_binding(TransactionId top_xid, uint32 *out_segment_id,
 										  uint16 *out_slot_offset, uint32 *out_tt_slot_id,
-										  uint32 *out_cluster_epoch);
+										  uint32 *out_cluster_epoch, uint16 *out_wrap);
 
 /* Cheap xact-end predicate; true only when this xact owns a local TT binding. */
 extern bool cluster_tt_local_has_binding(TransactionId top_xid);

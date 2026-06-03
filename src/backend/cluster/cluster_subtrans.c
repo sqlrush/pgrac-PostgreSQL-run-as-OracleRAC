@@ -315,7 +315,7 @@ cluster_subtrans_xact_has_state(TransactionId top_xid)
 		uint32 tt_id;
 		uint32 epoch;
 
-		if (!cluster_tt_local_peek_binding(top_xid, &seg, &off, &tt_id, &epoch))
+		if (!cluster_tt_local_peek_binding(top_xid, &seg, &off, &tt_id, &epoch, NULL))
 			return false;
 		memset(&key, 0, sizeof(key));
 		key.origin_node_id = (uint16)cluster_node_id;

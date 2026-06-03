@@ -360,6 +360,20 @@ extern void cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset
 										   SCN commit_scn);
 extern void cluster_tt_slot_mark_aborted(uint32 segment_id, uint16 slot_offset, TransactionId xid);
 
+/*
+ * spec-3.12 D2b — retention-pressure segment rollover support.
+ *
+ *	cluster_tt_slot_current_segment:
+ *	  segment_id the node's allocator is bound to (0 if never bound).  The
+ *	  binding path keeps allocating here after a rollover.
+ *
+ *	cluster_tt_slot_rollover:
+ *	  Rebind the node's allocator to a fresh segment + reset its 48 slots.
+ *	  Caller MUST hold the undo lifecycle_lock (serializes rollovers, C17).
+ */
+extern uint32 cluster_tt_slot_current_segment(int node_id);
+extern void cluster_tt_slot_rollover(int node_id, uint32 new_segment_id);
+
 
 /*
  * Shmem lifecycle (impl in cluster_tt_slot.c).

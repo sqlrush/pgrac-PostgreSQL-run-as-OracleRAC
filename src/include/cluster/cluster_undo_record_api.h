@@ -172,6 +172,19 @@ extern uint64 cluster_undo_segment_switch_count(void);
 extern uint64 cluster_undo_segment_create_fail_count(void);
 extern uint64 cluster_undo_segment_hard_cap_fail_count(void);
 
+/*
+ * spec-3.12 D2b: TT-slot retention-pressure segment rollover.
+ *
+ *	cluster_undo_tt_rollover_locked: rebind the node's TT-slot allocator to a
+ *	fresh undo segment when retained COMMITTED slots fill the active one (takes
+ *	lifecycle_lock internally).  Returns the new active TT segment_id, or 0 on
+ *	extend failure (*out_at_hard_cap distinguishes the 53R9E hard cap).
+ *	cluster_undo_tt_retention_rollover_count: observability counter accessor.
+ */
+extern uint32 cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id,
+											  bool *out_at_hard_cap);
+extern uint64 cluster_undo_tt_retention_rollover_count(void);
+
 /* P0 perf hardening: per-commit undo fsync counters. */
 extern uint64 cluster_undo_commit_fsync_count(void);
 extern uint64 cluster_undo_commit_fsync_segment_count(void);

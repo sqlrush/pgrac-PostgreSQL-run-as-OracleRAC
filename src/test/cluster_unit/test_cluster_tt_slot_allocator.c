@@ -713,6 +713,55 @@ UT_TEST(test_t35_all_active_overflow_not_retained_pressure)
 }
 
 
+/* ============================================================
+ *	spec-3.12 D2b — retention-pressure segment rollover
+ * ============================================================ */
+
+UT_TEST(test_t36_current_segment_tracks_binding)
+{
+	reset_allocator();
+	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), 0); /* unbound */
+	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), (int)NODE0_SEG);
+}
+
+UT_TEST(test_t37_rollover_rebinds_and_resets)
+{
+	uint16 off;
+
+	reset_allocator();
+	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100); /* bind seg 1, slot 0 ACTIVE */
+	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), (int)NODE0_SEG);
+
+	/* segment 2 also derives node 0 ((2-1)/256 == 0). */
+	cluster_tt_slot_rollover(0, 2);
+	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), 2);
+
+	/* Fresh segment -> first alloc returns offset 0, wrap 0. */
+	off = cluster_tt_slot_alloc(2, (TransactionId)200);
+	UT_ASSERT_EQ((int)off, 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(2, 0), 0);
+}
+
+UT_TEST(test_t38_mark_on_rolled_away_segment_is_noop)
+{
+	uint16 off;
+
+	reset_allocator();
+	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100); /* bind seg 1 */
+	cluster_tt_slot_rollover(0, 2);								/* roll node 0 to seg 2 */
+
+	/* A late commit on the OLD (rolled-away) segment must NOT touch the new
+	 * binding's slots -- it no-ops (old retention is durable). */
+	cluster_tt_slot_mark_committed(NODE0_SEG, 0, (TransactionId)100, (SCN)5);
+
+	/* seg 2 slot 0 is still FREE: first alloc returns offset 0, wrap unchanged. */
+	off = cluster_tt_slot_alloc(2, (TransactionId)200);
+	UT_ASSERT_EQ((int)off, 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(2, 0), 0);
+}
+
+
 int
 main(void)
 {
@@ -754,6 +803,9 @@ main(void)
 	UT_RUN(test_t33_mark_aborted_recycled_regardless_of_horizon);
 	UT_RUN(test_t34_guc_off_bypasses_retention);
 	UT_RUN(test_t35_all_active_overflow_not_retained_pressure);
+	UT_RUN(test_t36_current_segment_tracks_binding);
+	UT_RUN(test_t37_rollover_rebinds_and_resets);
+	UT_RUN(test_t38_mark_on_rolled_away_segment_is_noop);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

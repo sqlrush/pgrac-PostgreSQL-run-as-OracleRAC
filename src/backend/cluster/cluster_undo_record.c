@@ -70,6 +70,7 @@
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_shmem.h"
+#include "cluster/cluster_tt_slot.h" /* spec-3.12 D2b: TT allocator rollover */
 #include "cluster/cluster_uba.h"
 #include "cluster/cluster_undo_format.h"
 #include "cluster/cluster_undo_record.h"
@@ -119,6 +120,11 @@ typedef struct ClusterUndoRecordShared {
 	pg_atomic_uint64 segment_switch_count;		/* active_segment_id 切换 */
 	pg_atomic_uint64 segment_create_fail_count; /* FS error / timeout */
 	pg_atomic_uint64 segment_hard_cap_fail_count; /* 53R9E hard cap */
+
+	/* spec-3.12 D2b: TT-slot retention-pressure segment rollovers (a long
+	 * reader's retained COMMITTED slots filled the active segment, so the
+	 * allocator rebound to a fresh one instead of erroring "48 slots full"). */
+	pg_atomic_uint64 tt_retention_rollover_count;
 
 	/* P0 perf hardening (2026-05-31): per-commit (group) undo fsync.
 	 * Durability ordering unchanged (undo durable BEFORE commit visible), but
@@ -321,6 +327,7 @@ cluster_undo_record_shmem_init(void)
 		pg_atomic_init_u64(&UndoRecordShared->segment_switch_count, 0);
 		pg_atomic_init_u64(&UndoRecordShared->segment_create_fail_count, 0);
 		pg_atomic_init_u64(&UndoRecordShared->segment_hard_cap_fail_count, 0);
+		pg_atomic_init_u64(&UndoRecordShared->tt_retention_rollover_count, 0);
 
 		/* P0 perf hardening: per-commit undo fsync counters. */
 		pg_atomic_init_u64(&UndoRecordShared->commit_fsync_count, 0);
@@ -962,6 +969,65 @@ cluster_undo_autoextend_count(void)
 	if (UndoRecordShared == NULL)
 		return 0;
 	return pg_atomic_read_u64(&UndoRecordShared->autoextend_count);
+}
+
+/*
+ * cluster_undo_tt_rollover_locked -- spec-3.12 D2b.
+ *
+ *	The node's TT-slot allocator filled its active segment with retained
+ *	COMMITTED slots (a long reader holds the horizon below their commit_scns).
+ *	Under lifecycle_lock, double-check no peer already rolled over, then extend
+ *	the segment pool and rebind the allocator to the fresh segment.  Returns the
+ *	new (or concurrently-rolled) active TT segment_id; 0 on extend failure, with
+ *	*out_at_hard_cap set when the 53R9E hard cap was the cause.  Mirrors the
+ *	record-write autoextend's double-checked lifecycle_lock pattern.
+ *
+ *	C17 lock ordering: lifecycle_lock is taken here, then seg->lock (inside
+ *	cluster_tt_slot_current_segment / cluster_tt_slot_rollover) -- never the
+ *	reverse.  The retention horizon (ProcArrayLock) is computed by the caller
+ *	BEFORE this call and is not held across it.
+ */
+uint32
+cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at_hard_cap)
+{
+	uint8 owner_instance = (uint8)(node_id + 1);
+	uint32 cur;
+	uint32 new_segment_id;
+
+	if (out_at_hard_cap != NULL)
+		*out_at_hard_cap = false;
+
+	if (UndoRecordShared == NULL)
+		return 0;
+
+	LWLockAcquire(&UndoRecordShared->lifecycle_lock.lock, LW_EXCLUSIVE);
+
+	/* Double-checked: a peer may already have rolled this node over. */
+	cur = cluster_tt_slot_current_segment(node_id);
+	if (cur != 0 && cur != old_segment_id) {
+		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+		return cur;
+	}
+
+	new_segment_id = cluster_undo_segment_extend_or_create(owner_instance, out_at_hard_cap);
+	if (new_segment_id == 0) {
+		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+		return 0;
+	}
+
+	cluster_tt_slot_rollover(node_id, new_segment_id);
+	pg_atomic_fetch_add_u64(&UndoRecordShared->tt_retention_rollover_count, 1);
+
+	LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+	return new_segment_id;
+}
+
+uint64
+cluster_undo_tt_retention_rollover_count(void)
+{
+	if (UndoRecordShared == NULL)
+		return 0;
+	return pg_atomic_read_u64(&UndoRecordShared->tt_retention_rollover_count);
 }
 
 uint64

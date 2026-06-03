@@ -333,6 +333,37 @@ cluster_tt_slot_free(uint32 segment_id, uint16 slot_offset)
 
 
 /*
+ * cluster_tt_slot_pernode_structural -- return the per-node allocator that owns
+ * `segment_id`, validating only that segment_id is structurally in range.
+ * Unlike cluster_tt_slot_get_or_init it does NOT enforce the node's current
+ * binding, so end-of-xact mark transitions can no-op on a segment the node has
+ * since rolled away from (spec-3.12 D2b): that segment's retention is tracked
+ * durably (segment header), not in this shmem allocator.  Caller must check
+ * seg->segment_id == segment_id under the lock to detect the stale case.
+ */
+static ClusterTTSlotAllocPerSegment *
+cluster_tt_slot_pernode_structural(uint32 segment_id, const char *fn)
+{
+	int node_id;
+
+	if (ClusterTTSlotShm == NULL)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("cluster TT slot allocator shmem not initialised")));
+	if (segment_id == 0 || segment_id > UINT16_MAX)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("%s: segment_id %u out of range (1, %u]", fn, segment_id,
+							   (unsigned)UINT16_MAX)));
+	node_id = cluster_tt_slot_segment_to_node(segment_id);
+	if (node_id < 0 || node_id >= CLUSTER_TT_SLOT_MAX_NODES)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("%s: segment_id %u derives node_id %d outside [0, %d)", fn,
+							   segment_id, node_id, CLUSTER_TT_SLOT_MAX_NODES)));
+
+	return &ClusterTTSlotShm->per_node[node_id];
+}
+
+
+/*
  * cluster_tt_slot_mark_committed -- spec-3.12 D2.
  *
  *	ACTIVE -> COMMITTED, retaining owner xid + wrap + commit_scn.  The slot is
@@ -342,13 +373,16 @@ cluster_tt_slot_free(uint32 segment_id, uint16 slot_offset)
  *	Defensive: only an ACTIVE slot owned by `xid` transitions, so a double
  *	end-of-xact callback (or a slot already recycled by a later xact) is a
  *	no-op rather than corrupting another owner's retention state.
+ *
+ *	spec-3.12 D2b: if the node has rolled this segment away (seg->segment_id no
+ *	longer matches), this is a no-op -- the old segment's commit_scn is already
+ *	durable in its header and its retention is tracked at segment granularity.
  */
 void
 cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset, TransactionId xid,
 							   SCN commit_scn)
 {
 	ClusterTTSlotAllocPerSegment *seg;
-	ClusterTTSlotAllocEntry *e;
 
 	if (slot_offset >= TT_SLOTS_PER_SEGMENT)
 		ereport(ERROR,
@@ -363,14 +397,17 @@ cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset, Transactio
 	 */
 	Assert(SCN_VALID(commit_scn));
 
-	seg = cluster_tt_slot_get_or_init(segment_id);
+	seg = cluster_tt_slot_pernode_structural(segment_id, "cluster_tt_slot_mark_committed");
 
 	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
-	e = &seg->slots[slot_offset];
-	if (e->status == CTS_ACTIVE && e->xid == xid) {
-		e->status = CTS_COMMITTED;
-		e->commit_scn = commit_scn;
-		/* keep xid + wrap so the durable header slot stays addressable. */
+	if (seg->segment_id == segment_id) {
+		ClusterTTSlotAllocEntry *e = &seg->slots[slot_offset];
+
+		if (e->status == CTS_ACTIVE && e->xid == xid) {
+			e->status = CTS_COMMITTED;
+			e->commit_scn = commit_scn;
+			/* keep xid + wrap so the durable header slot stays addressable. */
+		}
 	}
 	LWLockRelease(&seg->lock);
 }
@@ -382,27 +419,97 @@ cluster_tt_slot_mark_committed(uint32 segment_id, uint16 slot_offset, Transactio
  *	ACTIVE -> ABORTED.  Aborted versions are invisible to every read_scn (abort
  *	already rolled the row back in place; CR rebuilds committed history only),
  *	so the slot is immediately recyclable -- no horizon retention.  commit_scn
- *	is cleared.  Same defensive ownership guard as mark_committed.
+ *	is cleared.  Same defensive ownership + rolled-away (D2b) guards as
+ *	mark_committed.
  */
 void
 cluster_tt_slot_mark_aborted(uint32 segment_id, uint16 slot_offset, TransactionId xid)
 {
 	ClusterTTSlotAllocPerSegment *seg;
-	ClusterTTSlotAllocEntry *e;
 
 	if (slot_offset >= TT_SLOTS_PER_SEGMENT)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("cluster_tt_slot_mark_aborted: slot_offset %u out of range [0, %d)",
 							   slot_offset, TT_SLOTS_PER_SEGMENT)));
 
-	seg = cluster_tt_slot_get_or_init(segment_id);
+	seg = cluster_tt_slot_pernode_structural(segment_id, "cluster_tt_slot_mark_aborted");
 
 	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
-	e = &seg->slots[slot_offset];
-	if (e->status == CTS_ACTIVE && e->xid == xid) {
-		e->status = CTS_ABORTED;
-		e->commit_scn = InvalidScn;
+	if (seg->segment_id == segment_id) {
+		ClusterTTSlotAllocEntry *e = &seg->slots[slot_offset];
+
+		if (e->status == CTS_ACTIVE && e->xid == xid) {
+			e->status = CTS_ABORTED;
+			e->commit_scn = InvalidScn;
+		}
 	}
+	LWLockRelease(&seg->lock);
+}
+
+
+/*
+ * cluster_tt_slot_current_segment -- spec-3.12 D2b.
+ *
+ *	Return the segment_id the node's TT-slot allocator is currently bound to,
+ *	or 0 if the node has never bound one.  The binding path uses this to keep
+ *	allocating on the active segment after a rollover (rather than re-deriving
+ *	the fixed spec-3.4b id).  Read under the SHARED lock so it can't tear
+ *	against a concurrent rollover.
+ */
+uint32
+cluster_tt_slot_current_segment(int node_id)
+{
+	ClusterTTSlotAllocPerSegment *seg;
+	uint32 segment_id;
+
+	if (ClusterTTSlotShm == NULL || node_id < 0 || node_id >= CLUSTER_TT_SLOT_MAX_NODES)
+		return 0;
+
+	seg = &ClusterTTSlotShm->per_node[node_id];
+	LWLockAcquire(&seg->lock, LW_SHARED);
+	segment_id = seg->segment_id;
+	LWLockRelease(&seg->lock);
+	return segment_id;
+}
+
+
+/*
+ * cluster_tt_slot_rollover -- spec-3.12 D2b.
+ *
+ *	Rebind the node's TT-slot allocator to `new_segment_id` and reset its 48
+ *	slots to FREE (the new segment's on-disk header is fresh, so wrap restarts
+ *	at 0).  The previous segment's retained COMMITTED slots are abandoned at the
+ *	shmem-allocator level: their commit_scn is already durable in that segment's
+ *	header and their retention is now tracked at segment granularity (no offset
+ *	on the old segment is ever reused, so its durable TT slots stay resolvable
+ *	by-xid).  Caller MUST serialize rollovers with lifecycle_lock (C17:
+ *	lifecycle_lock is held here, then seg->lock; never the reverse).
+ */
+void
+cluster_tt_slot_rollover(int node_id, uint32 new_segment_id)
+{
+	ClusterTTSlotAllocPerSegment *seg;
+
+	if (ClusterTTSlotShm == NULL)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("cluster TT slot allocator shmem not initialised")));
+	if (node_id < 0 || node_id >= CLUSTER_TT_SLOT_MAX_NODES)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cluster_tt_slot_rollover: node_id %d outside [0, %d)", node_id,
+							   CLUSTER_TT_SLOT_MAX_NODES)));
+	if (new_segment_id == 0 || new_segment_id > UINT16_MAX)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cluster_tt_slot_rollover: segment_id %u out of range (1, %u]",
+							   new_segment_id, (unsigned)UINT16_MAX)));
+	if (cluster_tt_slot_segment_to_node(new_segment_id) != node_id)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cluster_tt_slot_rollover: segment_id %u does not belong to node %d",
+							   new_segment_id, node_id)));
+
+	seg = &ClusterTTSlotShm->per_node[node_id];
+	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
+	seg->segment_id = new_segment_id;
+	memset(seg->slots, 0, sizeof(seg->slots)); /* all CTS_FREE, wrap 0, commit_scn 0 */
 	LWLockRelease(&seg->lock);
 }
 

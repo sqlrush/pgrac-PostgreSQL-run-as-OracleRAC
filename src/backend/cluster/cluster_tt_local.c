@@ -48,7 +48,8 @@
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_tt_durable.h" /* spec-3.11 D4 durable commit */
 #include "cluster/cluster_tt_local.h"
-#include "cluster/cluster_tt_slot.h" /* spec-3.4b D4 real binding */
+#include "cluster/cluster_tt_slot.h"		 /* spec-3.4b D4 real binding */
+#include "cluster/cluster_undo_record_api.h" /* spec-3.12 D2b cluster_undo_tt_rollover_locked */
 #include "cluster/cluster_tt_status.h"
 #include "cluster/cluster_tt_status_hint.h"		/* spec-3.2 D4 wire emit append */
 #include "cluster/storage/cluster_undo_alloc.h" /* cluster_undo_active_segment_for_node_or_create */
@@ -139,11 +140,12 @@ typedef struct ClusterTTLocalBinding {
 	TransactionId top_xid; /* InvalidTransactionId == no binding */
 	uint32 segment_id;
 	uint16 slot_offset;
-	/* cppcheck-suppress unusedStructMember
-	 * Reason: explicit padding between slot_offset (offset 10) and cluster_epoch (offset 12)
-	 * to align uint32 on a 4-byte boundary;  guards against implicit padding drift across
-	 * compilers (spec-3.4b F11 binding stability). */
-	uint16 _pad;
+	/* spec-3.12 D2b: wrap counter captured at bind time.  The slot is held
+	 * ACTIVE for the whole xact (never recycled while ACTIVE), so wrap cannot
+	 * change before commit -- capturing it here lets precommit stamp the durable
+	 * TT slot without re-reading the shmem allocator, which may have rolled this
+	 * segment away (cluster_tt_slot_get_wrap would then ERROR on the stale id). */
+	uint16 wrap;
 	uint32 cluster_epoch; /* snapshot at bind time */
 } ClusterTTLocalBinding;
 
@@ -233,21 +235,66 @@ cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segmen
 		ClusterTTLocalBinding *b;
 		uint32 seg;
 		uint16 off;
+		bool retained_pressure = false;
 
-		seg = cluster_undo_active_segment_for_node_or_create(cluster_node_id);
-		off = cluster_tt_slot_alloc(seg, top_xid);
-		if (off == INVALID_TT_SLOT_OFFSET)
-			ereport(
-				ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("cluster TT slot allocator exhausted on segment %u (48 slots full)", seg),
-				 errhint("All concurrent xacts on this node hold ACTIVE slots; retry after "
-						 "shorter transactions commit or abort.")));
+		/*
+		 * spec-3.12 D2b: allocate on the node's CURRENT TT segment (which may
+		 * have been rolled forward by an earlier retention rollover); only the
+		 * first-ever bind falls back to the fixed spec-3.4b segment id (and
+		 * lazily provisions its file).
+		 */
+		seg = cluster_tt_slot_current_segment(cluster_node_id);
+		if (seg == 0)
+			seg = cluster_undo_active_segment_for_node_or_create(cluster_node_id);
+
+		off = cluster_tt_slot_alloc_ext(seg, top_xid, &retained_pressure);
+		if (off == INVALID_TT_SLOT_OFFSET) {
+			if (!retained_pressure)
+				/* All 48 slots ACTIVE -- genuine in-flight concurrency limit. */
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("cluster TT slot allocator exhausted on segment %u (48 slots full)",
+								seg),
+						 errhint("All concurrent xacts on this node hold ACTIVE slots; retry after "
+								 "shorter transactions commit or abort.")));
+
+			/*
+			 * spec-3.12 D2b / C3b: retained COMMITTED slots (a long reader holds
+			 * the horizon) fill the active segment.  Roll over to a fresh undo
+			 * segment + rebind the allocator instead of failing the writer.
+			 */
+			{
+				bool at_hard_cap = false;
+				uint32 new_seg
+					= cluster_undo_tt_rollover_locked(cluster_node_id, seg, &at_hard_cap);
+
+				if (new_seg == 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("cluster TT slot allocator: retention rollover failed for "
+									"segment %u (%s)",
+									seg,
+									at_hard_cap ? "undo segment pool hard cap reached"
+												: "undo segment autoextend failed"),
+							 errhint("A long-running reader is retaining committed undo; end it, "
+									 "or raise cluster.undo_segments_max_per_instance.")));
+
+				seg = new_seg;
+				off = cluster_tt_slot_alloc(seg, top_xid);
+				if (off == INVALID_TT_SLOT_OFFSET)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("cluster TT slot allocator: fresh rollover segment %u already "
+									"full",
+									seg)));
+			}
+		}
 
 		b = cluster_tt_local_append_binding();
 		b->top_xid = top_xid;
 		b->segment_id = seg;
 		b->slot_offset = off;
+		b->wrap = cluster_tt_slot_get_wrap(seg, off); /* D2b: capture before any rollover */
 		b->cluster_epoch = (uint32)cluster_epoch_get_current();
 
 		*out_segment_id = seg;
@@ -267,7 +314,7 @@ cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segmen
 bool
 cluster_tt_local_peek_binding(TransactionId top_xid, uint32 *out_segment_id,
 							  uint16 *out_slot_offset, uint32 *out_tt_slot_id,
-							  uint32 *out_cluster_epoch)
+							  uint32 *out_cluster_epoch, uint16 *out_wrap)
 {
 	int idx;
 	const ClusterTTLocalBinding *b;
@@ -281,6 +328,8 @@ cluster_tt_local_peek_binding(TransactionId top_xid, uint32 *out_segment_id,
 	*out_slot_offset = b->slot_offset;
 	*out_tt_slot_id = cluster_tt_slot_offset_to_id(b->slot_offset);
 	*out_cluster_epoch = b->cluster_epoch;
+	if (out_wrap != NULL) /* spec-3.12 D2b: wrap captured at bind time */
+		*out_wrap = b->wrap;
 	return true;
 }
 
@@ -359,7 +408,7 @@ build_local_key(TransactionId xid, ClusterTTStatusKey *out)
 
 	memset(out, 0, sizeof(*out));
 
-	if (!cluster_tt_local_peek_binding(xid, &seg, &off, &tt_id, &epoch))
+	if (!cluster_tt_local_peek_binding(xid, &seg, &off, &tt_id, &epoch, NULL))
 		return false;
 
 	out->origin_node_id = (uint16)cluster_node_id;
@@ -466,10 +515,17 @@ cluster_tt_local_precommit_durable_finish(TransactionId xid, SCN commit_scn)
 	 * still present.  C1b: this only stamps commit_scn; whether the xact
 	 * actually committed is still decided by the commit record / CLOG.
 	 */
-	if (!cluster_tt_local_peek_binding(xid, &segment_id, &slot_offset, &tt_slot_id, &cluster_epoch))
+	if (!cluster_tt_local_peek_binding(xid, &segment_id, &slot_offset, &tt_slot_id, &cluster_epoch,
+									   &wrap))
 		return;
 
-	wrap = cluster_tt_slot_get_wrap(segment_id, slot_offset);
+	/*
+	 * spec-3.12 D2b: use the wrap captured at bind time, NOT a fresh
+	 * cluster_tt_slot_get_wrap() -- a peer backend may have rolled this node's
+	 * TT allocator to a new segment since this xact bound, which would make a
+	 * fresh read of the (now stale) segment ERROR.  The slot is held ACTIVE for
+	 * the whole xact, so its wrap cannot have changed.
+	 */
 	cluster_tt_slot_durable_commit(segment_id, slot_offset, xid, wrap, commit_scn);
 }
 
@@ -583,13 +639,14 @@ cluster_tt_local_get_or_create_binding(TransactionId top_xid, uint32 *out_segmen
 bool
 cluster_tt_local_peek_binding(TransactionId top_xid, uint32 *out_segment_id,
 							  uint16 *out_slot_offset, uint32 *out_tt_slot_id,
-							  uint32 *out_cluster_epoch)
+							  uint32 *out_cluster_epoch, uint16 *out_wrap)
 {
 	(void)top_xid;
 	(void)out_segment_id;
 	(void)out_slot_offset;
 	(void)out_tt_slot_id;
 	(void)out_cluster_epoch;
+	(void)out_wrap;
 	return false;
 }
 

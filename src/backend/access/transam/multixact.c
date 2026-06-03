@@ -912,7 +912,7 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 			uint32 tt_id;
 			uint32 epoch;
 
-			if (!cluster_tt_local_peek_binding(members[i].xid, &seg, &off, &tt_id, &epoch))
+			if (!cluster_tt_local_peek_binding(members[i].xid, &seg, &off, &tt_id, &epoch, NULL))
 			{
 				all_local = false;
 				break;
