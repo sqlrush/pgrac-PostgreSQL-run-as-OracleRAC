@@ -370,9 +370,12 @@ extern void cluster_tt_slot_mark_aborted(uint32 segment_id, uint16 slot_offset, 
  *	cluster_tt_slot_rollover:
  *	  Rebind the node's allocator to a fresh segment + reset its 48 slots.
  *	  Caller MUST hold the undo lifecycle_lock (serializes rollovers, C17).
+ *	  out_old_had_active (spec-3.12 D3; nullable) reports whether the old
+ *	  segment still had an in-flight ACTIVE slot, so the caller can decide
+ *	  the SEGMENT_ACTIVE -> SEGMENT_COMMITTED transition.
  */
 extern uint32 cluster_tt_slot_current_segment(int node_id);
-extern void cluster_tt_slot_rollover(int node_id, uint32 new_segment_id);
+extern void cluster_tt_slot_rollover(int node_id, uint32 new_segment_id, bool *out_old_had_active);
 
 
 /*

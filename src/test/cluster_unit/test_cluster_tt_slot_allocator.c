@@ -733,8 +733,14 @@ UT_TEST(test_t37_rollover_rebinds_and_resets)
 	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100); /* bind seg 1, slot 0 ACTIVE */
 	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), (int)NODE0_SEG);
 
-	/* segment 2 also derives node 0 ((2-1)/256 == 0). */
-	cluster_tt_slot_rollover(0, 2);
+	/* segment 2 also derives node 0 ((2-1)/256 == 0).  Old seg held an ACTIVE
+	 * slot (xid 100), so old_had_active must be reported true. */
+	{
+		bool old_had_active = false;
+
+		cluster_tt_slot_rollover(0, 2, &old_had_active);
+		UT_ASSERT_EQ((int)old_had_active, 1);
+	}
 	UT_ASSERT_EQ((int)cluster_tt_slot_current_segment(0), 2);
 
 	/* Fresh segment -> first alloc returns offset 0, wrap 0. */
@@ -749,7 +755,7 @@ UT_TEST(test_t38_mark_on_rolled_away_segment_is_noop)
 
 	reset_allocator();
 	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100); /* bind seg 1 */
-	cluster_tt_slot_rollover(0, 2);								/* roll node 0 to seg 2 */
+	cluster_tt_slot_rollover(0, 2, NULL);						/* roll node 0 to seg 2 */
 
 	/* A late commit on the OLD (rolled-away) segment must NOT touch the new
 	 * binding's slots -- it no-ops (old retention is durable). */
@@ -759,6 +765,22 @@ UT_TEST(test_t38_mark_on_rolled_away_segment_is_noop)
 	off = cluster_tt_slot_alloc(2, (TransactionId)200);
 	UT_ASSERT_EQ((int)off, 0);
 	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(2, 0), 0);
+}
+
+
+UT_TEST(test_t39_rollover_reports_drained_when_no_active)
+{
+	/* spec-3.12 D3: a segment whose only slots are retained COMMITTED (no
+	 * in-flight ACTIVE) reports old_had_active == false at rollover, so the
+	 * caller may transition it to SEGMENT_COMMITTED. */
+	bool old_had_active = true;
+
+	reset_allocator();
+	(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	cluster_tt_slot_mark_committed(NODE0_SEG, 0, (TransactionId)100, (SCN)5);
+
+	cluster_tt_slot_rollover(0, 2, &old_had_active);
+	UT_ASSERT_EQ((int)old_had_active, 0);
 }
 
 
@@ -806,6 +828,7 @@ main(void)
 	UT_RUN(test_t36_current_segment_tracks_binding);
 	UT_RUN(test_t37_rollover_rebinds_and_resets);
 	UT_RUN(test_t38_mark_on_rolled_away_segment_is_noop);
+	UT_RUN(test_t39_rollover_reports_drained_when_no_active);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

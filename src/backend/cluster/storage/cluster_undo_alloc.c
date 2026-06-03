@@ -477,6 +477,37 @@ cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance)
 
 
 /*
+ * cluster_undo_segment_mark_committed -- spec-3.12 D3 ACTIVE → COMMITTED.
+ *
+ *	Minimal lazy transition: when the TT-slot allocator rolls a drained segment
+ *	away (no in-flight ACTIVE TT slot left) and that segment is no longer the
+ *	record cursor's active segment, it moves to SEGMENT_COMMITTED ("all tx
+ *	committed; awaits retention").  cluster_undo_segment_recyclable() then admits
+ *	it once the horizon passes the segment's watermark; proactive reclaim of
+ *	RECYCLABLE segments stays in spec-3.13.  Only ACTIVE (incl. FULL-but-ACTIVE,
+ *	since FULL is a flag not a state) transitions; ALLOCATED / RECYCLABLE are a
+ *	no-op (defensive).  Idempotent (already-COMMITTED returns true).
+ */
+bool
+cluster_undo_segment_mark_committed(uint32 segment_id, uint8 owner_instance)
+{
+	PGAlignedBlock blockbuf;
+	UndoSegmentHeaderData *hdr;
+
+	if (!read_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data, &hdr))
+		return false;
+
+	if (hdr->segment_state == SEGMENT_COMMITTED)
+		return true; /* idempotent */
+	if (hdr->segment_state != SEGMENT_ACTIVE)
+		return false; /* only ACTIVE -> COMMITTED (caller decides eligibility) */
+
+	hdr->segment_state = SEGMENT_COMMITTED;
+	return write_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data);
+}
+
+
+/*
  * cluster_undo_segment_mark_full -- D1 set UNDO_SEGMENT_FLAG_FULL.
  *
  *	Called when free_block_bitmap shows segment exhausted.  Per spec

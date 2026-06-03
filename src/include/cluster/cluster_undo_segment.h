@@ -182,6 +182,14 @@ typedef enum UndoSegmentState {
 extern bool cluster_undo_segment_mark_active(uint32 segment_id, uint8 owner_instance);
 extern bool cluster_undo_segment_mark_full(uint32 segment_id, uint8 owner_instance);
 
+/*
+ * spec-3.12 D3: ACTIVE -> COMMITTED minimal lazy transition (a drained segment
+ * rolled away by the TT-slot retention rollover).  cluster_undo_segment_
+ * recyclable() (cluster_undo_retention.h) gates COMMITTED -> reclaim; proactive
+ * reclaim is spec-3.13.
+ */
+extern bool cluster_undo_segment_mark_committed(uint32 segment_id, uint8 owner_instance);
+
 /* D6 free_block_bitmap helpers (spec-3.8). */
 extern bool cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance,
 												 uint32 block_no);

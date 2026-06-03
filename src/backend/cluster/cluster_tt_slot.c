@@ -484,11 +484,21 @@ cluster_tt_slot_current_segment(int node_id)
  *	on the old segment is ever reused, so its durable TT slots stay resolvable
  *	by-xid).  Caller MUST serialize rollovers with lifecycle_lock (C17:
  *	lifecycle_lock is held here, then seg->lock; never the reverse).
+ *
+ *	spec-3.12 D3: *out_old_had_active (when non-NULL) reports whether the old
+ *	segment still had any CTS_ACTIVE (in-flight) slot at reset time.  If false,
+ *	the old segment is drained and the caller may transition it to
+ *	SEGMENT_COMMITTED for retention reclaim (spec-3.13).
  */
 void
-cluster_tt_slot_rollover(int node_id, uint32 new_segment_id)
+cluster_tt_slot_rollover(int node_id, uint32 new_segment_id, bool *out_old_had_active)
 {
 	ClusterTTSlotAllocPerSegment *seg;
+	bool old_had_active = false;
+	int i;
+
+	if (out_old_had_active != NULL)
+		*out_old_had_active = false;
 
 	if (ClusterTTSlotShm == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
@@ -508,9 +518,18 @@ cluster_tt_slot_rollover(int node_id, uint32 new_segment_id)
 
 	seg = &ClusterTTSlotShm->per_node[node_id];
 	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
+	for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
+		if (seg->slots[i].status == CTS_ACTIVE) {
+			old_had_active = true;
+			break;
+		}
+	}
 	seg->segment_id = new_segment_id;
 	memset(seg->slots, 0, sizeof(seg->slots)); /* all CTS_FREE, wrap 0, commit_scn 0 */
 	LWLockRelease(&seg->lock);
+
+	if (out_old_had_active != NULL)
+		*out_old_had_active = old_had_active;
 }
 
 

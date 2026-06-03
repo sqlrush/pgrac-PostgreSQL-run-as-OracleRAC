@@ -1015,7 +1015,30 @@ cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at
 		return 0;
 	}
 
-	cluster_tt_slot_rollover(node_id, new_segment_id);
+	{
+		bool old_had_active = false;
+		uint32 fixed_first = (uint32)node_id * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
+
+		cluster_tt_slot_rollover(node_id, new_segment_id, &old_had_active);
+
+		/*
+		 * spec-3.12 D3: transition the drained old segment to SEGMENT_COMMITTED
+		 * so retention reclaim (spec-3.13) can pick it up once the horizon
+		 * passes its watermark.  Guards keep it strictly safe in this lazy MVP:
+		 *   - !old_had_active: no in-flight ACTIVE TT slot remains, so "all tx
+		 *     committed" holds for the segment.
+		 *   - old != fixed_first: the spec-3.4b fixed segment is shared with the
+		 *     record-write cursor (both start there); never mark it COMMITTED.
+		 *   - old != record active_segment_id: the segment is not the record
+		 *     cursor's current write target.
+		 * A rolled-over TT segment is otherwise TT-exclusive (extend_or_create
+		 * hands disjoint ids to the record vs TT paths), so this is conflict-free.
+		 */
+		if (!old_had_active && old_segment_id != fixed_first
+			&& old_segment_id != UndoRecordShared->active_segment_id)
+			(void)cluster_undo_segment_mark_committed(old_segment_id, owner_instance);
+	}
+
 	pg_atomic_fetch_add_u64(&UndoRecordShared->tt_retention_rollover_count, 1);
 
 	LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
