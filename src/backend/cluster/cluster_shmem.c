@@ -733,6 +733,17 @@ cluster_init_shmem(void)
 	CLUSTER_INJECTION_POINT("cluster-init-pre-shmem");
 
 	/*
+	 * initdb's bootstrap postgres does not run process_shared_preload_libraries
+	 * or process_shmem_requests, so no addin shmem has been reserved.  In that
+	 * path the registry was never built and cluster_node_id is still the disabled
+	 * sentinel.  Do not lazily register/init the full cluster region set from the
+	 * tiny bootstrap shmem slop; real cluster shmem is created on normal
+	 * postmaster start after initdb completes.
+	 */
+	if (registry == NULL && cluster_node_id < 0)
+		return;
+
+	/*
 	 * Bootstrap and standalone modes skip process_shared_preload_libraries
 	 * (and thus cluster_init -> cluster_init_shmem_module).  Build the
 	 * registry lazily here so the foundational regions are always
