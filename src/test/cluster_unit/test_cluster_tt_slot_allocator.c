@@ -899,6 +899,79 @@ UT_TEST(test_t42_gc_skips_inflight_active)
 }
 
 
+/* ============================================================
+ *	spec-3.13 D5 — TT_WRAP_MAX retire (ABA fail-fast guard)
+ * ============================================================ */
+
+UT_TEST(test_t43_wrap_max_slot_is_retired_from_both_paths)
+{
+	/* Drive one slot's wrap to TT_WRAP_MAX via gc+alloc cycles, then
+	 * verify NEITHER selection point recycles it again: the cleaner GC
+	 * skips (slots_wrap_retired++), and alloc_ext reports pressure
+	 * instead of reusing it. */
+	ClusterUndoCleanerPassStats stats;
+	uint16 sa;
+	uint32 cycles;
+	uint64 retired_before;
+
+	reset_allocator();
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL);
+	mock_retention_horizon = (SCN)1000;
+
+	sa = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	UT_ASSERT_EQ((int)sa, 0);
+	cluster_tt_slot_mark_committed(NODE0_SEG, sa, (TransactionId)100, (SCN)5);
+
+	/* Each gc+alloc pair bumps wrap by exactly 1 (T40 equivalence). */
+	for (cycles = 0; cycles < (uint32)TT_WRAP_MAX; cycles++) {
+		memset(&stats, 0, sizeof(stats));
+		cluster_tt_slot_gc_current_pass((SCN)1000, &stats);
+		if (stats.shmem_tt_slots_gcd != 1)
+			break; /* retired: stop driving */
+		(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(200 + cycles));
+		cluster_tt_slot_mark_committed(NODE0_SEG, sa, (TransactionId)(200 + cycles), (SCN)5);
+	}
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(NODE0_SEG, sa), (int)TT_WRAP_MAX);
+
+	/* cleaner path refuses + counts. */
+	retired_before = cluster_tt_slot_wrap_retired_count();
+	memset(&stats, 0, sizeof(stats));
+	cluster_tt_slot_gc_current_pass((SCN)1000, &stats);
+	UT_ASSERT_EQ((int)stats.shmem_tt_slots_gcd, 0);
+	UT_ASSERT_EQ((int)stats.slots_wrap_retired, 1);
+	UT_ASSERT_EQ((int)(cluster_tt_slot_wrap_retired_count() - retired_before), 1);
+
+	/* alloc path refuses: with every other slot burned ACTIVE, the
+	 * retired slot must NOT be selected -> INVALID + pressure. */
+	{
+		bool pressure = false;
+		uint16 got;
+		int i;
+
+		for (i = 0; i < TT_SLOTS_PER_SEGMENT - 1; i++)
+			(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(70000 + i));
+		got = cluster_tt_slot_alloc_ext(NODE0_SEG, (TransactionId)99999, &pressure);
+		UT_ASSERT_EQ((int)got, (int)INVALID_TT_SLOT_OFFSET);
+		UT_ASSERT_EQ((int)pressure, 1);
+	}
+}
+
+UT_TEST(test_t44_rollover_clears_retire)
+{
+	/* Retire is generation-local: rollover resets wraps to 0 and the
+	 * same slot index becomes allocatable again (v0.2 ④ / §3.4). */
+	uint16 sa;
+
+	/* state from t43: slot 0 of NODE0_SEG is at TT_WRAP_MAX. */
+	cluster_tt_slot_rollover(0, 2, NULL);		  /* rebind+reset to segment 2 */
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL); /* and back: fresh state */
+
+	sa = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	UT_ASSERT_EQ((int)sa, 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(NODE0_SEG, sa), 0);
+}
+
+
 int
 main(void)
 {
@@ -948,6 +1021,8 @@ main(void)
 	UT_RUN(test_t40_gc_then_alloc_equals_direct_recycle);
 	UT_RUN(test_t41_gc_respects_horizon_retained_slot_untouched);
 	UT_RUN(test_t42_gc_skips_inflight_active);
+	UT_RUN(test_t43_wrap_max_slot_is_retired_from_both_paths);
+	UT_RUN(test_t44_rollover_clears_retire);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

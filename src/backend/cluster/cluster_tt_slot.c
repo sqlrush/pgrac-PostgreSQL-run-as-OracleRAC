@@ -108,6 +108,12 @@ typedef struct ClusterTTSlotShmem {
 	pg_atomic_uint64 tt_slot_retain_skip_count; /* COMMITTED slot kept (>= horizon) */
 	pg_atomic_uint64 retention_recycle_count;	/* COMMITTED slot recycled (< horizon) */
 
+	/* spec-3.13 D5: entries refused for recycle because wrap reached
+	 * TT_WRAP_MAX (ABA fail-fast guard; cleared only by whole-segment
+	 * rollover/reuse which resets wraps to 0).  Bumped by BOTH selection
+	 * points (alloc Pass-1 and the cleaner GC pass). */
+	pg_atomic_uint64 tt_slot_wrap_retired_count;
+
 	ClusterTTSlotAllocPerSegment per_node[CLUSTER_TT_SLOT_MAX_NODES];
 } ClusterTTSlotShmem;
 
@@ -181,6 +187,31 @@ cluster_tt_slot_get_or_init(uint32 segment_id)
 	}
 
 	return seg;
+}
+
+
+/*
+ * tt_slot_entry_wrap_retired -- spec-3.13 D5.
+ *
+ *	A terminal-state entry whose wrap counter has reached TT_WRAP_MAX is
+ *	retired for the remainder of this segment generation: recycling it
+ *	again could not bump wrap (saturation) and would erode the ABA
+ *	fail-fast guard.  Retire is shmem-only and generation-local (v0.2 ④):
+ *	rollover/reuse reset wraps to 0 and the slot becomes usable again.
+ *	Applies regardless of the retention GUC -- this is ABA safety, not
+ *	retention policy.
+ */
+static inline bool
+tt_slot_entry_wrap_retired(const ClusterTTSlotAllocEntry *e)
+{
+	return e->wrap >= TT_WRAP_MAX;
+}
+
+static inline void
+tt_slot_count_wrap_retired(void)
+{
+	if (ClusterTTSlotShm != NULL)
+		pg_atomic_fetch_add_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count, 1);
 }
 
 
@@ -286,6 +317,14 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 								  ? cluster_tt_slot_recyclable(e->status, e->commit_scn, horizon)
 								  : true; /* GUC off: spec-3.11 immediate recycle (C6) */
 
+			/* D5: wrap-retired entries are never re-selected this generation;
+			 * they read as pressure so the caller can roll over (C3b family). */
+			if (recyclable && tt_slot_entry_wrap_retired(e)) {
+				recyclable = false;
+				retained_pressure = true;
+				tt_slot_count_wrap_retired();
+			}
+
 			if (recyclable) {
 				if (reusable_idx < 0)
 					reusable_idx = i;
@@ -382,6 +421,11 @@ cluster_tt_slot_gc_current_pass(SCN horizon, ClusterUndoCleanerPassStats *stats)
 			continue;
 		if (!cluster_tt_slot_recyclable(e->status, e->commit_scn, horizon))
 			continue; /* retained: a live reader may still need it (8.A) */
+		if (tt_slot_entry_wrap_retired(e)) {
+			tt_slot_count_wrap_retired();
+			stats->slots_wrap_retired++;
+			continue; /* D5: ABA guard exhausted; wait for rollover/reuse */
+		}
 
 		if (e->status == CTS_COMMITTED && ClusterTTSlotShm != NULL)
 			pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_recycle_count, 1);
@@ -703,6 +747,7 @@ cluster_tt_slot_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTSlotShm->retention_horizon_scn, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->retention_recycle_count, 0);
+		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count, 0);
 		for (i = 0; i < CLUSTER_TT_SLOT_MAX_NODES; i++)
 			LWLockInitialize(&ClusterTTSlotShm->per_node[i].lock, LWTRANCHE_CLUSTER_TT_SLOT);
 	}
@@ -733,6 +778,14 @@ cluster_tt_slot_retention_recycle_count(void)
 	if (ClusterTTSlotShm == NULL)
 		return 0;
 	return pg_atomic_read_u64(&ClusterTTSlotShm->retention_recycle_count);
+}
+
+uint64
+cluster_tt_slot_wrap_retired_count(void)
+{
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	return pg_atomic_read_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count);
 }
 
 

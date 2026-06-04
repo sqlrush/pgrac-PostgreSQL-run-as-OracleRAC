@@ -392,6 +392,7 @@ extern void cluster_tt_slot_shmem_register(void);
  */
 extern uint64 cluster_tt_slot_retention_horizon_scn(void);
 extern uint64 cluster_tt_slot_retain_skip_count(void);
+extern uint64 cluster_tt_slot_wrap_retired_count(void); /* spec-3.13 D5 */
 extern uint64 cluster_tt_slot_retention_recycle_count(void);
 
 
