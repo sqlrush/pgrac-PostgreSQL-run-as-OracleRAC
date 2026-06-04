@@ -44,6 +44,17 @@
 
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_durable.h"
+#include "cluster/cluster_undo_cleaner.h" /* scan-pass stats (spec-3.13 D2-B) */
+
+/* spec-3.13 D2-B stub: scan pass compares commit_scn vs horizon. */
+int
+scn_time_cmp(SCN a, SCN b)
+{
+	uint64 la = a & ((((uint64)1) << 56) - 1);
+	uint64 lb = b & ((((uint64)1) << 56) - 1);
+
+	return (la < lb) ? -1 : (la > lb) ? 1 : 0;
+}
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_segment.h"
 #include "cluster/cluster_undo_smgr.h"
@@ -157,12 +168,15 @@ cluster_undo_smgr_read_header_bytes(uint32 segment_id pg_attribute_unused(),
 	return true;
 }
 
+static int g_write_hdr_calls = 0; /* spec-3.13 D2-B scan-only invariant probe */
+
 bool
 cluster_undo_smgr_write_header_bytes(uint32 segment_id pg_attribute_unused(),
 									 uint8 owner_instance pg_attribute_unused(),
 									 uint32 offset pg_attribute_unused(), const char *buf,
 									 uint32 len)
 {
+	g_write_hdr_calls++;
 	return buf != NULL && len == sizeof(TTSlot);
 }
 
@@ -347,6 +361,60 @@ UT_TEST(test_by_xid_two_match_ambiguous_failclosed)
 	UT_ASSERT_EQ((int)cluster_tt_slot_durable_lookup_by_xid(12345, &got), 0);
 }
 
+/* ============================================================
+ *	U6: cluster_undo_segment_tt_header_scan_pass (spec-3.13 D2-B,
+ *	scan-only) — classification + zero-write invariant.
+ * ============================================================ */
+
+UT_TEST(test_scan_pass_classifies_inventory)
+{
+	ClusterUndoCleanerPassStats stats = { 0 };
+	bool ok;
+
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(0, TT_SLOT_COMMITTED, (TransactionId)100, (SCN)5);	/* below */
+	seed_block_slot(1, TT_SLOT_COMMITTED, (TransactionId)101, (SCN)20); /* == horizon: retained */
+	seed_block_slot(2, TT_SLOT_COMMITTED, (TransactionId)102, (SCN)0);	/* unresolved (8.A) */
+	seed_block_slot(3, TT_SLOT_ACTIVE, (TransactionId)103, (SCN)0);		/* stale residue */
+	seed_block_slot(4, TT_SLOT_ABORTED, (TransactionId)104, (SCN)0);	/* no inventory impact */
+
+	ok = cluster_undo_segment_tt_header_scan_pass(1, 1, (SCN)20, &stats);
+	UT_ASSERT_EQ((int)ok, 1);
+	UT_ASSERT_EQ((int)stats.header_tt_slots_below_horizon, 1);
+	UT_ASSERT_EQ((int)stats.header_unresolved_committed, 1);
+	UT_ASSERT_EQ((int)stats.stale_active_skipped, 1);
+	UT_ASSERT_EQ((int)stats.segments_scanned, 1);
+}
+
+UT_TEST(test_scan_pass_writes_nothing)
+{
+	/* v0.3 (3) scan-only invariant: the pass must never call the smgr write
+	 * surface, and the canned block bytes must be bit-identical after. */
+	ClusterUndoCleanerPassStats stats = { 0 };
+	char before[BLCKSZ];
+
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(0, TT_SLOT_COMMITTED, (TransactionId)100, (SCN)5);
+	memcpy(before, g_canned_block, BLCKSZ);
+	g_write_hdr_calls = 0;
+
+	(void)cluster_undo_segment_tt_header_scan_pass(1, 1, (SCN)20, &stats);
+
+	UT_ASSERT_EQ(g_write_hdr_calls, 0);
+	UT_ASSERT_EQ(memcmp(before, g_canned_block, BLCKSZ), 0);
+}
+
+UT_TEST(test_scan_pass_read_fail_returns_false)
+{
+	ClusterUndoCleanerPassStats stats = { 0 };
+	bool ok;
+
+	/* segment 7 has no canned block -> read_block returns false. */
+	ok = cluster_undo_segment_tt_header_scan_pass(7, 1, (SCN)20, &stats);
+	UT_ASSERT_EQ((int)ok, 0);
+	UT_ASSERT_EQ((int)stats.segments_scanned, 0);
+}
+
 
 int
 main(int argc, char **argv)
@@ -375,6 +443,10 @@ main(int argc, char **argv)
 	UT_RUN(test_by_xid_zero_match_miss);
 	UT_RUN(test_by_xid_one_match);
 	UT_RUN(test_by_xid_two_match_ambiguous_failclosed);
+
+	UT_RUN(test_scan_pass_classifies_inventory);
+	UT_RUN(test_scan_pass_writes_nothing);
+	UT_RUN(test_scan_pass_read_fail_returns_false);
 
 	UT_DONE();
 	return ut_failed_count != 0 ? 1 : 0;

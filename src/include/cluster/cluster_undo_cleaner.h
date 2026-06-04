@@ -64,6 +64,7 @@
 #include "datatype/timestamp.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
+#include "cluster/cluster_scn.h" /* SCN (pass-stats horizon plumbing) */
 
 
 /*
@@ -137,6 +138,40 @@ extern TimestampTz cluster_undo_cleaner_spawned_at(void);
 extern TimestampTz cluster_undo_cleaner_ready_at(void);
 extern TimestampTz cluster_undo_cleaner_last_liveness_tick_at(void);
 extern int64 cluster_undo_cleaner_main_loop_iters(void);
+
+/*
+ * ClusterUndoCleanerPassStats -- per-pass tallies (D2/D3/D5 producers,
+ * D6 publishes a chosen subset into UndoCleanerSharedState).  Plain
+ * stack struct; zero it before each pass.
+ */
+typedef struct ClusterUndoCleanerPassStats {
+	uint32 segments_scanned;
+	uint32 shmem_tt_slots_gcd;			  /* D2-A: shmem slots recycled to FREE */
+	uint32 header_tt_slots_below_horizon; /* D2-B scan-only: would-be-recyclable */
+	uint32 header_unresolved_committed;	  /* D2-B: COMMITTED with invalid scn (8.A retain) */
+	uint32 segments_marked_recyclable;	  /* D3 */
+	uint32 segments_reused;				  /* D4 (allocator-side, reported back) */
+	uint32 stale_active_skipped;		  /* HC6: durable-side ACTIVE residue skipped */
+	uint32 slots_wrap_retired;			  /* D5 */
+} ClusterUndoCleanerPassStats;
+
+/*
+ * D2-A: proactive GC of the CURRENT shmem allocator segment for this
+ * node.  Caller supplies the horizon (computed ONCE per pass, before
+ * any seg->lock — spec-3.12 C17).  Shares the recycle transition
+ * helper with alloc Pass-2 (C-R1: single typed implementation).
+ */
+extern void cluster_tt_slot_gc_current_pass(SCN horizon, ClusterUndoCleanerPassStats *stats);
+
+/*
+ * D2-B: READ-ONLY scan of one segment's durable header TTSlot[]
+ * (block 0).  Counts sub-horizon committed / unresolved / stale-active
+ * slots; never mutates durable bytes (v0.3 ③).  Returns false when the
+ * header cannot be read (absent file / I/O) — caller counts and moves on.
+ */
+extern bool cluster_undo_segment_tt_header_scan_pass(uint32 segment_id, uint8 owner_instance,
+													 SCN horizon,
+													 ClusterUndoCleanerPassStats *stats);
 
 /* Status enum -> canonical lowercase string ("ready", ...). */
 extern const char *cluster_undo_cleaner_status_to_string(UndoCleanerStatus s);

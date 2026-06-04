@@ -36,8 +36,9 @@
 #include "access/transam.h"
 #include "utils/elog.h"
 
-#include "cluster/cluster_guc.h" /* cluster_node_id */
-#include "cluster/cluster_scn.h" /* SCN, SCN_VALID, InvalidScn */
+#include "cluster/cluster_guc.h"		  /* cluster_node_id */
+#include "cluster/cluster_scn.h"		  /* SCN, SCN_VALID, InvalidScn */
+#include "cluster/cluster_undo_cleaner.h" /* spec-3.13 D2-B scan-only pass */
 #include "cluster/cluster_tt_durable.h"
 #include "cluster/cluster_tt_slot.h"	  /* TTSlot, TT_SLOT_COMMITTED, TT_SLOTS_PER_SEGMENT */
 #include "cluster/cluster_undo_segment.h" /* UndoSegmentHeaderData */
@@ -269,5 +270,65 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 		return false; /* 0 = not found (recycled/overwritten) */
 
 	*commit_scn = found;
+	return true;
+}
+
+
+/*
+ * cluster_undo_segment_tt_header_scan_pass -- spec-3.13 D2-B (v0.3
+ * scan-only).
+ *
+ *	READ-ONLY classification of one segment's durable TTSlot[] (block 0
+ *	@ offset 112, 48 x 32B).  Produces inventory counts for the segment-
+ *	level evaluation (D3) and observability (D6); deliberately writes
+ *	NOTHING:
+ *	  - rewriting COMMITTED -> RECYCLABLE has zero effect on the segment
+ *	    predicate (it only watermarks TT_SLOT_COMMITTED), and
+ *	  - it would break cluster_tt_durable_slot_match (COMMITTED-only),
+ *	    degrading old unresolved-ITL readers' by-xid resolve to 53R97 —
+ *	    worse than the 3.12 lazy status quo.  (spec-3.13 v0.3 ③)
+ *
+ *	Classification mirror of the shmem predicate, typed for on-disk
+ *	TT_SLOT_* (C-R1: shared comparison semantics — strict < horizon,
+ *	UNKNOWN retains — without mixing the CTS_* / TT_SLOT_* enums):
+ *	  TT_SLOT_COMMITTED + valid scn < horizon  -> below_horizon++
+ *	  TT_SLOT_COMMITTED + invalid scn          -> unresolved++ (8.A retain)
+ *	  TT_SLOT_ACTIVE                           -> stale_active_skipped++ (HC6)
+ *	  UNUSED / ABORTED / RECYCLABLE            -> no inventory impact
+ */
+bool
+cluster_undo_segment_tt_header_scan_pass(uint32 segment_id, uint8 owner_instance, SCN horizon,
+										 ClusterUndoCleanerPassStats *stats)
+{
+	PGAlignedBlock block;
+	const UndoSegmentHeaderData *hdr;
+	int i;
+
+	Assert(stats != NULL);
+
+	/* Whole-block read mirrors the by-xid scan shape (one smgr surface). */
+	if (!cluster_undo_smgr_read_block(segment_id, owner_instance, 0, block.data))
+		return false; /* absent / I/O: caller counts and moves on */
+	hdr = (const UndoSegmentHeaderData *)block.data;
+
+	for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
+		const TTSlot *s = &hdr->tt_slots[i];
+
+		switch (s->status) {
+		case TT_SLOT_COMMITTED:
+			if (!SCN_VALID(s->commit_scn))
+				stats->header_unresolved_committed++;
+			else if (SCN_VALID(horizon) && scn_time_cmp(s->commit_scn, horizon) < 0)
+				stats->header_tt_slots_below_horizon++;
+			break;
+		case TT_SLOT_ACTIVE:
+			stats->stale_active_skipped++; /* HC6: never judged, only counted */
+			break;
+		default:
+			break; /* UNUSED / ABORTED / RECYCLABLE: no inventory impact */
+		}
+	}
+
+	stats->segments_scanned++;
 	return true;
 }

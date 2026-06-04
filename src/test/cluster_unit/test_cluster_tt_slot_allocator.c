@@ -65,6 +65,7 @@
 #include "access/transam.h"
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_slot.h"
+#include "cluster/cluster_undo_cleaner.h" /* gc pass + stats (spec-3.13) */
 #include "cluster/cluster_undo_retention.h"
 #include "cluster/storage/cluster_undo_alloc.h"
 #include "storage/lwlock.h"
@@ -789,6 +790,115 @@ UT_TEST(test_t39_rollover_reports_drained_when_no_active)
 }
 
 
+/* ============================================================
+ *	spec-3.13 D2-A — cleaner GC vs direct Pass-2 recycle equivalence
+ * ============================================================ */
+
+UT_TEST(test_t40_gc_then_alloc_equals_direct_recycle)
+{
+	/* R1 anti-divergence: COMMITTED(k) -> [GC] FREE(k+1) -> ACTIVE(B,k+1)
+	 * must end byte-identical to COMMITTED(k) -> [direct Pass-2] ACTIVE(B,k+1).
+	 * Two slots in the same segment get the same history; one is recycled
+	 * directly, the other via the cleaner pass. */
+	ClusterUndoCleanerPassStats stats = { 0 };
+	uint16 sa, sb;
+
+	reset_allocator();
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL); /* bind current segment */
+
+	sa = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	sb = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)101);
+	cluster_tt_slot_mark_committed(NODE0_SEG, sa, (TransactionId)100, (SCN)5);
+	cluster_tt_slot_mark_committed(NODE0_SEG, sb, (TransactionId)101, (SCN)5);
+
+	/* Burn every remaining FREE slot: Pass 2 recycle only triggers when
+	 * Pass 1 finds no FREE slot (FREE is always preferred). */
+	{
+		int i;
+
+		for (i = 0; i < TT_SLOTS_PER_SEGMENT - 2; i++)
+			(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(1000 + i));
+	}
+
+	/* path 1: direct Pass-2 recycle of sa by new owner 200 (horizon 20 > 5). */
+	mock_retention_horizon = (SCN)20;
+	{
+		uint16 got = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)200);
+		UT_ASSERT_EQ((int)got, (int)sa); /* first recyclable slot wins */
+	}
+
+	/* path 2: cleaner GC frees sb, then owner 201 allocates it. */
+	cluster_tt_slot_gc_current_pass((SCN)20, &stats);
+	UT_ASSERT_EQ((int)stats.shmem_tt_slots_gcd, 1); /* only sb was recyclable */
+	{
+		uint16 got = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)201);
+		UT_ASSERT_EQ((int)got, (int)sb); /* FREE slot found in Pass 1 */
+	}
+
+	/* end states byte-equivalent: both ACTIVE with wrap bumped exactly once. */
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(NODE0_SEG, sa), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(NODE0_SEG, sb), 1);
+}
+
+UT_TEST(test_t41_gc_respects_horizon_retained_slot_untouched)
+{
+	/* commit_scn == horizon is retained (strict '<', spec-3.12 U7);
+	 * the cleaner must not free it and must not bump wrap. */
+	ClusterUndoCleanerPassStats stats = { 0 };
+	uint16 sa;
+
+	reset_allocator();
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL);
+
+	sa = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	cluster_tt_slot_mark_committed(NODE0_SEG, sa, (TransactionId)100, (SCN)20);
+
+	/* alloc_ext below consults the stubbed horizon provider. */
+	mock_retention_horizon = (SCN)20;
+
+	cluster_tt_slot_gc_current_pass((SCN)20, &stats);
+	UT_ASSERT_EQ((int)stats.shmem_tt_slots_gcd, 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_get_wrap(NODE0_SEG, sa), 0);
+
+	/* still COMMITTED-retained: a later alloc under the same horizon must
+	 * report retained pressure rather than recycle it. */
+	{
+		bool pressure = false;
+		uint16 got;
+
+		int i;
+
+		/* burn the remaining FREE slots with in-flight xids */
+		for (i = 0; i < TT_SLOTS_PER_SEGMENT - 1; i++)
+			(void)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)(1000 + i));
+		got = cluster_tt_slot_alloc_ext(NODE0_SEG, (TransactionId)99999, &pressure);
+		UT_ASSERT_EQ((int)got, (int)INVALID_TT_SLOT_OFFSET);
+		UT_ASSERT_EQ((int)pressure, 1);
+	}
+}
+
+UT_TEST(test_t42_gc_skips_inflight_active)
+{
+	/* current-segment ACTIVE entries are live transactions, not crash
+	 * residue: the GC pass must leave them alone and must NOT count them
+	 * as stale (HC6 stale accounting is durable-side only). */
+	ClusterUndoCleanerPassStats stats = { 0 };
+	uint16 sa;
+
+	reset_allocator();
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL);
+
+	sa = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+
+	cluster_tt_slot_gc_current_pass((SCN)1000, &stats);
+	UT_ASSERT_EQ((int)stats.shmem_tt_slots_gcd, 0);
+	UT_ASSERT_EQ((int)stats.stale_active_skipped, 0);
+
+	/* idempotent re-alloc still finds the same ACTIVE slot. */
+	UT_ASSERT_EQ((int)cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100), (int)sa);
+}
+
+
 int
 main(void)
 {
@@ -834,6 +944,10 @@ main(void)
 	UT_RUN(test_t37_rollover_rebinds_and_resets);
 	UT_RUN(test_t38_mark_on_rolled_away_segment_is_noop);
 	UT_RUN(test_t39_rollover_reports_drained_when_no_active);
+
+	UT_RUN(test_t40_gc_then_alloc_equals_direct_recycle);
+	UT_RUN(test_t41_gc_respects_horizon_retained_slot_untouched);
+	UT_RUN(test_t42_gc_skips_inflight_active);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

@@ -62,7 +62,8 @@
 
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
-#include "cluster/cluster_mode.h" /* cluster_storage_mode_enabled */
+#include "cluster/cluster_mode.h"			/* cluster_storage_mode_enabled */
+#include "cluster/cluster_undo_retention.h" /* horizon (C17: once per pass) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_undo_cleaner.h"
 
@@ -353,16 +354,34 @@ undo_cleaner_advance_liveness_tick(void)
 static void
 undo_cleaner_run_pass(void)
 {
+	ClusterUndoCleanerPassStats stats;
 	if (!cluster_undo_cleaner_enabled)
 		return;
 	if (!cluster_storage_mode_enabled())
 		return;
 
-	/* Steps 3-8 land the real pass body here. */
+	/*
+	 * D2 (step 3): horizon ONCE per pass, BEFORE any seg->lock (C17).
+	 * With the retention gate GUC off there is nothing to pre-free —
+	 * alloc Pass-2 recycles immediately (C6) — so the pass only ticks.
+	 */
+	memset(&stats, 0, sizeof(stats));
+	if (cluster_undo_retention_horizon_enabled) {
+		SCN horizon = cluster_undo_retention_horizon();
+
+		cluster_tt_slot_gc_current_pass(horizon, &stats);
+
+		/*
+		 * D2-B durable header scan + D3 segment advancement iterate the
+		 * rolled-away segment inventory under
+		 * cluster.undo_cleaner_batch_segments — wired in steps 4-8.
+		 */
+	}
 
 	Assert(undo_cleaner_state != NULL);
 	LWLockAcquire(&undo_cleaner_state->lwlock, LW_EXCLUSIVE);
 	undo_cleaner_state->pass_count++;
+	undo_cleaner_state->shmem_tt_slots_gcd += stats.shmem_tt_slots_gcd;
 	LWLockRelease(&undo_cleaner_state->lwlock);
 }
 

@@ -50,6 +50,7 @@
 #include "cluster/cluster_shmem.h" /* ClusterShmemRegion */
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_retention.h"		/* horizon + recyclable predicate */
+#include "cluster/cluster_undo_cleaner.h"		/* spec-3.13 D2-A gc pass + stats */
 #include "cluster/storage/cluster_undo_alloc.h" /* CLUSTER_UNDO_SEGS_PER_INSTANCE */
 #include "miscadmin.h"
 #include "port/atomics.h" /* spec-3.12 D5 retention counters */
@@ -184,6 +185,32 @@ cluster_tt_slot_get_or_init(uint32 segment_id)
 
 
 /*
+ * tt_slot_entry_recycle_locked -- the single typed recycle transition
+ * (spec-3.13 C-R1).  Caller holds seg->lock and has already decided
+ * recyclability via cluster_tt_slot_recyclable / C6 bypass.
+ *
+ *	new_owner valid   -> COMMITTED/ABORTED becomes ACTIVE(new_owner)
+ *	                     (alloc Pass-2 direct reuse path);
+ *	new_owner invalid -> becomes CTS_FREE (cleaner D2-A proactive GC).
+ *
+ *	wrap++ happens HERE, at the recycle moment, in BOTH modes (saturate
+ *	at TT_WRAP_MAX).  FREE -> ACTIVE allocation never bumps wrap, so a
+ *	cleaner-mediated cycle (COMMITTED -> FREE -> ACTIVE) and a direct
+ *	recycle (COMMITTED -> ACTIVE) leave byte-identical end states —
+ *	the R1 anti-divergence property, unit-locked by T40.
+ */
+static void
+tt_slot_entry_recycle_locked(ClusterTTSlotAllocEntry *e, TransactionId new_owner)
+{
+	e->xid = new_owner;
+	e->status = TransactionIdIsValid(new_owner) ? CTS_ACTIVE : CTS_FREE;
+	e->commit_scn = InvalidScn;
+	if (e->wrap < TT_WRAP_MAX)
+		e->wrap++;
+}
+
+
+/*
  * cluster_tt_slot_alloc_ext
  *
  *	Three-tier fallback (L189 recycle policy) with the spec-3.12 retention
@@ -287,12 +314,7 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 		ClusterTTSlotAllocEntry *e = &seg->slots[reusable_idx];
 		bool was_committed = (e->status == CTS_COMMITTED);
 
-		e->xid = top_xid;
-		e->status = CTS_ACTIVE;
-		e->commit_scn = InvalidScn;
-		/* L189 wrap++ on recycle (saturate at TT_WRAP_MAX, defends ABA) */
-		if (e->wrap < TT_WRAP_MAX)
-			e->wrap++;
+		tt_slot_entry_recycle_locked(e, top_xid); /* C-R1 single transition */
 		chosen = (uint16)reusable_idx;
 
 		/* spec-3.12 D5: a COMMITTED slot recycled past the horizon (ABORTED was
@@ -313,6 +335,63 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 
 	LWLockRelease(&seg->lock);
 	return chosen;
+}
+
+
+/*
+ * cluster_tt_slot_gc_current_pass -- spec-3.13 D2-A.
+ *
+ *	Proactively recycle retention-eligible COMMITTED/ABORTED entries of
+ *	this node's CURRENT allocator segment to CTS_FREE, so the alloc fast
+ *	path finds FREE slots (Pass 1) instead of paying the Pass-2 horizon
+ *	gate.  Rolled-away segments have no shmem allocator state — their
+ *	durable headers are covered by the read-only scan pass (D2-B).
+ *
+ *	Caller computed `horizon` BEFORE any seg->lock (C17) and only calls
+ *	with the retention gate enabled: with the GUC off, alloc Pass-2
+ *	already recycles immediately (C6) and there is nothing to pre-free.
+ *
+ *	CTS_ACTIVE entries here are live in-flight transactions (this is the
+ *	current segment), NOT crash residue — they are simply skipped and
+ *	NOT counted as stale (HC6 stale accounting is durable-side only).
+ */
+void
+cluster_tt_slot_gc_current_pass(SCN horizon, ClusterUndoCleanerPassStats *stats)
+{
+	uint32 segment_id;
+	ClusterTTSlotAllocPerSegment *seg;
+	uint32 gcd = 0;
+	int i;
+
+	Assert(stats != NULL);
+
+	if (ClusterTTSlotShm == NULL || cluster_node_id < 0)
+		return;
+
+	segment_id = cluster_tt_slot_current_segment(cluster_node_id);
+	if (segment_id == 0)
+		return; /* no binding yet this incarnation */
+
+	seg = cluster_tt_slot_get_or_init(segment_id);
+
+	LWLockAcquire(&seg->lock, LW_EXCLUSIVE);
+	for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
+		ClusterTTSlotAllocEntry *e = &seg->slots[i];
+
+		if (e->status != CTS_COMMITTED && e->status != CTS_ABORTED)
+			continue;
+		if (!cluster_tt_slot_recyclable(e->status, e->commit_scn, horizon))
+			continue; /* retained: a live reader may still need it (8.A) */
+
+		if (e->status == CTS_COMMITTED && ClusterTTSlotShm != NULL)
+			pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_recycle_count, 1);
+		tt_slot_entry_recycle_locked(e, InvalidTransactionId);
+		gcd++;
+	}
+	LWLockRelease(&seg->lock);
+
+	stats->shmem_tt_slots_gcd += gcd;
+	stats->segments_scanned++;
 }
 
 
