@@ -239,6 +239,15 @@ sub write_txns {
 
 my $marked_baseline = undo_counter($node_d, 'cleaner_segments_marked_recyclable');
 
+# Move the record undo cursor away from the fixed first segment.  TT rollover
+# deliberately never marks the fixed segment COMMITTED, because the record
+# cursor starts there too.  A deterministic record autoextend makes the next
+# non-fixed TT rollover eligible for cleaner reclaim.
+write_txns($node_d, 900, 1);
+is($node_d->safe_psql('postgres', q{SELECT cluster_undo_test_force_segment_end()}),
+   't', 'L11 setup force_segment_end succeeds after active segment claim');
+write_txns($node_d, 901, 1);
+
 # ----------
 # L14 setup: pin the horizon with a live REPEATABLE READ snapshot.
 # ----------
@@ -246,10 +255,10 @@ my $pin = $node_d->background_psql('postgres');
 $pin->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
 $pin->query_safe('SELECT count(*) FROM t313'); # materialize the snapshot
 
-# Fill the current TT segment past its 48 slots: every committed slot is
-# retained (horizon pinned), so allocation pressure forces a rollover and
-# leaves a drained COMMITTED segment behind.
-write_txns($node_d, 1000, 60);
+# Fill two TT segments while the horizon is pinned.  The first rollover moves
+# away from the fixed first segment; the second rolls away a non-fixed,
+# TT-exclusive segment and marks it COMMITTED for cleaner processing.
+write_txns($node_d, 1000, 120);
 
 # ----------
 # L14: pinned horizon -> cleaner makes zero recycle progress and LOGs
@@ -286,22 +295,25 @@ my $count_files = sub {
 };
 my $files_before = $count_files->();
 
-write_txns($node_d, 2000, 60);
+# Force a record autoextend so extend_or_create() must choose from the pool;
+# once L11 made a segment RECYCLABLE this should reuse it in place.
+is($node_d->safe_psql('postgres', q{SELECT cluster_undo_test_force_segment_end()}),
+   't', 'L12 setup force_segment_end succeeds before reuse allocation');
+write_txns($node_d, 2000, 1);
 ok($node_d->poll_query_until('postgres',
 		q{SELECT value::bigint > 0 FROM pg_cluster_state
 		   WHERE category = 'undo' AND key = 'segment_reuse_count'}),
    'L12 allocator reuses a RECYCLABLE segment (segment_reuse_count > 0)');
 
-write_txns($node_d, 3000, 60);
 my $files_after = $count_files->();
 cmp_ok($files_after, '<=', $files_before,
 	   "L13 undo segment pool capped by reuse (files before=$files_before after=$files_after)");
 
 # Data sanity across recycle/reuse: every inserted row is intact.
 my $rowcheck = $node_d->safe_psql('postgres',
-	'SELECT count(*), coalesce(sum(id),0) FROM t313');
-is($rowcheck, '180|' . (1000*60+59*30 + 2000*60+59*30 + 3000*60+59*30),
-   'L12b all 180 rows intact across recycle + reuse');
+	'SELECT count(*), count(*) FILTER (WHERE id = v) FROM t313');
+is($rowcheck, '123|123',
+   'L12b all 123 rows intact across recycle + reuse');
 
 # ----------
 # L15: crash (immediate) + restart -> 0x40/0x50 redo leaves segment
@@ -311,7 +323,7 @@ $node_d->stop('immediate');
 $node_d->start;
 write_txns($node_d, 4000, 10);
 my $rowcheck2 = $node_d->safe_psql('postgres', 'SELECT count(*) FROM t313');
-is($rowcheck2, '190', 'L15 post-crash redo: writes resume, rows intact');
+is($rowcheck2, '133', 'L15 post-crash redo: writes resume, rows intact');
 ok($node_d->poll_query_until('postgres',
 		q{SELECT value = 'ready' FROM pg_cluster_state
 		   WHERE category = 'undo_cleaner' AND key = 'undo_cleaner_status'}),

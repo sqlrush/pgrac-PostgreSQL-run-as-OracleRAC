@@ -55,7 +55,7 @@ my $has_visibility_inject =
 	  'postgres',
 	  q{SELECT count(*) FROM pg_cluster_shmem
 	     WHERE name = 'pgrac cluster visibility inject'}) eq '1';
-my $expected_region_count = $has_visibility_inject ? '44' : '43';
+my $expected_region_count = $has_visibility_inject ? '45' : '44';
 
 
 # ----------
@@ -136,8 +136,7 @@ is($node->safe_psql(
 
 
 # ----------
-# L10: 1.10.1 baseline -- pg_cluster_shmem 4 rows (1.7 adds cluster_pcm_grd;
-# 1.10.1 adds cluster_startup_phase region).
+# L10: 1.10.1 baseline plus later shmem regions.
 # ----------
 is($node->safe_psql(
 		'postgres',
