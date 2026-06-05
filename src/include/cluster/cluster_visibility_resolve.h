@@ -20,13 +20,15 @@
  *	  metadata (malformed UBA) still raises DATA_CORRUPTED via the
  *	  underlying helpers, as today.
  *
- *	  Exact-key discipline (spec-3.14 v0.2, R10): an ITL slot ref is
- *	  only authoritative when ref.tt_slot_id != 0 AND
- *	  ref.local_xid == raw_xid AND ref.origin_node_id != self.  A slot
- *	  whose recorded xid no longer matches the tuple-side xid was
+ *	  Exact-key discipline (spec-3.14 v0.2, R10 refined): an ITL slot
+ *	  ref is authoritative remote evidence only when ref.tt_slot_id != 0,
+ *	  ref.origin_node_id != self, and ref.local_xid == raw_xid.  A remote
+ *	  slot whose recorded xid no longer matches the tuple-side xid was
  *	  recycled to another owner -> STALE_OR_AMBIGUOUS -> caller 53R97;
- *	  NEVER silently fall through to the PG-native CLOG path (that is
- *	  exactly the false-resolve this resolver exists to prevent).
+ *	  NEVER silently fall through to the PG-native CLOG path for remote
+ *	  evidence.  Own-instance refs are LOCAL and always route to PG-native
+ *	  CLOG, including the normal local hot-page case where the 8-slot ITL
+ *	  cache has recycled the tuple's old slot.
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California

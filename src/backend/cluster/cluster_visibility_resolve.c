@@ -97,9 +97,12 @@ resolve_from_remote_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
  * REMOTE, resolve its status.  spec-3.14 R10 exact-key discipline:
  *	  tt_slot_id == 0           -> placeholder (spec-3.1) -> NONE-equiv:
  *	                               treated as no evidence by caller.
- *	  local_xid != raw_xid      -> slot recycled to another owner ->
+ *	  origin == self            -> LOCAL (PG CLOG resolves), even when
+ *	                               local_xid no longer matches because a
+ *	                               local hot-page slot was recycled.
+ *	  origin != self &&
+ *	  local_xid != raw_xid      -> remote slot recycled to another owner ->
  *	                               STALE_OR_AMBIGUOUS (caller 53R97).
- *	  origin == self            -> LOCAL (PG CLOG resolves).
  *	  origin != self            -> REMOTE (overlay resolve).
  */
 static void
@@ -116,19 +119,27 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		return;
 	}
 
-	if (ref->local_xid != raw_xid) {
+	if ((int32)ref->origin_node_id == cluster_node_id) {
 		/*
-		 * The slot no longer belongs to this xid (recycled).  R10: do NOT
-		 * fall through to PG-native; that is the false-resolve this
-		 * resolver exists to prevent.
+		 * Own-instance evidence is deliberately routed to PG-native CLOG.
+		 * ITL data slots are only an 8-slot page cache and are normally
+		 * recycled on local hot pages; treating a local_xid mismatch here as
+		 * remote-unknown would make ordinary local UPDATE/DELETE/SELECT fail
+		 * closed.  Remote safety still depends on an explicit remote-origin
+		 * ref, which is checked below.
 		 */
-		out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;
-		cluster_vis_bump_vis_variant_unknown_failclosed_count();
+		out->evidence = CLUSTER_VIS_EVIDENCE_LOCAL;
 		return;
 	}
 
-	if ((int32)ref->origin_node_id == cluster_node_id) {
-		out->evidence = CLUSTER_VIS_EVIDENCE_LOCAL;
+	if (ref->local_xid != raw_xid) {
+		/*
+		 * The available evidence says REMOTE, but the slot no longer belongs
+		 * to this tuple-side xid.  Do NOT fall through to PG-native local CLOG;
+		 * that is the false-resolve this resolver exists to prevent.
+		 */
+		out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;
+		cluster_vis_bump_vis_variant_unknown_failclosed_count();
 		return;
 	}
 
