@@ -1031,6 +1031,17 @@ cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at
 		return 0;
 	}
 
+	/*
+	 * A TT-only rollover segment does not receive record writes, so it would
+	 * otherwise remain SEGMENT_ALLOCATED forever.  Put it into the same ACTIVE
+	 * lifecycle state as record segments so a later drained rollover can advance
+	 * ACTIVE -> COMMITTED -> RECYCLABLE.
+	 */
+	if (!cluster_undo_segment_mark_active(new_segment_id, owner_instance)) {
+		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+		return 0;
+	}
+
 	{
 		bool old_had_active = false;
 		uint32 fixed_first = (uint32)node_id * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;

@@ -238,6 +238,8 @@ sub write_txns {
 }
 
 my $marked_baseline = undo_counter($node_d, 'cleaner_segments_marked_recyclable');
+my $rollover_baseline = undo_counter($node_d, 'tt_retention_rollover_count');
+my $seg_retain_baseline = undo_counter($node_d, 'segment_retain_skip_count');
 
 # Move the record undo cursor away from the fixed first segment.  TT rollover
 # deliberately never marks the fixed segment COMMITTED, because the record
@@ -259,6 +261,10 @@ $pin->query_safe('SELECT count(*) FROM t313'); # materialize the snapshot
 # away from the fixed first segment; the second rolls away a non-fixed,
 # TT-exclusive segment and marks it COMMITTED for cleaner processing.
 write_txns($node_d, 1000, 120);
+cmp_ok(undo_counter($node_d, 'tt_retention_rollover_count'), '>', $rollover_baseline,
+	   'L11 setup retention pressure rolls the TT allocator over');
+cmp_ok(undo_counter($node_d, 'segment_retain_skip_count'), '>', $seg_retain_baseline,
+	   'L11 setup rolled-away TT segment is counted as retained');
 
 # ----------
 # L14: pinned horizon -> cleaner makes zero recycle progress and LOGs
