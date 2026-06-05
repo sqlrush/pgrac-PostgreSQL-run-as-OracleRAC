@@ -212,7 +212,8 @@ $node_c->stop;
 my $node_d = PgracClusterNode->new('recycle');
 $node_d->init;
 $node_d->append_conf('postgresql.conf',
-	"log_min_messages = debug1\ncluster.undo_cleaner_interval_ms = 200\n");
+	"log_min_messages = debug1\ncluster.enabled = on\ncluster.node_id = 0\n"
+	. "cluster.allow_single_node = on\ncluster.undo_cleaner_interval_ms = 200\n");
 $node_d->start;
 
 $node_d->safe_psql('postgres',
