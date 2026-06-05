@@ -2967,6 +2967,7 @@ cluster_heap_writer_wait_failclosed(Relation relation, Buffer buffer, HeapTuple 
 
 		if (cluster_itl_find_multixact_origin_by_xmax(page, (MultiXactId) xwait, &marker_origin)
 			&& (int32) marker_origin != cluster_node_id)
+			cluster_vis_bump_vis_conflict_failclosed_count();
 			ereport(ERROR, (errcode(ERRCODE_CLUSTER_CROSS_NODE_WRITE_CONFLICT),
 							errmsg("cross-node write conflict: remote multixact writer %u on node %u",
 								   xwait, marker_origin),
@@ -2998,6 +2999,7 @@ cluster_heap_writer_wait_failclosed(Relation relation, Buffer buffer, HeapTuple 
 
 	if (cres.status == CLUSTER_TT_STATUS_IN_PROGRESS
 		|| cres.status == CLUSTER_TT_STATUS_SUBCOMMITTED)
+		cluster_vis_bump_vis_conflict_failclosed_count();
 		ereport(ERROR, (errcode(ERRCODE_CLUSTER_CROSS_NODE_WRITE_CONFLICT),
 						errmsg("cross-node write conflict: remote writer %u on node %u still running",
 							   xwait, cref.origin_node_id),

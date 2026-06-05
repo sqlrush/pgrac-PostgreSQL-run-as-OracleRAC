@@ -111,6 +111,14 @@ typedef struct ClusterTTStatusShmem {
 	pg_atomic_uint64 subcommitted_install_count;
 	pg_atomic_uint64 subcommitted_lookup_hit_count;
 	pg_atomic_uint64 parent_chain_follow_count;
+
+	/* spec-3.14 D8: HeapTupleSatisfies* variant fork observability. */
+	pg_atomic_uint64 vis_update_fork_count;
+	pg_atomic_uint64 vis_dirty_fork_count;
+	pg_atomic_uint64 vis_selftoast_fork_count;
+	pg_atomic_uint64 vis_conflict_failclosed_count; /* 53R9H */
+	pg_atomic_uint64 prune_remote_keep_count;
+	pg_atomic_uint64 vis_variant_unknown_failclosed_count;
 } ClusterTTStatusShmem;
 
 #ifdef USE_PGRAC_CLUSTER
@@ -165,6 +173,13 @@ cluster_tt_status_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTStatusState->subcommitted_install_count, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->subcommitted_lookup_hit_count, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->parent_chain_follow_count, 0);
+		/* PGRAC (spec-3.14 D8) */
+		pg_atomic_init_u64(&ClusterTTStatusState->vis_update_fork_count, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->vis_dirty_fork_count, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->vis_selftoast_fork_count, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->vis_conflict_failclosed_count, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->prune_remote_keep_count, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->vis_variant_unknown_failclosed_count, 0);
 	}
 
 	/* Lock. */
@@ -584,6 +599,31 @@ cluster_tt_status_bump_parent_chain_follow(void)
 		pg_atomic_fetch_add_u64(&ClusterTTStatusState->parent_chain_follow_count, 1);
 }
 
+
+/* ============================================================
+ * spec-3.14 D8 visibility fork counters (bump + read).
+ * ============================================================ */
+
+#define CLUSTER_VIS_BUMP(field)                                                                    \
+	void cluster_vis_bump_##field(void)                                                            \
+	{                                                                                              \
+		if (ClusterTTStatusState != NULL)                                                          \
+			pg_atomic_fetch_add_u64(&ClusterTTStatusState->field, 1);                              \
+	}                                                                                              \
+	uint64 cluster_vis_get_##field(void)                                                           \
+	{                                                                                              \
+		if (ClusterTTStatusState == NULL)                                                          \
+			return 0;                                                                              \
+		return pg_atomic_read_u64(&ClusterTTStatusState->field);                                   \
+	}
+
+CLUSTER_VIS_BUMP(vis_update_fork_count)
+CLUSTER_VIS_BUMP(vis_dirty_fork_count)
+CLUSTER_VIS_BUMP(vis_selftoast_fork_count)
+CLUSTER_VIS_BUMP(vis_conflict_failclosed_count)
+CLUSTER_VIS_BUMP(prune_remote_keep_count)
+CLUSTER_VIS_BUMP(vis_variant_unknown_failclosed_count)
+
 #else /* !USE_PGRAC_CLUSTER */
 
 Size
@@ -683,5 +723,6 @@ CLUSTER_TT_STATUS_COUNTER_GETTER_STUB(parent_chain_follow_count)
 void
 cluster_tt_status_bump_parent_chain_follow(void)
 {}
+
 
 #endif /* USE_PGRAC_CLUSTER */

@@ -299,8 +299,10 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	{
 		bool		cluster_vis;
 
-		if (cluster_satisfies_self_fork(htup, buffer, &cluster_vis))
+		if (cluster_satisfies_self_fork(htup, buffer, &cluster_vis)) {
+			cluster_vis_bump_vis_selftoast_fork_count();
 			return cluster_vis;
+		}
 	}
 #endif
 
@@ -522,8 +524,10 @@ HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	{
 		bool		cluster_vis;
 
-		if (cluster_satisfies_toast_fork(htup, buffer, &cluster_vis))
+		if (cluster_satisfies_toast_fork(htup, buffer, &cluster_vis)) {
+			cluster_vis_bump_vis_selftoast_fork_count();
 			return cluster_vis;
+		}
 	}
 #endif
 
@@ -772,8 +776,10 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid, Buffer buffer)
 	{
 		TM_Result	cluster_res;
 
-		if (cluster_satisfies_update_fork(htup, buffer, &cluster_res))
+		if (cluster_satisfies_update_fork(htup, buffer, &cluster_res)) {
+			cluster_vis_bump_vis_update_fork_count();
 			return cluster_res;
+		}
 	}
 #endif
 
@@ -1154,8 +1160,10 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	{
 		bool		cluster_vis;
 
-		if (cluster_satisfies_dirty_fork(htup, buffer, &cluster_vis))
+		if (cluster_satisfies_dirty_fork(htup, buffer, &cluster_vis)) {
+			cluster_vis_bump_vis_dirty_fork_count();
 			return cluster_vis;
+		}
 	}
 #endif
 
@@ -1813,8 +1821,10 @@ HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer, TransactionId *de
 	 * LIVE is the implementation-time correction (dead_after re-test hazard).
 	 */
 	if (cluster_storage_mode_enabled()
-		&& cluster_tuple_has_remote_evidence(buffer, tuple))
+		&& cluster_tuple_has_remote_evidence(buffer, tuple)) {
+		cluster_vis_bump_prune_remote_keep_count();
 		return HEAPTUPLE_LIVE;
+	}
 #endif
 
 	/*
@@ -2012,8 +2022,10 @@ HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot, Buffer buffer
 #ifdef USE_PGRAC_CLUSTER
 	/* spec-3.14 D5: remote writer evidence -> not removable (keep). */
 	if (cluster_storage_mode_enabled()
-		&& cluster_tuple_has_remote_evidence(buffer, htup->t_data))
+		&& cluster_tuple_has_remote_evidence(buffer, htup->t_data)) {
+		cluster_vis_bump_prune_remote_keep_count();
 		return true;
+	}
 #endif
 
 	TransactionId dead_after = InvalidTransactionId;

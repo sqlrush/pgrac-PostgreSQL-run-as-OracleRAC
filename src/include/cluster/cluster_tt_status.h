@@ -274,6 +274,20 @@ extern void cluster_tt_status_bump_self_consumer_hit(void);
  */
 extern uint64 cluster_tt_status_get_install_count(void);
 extern uint64 cluster_tt_status_get_lookup_hit_count(void);
+
+/* spec-3.14 D8 visibility fork counters. */
+extern void cluster_vis_bump_vis_update_fork_count(void);
+extern uint64 cluster_vis_get_vis_update_fork_count(void);
+extern void cluster_vis_bump_vis_dirty_fork_count(void);
+extern uint64 cluster_vis_get_vis_dirty_fork_count(void);
+extern void cluster_vis_bump_vis_selftoast_fork_count(void);
+extern uint64 cluster_vis_get_vis_selftoast_fork_count(void);
+extern void cluster_vis_bump_vis_conflict_failclosed_count(void);
+extern uint64 cluster_vis_get_vis_conflict_failclosed_count(void);
+extern void cluster_vis_bump_prune_remote_keep_count(void);
+extern uint64 cluster_vis_get_prune_remote_keep_count(void);
+extern void cluster_vis_bump_vis_variant_unknown_failclosed_count(void);
+extern uint64 cluster_vis_get_vis_variant_unknown_failclosed_count(void);
 extern uint64 cluster_tt_status_get_lookup_miss_count(void);
 extern uint64 cluster_tt_status_get_evict_count(void);
 extern uint64 cluster_tt_status_get_flush_count(void);

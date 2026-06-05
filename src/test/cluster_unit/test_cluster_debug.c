@@ -870,6 +870,37 @@ cluster_tt_durable_redo_apply_count(void)
 {
 	return 0;
 }
+/* spec-3.14 D8 visibility counter accessor stubs (dump_visibility rows). */
+uint64
+cluster_vis_get_vis_update_fork_count(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_vis_dirty_fork_count(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_vis_selftoast_fork_count(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_vis_conflict_failclosed_count(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_prune_remote_keep_count(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_vis_variant_unknown_failclosed_count(void)
+{
+	return 0;
+}
 /* spec-3.13 D6 counter accessor stubs (dump_undo new rows). */
 uint64
 cluster_undo_cleaner_pass_count(void)

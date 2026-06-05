@@ -1464,6 +1464,28 @@ dump_gcs(ReturnSetInfo *rsinfo)
  *	cluster_tap t/213 + t/214 + t/219 L2 + t/220 verification + perf class 7
  *	baseline tracking.
  */
+/*
+ * dump_visibility -- spec-3.14 D8 HeapTupleSatisfies* variant fork
+ * observability (6 counters under category='visibility').
+ */
+static void
+dump_visibility(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "visibility", "vis_update_fork_count",
+			 fmt_int64((int64)cluster_vis_get_vis_update_fork_count()));
+	emit_row(rsinfo, "visibility", "vis_dirty_fork_count",
+			 fmt_int64((int64)cluster_vis_get_vis_dirty_fork_count()));
+	emit_row(rsinfo, "visibility", "vis_selftoast_fork_count",
+			 fmt_int64((int64)cluster_vis_get_vis_selftoast_fork_count()));
+	emit_row(rsinfo, "visibility", "vis_conflict_failclosed_count",
+			 fmt_int64((int64)cluster_vis_get_vis_conflict_failclosed_count()));
+	emit_row(rsinfo, "visibility", "prune_remote_keep_count",
+			 fmt_int64((int64)cluster_vis_get_prune_remote_keep_count()));
+	emit_row(rsinfo, "visibility", "vis_variant_unknown_failclosed_count",
+			 fmt_int64((int64)cluster_vis_get_vis_variant_unknown_failclosed_count()));
+}
+
+
 static void
 dump_undo(ReturnSetInfo *rsinfo)
 {
@@ -1614,6 +1636,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_cluster_stats(rsinfo);
 		dump_cluster_cssd(rsinfo);
 		dump_undo_cleaner(rsinfo);
+		dump_visibility(rsinfo);
 		dump_scn(rsinfo);
 		dump_ges(rsinfo);
 		dump_grd(rsinfo);

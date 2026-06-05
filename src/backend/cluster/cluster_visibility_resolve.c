@@ -117,6 +117,7 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		 * resolver exists to prevent.
 		 */
 		out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;
+		cluster_vis_bump_vis_variant_unknown_failclosed_count();
 		return;
 	}
 
