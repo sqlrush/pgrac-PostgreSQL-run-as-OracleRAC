@@ -121,4 +121,41 @@ extern void cluster_visibility_resolve_from_ref(TransactionId raw_xid,
 												ClusterVisResolve *out);
 
 
+/*
+ * ============================================================
+ * spec-3.14 §2.2 OBS truth tables as pure verdict functions.
+ *
+ *	Each variant fork resolves a tuple-side xid's cluster status via the
+ *	resolver above, then maps it to a variant verdict here.  Keeping the
+ *	policy as pure functions (status -> verdict, no buffer / no ereport)
+ *	makes the OBS-2~5 tables a fully enumerable unit test (60 cases) and
+ *	the single source of truth (L212).  The fork translates the verdict
+ *	to its native return type (TM_Result / bool) and raises the
+ *	fail-closed SQLSTATE.
+ * ============================================================
+ */
+
+typedef enum ClusterVisVerdict {
+	CVV_VISIBLE,			/* proceed / visible / tuple still live */
+	CVV_INVISIBLE,			/* not visible to this read */
+	CVV_BEING_MODIFIED,		/* remote in-progress writer (Update xmax) */
+	CVV_GONE_UPDATED,		/* remote committed update (caller TM_Updated) */
+	CVV_GONE_DELETED,		/* remote committed delete (caller TM_Deleted) */
+	CVV_FAILCLOSED_UNKNOWN, /* 53R97: status not determinable */
+	CVV_FAILCLOSED_CONFLICT /* 53R9H: cross-node write conflict (Dirty) */
+} ClusterVisVerdict;
+
+/* OBS-4 Self / OBS-5 Toast: one xid side, "is it visible now". */
+extern ClusterVisVerdict cluster_vis_self_verdict(ClusterTTStatus status);
+extern ClusterVisVerdict cluster_vis_toast_verdict(ClusterTTStatus status);
+
+/* OBS-2 Update: xmin gate then xmax outcome. */
+extern ClusterVisVerdict cluster_vis_update_xmin_verdict(ClusterTTStatus status);
+extern ClusterVisVerdict cluster_vis_update_xmax_verdict(ClusterTTStatus status, bool is_delete);
+
+/* OBS-3 Dirty: no wait_policy layer, so remote in-progress -> 53R9H. */
+extern ClusterVisVerdict cluster_vis_dirty_verdict(ClusterTTStatus status, bool is_xmax,
+												   bool is_delete);
+
+
 #endif /* CLUSTER_VISIBILITY_RESOLVE_H */
