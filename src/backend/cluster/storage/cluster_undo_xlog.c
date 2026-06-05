@@ -497,10 +497,12 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
  *   shape.  Decision via the header-inline pure table
  *   (cluster_undo_segment_recycle_redo_decide):
  *     disk gen >  rec gen -> stale skip (a later reuse is durable);
- *     disk gen == rec gen -> idempotent apply when state is old/new;
+ *     disk gen == rec gen -> apply for any legal not-newer lifecycle state
+ *                            (direct-file writes may expose stale header
+ *                            state at crash recovery);
  *     disk gen <  rec gen -> PANIC (the preceding REUSE redo must have
  *                            aligned the generation; v0.3 (2));
- *     same gen, alien state -> PANIC.
+ *     same gen, illegal state -> PANIC.
  */
 static void
 cluster_undo_redo_segment_recycle(XLogReaderState *record)

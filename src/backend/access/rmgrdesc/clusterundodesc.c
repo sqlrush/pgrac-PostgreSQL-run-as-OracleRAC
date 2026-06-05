@@ -56,8 +56,9 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 			(unsigned)rec->instance, (unsigned)rec->segment_id, (unsigned)rec->slot_offset,
 			(unsigned)rec->wrap, (unsigned)rec->xid, (uint64)rec->commit_scn);
 		break;
+	}
 	case XLOG_UNDO_SEGMENT_RECYCLE: {
-		xl_undo_segment_recycle *xlrec = (xl_undo_segment_recycle *)rec;
+		xl_undo_segment_recycle *xlrec = (xl_undo_segment_recycle *)payload;
 
 		appendStringInfo(buf, "instance %u seg %u gen %u state %u->%u", xlrec->instance,
 						 xlrec->segment_id, xlrec->expected_generation, xlrec->old_state,
@@ -65,13 +66,12 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 		break;
 	}
 	case XLOG_UNDO_SEGMENT_REUSE: {
-		xl_undo_segment_reuse *xlrec = (xl_undo_segment_reuse *)rec;
+		xl_undo_segment_reuse *xlrec = (xl_undo_segment_reuse *)payload;
 
 		appendStringInfo(buf, "instance %u seg %u gen %u->%u (fresh header image)",
 						 xlrec->instance, xlrec->segment_id, xlrec->old_generation,
 						 xlrec->new_generation);
 		break;
-	}
 	}
 	default:
 		appendStringInfo(buf, "unknown op %u", info);

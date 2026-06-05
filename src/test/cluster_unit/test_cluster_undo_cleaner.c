@@ -10,7 +10,8 @@
  *	    R2  same generation + RECYCLABLE           -> APPLY (idempotent)
  *	    R3  disk generation higher                 -> SKIP_STALE
  *	    R4  disk generation lower                  -> BAD_GENERATION (PANIC)
- *	    R5  same generation + alien state (ACTIVE) -> BAD_STATE (PANIC)
+ *	    R5  same generation + earlier legal states -> APPLY
+ *	    R5b same generation + illegal state         -> BAD_STATE (PANIC)
  *
  *	  Steps 6-7 append the REUSE redo table + wrap-retire edges here.
  *
@@ -93,11 +94,21 @@ UT_TEST(test_r4_disk_gen_lower_is_corruption)
 				 (int)CLUSTER_SEGRECYCLE_REDO_BAD_GENERATION);
 }
 
-UT_TEST(test_r5_same_gen_alien_state_is_corruption)
+UT_TEST(test_r5_same_gen_earlier_states_apply)
 {
 	xl_undo_segment_recycle rec = make_rec(5);
 
+	UT_ASSERT_EQ((int)cluster_undo_segment_recycle_redo_decide(5, (uint8)SEGMENT_ALLOCATED, &rec),
+				 (int)CLUSTER_SEGRECYCLE_REDO_APPLY);
 	UT_ASSERT_EQ((int)cluster_undo_segment_recycle_redo_decide(5, (uint8)SEGMENT_ACTIVE, &rec),
+				 (int)CLUSTER_SEGRECYCLE_REDO_APPLY);
+}
+
+UT_TEST(test_r5b_same_gen_illegal_state_is_corruption)
+{
+	xl_undo_segment_recycle rec = make_rec(5);
+
+	UT_ASSERT_EQ((int)cluster_undo_segment_recycle_redo_decide(5, (uint8)SEGMENT_INVALID, &rec),
 				 (int)CLUSTER_SEGRECYCLE_REDO_BAD_STATE);
 }
 
@@ -159,7 +170,8 @@ main(void)
 	UT_RUN(test_r2_same_gen_recyclable_idempotent);
 	UT_RUN(test_r3_disk_gen_higher_skips_stale);
 	UT_RUN(test_r4_disk_gen_lower_is_corruption);
-	UT_RUN(test_r5_same_gen_alien_state_is_corruption);
+	UT_RUN(test_r5_same_gen_earlier_states_apply);
+	UT_RUN(test_r5b_same_gen_illegal_state_is_corruption);
 	UT_RUN(test_r6_reuse_fresh_or_torn_header_applies);
 	UT_RUN(test_r7_reuse_old_or_new_generation_applies_idempotent);
 	UT_RUN(test_r8_reuse_disk_newer_skips_stale);

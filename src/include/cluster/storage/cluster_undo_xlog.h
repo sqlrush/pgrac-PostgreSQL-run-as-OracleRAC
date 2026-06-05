@@ -135,12 +135,15 @@ typedef struct xl_undo_tt_slot_commit {
  * On-disk WAL payload for XLOG_UNDO_SEGMENT_RECYCLE (spec-3.13 D3).
  *
  *   Generation-ordered state delta: redo applies new_state to block 0
- *   only when the on-disk wrap_count equals expected_generation and the
- *   on-disk state is old_state/new_state (idempotent).  A HIGHER disk
- *   generation means a later whole-segment reuse is already durable ->
- *   stale skip.  A LOWER disk generation is impossible once the
- *   preceding XLOG_UNDO_SEGMENT_REUSE has replayed -> corruption, PANIC
- *   (spec-3.13 v0.3 (2): no silent skip).
+ *   when the on-disk wrap_count equals expected_generation and the
+ *   on-disk state is any legal not-newer lifecycle state.  Direct pg_undo
+ *   header writes before the recycle transition are not all fsync-protected,
+ *   so crash redo may legitimately see ALLOCATED / ACTIVE / COMMITTED even
+ *   though the WAL recycle record proves the segment had reached COMMITTED
+ *   at insert time.  A HIGHER disk generation means a later whole-segment
+ *   reuse is already durable -> stale skip.  A LOWER disk generation is
+ *   impossible once the preceding XLOG_UNDO_SEGMENT_REUSE has replayed ->
+ *   corruption, PANIC (spec-3.13 v0.3 (2): no silent skip).
  *
  *   12 bytes, no implicit padding (explicit _pad).
  */
@@ -165,7 +168,7 @@ typedef enum ClusterUndoSegRecycleRedo {
 	CLUSTER_SEGRECYCLE_REDO_APPLY = 0,
 	CLUSTER_SEGRECYCLE_REDO_SKIP_STALE = 1,		/* disk gen > rec gen: later reuse durable */
 	CLUSTER_SEGRECYCLE_REDO_BAD_GENERATION = 2, /* disk gen < rec gen: impossible -> PANIC */
-	CLUSTER_SEGRECYCLE_REDO_BAD_STATE = 3		/* same gen, state not old/new -> PANIC */
+	CLUSTER_SEGRECYCLE_REDO_BAD_STATE = 3		/* same gen, illegal lifecycle state */
 } ClusterUndoSegRecycleRedo;
 
 static inline ClusterUndoSegRecycleRedo
@@ -176,7 +179,7 @@ cluster_undo_segment_recycle_redo_decide(uint32 disk_generation, uint8 disk_stat
 		return CLUSTER_SEGRECYCLE_REDO_SKIP_STALE;
 	if (disk_generation < rec->expected_generation)
 		return CLUSTER_SEGRECYCLE_REDO_BAD_GENERATION;
-	if (disk_state == rec->old_state || disk_state == rec->new_state)
+	if (disk_state <= rec->new_state)
 		return CLUSTER_SEGRECYCLE_REDO_APPLY;
 	return CLUSTER_SEGRECYCLE_REDO_BAD_STATE;
 }
