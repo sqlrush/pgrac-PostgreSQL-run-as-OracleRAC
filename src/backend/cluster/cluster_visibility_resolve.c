@@ -57,6 +57,9 @@ resolve_from_remote_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
 	ClusterTTStatusKey key;
 	ClusterTTStatusResult result;
 
+	if (out == NULL || ref == NULL)
+		return;
+
 	out->evidence = CLUSTER_VIS_EVIDENCE_REMOTE;
 	out->status = CLUSTER_TT_STATUS_UNKNOWN;
 	out->commit_scn = InvalidScn;
@@ -102,6 +105,9 @@ resolve_from_remote_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
 static void
 classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisResolve *out)
 {
+	if (out == NULL || ref == NULL)
+		return;
+
 	out->ref = *ref;
 
 	if (ref->tt_slot_id == 0) {
@@ -134,7 +140,9 @@ void
 cluster_visibility_resolve_from_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
 									ClusterVisResolve *out)
 {
-	Assert(out != NULL);
+	if (out == NULL)
+		return;
+
 	memset(out, 0, sizeof(*out));
 	out->evidence = CLUSTER_VIS_EVIDENCE_NONE;
 	out->status = CLUSTER_TT_STATUS_UNKNOWN;
@@ -151,13 +159,17 @@ cluster_visibility_resolve_tuple(Buffer buffer, HeapTupleHeader htup, Transactio
 	Page page;
 	ClusterUndoTTSlotRef ref;
 
-	Assert(out != NULL);
+	if (out == NULL)
+		return;
+
 	memset(out, 0, sizeof(*out));
 	out->evidence = CLUSTER_VIS_EVIDENCE_NONE;
 	out->status = CLUSTER_TT_STATUS_UNKNOWN;
 	out->commit_scn = InvalidScn;
 
 	if (!BufferIsValid(buffer))
+		return;
+	if (htup == NULL)
 		return;
 	page = BufferGetPage(buffer);
 	if (!PageHasItl(page))
