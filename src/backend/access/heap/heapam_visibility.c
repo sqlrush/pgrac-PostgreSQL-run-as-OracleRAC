@@ -1800,6 +1800,23 @@ HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer, TransactionId *de
 
 	*dead_after = InvalidTransactionId;
 
+#ifdef USE_PGRAC_CLUSTER
+	/*
+	 * spec-3.14 D5 (hole #2): a tuple with REMOTE writer evidence must never
+	 * be judged DEAD by this node's local horizon -- overlapping xid spaces
+	 * mean local oldest_xmin can pass a still-live remote xid (false-dead).
+	 * Return HEAPTUPLE_LIVE: the RECENTLY_DEAD path re-tests dead_after
+	 * against the LOCAL oldest_xmin / vistest (heap_prune_satisfies_vacuum)
+	 * and would re-introduce the false-dead, so LIVE (unconditional keep) is
+	 * the only safe verdict.  Real reclamation waits for the cross-node
+	 * vacuum-coordination spec (spec-3.14 §10).  spec wrote RECENTLY_DEAD;
+	 * LIVE is the implementation-time correction (dead_after re-test hazard).
+	 */
+	if (cluster_storage_mode_enabled()
+		&& cluster_tuple_has_remote_evidence(buffer, tuple))
+		return HEAPTUPLE_LIVE;
+#endif
+
 	/*
 	 * Has inserting transaction committed?
 	 *
@@ -1992,6 +2009,13 @@ HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer, TransactionId *de
 static bool
 HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 {
+#ifdef USE_PGRAC_CLUSTER
+	/* spec-3.14 D5: remote writer evidence -> not removable (keep). */
+	if (cluster_storage_mode_enabled()
+		&& cluster_tuple_has_remote_evidence(buffer, htup->t_data))
+		return true;
+#endif
+
 	TransactionId dead_after = InvalidTransactionId;
 	HTSV_Result res;
 
@@ -2151,6 +2175,17 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 
 	Assert(ItemPointerIsValid(&htup->t_self));
 	Assert(htup->t_tableOid != InvalidOid);
+
+#ifdef USE_PGRAC_CLUSTER
+	/* spec-3.14 D6: logical decoding of cluster-modified tuples is not
+	 * supported until Stage 6/#95 (cross-node CID mapping).  Local tuples
+	 * are unaffected. */
+	if (cluster_storage_mode_enabled()
+		&& cluster_tuple_has_remote_evidence(buffer, tuple))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("logical decoding of cluster-modified tables is not supported"),
+						errhint("Cross-node historic visibility lands at Stage 6/#95.")));
+#endif
 
 	/* inserting transaction aborted */
 	if (HeapTupleHeaderXminInvalid(tuple)) {

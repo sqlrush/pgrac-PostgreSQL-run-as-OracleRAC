@@ -158,4 +158,15 @@ extern ClusterVisVerdict cluster_vis_dirty_verdict(ClusterTTStatus status, bool 
 												   bool is_delete);
 
 
+/*
+ * spec-3.14 D5: cheap "does this tuple have any REMOTE writer evidence"
+ * test for the prune / vacuum / surely-dead guards.  Looks only at ITL
+ * ref origin (no TT overlay lookup) -- a tuple whose xmin or xmax was
+ * written by another instance must never be physically removed by this
+ * node's local horizon (hole #2: false-dead under overlapping xid
+ * spaces).  Caller holds the buffer content lock.
+ */
+extern bool cluster_tuple_has_remote_evidence(Buffer buffer, HeapTupleHeader tuple);
+
+
 #endif /* CLUSTER_VISIBILITY_RESOLVE_H */

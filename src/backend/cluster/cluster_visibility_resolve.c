@@ -194,4 +194,47 @@ cluster_visibility_resolve_tuple(Buffer buffer, HeapTupleHeader htup, Transactio
 	}
 }
 
+
+/*
+ * spec-3.14 D5: cheap remote-writer evidence test (no overlay lookup).
+ */
+bool
+cluster_tuple_has_remote_evidence(Buffer buffer, HeapTupleHeader tuple)
+{
+	Page page;
+	ClusterUndoTTSlotRef ref;
+	TransactionId raw_xmax;
+
+	if (!BufferIsValid(buffer))
+		return false;
+	page = BufferGetPage(buffer);
+	if (!PageHasItl(page))
+		return false;
+
+	/* The tuple's own slot records the last writer (insert or update). */
+	if (tuple->t_itl_slot_idx != CLUSTER_ITL_SLOT_UNALLOCATED
+		&& cluster_itl_get_tt_ref(page, tuple->t_itl_slot_idx, &ref) && ref.tt_slot_id != 0
+		&& (int32)ref.origin_node_id != cluster_node_id)
+		return true;
+
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)
+		return false;
+
+	raw_xmax = HeapTupleHeaderGetRawXmax(tuple);
+
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI) {
+		uint16 marker_origin = 0;
+
+		if (cluster_itl_find_multixact_origin_by_xmax(page, (MultiXactId)raw_xmax, &marker_origin)
+			&& (int32)marker_origin != cluster_node_id)
+			return true;
+	} else if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask)) {
+		if (cluster_itl_find_lock_tt_ref_by_xmax(page, raw_xmax, &ref) && ref.tt_slot_id != 0
+			&& (int32)ref.origin_node_id != cluster_node_id)
+			return true;
+	}
+
+	return false;
+}
+
 #endif /* USE_PGRAC_CLUSTER */

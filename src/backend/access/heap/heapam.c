@@ -84,6 +84,7 @@
 #include "cluster/cluster_itl.h"		/* alloc_or_reuse_slot / stamp_active */
 #include "cluster/cluster_itl_slot.h"	/* CLUSTER_ITL_SLOT_UNALLOCATED */
 #include "cluster/cluster_tt_status.h" /* spec-3.14 D2b writer wait bridge */
+#include "cluster/cluster_visibility_resolve.h" /* spec-3.14 D5b surely-dead guard */
 #include "cluster/cluster_itl_touch.h"	/* xact-local touch list */
 #include "cluster/cluster_scn.h"		/* cluster_scn_advance / SCN */
 /* PGRAC (spec-3.4b D5): real UBA encode + xact-local TT binding. */
@@ -1712,7 +1713,16 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			if (!vistest)
 				vistest = GlobalVisTestFor(relation);
 
-			if (!HeapTupleIsSurelyDead(heapTuple, vistest))
+			if (
+#ifdef USE_PGRAC_CLUSTER
+				/* spec-3.14 D5b: HeapTupleIsSurelyDead has no Buffer and
+				 * bypasses VacuumHorizon; guard the HOT all_dead probe here
+				 * so a remote-evidence chain is never declared all-dead. */
+				(cluster_storage_mode_enabled()
+				 && cluster_tuple_has_remote_evidence(buffer, heapTuple->t_data))
+					? true : /* remote evidence -> not surely dead -> *all_dead=false */
+#endif
+				!HeapTupleIsSurelyDead(heapTuple, vistest))
 				*all_dead = false;
 		}
 
