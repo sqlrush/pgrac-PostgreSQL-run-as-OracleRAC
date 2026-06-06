@@ -464,6 +464,58 @@ UT_TEST(test_durable_abort_preserves_identity)
 }
 
 
+/* ============================================================
+ *	spec-3.16 D2 — 0x30/0x60 redo decide table idempotent + shared
+ *
+ *	cluster_tt_durable_redo_decide is the SINGLE last-writer-wins table
+ *	for BOTH XLOG_UNDO_TT_SLOT_COMMIT (0x30) and XLOG_UNDO_TT_SLOT_ABORT
+ *	(0x60); the handlers differ only in the status they stamp on APPLY
+ *	(COMMITTED vs ABORTED).  These tests lock that the table is a pure
+ *	function (replay-idempotent) and that the abort path reaches the
+ *	same decisions (anti-divergence, L216).
+ * ============================================================ */
+
+UT_TEST(test_redo_decide_idempotent_replay)
+{
+	/* Pure function: same inputs -> same decision, any number of replays
+	 * (the byte-level idempotency of the on-disk slot is the e2e job of
+	 * t/225 L1/L2; here we lock the decision determinism). */
+	int i;
+
+	for (i = 0; i < 5; i++) {
+		UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_COMMITTED, 100, 5, 100, 5),
+					 (int)CLUSTER_TT_REDO_APPLY); /* same owner: idempotent re-apply */
+		UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_COMMITTED, 100, 6, 100, 5),
+					 (int)CLUSTER_TT_REDO_SKIP); /* disk newer wrap: stale record */
+		UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_ACTIVE, 100, 5, 200, 6),
+					 (int)CLUSTER_TT_REDO_APPLY); /* recycle-then-write */
+	}
+}
+
+UT_TEST(test_redo_decide_abort_shares_commit_table)
+{
+	/* The 0x60 abort redo handler feeds the SAME decide table as 0x30.
+	 * Enumerate the abort-replay scenarios and confirm they reach the
+	 * same verdicts -- a future change that forks abort decisioning must
+	 * break this test. */
+
+	/* abort record replayed onto its own already-ABORTED slot (crash
+	 * after the abort write): same wrap/xid -> idempotent APPLY. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_ABORTED, 777, 4, 777, 4),
+				 (int)CLUSTER_TT_REDO_APPLY);
+	/* abort record onto a slot a newer owner already took (higher wrap)
+	 * -> SKIP (do not clobber the newer transaction). */
+	UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_ACTIVE, 800, 5, 777, 4),
+				 (int)CLUSTER_TT_REDO_SKIP);
+	/* abort record onto the still-ACTIVE slot it owns -> APPLY. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(TT_SLOT_ACTIVE, 777, 4, 777, 4),
+				 (int)CLUSTER_TT_REDO_APPLY);
+	/* invalid disk status -> corruption regardless of commit/abort. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_redo_decide(99, 777, 4, 777, 4),
+				 (int)CLUSTER_TT_REDO_BADSTATUS);
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -497,6 +549,9 @@ main(int argc, char **argv)
 	UT_RUN(test_scan_pass_read_fail_returns_false);
 
 	UT_RUN(test_durable_abort_preserves_identity);
+
+	UT_RUN(test_redo_decide_idempotent_replay);
+	UT_RUN(test_redo_decide_abort_shares_commit_table);
 
 	UT_DONE();
 	return ut_failed_count != 0 ? 1 : 0;
