@@ -216,6 +216,59 @@ cluster_tt_twophase_postabort(TransactionId xid, uint16 info, void *recdata, uin
 
 
 /*
+ * cluster_tt_twophase_standby_recover -- spec-3.16 D1.
+ *
+ *	Hot-standby received this prepared xact via the WAL stream.  Rebuild
+ *	its TT status overlay so a standby reader resolves the prepared
+ *	tuples as IN_PROGRESS instead of overlay-miss 53R97.  Standby is
+ *	read-only and allocates no slots, so -- unlike the crash-restart
+ *	recover callback -- there is NO protected-slot map step (V-4 / C-R3).
+ *
+ *	Failure semantics (spec-3.16 hardening v0.2):
+ *	  - corrupt 2PC payload (magic/version/length/CRC) is corrupted WAL/
+ *	    state: fail-loud (DATA_CORRUPTED ERROR), same as the crash-restart
+ *	    recover callback -- the standby must NOT silently swallow it;
+ *	  - overlay capacity / shmem unavailable: WARNING + count, and the
+ *	    affected prepared reads 53R97 fail-closed on the standby.
+ *
+ *	V-3 note: the overlay is NOT updated when the standby later replays
+ *	COMMIT PREPARED (0x30 redo touches only the durable header) -- full
+ *	standby reader visibility is forward-linked to #95.
+ */
+void
+cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdata, uint32 len)
+{
+	ClusterTT2PCParsed p;
+	uint32 j;
+
+	(void)info;
+
+	if (!cluster_enabled || cluster_node_id < 0)
+		return;
+
+	/* corrupt payload -> fail-loud (same as crash-restart recover). */
+	parse_or_corrupt(xid, recdata, len, &p);
+
+	for (j = 0; j < p.nsublinks; j++) {
+		const ClusterTT2PCSubLink *l = &p.sublinks[j];
+
+		if (!cluster_tt_status_install_subcommitted(&l->child_key, &l->parent_key)) {
+			/* capacity / shmem unavailable: degrade, do NOT PANIC the
+			 * standby; affected reads fail-closed 53R97 + we count it. */
+			cluster_vis_bump_twopc_recover_rebinds();
+			ereport(WARNING,
+					(errmsg("cluster standby: SUBCOMMITTED overlay full rebuilding prepared "
+							"transaction %u (subxid %u); affected reads will fail-closed",
+							xid, l->child_key.local_xid)));
+			return;
+		}
+	}
+
+	cluster_vis_bump_twopc_recover_rebinds();
+}
+
+
+/*
  * cluster_tt_twophase_prefinish -- spec-3.15 D5 (C-P6 resolve-before-WAL).
  *
  *	Runs inside FinishPreparedTransaction AFTER final_scn is produced

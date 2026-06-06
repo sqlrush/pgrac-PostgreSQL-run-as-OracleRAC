@@ -254,6 +254,7 @@ static void ProcessRecords(char *bufptr, TransactionId xid, const TwoPhaseCallba
 #ifdef USE_PGRAC_CLUSTER
 static void ProcessClusterTTPrefinish(char *bufptr, TransactionId xid, SCN final_scn,
 									  bool isCommit);
+static void ProcessClusterTTStandbyRecover(char *bufptr, TransactionId xid);
 #endif
 static void RemoveGXact(GlobalTransaction gxact);
 
@@ -1678,6 +1679,38 @@ ProcessClusterTTPrefinish(char *bufptr, TransactionId xid, SCN final_scn, bool i
 		bufptr += MAXALIGN(record->len);
 	}
 }
+
+/*
+ * PGRAC (spec-3.16 D1): cluster TT standby overlay rebuild.
+ *
+ *   StandbyRecoverPreparedTransactions only reads the 2PC buffer; it
+ *   never runs ProcessRecords (the twophase_standby_recover_callbacks
+ *   table is dead in PG 16 -- no caller -- and activating it would
+ *   double-acquire the AccessExclusiveLocks that PrepareRedoAdd /
+ *   standby lock WAL already handle).  So we walk the records here,
+ *   cluster-only: dispatch ONLY the TWOPHASE_RM_CLUSTER_TT_ID payload
+ *   to the cluster standby recover, leaving every other rmgr's standby
+ *   recovery to its native path.  Mirror of ProcessClusterTTPrefinish.
+ */
+static void
+ProcessClusterTTStandbyRecover(char *bufptr, TransactionId xid)
+{
+	for (;;) {
+		TwoPhaseRecordOnDisk *record = (TwoPhaseRecordOnDisk *)bufptr;
+
+		Assert(record->rmid <= TWOPHASE_RM_MAX_ID);
+		if (record->rmid == TWOPHASE_RM_END_ID)
+			break;
+
+		bufptr += MAXALIGN(sizeof(TwoPhaseRecordOnDisk));
+
+		if (record->rmid == TWOPHASE_RM_CLUSTER_TT_ID)
+			cluster_tt_twophase_standby_recover(xid, record->info, (void *)bufptr,
+												record->len);
+
+		bufptr += MAXALIGN(record->len);
+	}
+}
 #endif /* USE_PGRAC_CLUSTER */
 
 
@@ -2020,8 +2053,36 @@ StandbyRecoverPreparedTransactions(void)
 		xid = gxact->xid;
 
 		buf = ProcessTwoPhaseBuffer(xid, gxact->prepare_start_lsn, gxact->ondisk, true, false);
-		if (buf != NULL)
-			pfree(buf);
+		if (buf == NULL)
+			continue;
+
+#ifdef USE_PGRAC_CLUSTER
+		{
+			/*
+			 * PGRAC (spec-3.16 D1): rebuild this prepared xact's cluster TT
+			 * overlay on the standby.  Slice past the 2PC header to the
+			 * records payload (same skip arithmetic as
+			 * RecoverPreparedTransactions), drop TwoPhaseStateLock before the
+			 * cluster callback (it takes ClusterTTStatusLock), then re-acquire.
+			 */
+			TwoPhaseFileHeader *hdr = (TwoPhaseFileHeader *)buf;
+			char *bufptr = buf + MAXALIGN(sizeof(TwoPhaseFileHeader));
+
+			bufptr += MAXALIGN(hdr->gidlen);
+			bufptr += MAXALIGN(hdr->nsubxacts * sizeof(TransactionId));
+			bufptr += MAXALIGN(hdr->ncommitrels * sizeof(RelFileLocator));
+			bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileLocator));
+			bufptr += MAXALIGN(hdr->ncommitstats * sizeof(xl_xact_stats_item));
+			bufptr += MAXALIGN(hdr->nabortstats * sizeof(xl_xact_stats_item));
+			bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+
+			LWLockRelease(TwoPhaseStateLock);
+			ProcessClusterTTStandbyRecover(bufptr, xid);
+			LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+		}
+#endif
+
+		pfree(buf);
 	}
 	LWLockRelease(TwoPhaseStateLock);
 }

@@ -76,8 +76,12 @@ const TwoPhaseCallback twophase_standby_recover_callbacks[TWOPHASE_RM_MAX_ID + 1
 	NULL,						/* MultiXact */
 	NULL						/* PredicateLock */,
 #ifdef USE_PGRAC_CLUSTER
-	NULL,	/* ClusterTT (standby: spec-3.16) */
+	NULL, /* ClusterTT: standby rebuild does NOT use this table (spec-3.16 D1) --
+		   * the table is dead in PG 16 (no ProcessRecords caller) and
+		   * activating it would double-acquire standby AccessExclusiveLocks;
+		   * cluster standby overlay rebuild runs as a cluster-only traversal in
+		   * twophase.c::ProcessClusterTTStandbyRecover instead. */
 #else
-	NULL,						/* ClusterTT (standby: spec-3.16) (disable-cluster) */
+	NULL,						/* ClusterTT (standby; disable-cluster) */
 #endif
 };

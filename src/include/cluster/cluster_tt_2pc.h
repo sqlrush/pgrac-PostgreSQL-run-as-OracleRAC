@@ -153,6 +153,9 @@ extern void cluster_tt_twophase_prefinish(TransactionId xid, SCN final_scn, bool
  * only (C-P7).
  */
 extern void cluster_tt_twophase_recover(TransactionId xid, uint16 info, void *recdata, uint32 len);
+/* spec-3.16 D1: standby overlay rebuild (cluster-only traversal; no protected map). */
+extern void cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdata,
+												uint32 len);
 extern void cluster_tt_twophase_postcommit(TransactionId xid, uint16 info, void *recdata,
 										   uint32 len);
 extern void cluster_tt_twophase_postabort(TransactionId xid, uint16 info, void *recdata,
