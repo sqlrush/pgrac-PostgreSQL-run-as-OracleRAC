@@ -83,6 +83,14 @@ extern void cluster_tt_slot_durable_commit(uint32 segment_id, uint16 slot_offset
 										   uint16 wrap, SCN commit_scn);
 
 /*
+ * cluster_tt_slot_durable_abort -- spec-3.15 D5 (ROLLBACK PREPARED).
+ * Stamps TT_SLOT_ABORTED preserving xid/wrap (V-2), emitting 0x31.
+ * Same C10 durability contract as durable_commit.
+ */
+extern void cluster_tt_slot_durable_abort(uint32 segment_id, uint16 slot_offset, TransactionId xid,
+										  uint16 wrap);
+
+/*
  * cluster_tt_slot_durable_lookup -- read the durable TT slot (segment_id,
  *	slot_offset) and return its commit_scn iff the slot is still bound to
  *	`xid` and COMMITTED with a valid commit_scn.  xid mismatch (slot recycled

@@ -57,6 +57,14 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 			(unsigned)rec->wrap, (unsigned)rec->xid, (uint64)rec->commit_scn);
 		break;
 	}
+	case XLOG_UNDO_TT_SLOT_ABORT: {
+		xl_undo_tt_slot_abort *xlrec = (xl_undo_tt_slot_abort *)payload;
+
+		appendStringInfo(buf, "instance %u seg %u slot %u wrap %u xid %u (prepared abort)",
+						 xlrec->instance, xlrec->segment_id, xlrec->slot_offset, xlrec->wrap,
+						 xlrec->xid);
+		break;
+	}
 	case XLOG_UNDO_SEGMENT_RECYCLE: {
 		xl_undo_segment_recycle *xlrec = (xl_undo_segment_recycle *)payload;
 
@@ -88,6 +96,8 @@ cluster_undo_identify(uint8 info)
 		return "UNDO_SEGMENT_INIT";
 	case XLOG_UNDO_TT_SLOT_COMMIT:
 		return "UNDO_TT_SLOT_COMMIT";
+	case XLOG_UNDO_TT_SLOT_ABORT:
+		return "UNDO_TT_SLOT_ABORT";
 	case XLOG_UNDO_SEGMENT_RECYCLE:
 		return "UNDO_SEGMENT_RECYCLE";
 	case XLOG_UNDO_SEGMENT_REUSE:

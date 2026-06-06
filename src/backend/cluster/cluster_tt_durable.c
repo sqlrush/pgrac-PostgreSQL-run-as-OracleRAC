@@ -162,6 +162,53 @@ cluster_tt_slot_durable_commit(uint32 segment_id, uint16 slot_offset, Transactio
 }
 
 
+/*
+ * cluster_tt_slot_durable_abort -- spec-3.15 D5 (ROLLBACK PREPARED).
+ *
+ *	Mirror of durable_commit: WAL 0x31 first (the prepared-abort record's
+ *	flush carries it, C10), then the 32B targeted RMW stamping
+ *	TT_SLOT_ABORTED with xid/wrap preserved and commit_scn cleared (V-2:
+ *	identity must survive so by-exact-key lookups resolve ABORTED instead
+ *	of missing into 53R97).
+ */
+void
+cluster_tt_slot_durable_abort(uint32 segment_id, uint16 slot_offset, TransactionId xid, uint16 wrap)
+{
+	uint8 owner = tt_owner_instance_for_segment(segment_id);
+	uint32 off = tt_slot_file_offset(slot_offset);
+	TTSlot slot;
+
+	Assert(slot_offset < TT_SLOTS_PER_SEGMENT);
+	Assert(TransactionIdIsValid(xid));
+
+	(void)cluster_undo_emit_tt_slot_abort(owner, segment_id, slot_offset, wrap, xid);
+
+	cluster_tt_durable_io_wait_start();
+
+	if (!cluster_undo_smgr_read_header_bytes(segment_id, owner, off, (char *)&slot, sizeof(slot))) {
+		cluster_tt_durable_io_wait_end();
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("cluster durable TT: cannot read slot %u of undo segment %u",
+							   slot_offset, segment_id)));
+	}
+
+	slot.xid = xid;
+	slot.wrap = wrap;
+	slot.status = (uint8)TT_SLOT_ABORTED;
+	slot.commit_scn = InvalidScn;
+
+	if (!cluster_undo_smgr_write_header_bytes(segment_id, owner, off, (const char *)&slot,
+											  sizeof(slot))) {
+		cluster_tt_durable_io_wait_end();
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("cluster durable TT: cannot write slot %u of undo segment %u",
+							   slot_offset, segment_id)));
+	}
+
+	cluster_tt_durable_io_wait_end();
+}
+
+
 bool
 cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset, TransactionId xid,
 							   SCN *commit_scn)

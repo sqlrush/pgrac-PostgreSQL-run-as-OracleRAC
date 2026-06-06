@@ -262,7 +262,7 @@ cluster_tt_twophase_prefinish(TransactionId xid, SCN final_scn, bool is_commit, 
 			(void)cluster_tt_status_install_local(&key, CLUSTER_TT_STATUS_COMMITTED, final_scn);
 			cluster_tt_status_hint_emit(&key, CLUSTER_TT_STATUS_COMMITTED, final_scn);
 		} else {
-			/* step 7 lands the durable 0x31 abort-clear here. */
+			cluster_tt_slot_durable_abort(b->undo_segment_id, b->slot_offset, b->xid, b->wrap);
 			(void)cluster_tt_status_install_local(&key, CLUSTER_TT_STATUS_ABORTED, InvalidScn);
 			cluster_tt_status_hint_emit(&key, CLUSTER_TT_STATUS_ABORTED, InvalidScn);
 		}

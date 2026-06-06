@@ -121,6 +121,17 @@ static bool g_read_hdr_ok = true; /* read_header_bytes success flag */
 static char g_canned_block[BLCKSZ];		  /* returned by read_block for segment 1 */
 static uint32 g_canned_block_segment = 1; /* which segment_id the canned block answers */
 
+/* spec-3.15 D5 stub: 0x31 emit (WAL machinery not linked in unit). */
+XLogRecPtr
+cluster_undo_emit_tt_slot_abort(uint8 instance pg_attribute_unused(),
+								uint32 segment_id pg_attribute_unused(),
+								uint16 slot_offset pg_attribute_unused(),
+								uint16 wrap pg_attribute_unused(),
+								TransactionId xid pg_attribute_unused())
+{
+	return InvalidXLogRecPtr;
+}
+
 XLogRecPtr
 cluster_undo_emit_tt_slot_commit(uint8 instance pg_attribute_unused(),
 								 uint32 segment_id pg_attribute_unused(),
@@ -176,7 +187,8 @@ cluster_undo_smgr_read_header_bytes(uint32 segment_id pg_attribute_unused(),
 	return true;
 }
 
-static int g_write_hdr_calls = 0; /* spec-3.13 D2-B scan-only invariant probe */
+static int g_write_hdr_calls = 0;  /* spec-3.13 D2-B scan-only invariant probe */
+static TTSlot g_last_written_slot; /* spec-3.15: capture write payload */
 
 bool
 cluster_undo_smgr_write_header_bytes(uint32 segment_id pg_attribute_unused(),
@@ -185,6 +197,8 @@ cluster_undo_smgr_write_header_bytes(uint32 segment_id pg_attribute_unused(),
 									 uint32 len)
 {
 	g_write_hdr_calls++;
+	if (buf != NULL && len == sizeof(TTSlot))
+		memcpy(&g_last_written_slot, buf, sizeof(TTSlot));
 	return buf != NULL && len == sizeof(TTSlot);
 }
 
@@ -424,6 +438,32 @@ UT_TEST(test_scan_pass_read_fail_returns_false)
 }
 
 
+/* ============================================================
+ *	spec-3.15 D5 — durable_abort stamps ABORTED preserving identity
+ * ============================================================ */
+
+UT_TEST(test_durable_abort_preserves_identity)
+{
+	/* V-2: identity (xid/wrap) must survive so by-exact-key lookups
+	 * resolve ABORTED instead of missing into 53R97. */
+	g_read_hdr_ok = true;
+	memset(&g_canned_slot, 0, sizeof(g_canned_slot));
+	g_canned_slot.status = TT_SLOT_ACTIVE;
+	g_canned_slot.xid = (TransactionId)777;
+	g_canned_slot.wrap = 4;
+	g_canned_slot.commit_scn = (SCN)123; /* stale garbage to be cleared */
+
+	g_write_hdr_calls = 0;
+	cluster_tt_slot_durable_abort(1, 7, (TransactionId)777, 4);
+
+	UT_ASSERT_EQ(g_write_hdr_calls, 1);
+	UT_ASSERT_EQ((int)g_last_written_slot.status, (int)TT_SLOT_ABORTED);
+	UT_ASSERT_EQ((int)g_last_written_slot.xid, 777);
+	UT_ASSERT_EQ((int)g_last_written_slot.wrap, 4);
+	UT_ASSERT_EQ((int)SCN_VALID(g_last_written_slot.commit_scn), 0);
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -455,6 +495,8 @@ main(int argc, char **argv)
 	UT_RUN(test_scan_pass_classifies_inventory);
 	UT_RUN(test_scan_pass_writes_nothing);
 	UT_RUN(test_scan_pass_read_fail_returns_false);
+
+	UT_RUN(test_durable_abort_preserves_identity);
 
 	UT_DONE();
 	return ut_failed_count != 0 ? 1 : 0;

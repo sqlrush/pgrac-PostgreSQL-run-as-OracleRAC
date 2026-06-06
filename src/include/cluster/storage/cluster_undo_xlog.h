@@ -53,6 +53,7 @@
  */
 #define XLOG_UNDO_SEGMENT_INIT 0x10
 #define XLOG_UNDO_TT_SLOT_COMMIT 0x30  /* spec-3.11 D3: durable TT slot commit_scn */
+#define XLOG_UNDO_TT_SLOT_ABORT 0x31   /* spec-3.15 D5: prepared rollback targeted abort */
 #define XLOG_UNDO_SEGMENT_RECYCLE 0x40 /* spec-3.13 D3: COMMITTED -> RECYCLABLE */
 #define XLOG_UNDO_SEGMENT_REUSE 0x50   /* spec-3.13 D4: whole-segment rebirth */
 
@@ -130,6 +131,29 @@ typedef struct xl_undo_tt_slot_commit {
 	uint8 _pad[3];		  /* offset 13; 3 B; pad up to SCN 8-byte alignment */
 	SCN commit_scn;		  /* offset 16; 8 B */
 } xl_undo_tt_slot_commit; /* total 24 B */
+
+/*
+ * On-disk WAL payload for XLOG_UNDO_TT_SLOT_ABORT (spec-3.15 D5).
+ *
+ *   ROLLBACK PREPARED's durable TT resolve: stamp the slot
+ *   TT_SLOT_ABORTED while PRESERVING xid/wrap identity (V-2: clearing
+ *   to UNUSED would make later by-exact-key lookups miss and fail
+ *   closed 53R97 where a silent invisible is the correct answer).
+ *   Redo reuses the 0x30 last-writer-wins decision table
+ *   (cluster_tt_durable_redo_decide): same wrap/xid ordering, APPLY
+ *   writes ABORTED + InvalidScn.
+ */
+typedef struct xl_undo_tt_slot_abort {
+	uint32 segment_id;
+	uint16 slot_offset;
+	uint16 wrap;
+	TransactionId xid;
+	uint8 instance;
+	uint8 _pad[3];
+} xl_undo_tt_slot_abort;
+
+StaticAssertDecl(sizeof(xl_undo_tt_slot_abort) == 16,
+				 "spec-3.15: xl_undo_tt_slot_abort is 16 bytes, no implicit padding");
 
 /*
  * On-disk WAL payload for XLOG_UNDO_SEGMENT_RECYCLE (spec-3.13 D3).
@@ -261,6 +285,11 @@ extern XLogRecPtr cluster_undo_emit_segment_init(uint8 instance, uint32 segment_
 extern XLogRecPtr cluster_undo_emit_tt_slot_commit(uint8 instance, uint32 segment_id,
 												   uint16 slot_offset, uint16 wrap,
 												   TransactionId xid, SCN commit_scn);
+
+/* spec-3.15 D5: emit XLOG_UNDO_TT_SLOT_ABORT (prepared rollback). */
+extern XLogRecPtr cluster_undo_emit_tt_slot_abort(uint8 instance, uint32 segment_id,
+												  uint16 slot_offset, uint16 wrap,
+												  TransactionId xid);
 
 /* spec-3.13 D3: emit XLOG_UNDO_SEGMENT_RECYCLE (caller XLogFlush + pwrite + fsync). */
 extern XLogRecPtr cluster_undo_emit_segment_recycle(uint8 instance, uint32 segment_id,
