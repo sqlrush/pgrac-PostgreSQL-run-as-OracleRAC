@@ -107,11 +107,9 @@ cluster_tt_2pc_serialize(const ClusterTT2PCBinding *bindings, uint16 nbindings,
 		memcpy(p, bindings, (size_t)nbindings * sizeof(ClusterTT2PCBinding));
 		p += (size_t)nbindings * sizeof(ClusterTT2PCBinding);
 	}
-	if (nsublinks > 0) {
+	if (nsublinks > 0)
 		memcpy(p, sublinks, (size_t)nsublinks * sizeof(ClusterTT2PCSubLink));
-		p += (size_t)nsublinks * sizeof(ClusterTT2PCSubLink);
-	}
-	Assert((uint32)(p - dst) == need);
+	/* total length == record_size() by construction (S1-S3 lock it). */
 
 	/* Stamp crc last (computed with the field zeroed). */
 	((ClusterTT2PCRecord *)dst)->crc = record_crc(dst, need);

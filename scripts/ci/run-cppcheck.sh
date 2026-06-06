@@ -74,6 +74,13 @@ GLOBAL_SUPP=(
   --suppress=unmatchedSuppression
 )
 
+# Reason: TwoPhaseCallback ABI (twophase_rmgr.h) fixes the recover callback
+# signature to (TransactionId, uint16, void *, uint32); recdata cannot be
+# const-qualified without breaking the shared callback table type (spec-3.15).
+CLUSTER_ABI_SUPP=(
+  --suppress=constParameterPointer:src/backend/cluster/cluster_tt_2pc.c
+)
+
 # Reason: PG-upstream headers reachable via -I src/include but outside
 # spec-0.27.5 §1.2 scope (pgrac is only responsible for cluster code).
 PG_HEADER_SUPP=(
@@ -166,6 +173,7 @@ echo "Scanning: ${CLUSTER_DIRS[*]}"
 cppcheck \
   --enable=warning,style,performance,portability \
   "${GLOBAL_SUPP[@]}" \
+  "${CLUSTER_ABI_SUPP[@]}" \
   "${PG_HEADER_SUPP[@]}" \
   "${SHAREDFS_SUPP[@]}" \
   "${UNIT_STUB_SUPP[@]}" \
