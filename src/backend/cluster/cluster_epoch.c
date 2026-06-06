@@ -91,6 +91,16 @@ cluster_epoch_shmem_init(void)
 	cluster_epoch_state
 		= ShmemInitStruct("pgrac cluster epoch", cluster_epoch_shmem_size(), &found);
 	if (!found) {
+		/*
+		 * spec-3.16 D4 (recovery contract): crash recovery resets the epoch to
+		 * CLUSTER_EPOCH_INITIAL here (postmaster restart rebuilds shmem;
+		 * !found).  WAL redo NEVER advances the epoch -- only spec-2.29
+		 * reconfig broadcast does.  So after a single-instance crash recovery
+		 * the epoch is 0, snapshots taken post-recovery carry read_epoch == 0
+		 * == current, and the spec-3.3 epoch fence (heapam_visibility.c) does
+		 * NOT false-trip.  Multi-node epoch reconstruction across a crash is a
+		 * reconfig-protocol concern (spec-2.29 / #95), forward-linked.
+		 */
 		pg_atomic_init_u64(&cluster_epoch_state->current_epoch, CLUSTER_EPOCH_INITIAL);
 		pg_atomic_init_u64(&cluster_epoch_state->epoch_changed_at_lsn, 0);
 		memset(cluster_epoch_state->_reserved, 0, sizeof(cluster_epoch_state->_reserved));

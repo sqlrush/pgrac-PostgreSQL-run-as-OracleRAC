@@ -838,6 +838,17 @@ cluster_undo_redo_segment_reuse(XLogReaderState *record)
 void
 cluster_undo_redo(XLogReaderState *record)
 {
+	/*
+	 * spec-3.16 D3 (ITL ref recovery reachability): this handler restores the
+	 * durable TT slot (0x30/0x60) and segment lifecycle (0x10/0x40/0x50) into
+	 * the pg_undo files.  The heap page ITL ref that points at a TT slot is
+	 * restored by the HEAP rmgr (FPI / heap redo) at its own LSN.  Both records
+	 * replay in StartupXLOG LSN order, and a reader (heapam_visibility) only
+	 * runs AFTER recovery reaches consistency + finishes -- so by the time any
+	 * ITL ref is dereferenced, both the page ref and its durable TT slot are
+	 * already replayed.  No cross-rmgr ordering dependency (t/225 L4 e2e).
+	 */
+
 	uint8 info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info) {
