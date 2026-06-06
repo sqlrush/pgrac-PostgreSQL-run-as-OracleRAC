@@ -1465,6 +1465,23 @@ dump_gcs(ReturnSetInfo *rsinfo)
  *	baseline tracking.
  */
 /*
+ * dump_recovery -- spec-3.16 D5 recovery observability (4 rows).
+ */
+static void
+dump_recovery(ReturnSetInfo *rsinfo)
+{
+	emit_row(rsinfo, "recovery", "recovery_undo_redo_applies",
+			 fmt_int64((int64)cluster_vis_get_recovery_undo_redo_applies()));
+	emit_row(rsinfo, "recovery", "recovery_undo_redo_skips",
+			 fmt_int64((int64)cluster_vis_get_recovery_undo_redo_skips()));
+	emit_row(rsinfo, "recovery", "recovery_2pc_standby_rebuilds",
+			 fmt_int64((int64)cluster_vis_get_recovery_2pc_standby_rebuilds()));
+	emit_row(rsinfo, "recovery", "recovery_overlay_rebuild_count",
+			 fmt_int64((int64)cluster_vis_get_recovery_overlay_rebuild_count()));
+}
+
+
+/*
  * dump_tt_2pc -- spec-3.15 D9 two-phase commit observability (6 rows).
  */
 static void
@@ -1659,6 +1676,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_undo_cleaner(rsinfo);
 		dump_visibility(rsinfo);
 		dump_tt_2pc(rsinfo);
+		dump_recovery(rsinfo);
 		dump_scn(rsinfo);
 		dump_ges(rsinfo);
 		dump_grd(rsinfo);

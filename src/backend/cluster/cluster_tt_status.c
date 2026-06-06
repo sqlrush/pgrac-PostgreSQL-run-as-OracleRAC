@@ -127,6 +127,12 @@ typedef struct ClusterTTStatusShmem {
 	pg_atomic_uint64 twopc_prefinish_commits;
 	pg_atomic_uint64 twopc_prefinish_aborts;
 	pg_atomic_uint64 twopc_recover_rebinds;
+
+	/* spec-3.16 D5: recovery observability. */
+	pg_atomic_uint64 recovery_undo_redo_applies;
+	pg_atomic_uint64 recovery_undo_redo_skips;
+	pg_atomic_uint64 recovery_2pc_standby_rebuilds;
+	pg_atomic_uint64 recovery_overlay_rebuild_count;
 } ClusterTTStatusShmem;
 
 #ifdef USE_PGRAC_CLUSTER
@@ -195,6 +201,11 @@ cluster_tt_status_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTStatusState->twopc_prefinish_commits, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->twopc_prefinish_aborts, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->twopc_recover_rebinds, 0);
+		/* PGRAC (spec-3.16 D5) */
+		pg_atomic_init_u64(&ClusterTTStatusState->recovery_undo_redo_applies, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->recovery_undo_redo_skips, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->recovery_2pc_standby_rebuilds, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->recovery_overlay_rebuild_count, 0);
 	}
 
 	/* Lock. */
@@ -646,6 +657,12 @@ CLUSTER_VIS_BUMP(twopc_postprepare_transfers)
 CLUSTER_VIS_BUMP(twopc_prefinish_commits)
 CLUSTER_VIS_BUMP(twopc_prefinish_aborts)
 CLUSTER_VIS_BUMP(twopc_recover_rebinds)
+
+/* spec-3.16 D5: recovery counters. */
+CLUSTER_VIS_BUMP(recovery_undo_redo_applies)
+CLUSTER_VIS_BUMP(recovery_undo_redo_skips)
+CLUSTER_VIS_BUMP(recovery_2pc_standby_rebuilds)
+CLUSTER_VIS_BUMP(recovery_overlay_rebuild_count)
 
 #else /* !USE_PGRAC_CLUSTER */
 

@@ -870,6 +870,28 @@ cluster_tt_durable_redo_apply_count(void)
 {
 	return 0;
 }
+/* spec-3.16 D5 recovery counter accessor stubs (dump_recovery rows). */
+uint64
+cluster_vis_get_recovery_undo_redo_applies(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_recovery_undo_redo_skips(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_recovery_2pc_standby_rebuilds(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_recovery_overlay_rebuild_count(void)
+{
+	return 0;
+}
+
 /* spec-3.15 D9 2PC counter accessor stubs (dump_tt_2pc rows). */
 uint64
 cluster_vis_get_twopc_prepare_records(void)

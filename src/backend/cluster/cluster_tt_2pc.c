@@ -255,7 +255,7 @@ cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdat
 		if (!cluster_tt_status_install_subcommitted(&l->child_key, &l->parent_key)) {
 			/* capacity / shmem unavailable: degrade, do NOT PANIC the
 			 * standby; affected reads fail-closed 53R97 + we count it. */
-			cluster_vis_bump_twopc_recover_rebinds();
+			cluster_vis_bump_recovery_overlay_rebuild_count();
 			ereport(WARNING,
 					(errmsg("cluster standby: SUBCOMMITTED overlay full rebuilding prepared "
 							"transaction %u (subxid %u); affected reads will fail-closed",
@@ -264,7 +264,7 @@ cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdat
 		}
 	}
 
-	cluster_vis_bump_twopc_recover_rebinds();
+	cluster_vis_bump_recovery_2pc_standby_rebuilds();
 }
 
 

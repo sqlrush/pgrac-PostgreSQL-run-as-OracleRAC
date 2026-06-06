@@ -302,6 +302,16 @@ extern void cluster_vis_bump_twopc_prefinish_aborts(void);
 extern uint64 cluster_vis_get_twopc_prefinish_aborts(void);
 extern void cluster_vis_bump_twopc_recover_rebinds(void);
 extern uint64 cluster_vis_get_twopc_recover_rebinds(void);
+
+/* spec-3.16 D5: recovery counters. */
+extern void cluster_vis_bump_recovery_undo_redo_applies(void);
+extern uint64 cluster_vis_get_recovery_undo_redo_applies(void);
+extern void cluster_vis_bump_recovery_undo_redo_skips(void);
+extern uint64 cluster_vis_get_recovery_undo_redo_skips(void);
+extern void cluster_vis_bump_recovery_2pc_standby_rebuilds(void);
+extern uint64 cluster_vis_get_recovery_2pc_standby_rebuilds(void);
+extern void cluster_vis_bump_recovery_overlay_rebuild_count(void);
+extern uint64 cluster_vis_get_recovery_overlay_rebuild_count(void);
 extern uint64 cluster_tt_status_get_lookup_miss_count(void);
 extern uint64 cluster_tt_status_get_evict_count(void);
 extern uint64 cluster_tt_status_get_flush_count(void);

@@ -43,6 +43,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
+#include "cluster/cluster_tt_status.h"			/* spec-3.16 D5 recovery counters */
 #include "cluster/cluster_tt_durable.h"			/* spec-3.11: redo decision predicate */
 #include "cluster/cluster_undo_segment.h"		/* UNDO_SEGMENT_SIZE_BYTES */
 #include "cluster/storage/cluster_undo_alloc.h" /* header identity check (3.13 reuse redo) */
@@ -481,6 +482,7 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 		break;
 	case CLUSTER_TT_REDO_SKIP:
 		/* stale record; a newer commit is already durable -> no write. */
+		cluster_vis_bump_recovery_undo_redo_skips(); /* spec-3.16 D5 */
 		break;
 	case CLUSTER_TT_REDO_APPLY: {
 		ssize_t written;
@@ -511,7 +513,8 @@ cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after TT slot commit: %m", path)));
 		}
-		cluster_tt_durable_count_redo_apply(); /* spec-3.11 D8 observability */
+		cluster_tt_durable_count_redo_apply();		   /* spec-3.11 D8 observability */
+		cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
 		break;
 	}
 	}
@@ -850,6 +853,11 @@ cluster_undo_redo(XLogReaderState *record)
 	 */
 
 	uint8 info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	/* spec-3.16 D7 (C-R4): redo runs only during recovery.  Debug-only
+	 * invariant -- NOT a production guard (L218): the rmgr framework
+	 * already restricts redo to StartupXLOG. */
+	Assert(InRecovery || RecoveryInProgress());
 
 	switch (info) {
 	case XLOG_UNDO_SEGMENT_INIT:
