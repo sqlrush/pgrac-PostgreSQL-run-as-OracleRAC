@@ -393,6 +393,24 @@ extern void cluster_tt_slot_shmem_register(void);
 extern uint64 cluster_tt_slot_retention_horizon_scn(void);
 extern uint64 cluster_tt_slot_retain_skip_count(void);
 extern uint64 cluster_tt_slot_wrap_retired_count(void); /* spec-3.13 D5 */
+
+/*
+ * spec-3.15 D6 (V-4): protected-slot map for prepared transactions.
+ *
+ *	Crash recovery re-pins every prepared xact's TT slot here so the
+ *	allocator cannot hand it to a new transaction before COMMIT/ROLLBACK
+ *	PREPARED resolves it (the shmem allocator array is per-node single-
+ *	entry and rebuilt empty after restart -- re-pinning entries is
+ *	structurally impossible for multiple segments, hence a map + alloc
+ *	gate).  Empty map short-circuits to zero overhead.
+ */
+#define CLUSTER_TT_PROTECTED_MAX 1024
+
+extern bool cluster_tt_slot_protect(uint32 segment_id, uint16 slot_offset, uint16 wrap,
+									TransactionId xid);
+extern uint32 cluster_tt_slot_unprotect_xid(TransactionId xid);
+extern bool cluster_tt_slot_is_protected(uint32 segment_id, uint16 slot_offset);
+extern uint32 cluster_tt_slot_protected_count(void);
 extern uint64 cluster_tt_slot_retention_recycle_count(void);
 
 

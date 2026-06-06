@@ -66,6 +66,7 @@
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_cleaner.h" /* gc pass + stats (spec-3.13) */
+#include "storage/spin.h"				  /* slock_t (spec-3.15 map stub) */
 #include "cluster/cluster_undo_retention.h"
 #include "cluster/storage/cluster_undo_alloc.h"
 #include "storage/lwlock.h"
@@ -210,6 +211,17 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 
 SCN mock_retention_horizon = InvalidScn;
 bool cluster_undo_retention_horizon_enabled = true;
+
+/* spec-3.15 D6 stub: protected-map spinlock (single-threaded unit). */
+int
+s_lock(volatile slock_t *lock, const char *file, int line, const char *func)
+{
+	(void)lock;
+	(void)file;
+	(void)line;
+	(void)func;
+	return 0;
+}
 
 /* spec-3.12: the shmem size/init now gate on cluster being enabled (so bootstrap
  * skips the ~96 KB region); the standalone test runs as an enabled node. */
@@ -972,6 +984,62 @@ UT_TEST(test_t44_rollover_clears_retire)
 }
 
 
+/* ============================================================
+ *	spec-3.15 D6 (V-4) — protected-slot map + allocator gate
+ * ============================================================ */
+
+UT_TEST(test_t45_protected_map_basics)
+{
+	reset_allocator();
+	UT_ASSERT_EQ((int)cluster_tt_slot_protected_count(), 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_is_protected(NODE0_SEG, 0), 0);
+
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 0, 3, (TransactionId)900), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 7, 0, (TransactionId)900), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protected_count(), 2);
+	UT_ASSERT_EQ((int)cluster_tt_slot_is_protected(NODE0_SEG, 0), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_is_protected(NODE0_SEG, 7), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_is_protected(NODE0_SEG, 1), 0);
+
+	/* unprotect by xid removes both pins of that prepared xact. */
+	UT_ASSERT_EQ((int)cluster_tt_slot_unprotect_xid((TransactionId)900), 2);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protected_count(), 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_unprotect_xid((TransactionId)900), 0); /* idempotent */
+}
+
+UT_TEST(test_t46_alloc_gate_skips_protected_free_slot)
+{
+	/* Crash-recover shape: shmem is fresh (slot 0 reads FREE) but the map
+	 * pins it for a prepared xact -> the allocator must skip it. */
+	uint16 got;
+
+	reset_allocator();
+	cluster_tt_slot_rollover(0, NODE0_SEG, NULL);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 0, 1, (TransactionId)901), 1);
+
+	got = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)100);
+	UT_ASSERT_EQ((int)got, 1); /* slot 0 protected -> first grant is slot 1 */
+
+	/* after resolve the pin is gone and slot 0 is grantable again. */
+	(void)cluster_tt_slot_unprotect_xid((TransactionId)901);
+	got = cluster_tt_slot_alloc(NODE0_SEG, (TransactionId)101);
+	UT_ASSERT_EQ((int)got, 0);
+}
+
+UT_TEST(test_t47_protect_idempotent_and_conflict)
+{
+	reset_allocator();
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 5, 2, (TransactionId)902), 1);
+	/* identical tuple: idempotent true (C-P2 recover replay). */
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 5, 2, (TransactionId)902), 1);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protected_count(), 1);
+	/* conflicting owner on the same (seg,slot): refused. */
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 5, 2, (TransactionId)903), 0);
+	UT_ASSERT_EQ((int)cluster_tt_slot_protect(NODE0_SEG, 5, 9, (TransactionId)902), 0);
+	(void)cluster_tt_slot_unprotect_xid((TransactionId)902);
+}
+
+
 int
 main(void)
 {
@@ -1023,6 +1091,9 @@ main(void)
 	UT_RUN(test_t42_gc_skips_inflight_active);
 	UT_RUN(test_t43_wrap_max_slot_is_retired_from_both_paths);
 	UT_RUN(test_t44_rollover_clears_retire);
+	UT_RUN(test_t45_protected_map_basics);
+	UT_RUN(test_t46_alloc_gate_skips_protected_free_slot);
+	UT_RUN(test_t47_protect_idempotent_and_conflict);
 
 	return ut_failed_count == 0 ? 0 : 1;
 }

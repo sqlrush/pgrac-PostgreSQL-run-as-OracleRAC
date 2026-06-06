@@ -51,6 +51,7 @@
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_retention.h"		/* horizon + recyclable predicate */
 #include "cluster/cluster_undo_cleaner.h"		/* spec-3.13 D2-A gc pass + stats */
+#include "storage/spin.h"						/* protected-slot map lock (spec-3.15 D6) */
 #include "cluster/storage/cluster_undo_alloc.h" /* CLUSTER_UNDO_SEGS_PER_INSTANCE */
 #include "miscadmin.h"
 #include "port/atomics.h" /* spec-3.12 D5 retention counters */
@@ -113,6 +114,17 @@ typedef struct ClusterTTSlotShmem {
 	 * rollover/reuse which resets wraps to 0).  Bumped by BOTH selection
 	 * points (alloc Pass-1 and the cleaner GC pass). */
 	pg_atomic_uint64 tt_slot_wrap_retired_count;
+
+	/* spec-3.15 D6 (V-4): prepared-xact protected slots (alloc gate). */
+	slock_t protected_lock;
+	uint32 protected_count;
+	struct {
+		uint32 segment_id;
+		uint16 slot_offset;
+		uint16 wrap;
+		TransactionId xid;
+		uint32 _pad;
+	} protected_slots[CLUSTER_TT_PROTECTED_MAX];
 
 	ClusterTTSlotAllocPerSegment per_node[CLUSTER_TT_SLOT_MAX_NODES];
 } ClusterTTSlotShmem;
@@ -310,7 +322,7 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 			return (uint16)i;
 		}
 		if (e->status == CTS_FREE) {
-			if (free_idx < 0)
+			if (free_idx < 0 && !cluster_tt_slot_is_protected(segment_id, (uint16)i))
 				free_idx = i;
 		} else if (e->status == CTS_COMMITTED || e->status == CTS_ABORTED) {
 			bool recyclable = gate_enabled
@@ -326,7 +338,7 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 			}
 
 			if (recyclable) {
-				if (reusable_idx < 0)
+				if (reusable_idx < 0 && !cluster_tt_slot_is_protected(segment_id, (uint16)i))
 					reusable_idx = i;
 			} else {
 				/* COMMITTED and not older than horizon: retention keeps it alive. */
@@ -748,6 +760,8 @@ cluster_tt_slot_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->retention_recycle_count, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count, 0);
+		SpinLockInit(&ClusterTTSlotShm->protected_lock);
+		ClusterTTSlotShm->protected_count = 0;
 		for (i = 0; i < CLUSTER_TT_SLOT_MAX_NODES; i++)
 			LWLockInitialize(&ClusterTTSlotShm->per_node[i].lock, LWTRANCHE_CLUSTER_TT_SLOT);
 	}
@@ -786,6 +800,112 @@ cluster_tt_slot_wrap_retired_count(void)
 	if (ClusterTTSlotShm == NULL)
 		return 0;
 	return pg_atomic_read_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count);
+}
+
+
+/* ============================================================
+ *	spec-3.15 D6 (V-4): protected-slot map.
+ *
+ *	Writers: twophase recover (startup, re-pin) and prefinish resolve
+ *	(unprotect).  Reader: the allocator gate below.  A tiny spinlock
+ *	guards the array; all critical sections are a few comparisons.
+ *	protect() is idempotent on the exact same (seg, slot, wrap, xid)
+ *	tuple (C-P2: recover may replay).
+ * ============================================================ */
+
+bool
+cluster_tt_slot_protect(uint32 segment_id, uint16 slot_offset, uint16 wrap, TransactionId xid)
+{
+	uint32 i;
+	bool ok = false;
+
+	if (ClusterTTSlotShm == NULL)
+		return false;
+
+	SpinLockAcquire(&ClusterTTSlotShm->protected_lock);
+	for (i = 0; i < ClusterTTSlotShm->protected_count; i++) {
+		if (ClusterTTSlotShm->protected_slots[i].segment_id == segment_id
+			&& ClusterTTSlotShm->protected_slots[i].slot_offset == slot_offset) {
+			/* idempotent when identical; conflicting owner is a bug. */
+			ok = (ClusterTTSlotShm->protected_slots[i].xid == xid
+				  && ClusterTTSlotShm->protected_slots[i].wrap == wrap);
+			SpinLockRelease(&ClusterTTSlotShm->protected_lock);
+			return ok;
+		}
+	}
+	if (ClusterTTSlotShm->protected_count < CLUSTER_TT_PROTECTED_MAX) {
+		uint32 n = ClusterTTSlotShm->protected_count;
+
+		ClusterTTSlotShm->protected_slots[n].segment_id = segment_id;
+		ClusterTTSlotShm->protected_slots[n].slot_offset = slot_offset;
+		ClusterTTSlotShm->protected_slots[n].wrap = wrap;
+		ClusterTTSlotShm->protected_slots[n].xid = xid;
+		ClusterTTSlotShm->protected_slots[n]._pad = 0;
+		ClusterTTSlotShm->protected_count = n + 1;
+		ok = true;
+	}
+	SpinLockRelease(&ClusterTTSlotShm->protected_lock);
+	return ok;
+}
+
+uint32
+cluster_tt_slot_unprotect_xid(TransactionId xid)
+{
+	uint32 i;
+	uint32 removed = 0;
+
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+
+	SpinLockAcquire(&ClusterTTSlotShm->protected_lock);
+	i = 0;
+	while (i < ClusterTTSlotShm->protected_count) {
+		if (ClusterTTSlotShm->protected_slots[i].xid == xid) {
+			uint32 last = ClusterTTSlotShm->protected_count - 1;
+
+			ClusterTTSlotShm->protected_slots[i] = ClusterTTSlotShm->protected_slots[last];
+			ClusterTTSlotShm->protected_count = last;
+			removed++;
+			continue; /* re-check swapped-in entry at i */
+		}
+		i++;
+	}
+	SpinLockRelease(&ClusterTTSlotShm->protected_lock);
+	return removed;
+}
+
+bool
+cluster_tt_slot_is_protected(uint32 segment_id, uint16 slot_offset)
+{
+	uint32 i;
+	bool hit = false;
+
+	if (ClusterTTSlotShm == NULL || ClusterTTSlotShm->protected_count == 0)
+		return false; /* empty-map fast path: no lock */
+
+	SpinLockAcquire(&ClusterTTSlotShm->protected_lock);
+	for (i = 0; i < ClusterTTSlotShm->protected_count; i++) {
+		if (ClusterTTSlotShm->protected_slots[i].segment_id == segment_id
+			&& ClusterTTSlotShm->protected_slots[i].slot_offset == slot_offset) {
+			hit = true;
+			break;
+		}
+	}
+	SpinLockRelease(&ClusterTTSlotShm->protected_lock);
+	return hit;
+}
+
+uint32
+cluster_tt_slot_protected_count(void)
+{
+	uint32 n;
+
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	SpinLockAcquire(&ClusterTTSlotShm->protected_lock);
+	n = ClusterTTSlotShm->protected_count;
+	SpinLockRelease(&ClusterTTSlotShm->protected_lock);
+	return n;
 }
 
 

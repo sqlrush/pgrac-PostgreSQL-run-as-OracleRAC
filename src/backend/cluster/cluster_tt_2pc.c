@@ -41,7 +41,9 @@
 #include "cluster/cluster_itl_touch.h" /* PostPrepare touch-list drop (V-2) */
 #include "cluster/cluster_subtrans.h"  /* sub-link export/reset (D7) */
 #include "cluster/cluster_tt_2pc.h"
-#include "cluster/cluster_tt_local.h" /* binding export/reset */
+#include "cluster/cluster_tt_local.h"  /* binding export/reset */
+#include "cluster/cluster_tt_slot.h"   /* protected-slot map (D6/V-4) */
+#include "cluster/cluster_tt_status.h" /* SUBCOMMITTED overlay rebuild */
 
 
 /*
@@ -112,6 +114,97 @@ PostPrepare_ClusterTT(void)
 	cluster_tt_local_reset_binding();
 	cluster_subtrans_reset_local_links();
 	cluster_itl_touch_reset_at_end_xact();
+}
+
+
+/*
+ * parse_or_corrupt -- shared fail-closed record validation for the
+ * twophase callbacks (C-P7 family: a damaged 2PC record must stop the
+ * resolve loudly, mirroring PG's treatment of a damaged state file).
+ */
+static void
+parse_or_corrupt(TransactionId xid, const void *recdata, uint32 len, ClusterTT2PCParsed *out)
+{
+	if (!cluster_tt_2pc_parse_record(recdata, len, out))
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("corrupt cluster TT 2PC record for prepared transaction %u (len %u)",
+							   xid, len),
+						errhint("The two-phase state file payload failed magic/version/length/CRC "
+								"validation.")));
+}
+
+
+/*
+ * cluster_tt_twophase_recover -- spec-3.15 D6 (crash-restart re-pin).
+ *
+ *	Runs from RecoverPreparedTransactions before user transactions are
+ *	accepted.  Re-pins every binding into the protected-slot map so the
+ *	allocator cannot hand a prepared xact's slot to a new transaction
+ *	(V-4), and rebuilds the SUBCOMMITTED overlay links (the shmem
+ *	overlay did not survive the crash).  Idempotent (C-P2): protect()
+ *	short-circuits on an identical tuple and the overlay install is
+ *	keyed.
+ */
+void
+cluster_tt_twophase_recover(TransactionId xid, uint16 info, void *recdata, uint32 len)
+{
+	ClusterTT2PCParsed p;
+	uint16 i;
+	uint32 j;
+
+	(void)info;
+	parse_or_corrupt(xid, recdata, len, &p);
+
+	for (i = 0; i < p.nbindings; i++) {
+		const ClusterTT2PCBinding *b = &p.bindings[i];
+
+		if (!cluster_tt_slot_protect(b->undo_segment_id, b->slot_offset, b->wrap, b->xid))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("cannot re-pin prepared transaction %u TT slot (segment %u, slot %u)",
+							b->xid, b->undo_segment_id, b->slot_offset),
+					 errhint("Protected-slot map is full or the slot is pinned by a conflicting "
+							 "owner; resolve other prepared transactions first.")));
+	}
+
+	for (j = 0; j < p.nsublinks; j++) {
+		const ClusterTT2PCSubLink *l = &p.sublinks[j];
+
+		if (!cluster_tt_status_install_subcommitted(&l->child_key, &l->parent_key))
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("cannot rebuild SUBCOMMITTED overlay for prepared "
+								   "transaction %u (subxid %u)",
+								   xid, l->child_key.local_xid),
+							errhint("TT status overlay is full; increase its capacity or "
+									"resolve prepared transactions.")));
+	}
+}
+
+
+/*
+ * postcommit / postabort -- non-fallible cleanup only (C-P7).
+ *
+ *	The durable resolve already happened in the prefinish hook (steps
+ *	6-7) BEFORE the prepared commit/abort WAL.  Here we only drop the
+ *	protected-slot pins for this xid; idempotent and safe on absence
+ *	(unprotect of an unknown xid is a no-op).
+ */
+void
+cluster_tt_twophase_postcommit(TransactionId xid, uint16 info, void *recdata, uint32 len)
+{
+	(void)info;
+	(void)recdata;
+	(void)len;
+	(void)cluster_tt_slot_unprotect_xid(xid);
+}
+
+void
+cluster_tt_twophase_postabort(TransactionId xid, uint16 info, void *recdata, uint32 len)
+{
+	(void)info;
+	(void)recdata;
+	(void)len;
+	(void)cluster_tt_slot_unprotect_xid(xid);
 }
 
 #endif /* USE_PGRAC_CLUSTER */
