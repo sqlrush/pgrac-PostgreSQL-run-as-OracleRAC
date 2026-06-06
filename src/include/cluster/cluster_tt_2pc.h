@@ -13,7 +13,7 @@
  *	  the slots via a protected-slot map so the allocator cannot hand
  *	  them to new transactions (V-4).
  *
- *	  Ordering contract (C-P6): durable TT resolve (0x30 commit / 0x31
+ *	  Ordering contract (C-P6): durable TT resolve (0x30 commit / 0x60
  *	  abort-clear) happens in FinishPreparedTransaction BEFORE the
  *	  prepared commit/abort WAL record -- the twophase post callbacks
  *	  run too late and carry no final_scn (C-P7), so they only do
@@ -140,7 +140,7 @@ extern void PostPrepare_ClusterTT(void);
  * FinishPreparedTransaction prefinish (C-P6): called AFTER final_scn is
  * produced and BEFORE RecordTransactionCommitPrepared/AbortPrepared.
  * Commit: per-binding 0x30 durable commit + overlay COMMITTED.
- * Abort:  per-binding 0x31 durable abort-clear + overlay ABORTED.
+ * Abort:  per-binding 0x60 durable abort-clear + overlay ABORTED.
  * Failure here is safe: the xact is still prepared and retryable.
  */
 extern void cluster_tt_twophase_prefinish(TransactionId xid, SCN final_scn, bool is_commit,

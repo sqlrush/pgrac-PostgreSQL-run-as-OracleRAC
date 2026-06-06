@@ -402,6 +402,8 @@ cluster_undo_redo_segment_init(XLogReaderState *record)
 		if (dret >= 0 && (size_t)dret < sizeof(dir))
 			fsync_fname(dir, true);
 	}
+
+	cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
 }
 
 
@@ -586,7 +588,9 @@ cluster_undo_redo_tt_slot_abort(XLogReaderState *record)
 							   path, rec->slot_offset, slot->status)));
 		break;
 	case CLUSTER_TT_REDO_SKIP:
-		break; /* a newer owner is already durable */
+		/* A newer owner is already durable. */
+		cluster_vis_bump_recovery_undo_redo_skips(); /* spec-3.16 D5 */
+		break;
 	case CLUSTER_TT_REDO_APPLY: {
 		ssize_t written;
 
@@ -615,6 +619,7 @@ cluster_undo_redo_tt_slot_abort(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after TT slot abort: %m", path)));
 		}
+		cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
 		break;
 	}
 	}
@@ -680,6 +685,7 @@ cluster_undo_redo_segment_recycle(XLogReaderState *record)
 
 	switch (cluster_undo_segment_recycle_redo_decide(hdr->wrap_count, hdr->segment_state, rec)) {
 	case CLUSTER_SEGRECYCLE_REDO_SKIP_STALE:
+		cluster_vis_bump_recovery_undo_redo_skips(); /* spec-3.16 D5 */
 		break; /* a later whole-segment reuse is already durable */
 	case CLUSTER_SEGRECYCLE_REDO_BAD_GENERATION:
 		close(fd);
@@ -724,6 +730,7 @@ cluster_undo_redo_segment_recycle(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after recycle redo: %m", path)));
 		}
+		cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
 		break;
 	}
 	}
@@ -790,6 +797,7 @@ cluster_undo_redo_segment_reuse(XLogReaderState *record)
 
 	switch (cluster_undo_segment_reuse_redo_decide(header_valid, disk_generation, rec)) {
 	case CLUSTER_SEGREUSE_REDO_SKIP_STALE:
+		cluster_vis_bump_recovery_undo_redo_skips(); /* spec-3.16 D5 */
 		break;
 	case CLUSTER_SEGREUSE_REDO_BAD_GENERATION:
 		close(fd);
@@ -822,6 +830,7 @@ cluster_undo_redo_segment_reuse(XLogReaderState *record)
 					(errcode_for_file_access(),
 					 errmsg("could not fsync undo segment \"%s\" after reuse redo: %m", path)));
 		}
+		cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
 		break;
 	}
 	}

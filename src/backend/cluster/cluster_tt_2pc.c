@@ -239,6 +239,7 @@ void
 cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdata, uint32 len)
 {
 	ClusterTT2PCParsed p;
+	uint16 i;
 	uint32 j;
 
 	(void)info;
@@ -248,6 +249,29 @@ cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdat
 
 	/* corrupt payload -> fail-loud (same as crash-restart recover). */
 	parse_or_corrupt(xid, recdata, len, &p);
+
+	for (i = 0; i < p.nbindings; i++) {
+		const ClusterTT2PCBinding *b = &p.bindings[i];
+		ClusterTTStatusKey key;
+
+		memset(&key, 0, sizeof(key));
+		key.origin_node_id = (uint16)cluster_node_id;
+		key.undo_segment_id = (uint16)b->undo_segment_id;
+		key.tt_slot_id = cluster_tt_slot_offset_to_id(b->slot_offset);
+		key.cluster_epoch = b->cluster_epoch;
+		key.local_xid = b->xid;
+
+		if (!cluster_tt_status_install_local(&key, CLUSTER_TT_STATUS_IN_PROGRESS, InvalidScn)) {
+			/* capacity / shmem unavailable: degrade, do NOT PANIC the
+			 * standby; affected reads fail-closed 53R97 + we count it. */
+			cluster_vis_bump_recovery_overlay_rebuild_count();
+			ereport(WARNING,
+					(errmsg("cluster standby: TT overlay full rebuilding prepared transaction "
+							"%u (xid %u); affected reads will fail-closed",
+							xid, b->xid)));
+			return;
+		}
+	}
 
 	for (j = 0; j < p.nsublinks; j++) {
 		const ClusterTT2PCSubLink *l = &p.sublinks[j];
@@ -284,7 +308,7 @@ cluster_tt_twophase_standby_recover(TransactionId xid, uint16 info, void *recdat
  *	explicit resolve: the spec-3.5 lazy parent-follow reads the parent's
  *	terminal state.
  *
- *	Abort: per-binding durable 0x31 abort-clear (step 7) plus the
+ *	Abort: per-binding durable 0x60 abort-clear (step 7) plus the
  *	ABORTED overlay install + hint.
  *
  *	Failure anywhere here is safe (C-P6): the transaction is still
