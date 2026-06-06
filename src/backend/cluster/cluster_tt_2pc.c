@@ -41,9 +41,10 @@
 #include "cluster/cluster_itl_touch.h" /* PostPrepare touch-list drop (V-2) */
 #include "cluster/cluster_subtrans.h"  /* sub-link export/reset (D7) */
 #include "cluster/cluster_tt_2pc.h"
-#include "cluster/cluster_tt_local.h"  /* binding export/reset */
-#include "cluster/cluster_tt_slot.h"   /* protected-slot map (D6/V-4) */
-#include "cluster/cluster_tt_status.h" /* SUBCOMMITTED overlay rebuild */
+#include "cluster/cluster_tt_local.h"		 /* binding export/reset */
+#include "cluster/cluster_tt_slot.h"		 /* protected-slot map (D6/V-4) */
+#include "cluster/cluster_tt_status.h"		 /* SUBCOMMITTED overlay rebuild */
+#include "cluster/cluster_undo_record_api.h" /* xact_reset (PostPrepare) */
 
 
 /*
@@ -114,6 +115,7 @@ PostPrepare_ClusterTT(void)
 	cluster_tt_local_reset_binding();
 	cluster_subtrans_reset_local_links();
 	cluster_itl_touch_reset_at_end_xact();
+	cluster_undo_record_xact_reset(); /* touched-undo list + D16 flag */
 }
 
 

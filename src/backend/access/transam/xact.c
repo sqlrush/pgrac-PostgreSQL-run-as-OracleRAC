@@ -150,6 +150,7 @@
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_tt_local.h" /* PGRAC: spec-3.1 D6 commit/abort hook */
 #include "cluster/cluster_itl_touch.h" /* PGRAC: spec-3.4a D6 pre-commit/abort */
+#include "cluster/cluster_tt_2pc.h"	 /* PGRAC: spec-3.15 PREPARE record */
 #include "cluster/cluster_subtrans.h"  /* PGRAC: spec-3.5 D7 subxact lifecycle hook */
 #include "cluster/cluster_undo_record_api.h"  /* PGRAC: spec-3.7 D16 PREPARE guard */
 #endif
@@ -2911,6 +2912,19 @@ PrepareTransaction(void)
 	 * PREPARED; in particular, pay attention to whether things should happen
 	 * before or after releasing the transaction's locks.
 	 */
+#ifdef USE_PGRAC_CLUSTER
+
+	/*
+	 * PGRAC (spec-3.15 D3, C-P5): make this transaction's direct-file
+	 * undo writes durable BEFORE the PREPARE WAL record.  Without this,
+	 * PREPARE-durable -> crash would leave the prepared xact pointing at
+	 * never-fsynced undo (the original spec-3.7 D16 risk).  Reuses the
+	 * commit-path flush (same touched-segment list; the shared
+	 * commit_fsync_* counters intentionally count both).
+	 */
+	cluster_undo_xact_precommit_flush();
+#endif
+
 	StartPrepare(gxact);
 
 	AtPrepare_Notify();
@@ -2919,6 +2933,12 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
+#ifdef USE_PGRAC_CLUSTER
+	/* PGRAC (spec-3.15 D3): serialize TT bindings + SUBCOMMITTED links
+	 * into the 2PC record.  Serialize-only: state transfer happens in
+	 * PostPrepare_ClusterTT after EndPrepare succeeded. */
+	AtPrepare_ClusterTT();
+#endif
 
 	/*
 	 * Here is where we really truly prepare.
@@ -2983,6 +3003,12 @@ PrepareTransaction(void)
 	PostPrepare_MultiXact(xid);
 
 	PostPrepare_PredicateLocks(xid);
+#ifdef USE_PGRAC_CLUSTER
+	/* PGRAC (spec-3.15 D3): ownership transfer -- the 2PC record is now
+	 * the single authority (C-P4); drop backend-local TT bindings,
+	 * SUBCOMMITTED links, ITL touch list and the touched-undo bookkeeping. */
+	PostPrepare_ClusterTT();
+#endif
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_LOCKS,
