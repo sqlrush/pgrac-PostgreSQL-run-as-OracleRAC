@@ -58,7 +58,9 @@ record_crc(const char *buf, uint32 len)
 	ClusterTT2PCRecord hdr;
 	pg_crc32c crc;
 
-	Assert(len >= sizeof(ClusterTT2PCRecord));
+	if (len < sizeof(ClusterTT2PCRecord))
+		return 0;
+
 	memcpy(&hdr, buf, sizeof(hdr));
 	hdr.crc = 0;
 
