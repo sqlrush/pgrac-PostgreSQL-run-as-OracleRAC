@@ -5,8 +5,9 @@
  *	  magic / enum / SQLSTATE tests for Undo Record Format.
  *
  *	  12 tests covering:
- *	    T1   UndoBlockHeader sizeof = 40 (HC211 Hardening v1.0.1) +
- *	         offsetof first_change_scn = 16, first_change_lsn = 24, crc64 = 32
+ *	    T1   UndoBlockHeader sizeof = 48 (HC211 40B + spec-3.18 D2 block_lsn) +
+ *	         offsetof first_change_scn = 16, first_change_lsn = 24, crc64 = 32,
+ *	         block_lsn = 40
  *	    T2   UndoSlotDirEntry sizeof = 8 (HC212)
  *	    T3   UndoRecordHeader sizeof = 64 (HC213) + offsetof prev_uba = 24,
  *	         target_locator = 40, target_block = 56, target_offset = 60
@@ -50,10 +51,10 @@
 UT_DEFINE_GLOBALS();
 
 
-/* ---- T1: UndoBlockHeader 40B + key offsetof ---- */
+/* ---- T1: UndoBlockHeader 48B + key offsetof (spec-3.18 D2 block_lsn) ---- */
 UT_TEST(test_undo_block_header)
 {
-	UT_ASSERT_EQ(sizeof(UndoBlockHeader), 40);
+	UT_ASSERT_EQ(sizeof(UndoBlockHeader), 48);
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, magic), 0);
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, block_version), 4);
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, slot_count), 6);
@@ -61,6 +62,7 @@ UT_TEST(test_undo_block_header)
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, first_change_scn), 16);
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, first_change_lsn), 24);
 	UT_ASSERT_EQ(offsetof(UndoBlockHeader, crc64), 32);
+	UT_ASSERT_EQ(offsetof(UndoBlockHeader, block_lsn), 40);
 }
 
 /* ---- T2: UndoSlotDirEntry 8B ---- */
@@ -163,13 +165,13 @@ UT_TEST(test_sqlstate_53R9D)
 /* ---- T12: cluster_undo_block_has_space helper ---- */
 UT_TEST(test_block_has_space)
 {
-	/* Empty block: free_offset = 40 (UndoBlockHeader), slot_count = 0.
-	 * Block size 8192;  slot dir grows from end (BLCKSZ - 8 per slot).
-	 * 7K record OK:  40 + 7168 = 7208 ≤ 8192 - 8 = 8184. */
-	UT_ASSERT(cluster_undo_block_has_space(40, 0, 7168));
+	/* Empty block: free_offset = sizeof(UndoBlockHeader) (48B, spec-3.18 D2),
+	 * slot_count = 0.  Block size 8192;  slot dir grows from end (BLCKSZ - 8
+	 * per slot).  7K record OK:  48 + 7168 = 7216 ≤ 8192 - 8 = 8184. */
+	UT_ASSERT(cluster_undo_block_has_space((uint32) sizeof(UndoBlockHeader), 0, 7168));
 
-	/* 8K record fail: 40 + 8192 > 8184. */
-	UT_ASSERT(!cluster_undo_block_has_space(40, 0, 8192));
+	/* 8K record fail:  48 + 8192 > 8184. */
+	UT_ASSERT(!cluster_undo_block_has_space((uint32) sizeof(UndoBlockHeader), 0, 8192));
 
 	/* Half-full + small record OK. */
 	UT_ASSERT(cluster_undo_block_has_space(4096, 100, 100));
