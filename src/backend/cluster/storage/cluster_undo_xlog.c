@@ -896,28 +896,23 @@ static void
 cluster_undo_redo_block_write(XLogReaderState *record)
 {
 	xl_undo_block_write *rec;
-	const char *image;
+	const char *body;
+	uint32 total_len;
+	uint32 body_len;
 	char path[MAXPGPATH];
 	PGAlignedBlock blockbuf;
 	int fd;
 	ssize_t written;
 
-	if (XLogRecGetDataLen(record) != sizeof(*rec) + BLCKSZ)
-		ereport(PANIC, (errmsg("invalid XLOG_UNDO_BLOCK_WRITE record length: %u",
-							   XLogRecGetDataLen(record))));
+	total_len = XLogRecGetDataLen(record);
+	if (total_len < sizeof(xl_undo_block_write))
+		ereport(PANIC, (errmsg("invalid XLOG_UNDO_BLOCK_WRITE record length: %u", total_len)));
 	rec = (xl_undo_block_write *)XLogRecGetData(record);
-	image = (const char *)XLogRecGetData(record) + sizeof(*rec);
+	body = (const char *)XLogRecGetData(record) + sizeof(*rec);
+	body_len = total_len - (uint32)sizeof(*rec);
 
-	/* D2a ships only has_fpi=1; the 3-range delta replay is D2b -> fail closed. */
-	if (rec->has_fpi != 1)
-		ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE redo: has_fpi=%u unsupported "
-							   "(3-range delta replay lands in D2b)",
-							   rec->has_fpi)));
 	if (rec->block_no == 0)
 		ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE redo: block_no 0 is the segment header")));
-
-	/* Restore the full image + stamp block_lsn = this record's LSN (§2.6). */
-	cluster_undo_apply_block_write_fpi(image, record->EndRecPtr, blockbuf.data);
 
 	if (build_undo_segment_path(rec->instance, rec->segment_id, path, sizeof(path)) != 0)
 		ereport(PANIC, (errmsg("undo segment path too long: instance=%u seg=%u", rec->instance,
@@ -930,6 +925,53 @@ cluster_undo_redo_block_write(XLogReaderState *record)
 			(errcode_for_file_access(),
 			 errmsg("could not open undo segment file \"%s\" for block write redo: %m", path),
 			 errhint("XLOG_UNDO_SEGMENT_INIT/REUSE must precede XLOG_UNDO_BLOCK_WRITE in WAL.")));
+
+	if (rec->has_fpi == 1) {
+		/* Full-page image: restore wholesale (no existing-block read needed). */
+		if (body_len != BLCKSZ) {
+			close(fd);
+			ereport(PANIC,
+					(errmsg("XLOG_UNDO_BLOCK_WRITE FPI body %u != BLCKSZ %d", body_len, BLCKSZ)));
+		}
+		cluster_undo_apply_block_write_fpi(body, record->EndRecPtr, blockbuf.data);
+	} else {
+		/*
+		 * 3-range delta (D2b): patch the existing block, which an earlier
+		 * post-checkpoint FPI already restored (recovery replays in LSN order,
+		 * first touch per block is its FPI).  Bounds are validated fail-closed
+		 * (8.A) before touching the block.
+		 */
+		ssize_t nread;
+		uint32 expect_body
+			= UNDO_BLOCK_HDR_PREFIX_LEN + rec->rec_len + (uint32)sizeof(UndoSlotDirEntry);
+
+		if (rec->rec_off < sizeof(UndoBlockHeader) || rec->rec_len == 0
+			|| (uint32)rec->rec_off + rec->rec_len > BLCKSZ
+			|| rec->slot_off < sizeof(UndoBlockHeader)
+			|| (uint32)rec->slot_off + sizeof(UndoSlotDirEntry) > BLCKSZ) {
+			close(fd);
+			ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE delta out of bounds: "
+								   "rec_off=%u rec_len=%u slot_off=%u",
+								   rec->rec_off, rec->rec_len, rec->slot_off)));
+		}
+		if (body_len != expect_body) {
+			close(fd);
+			ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE delta body %u != expected %u", body_len,
+								   expect_body)));
+		}
+		nread = pg_pread(fd, blockbuf.data, BLCKSZ, (off_t)rec->block_no * BLCKSZ);
+		if (nread != BLCKSZ) {
+			int save_errno = errno;
+
+			close(fd);
+			errno = save_errno;
+			ereport(PANIC, (errcode_for_file_access(),
+							errmsg("could not read undo block %u of \"%s\" for delta redo: "
+								   "read %zd of %d bytes",
+								   rec->block_no, path, nread, BLCKSZ)));
+		}
+		cluster_undo_apply_block_write_delta(blockbuf.data, rec, body, record->EndRecPtr);
+	}
 
 	written = pg_pwrite(fd, blockbuf.data, BLCKSZ, (off_t)rec->block_no * BLCKSZ);
 	if (written != BLCKSZ) {

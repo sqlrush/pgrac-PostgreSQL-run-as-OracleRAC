@@ -198,6 +198,48 @@ UT_TEST(test_stage3_undo_block_write_fpi_apply)
 }
 
 
+/* ===== L2d — D2b 3-range delta apply: hdr_prefix + record + slot + block_lsn ===== */
+
+UT_TEST(test_stage3_undo_block_write_delta_apply)
+{
+	char base[BLCKSZ];
+	xl_undo_block_write rec;
+	char body[UNDO_BLOCK_HDR_PREFIX_LEN + 64 + 8]; /* hdr_prefix(40) + rec(64) + slot(8) */
+	UndoBlockHeader *bh = (UndoBlockHeader *)base;
+
+	/* Existing on-disk block image (the redo base). */
+	memset(base, 0x11, BLCKSZ);
+
+	/* Delta: a 64-byte record at offset 200, an 8-byte slot near the tail. */
+	memset(&rec, 0, sizeof(rec));
+	rec.has_fpi = 0;
+	rec.rec_off = 200;
+	rec.rec_len = 64;
+	rec.slot_off = 8000;
+
+	memset(body, 0x22, UNDO_BLOCK_HDR_PREFIX_LEN);			/* header prefix */
+	memset(body + UNDO_BLOCK_HDR_PREFIX_LEN, 0x33, 64);		/* record */
+	memset(body + UNDO_BLOCK_HDR_PREFIX_LEN + 64, 0x44, 8); /* slot */
+
+	cluster_undo_apply_block_write_delta(base, &rec, body, (XLogRecPtr)0xCAFE);
+
+	/* header prefix [0,40) patched (block_lsn at offset 40 is NOT in the prefix) */
+	UT_ASSERT_EQ((int)(unsigned char)base[0], 0x22);
+	UT_ASSERT_EQ((int)(unsigned char)base[UNDO_BLOCK_HDR_PREFIX_LEN - 1], 0x22);
+	/* record [200,264) patched */
+	UT_ASSERT_EQ((int)(unsigned char)base[200], 0x33);
+	UT_ASSERT_EQ((int)(unsigned char)base[263], 0x33);
+	/* slot [8000,8008) patched */
+	UT_ASSERT_EQ((int)(unsigned char)base[8000], 0x44);
+	UT_ASSERT_EQ((int)(unsigned char)base[8007], 0x44);
+	/* untouched gaps keep the base bytes */
+	UT_ASSERT_EQ((int)(unsigned char)base[199], 0x11); /* between header and record */
+	UT_ASSERT_EQ((int)(unsigned char)base[264], 0x11); /* after the record */
+	/* block_lsn set from the record LSN (never carried in the body) */
+	UT_ASSERT_EQ((long long)bh->block_lsn, (long long)0xCAFE);
+}
+
+
 /* ===== L3 — 6 MVCC capability dump category names stable ===== */
 
 UT_TEST(test_stage3_capability_dump_category_names)
@@ -339,6 +381,7 @@ main(void)
 	UT_RUN(test_stage3_undo_opcodes_registered_and_info_mask_clear);
 	UT_RUN(test_stage3_undo_block_write_wal_abi);
 	UT_RUN(test_stage3_undo_block_write_fpi_apply);
+	UT_RUN(test_stage3_undo_block_write_delta_apply);
 	UT_RUN(test_stage3_capability_dump_category_names);
 	UT_RUN(test_stage3_sqlstate_mvcc_surface_encodable);
 	UT_RUN(test_stage3_wait_events_count_snapshot_93);

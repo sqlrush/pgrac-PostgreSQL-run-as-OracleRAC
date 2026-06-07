@@ -338,6 +338,29 @@ cluster_undo_apply_block_write_fpi(const char *fpi_image, XLogRecPtr record_lsn,
 	((UndoBlockHeader *)out_block)->block_lsn = record_lsn;
 }
 
+/*
+ * cluster_undo_apply_block_write_delta -- D2b 3-range delta apply (pure;
+ * cluster_unit-tested).  Patches an existing block image in place with the
+ * header prefix [0, UNDO_BLOCK_HDR_PREFIX_LEN), the new record [rec_off,
+ * +rec_len), and the new slot dir entry [slot_off, +sizeof(UndoSlotDirEntry))
+ * carried back-to-back in delta_body, then stamps block_lsn from the record
+ * LSN (never in the body -- §2.6).  The redo caller MUST have validated
+ * rec_off / rec_len / slot_off bounds before calling.
+ */
+static inline void
+cluster_undo_apply_block_write_delta(char *block, const xl_undo_block_write *rec,
+									 const char *delta_body, XLogRecPtr record_lsn)
+{
+	const char *p = delta_body;
+
+	memcpy(block, p, UNDO_BLOCK_HDR_PREFIX_LEN); /* header prefix [0,40) */
+	p += UNDO_BLOCK_HDR_PREFIX_LEN;
+	memcpy(block + rec->rec_off, p, rec->rec_len); /* new record */
+	p += rec->rec_len;
+	memcpy(block + rec->slot_off, p, sizeof(UndoSlotDirEntry)); /* new slot dir entry */
+	((UndoBlockHeader *)block)->block_lsn = record_lsn;
+}
+
 
 /*
  * Public API.
