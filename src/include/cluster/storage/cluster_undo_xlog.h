@@ -59,7 +59,7 @@
 #define XLOG_UNDO_SEGMENT_RECYCLE 0x40 /* spec-3.13 D3: COMMITTED -> RECYCLABLE */
 #define XLOG_UNDO_SEGMENT_REUSE 0x50   /* spec-3.13 D4: whole-segment rebirth */
 #define XLOG_UNDO_TT_SLOT_ABORT 0x60   /* spec-3.15 D5: prepared rollback targeted abort */
-#define XLOG_UNDO_BLOCK_WRITE 0x70	   /* spec-3.18 D2: undo data-block change (FPI/3-range delta) */
+#define XLOG_UNDO_BLOCK_WRITE 0x70 /* spec-3.18 D2: undo data-block change (FPI/3-range delta) */
 
 StaticAssertDecl((XLOG_UNDO_SEGMENT_INIT & XLR_INFO_MASK) == 0,
 				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
@@ -283,7 +283,7 @@ StaticAssertDecl(offsetof(xl_undo_tt_slot_commit, commit_scn) == 16,
  * and is set from it on both write and redo;  it never travels in the WAL
  * body, so the delta's header prefix stops here (spec-3.18 D2 §2.6 v0.7).
  */
-#define UNDO_BLOCK_HDR_PREFIX_LEN ((uint32) offsetof(UndoBlockHeader, block_lsn))
+#define UNDO_BLOCK_HDR_PREFIX_LEN ((uint32)offsetof(UndoBlockHeader, block_lsn))
 
 /*
  * On-disk WAL payload header for XLOG_UNDO_BLOCK_WRITE (spec-3.18 D2).
@@ -319,10 +319,24 @@ typedef struct xl_undo_block_write {
 	uint16 rec_off;	   /* offset 10;  2 B; delta: new record start offset */
 	uint16 rec_len;	   /* offset 12;  2 B; delta: new record length */
 	uint16 slot_off;   /* offset 14;  2 B; delta: new slot dir entry offset */
-} xl_undo_block_write;	/* total 16 B */
+} xl_undo_block_write; /* total 16 B */
 
 StaticAssertDecl(sizeof(xl_undo_block_write) == 16,
 				 "spec-3.18: xl_undo_block_write is 16 bytes, no implicit padding");
+
+/*
+ * cluster_undo_apply_block_write_fpi -- D2a full-page-image apply (pure;
+ * cluster_unit-tested).  Restores the WAL image wholesale, then stamps
+ * block_lsn with the record's own end LSN.  block_lsn never travels in the
+ * WAL body (it IS the record LSN), so the image's block_lsn bytes are stale
+ * and overwritten here -- the same way PG redo sets a page LSN (§2.6).
+ */
+static inline void
+cluster_undo_apply_block_write_fpi(const char *fpi_image, XLogRecPtr record_lsn, char *out_block)
+{
+	memcpy(out_block, fpi_image, BLCKSZ);
+	((UndoBlockHeader *)out_block)->block_lsn = record_lsn;
+}
 
 
 /*
@@ -365,6 +379,17 @@ extern XLogRecPtr cluster_undo_emit_segment_recycle(uint8 instance, uint32 segme
 extern XLogRecPtr cluster_undo_emit_segment_reuse(uint8 instance, uint32 segment_id,
 												  uint32 old_generation, uint32 new_generation,
 												  const char *fresh_header_image);
+
+/*
+ * cluster_undo_emit_block_write (spec-3.18 D2a)
+ *	  Emit XLOG_UNDO_BLOCK_WRITE for one undo data block (block_no >= 1).
+ *	  D2a ships always-FPI: the full BLCKSZ image is carried and redo restores
+ *	  it wholesale (torn-write safe, no checkpoint-relative FPI decision; the
+ *	  3-range delta + DELAY_CHKPT_START race-close is D2b).  Caller stamps the
+ *	  returned LSN into the block's block_lsn before write-through (§2.6).
+ */
+extern XLogRecPtr cluster_undo_emit_block_write(uint8 instance, uint32 segment_id, uint32 block_no,
+												const char *block_image);
 
 /*
  * cluster_undo_redo

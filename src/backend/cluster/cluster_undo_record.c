@@ -80,6 +80,7 @@
 #include "cluster/cluster_undo_smgr.h"
 #include "cluster/storage/cluster_undo_buf.h" /* spec-3.18 D1 read/write-through */
 #include "cluster/storage/cluster_undo_alloc.h"
+#include "cluster/storage/cluster_undo_xlog.h" /* spec-3.18 D2a XLOG_UNDO_BLOCK_WRITE */
 
 #include "access/xlog.h" /* GetXLogWriteRecPtr */
 
@@ -763,6 +764,20 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	/* Update block header. */
 	blkhdr->slot_count = (uint16)(slot_count + 1);
 	blkhdr->free_offset = free_offset + record_length;
+
+	/*
+	 * spec-3.18 D2a: WAL-protect this undo data block before it is written
+	 * out.  D2a emits an always-FPI XLOG_UNDO_BLOCK_WRITE (the full image;
+	 * crash redo restores it wholesale, repairing any torn write) and stamps
+	 * block_lsn with the record's own LSN (§2.6 -- block_lsn never travels in
+	 * the WAL body).  Emitted under cursor_lock so the WAL image matches the
+	 * block we are about to write.  Write-through + precommit fsync are
+	 * unchanged in D2a; the write-back + 3-range delta + DELAY_CHKPT_START
+	 * rework is D2b.
+	 */
+	Assert(current_block >= 1); /* data blocks only; block 0 is the segment header */
+	blkhdr->block_lsn
+		= cluster_undo_emit_block_write(owner_instance, segment_id, current_block, block_buf);
 
 	/* Write block back to file.  P0 perf hardening (2026-05-31): do NOT fsync
 	 * here — fsync moved out of cursor_lock to a single per-xact precommit

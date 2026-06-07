@@ -76,9 +76,16 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 	case XLOG_UNDO_SEGMENT_REUSE: {
 		xl_undo_segment_reuse *xlrec = (xl_undo_segment_reuse *)payload;
 
-		appendStringInfo(buf, "instance %u seg %u gen %u->%u (fresh header image)",
-						 xlrec->instance, xlrec->segment_id, xlrec->old_generation,
-						 xlrec->new_generation);
+		appendStringInfo(buf, "instance %u seg %u gen %u->%u (fresh header image)", xlrec->instance,
+						 xlrec->segment_id, xlrec->old_generation, xlrec->new_generation);
+		break;
+	}
+	case XLOG_UNDO_BLOCK_WRITE: {
+		xl_undo_block_write *xlrec = (xl_undo_block_write *)payload;
+
+		appendStringInfo(buf, "instance %u seg %u block %u %s", (unsigned)xlrec->instance,
+						 (unsigned)xlrec->segment_id, (unsigned)xlrec->block_no,
+						 xlrec->has_fpi ? "(full image)" : "(3-range delta)");
 		break;
 	}
 	default:
@@ -102,6 +109,8 @@ cluster_undo_identify(uint8 info)
 		return "UNDO_SEGMENT_RECYCLE";
 	case XLOG_UNDO_SEGMENT_REUSE:
 		return "UNDO_SEGMENT_REUSE";
+	case XLOG_UNDO_BLOCK_WRITE:
+		return "UNDO_BLOCK_WRITE";
 	default:
 		return NULL;
 	}

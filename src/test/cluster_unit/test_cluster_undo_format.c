@@ -168,10 +168,10 @@ UT_TEST(test_block_has_space)
 	/* Empty block: free_offset = sizeof(UndoBlockHeader) (48B, spec-3.18 D2),
 	 * slot_count = 0.  Block size 8192;  slot dir grows from end (BLCKSZ - 8
 	 * per slot).  7K record OK:  48 + 7168 = 7216 ≤ 8192 - 8 = 8184. */
-	UT_ASSERT(cluster_undo_block_has_space((uint32) sizeof(UndoBlockHeader), 0, 7168));
+	UT_ASSERT(cluster_undo_block_has_space((uint32)sizeof(UndoBlockHeader), 0, 7168));
 
 	/* 8K record fail:  48 + 8192 > 8184. */
-	UT_ASSERT(!cluster_undo_block_has_space((uint32) sizeof(UndoBlockHeader), 0, 8192));
+	UT_ASSERT(!cluster_undo_block_has_space((uint32)sizeof(UndoBlockHeader), 0, 8192));
 
 	/* Half-full + small record OK. */
 	UT_ASSERT(cluster_undo_block_has_space(4096, 100, 100));

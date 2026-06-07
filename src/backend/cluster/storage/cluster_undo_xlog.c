@@ -288,6 +288,43 @@ cluster_undo_emit_segment_reuse(uint8 instance, uint32 segment_id, uint32 old_ge
 
 
 /*
+ * cluster_undo_emit_block_write (spec-3.18 D2a)
+ *	  Emit XLOG_UNDO_BLOCK_WRITE carrying the full BLCKSZ image of one undo
+ *	  data block (block_no >= 1).  D2a is always-FPI: redo restores the image
+ *	  wholesale, which is torn-write safe without any checkpoint-relative FPI
+ *	  decision (the 3-range delta + DELAY_CHKPT_START race-close is D2b).  The
+ *	  caller stamps the returned LSN into the block's block_lsn header field
+ *	  before its write-through (§2.6: block_lsn is the record's own LSN, never
+ *	  carried in the WAL body).
+ */
+XLogRecPtr
+cluster_undo_emit_block_write(uint8 instance, uint32 segment_id, uint32 block_no,
+							  const char *block_image)
+{
+	xl_undo_block_write rec;
+	XLogRecPtr lsn;
+
+	Assert(instance >= 1);
+	Assert(block_no >= 1); /* block 0 is the segment header (SEGMENT_INIT/REUSE) */
+	Assert(block_image != NULL);
+
+	memset(&rec, 0, sizeof(rec));
+	rec.segment_id = segment_id;
+	rec.block_no = block_no;
+	rec.instance = instance;
+	rec.has_fpi = 1; /* D2a: always full image (rec_off/rec_len/slot_off unused) */
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&rec, sizeof(rec));
+	XLogRegisterData(unconstify(char *, block_image), BLCKSZ);
+
+	lsn = XLogInsert(RM_CLUSTER_UNDO_ID, XLOG_UNDO_BLOCK_WRITE);
+
+	return lsn;
+}
+
+
+/*
  * Replay XLOG_UNDO_SEGMENT_INIT.
  *
  *   Spec-1.22 Hardening v1.0.3: full idempotent create + size + restore
@@ -842,6 +879,85 @@ cluster_undo_redo_segment_reuse(XLogReaderState *record)
 
 
 /*
+ * Replay XLOG_UNDO_BLOCK_WRITE (spec-3.18 D2a).
+ *
+ *   D2a ships always-FPI: the record carries a full BLCKSZ image.  Redo
+ *   restores it wholesale into a data block (block_no >= 1) of the undo
+ *   segment file and stamps block_lsn with this record's own end LSN (§2.6).
+ *   Idempotent: re-replaying writes byte-identical bytes.  The 3-range delta
+ *   form (has_fpi=0) lands in D2b -- fail closed here until then.
+ *
+ *   pg_undo/ files are outside PG's RelFileLocator namespace, so we open +
+ *   pwrite + fsync directly.  SEGMENT_INIT/REUSE (which create the file)
+ *   always precede a block write in WAL LSN order, so the file must already
+ *   exist (O_RDWR, no O_CREAT).
+ */
+static void
+cluster_undo_redo_block_write(XLogReaderState *record)
+{
+	xl_undo_block_write *rec;
+	const char *image;
+	char path[MAXPGPATH];
+	PGAlignedBlock blockbuf;
+	int fd;
+	ssize_t written;
+
+	if (XLogRecGetDataLen(record) != sizeof(*rec) + BLCKSZ)
+		ereport(PANIC, (errmsg("invalid XLOG_UNDO_BLOCK_WRITE record length: %u",
+							   XLogRecGetDataLen(record))));
+	rec = (xl_undo_block_write *)XLogRecGetData(record);
+	image = (const char *)XLogRecGetData(record) + sizeof(*rec);
+
+	/* D2a ships only has_fpi=1; the 3-range delta replay is D2b -> fail closed. */
+	if (rec->has_fpi != 1)
+		ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE redo: has_fpi=%u unsupported "
+							   "(3-range delta replay lands in D2b)",
+							   rec->has_fpi)));
+	if (rec->block_no == 0)
+		ereport(PANIC, (errmsg("XLOG_UNDO_BLOCK_WRITE redo: block_no 0 is the segment header")));
+
+	/* Restore the full image + stamp block_lsn = this record's LSN (§2.6). */
+	cluster_undo_apply_block_write_fpi(image, record->EndRecPtr, blockbuf.data);
+
+	if (build_undo_segment_path(rec->instance, rec->segment_id, path, sizeof(path)) != 0)
+		ereport(PANIC, (errmsg("undo segment path too long: instance=%u seg=%u", rec->instance,
+							   rec->segment_id)));
+
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0)
+		ereport(
+			PANIC,
+			(errcode_for_file_access(),
+			 errmsg("could not open undo segment file \"%s\" for block write redo: %m", path),
+			 errhint("XLOG_UNDO_SEGMENT_INIT/REUSE must precede XLOG_UNDO_BLOCK_WRITE in WAL.")));
+
+	written = pg_pwrite(fd, blockbuf.data, BLCKSZ, (off_t)rec->block_no * BLCKSZ);
+	if (written != BLCKSZ) {
+		int save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+		ereport(PANIC, (errcode_for_file_access(),
+						errmsg("could not write undo block %u of \"%s\": wrote %zd of %d bytes",
+							   rec->block_no, path, written, BLCKSZ)));
+	}
+	if (pg_fsync(fd) != 0) {
+		int save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+		ereport(PANIC, (errcode_for_file_access(),
+						errmsg("could not fsync undo segment \"%s\" after block write: %m", path)));
+	}
+	if (close(fd) != 0)
+		ereport(PANIC, (errcode_for_file_access(),
+						errmsg("could not close undo segment file \"%s\": %m", path)));
+
+	cluster_vis_bump_recovery_undo_redo_applies(); /* spec-3.16 D5 */
+}
+
+
+/*
  * cluster_undo_redo -- RM_CLUSTER_UNDO redo handler entry point.
  *
  *   Dispatches by xl_info & XLR_INFO_MASK after stripping the framework
@@ -883,6 +999,9 @@ cluster_undo_redo(XLogReaderState *record)
 		break;
 	case XLOG_UNDO_SEGMENT_REUSE:
 		cluster_undo_redo_segment_reuse(record);
+		break;
+	case XLOG_UNDO_BLOCK_WRITE:
+		cluster_undo_redo_block_write(record);
 		break;
 	default:
 		ereport(PANIC, (errmsg("cluster_undo_redo: unknown op code %u", info)));

@@ -171,6 +171,33 @@ UT_TEST(test_stage3_undo_block_write_wal_abi)
 }
 
 
+/* ===== L2c — D2a always-FPI apply: image restored + block_lsn from record LSN ===== */
+
+UT_TEST(test_stage3_undo_block_write_fpi_apply)
+{
+	char image[BLCKSZ];
+	char out[BLCKSZ];
+	UndoBlockHeader *ih = (UndoBlockHeader *)image;
+	UndoBlockHeader *oh = (UndoBlockHeader *)out;
+
+	/* A WAL full-page image carries a STALE block_lsn (set before XLogInsert);
+	 * redo must overwrite it with the record's own LSN and leave every other
+	 * byte byte-identical (block_lsn never travels in the body -- §2.6). */
+	memset(image, 0xAB, BLCKSZ);
+	ih->magic = PGRAC_UNDO_BLOCK_MAGIC;
+	ih->block_lsn = (XLogRecPtr)0xDEAD; /* stale value inside the image */
+
+	cluster_undo_apply_block_write_fpi(image, (XLogRecPtr)0xBEEF, out);
+
+	UT_ASSERT_EQ((long long)oh->block_lsn, (long long)0xBEEF); /* = record LSN */
+	UT_ASSERT_EQ((long long)oh->magic, (long long)PGRAC_UNDO_BLOCK_MAGIC);
+
+	/* Normalize the one intended diff, then the rest must be identical. */
+	oh->block_lsn = ih->block_lsn;
+	UT_ASSERT_EQ(memcmp(image, out, BLCKSZ), 0);
+}
+
+
 /* ===== L3 — 6 MVCC capability dump category names stable ===== */
 
 UT_TEST(test_stage3_capability_dump_category_names)
@@ -311,6 +338,7 @@ main(void)
 	UT_RUN(test_stage3_catversion_at_or_above_spec_3_16);
 	UT_RUN(test_stage3_undo_opcodes_registered_and_info_mask_clear);
 	UT_RUN(test_stage3_undo_block_write_wal_abi);
+	UT_RUN(test_stage3_undo_block_write_fpi_apply);
 	UT_RUN(test_stage3_capability_dump_category_names);
 	UT_RUN(test_stage3_sqlstate_mvcc_surface_encodable);
 	UT_RUN(test_stage3_wait_events_count_snapshot_93);
