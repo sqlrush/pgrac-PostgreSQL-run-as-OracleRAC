@@ -39,7 +39,8 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
-#include "cluster/cluster_scn.h" /* SCN typedef (spec-3.11 D3 xl_undo_tt_slot_commit) */
+#include "cluster/cluster_scn.h"		 /* SCN typedef (spec-3.11 D3 xl_undo_tt_slot_commit) */
+#include "cluster/cluster_undo_format.h" /* UndoBlockHeader/UndoSlotDirEntry (spec-3.18 D2 block_write) */
 
 
 /*
@@ -50,6 +51,7 @@
  *     0x30 XLOG_UNDO_TT_SLOT_COMMIT
  *     0x40 XLOG_UNDO_SEGMENT_RECYCLE (landed: spec-3.13 D3)
  *     0x60 XLOG_UNDO_TT_SLOT_ABORT (landed: spec-3.15 D5)
+ *     0x70 XLOG_UNDO_BLOCK_WRITE (landed: spec-3.18 D2)
  *     ... up to 0xF0 (low nibble used for XLR_INFO_MASK by xlog framework).
  */
 #define XLOG_UNDO_SEGMENT_INIT 0x10
@@ -57,6 +59,7 @@
 #define XLOG_UNDO_SEGMENT_RECYCLE 0x40 /* spec-3.13 D3: COMMITTED -> RECYCLABLE */
 #define XLOG_UNDO_SEGMENT_REUSE 0x50   /* spec-3.13 D4: whole-segment rebirth */
 #define XLOG_UNDO_TT_SLOT_ABORT 0x60   /* spec-3.15 D5: prepared rollback targeted abort */
+#define XLOG_UNDO_BLOCK_WRITE 0x70	   /* spec-3.18 D2: undo data-block change (FPI/3-range delta) */
 
 StaticAssertDecl((XLOG_UNDO_SEGMENT_INIT & XLR_INFO_MASK) == 0,
 				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
@@ -67,6 +70,8 @@ StaticAssertDecl((XLOG_UNDO_SEGMENT_RECYCLE & XLR_INFO_MASK) == 0,
 StaticAssertDecl((XLOG_UNDO_SEGMENT_REUSE & XLR_INFO_MASK) == 0,
 				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
 StaticAssertDecl((XLOG_UNDO_TT_SLOT_ABORT & XLR_INFO_MASK) == 0,
+				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
+StaticAssertDecl((XLOG_UNDO_BLOCK_WRITE & XLR_INFO_MASK) == 0,
 				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
 
 
@@ -270,6 +275,54 @@ StaticAssertDecl(sizeof(xl_undo_tt_slot_commit) == 24,
 StaticAssertDecl(offsetof(xl_undo_tt_slot_commit, commit_scn) == 16,
 				 "xl_undo_tt_slot_commit.commit_scn must be at offset 16 "
 				 "(SCN 8-byte alignment slot; spec-3.11 L45)");
+
+
+/*
+ * Bytes of UndoBlockHeader carried in a XLOG_UNDO_BLOCK_WRITE delta -- the
+ * header up to (but excluding) block_lsn.  block_lsn is the record's own LSN
+ * and is set from it on both write and redo;  it never travels in the WAL
+ * body, so the delta's header prefix stops here (spec-3.18 D2 §2.6 v0.7).
+ */
+#define UNDO_BLOCK_HDR_PREFIX_LEN ((uint32) offsetof(UndoBlockHeader, block_lsn))
+
+/*
+ * On-disk WAL payload header for XLOG_UNDO_BLOCK_WRITE (spec-3.18 D2).
+ *
+ *   Protects an undo data-block change (block_no >= 1) once the undo buffer
+ *   pool defers data-file flushes (D2b).  Two shapes, by has_fpi:
+ *
+ *     has_fpi=1: first post-checkpoint touch of this block (or a fresh block).
+ *                The full BLCKSZ new-state image follows the header;  redo
+ *                writes it wholesale, repairing any torn pre-checkpoint write.
+ *     has_fpi=0: a later touch in the same checkpoint cycle.  Undo data blocks
+ *                are append-only, so exactly three disjoint regions change,
+ *                carried back-to-back after the header:
+ *                  hdr_prefix : block[0, UNDO_BLOCK_HDR_PREFIX_LEN)
+ *                  record     : block[rec_off, rec_off + rec_len)
+ *                  slot       : block[slot_off, slot_off + sizeof(UndoSlotDirEntry))
+ *
+ *   Redo is unconditional + idempotent (no generation/LSN skip): recovery
+ *   starts at the checkpoint redo point, so the first record seen for any
+ *   block is its FPI and later deltas replay forward in LSN order.  After
+ *   applying, redo sets the block's block_lsn = the record's own end LSN.
+ *
+ *   block 0 (segment header) is never carried here -- it keeps its own
+ *   synchronous write-through + XLOG_UNDO_SEGMENT_INIT/REUSE full-image path.
+ *
+ *   16 bytes, no implicit padding (uint16 fields naturally aligned).
+ */
+typedef struct xl_undo_block_write {
+	uint32 segment_id; /* offset  0;  4 B */
+	uint32 block_no;   /* offset  4;  4 B; >= 1 (block 0 never carried here) */
+	uint8 instance;	   /* offset  8;  1 B; owner instance (1..128) */
+	uint8 has_fpi;	   /* offset  9;  1 B; 1 => BLCKSZ image; 0 => 3-range delta */
+	uint16 rec_off;	   /* offset 10;  2 B; delta: new record start offset */
+	uint16 rec_len;	   /* offset 12;  2 B; delta: new record length */
+	uint16 slot_off;   /* offset 14;  2 B; delta: new slot dir entry offset */
+} xl_undo_block_write;	/* total 16 B */
+
+StaticAssertDecl(sizeof(xl_undo_block_write) == 16,
+				 "spec-3.18: xl_undo_block_write is 16 bytes, no implicit padding");
 
 
 /*

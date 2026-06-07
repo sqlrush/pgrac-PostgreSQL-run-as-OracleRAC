@@ -137,6 +137,7 @@ UT_TEST(test_stage3_undo_opcodes_registered_and_info_mask_clear)
 	UT_ASSERT_EQ((int)XLOG_UNDO_SEGMENT_RECYCLE, 0x40); /* spec-3.13 */
 	UT_ASSERT_EQ((int)XLOG_UNDO_SEGMENT_REUSE, 0x50);	/* spec-3.13 */
 	UT_ASSERT_EQ((int)XLOG_UNDO_TT_SLOT_ABORT, 0x60);	/* spec-3.15 */
+	UT_ASSERT_EQ((int)XLOG_UNDO_BLOCK_WRITE, 0x70);		/* spec-3.18 D2 */
 
 	/* L217:  every live opcode leaves the low nibble (XLR_INFO_MASK,
 	 * reserved by the xlog framework) clear.  The cluster_undo_xlog.h
@@ -147,6 +148,26 @@ UT_TEST(test_stage3_undo_opcodes_registered_and_info_mask_clear)
 	UT_ASSERT_EQ((int)(XLOG_UNDO_SEGMENT_RECYCLE & XLR_INFO_MASK), 0);
 	UT_ASSERT_EQ((int)(XLOG_UNDO_SEGMENT_REUSE & XLR_INFO_MASK), 0);
 	UT_ASSERT_EQ((int)(XLOG_UNDO_TT_SLOT_ABORT & XLR_INFO_MASK), 0);
+	UT_ASSERT_EQ((int)(XLOG_UNDO_BLOCK_WRITE & XLR_INFO_MASK), 0);
+}
+
+
+/* ===== L2b — xl_undo_block_write WAL ABI (spec-3.18 D2 3-range delta) ===== */
+
+UT_TEST(test_stage3_undo_block_write_wal_abi)
+{
+	/* Fixed 16B header;  block_lsn never travels in the body (it is the
+	 * record's own LSN, set on write + redo).  hdr_prefix range stops at
+	 * offsetof(block_lsn) == 40 so the delta excludes it. */
+	UT_ASSERT_EQ(sizeof(xl_undo_block_write), 16);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, segment_id), 0);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, block_no), 4);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, instance), 8);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, has_fpi), 9);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, rec_off), 10);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, rec_len), 12);
+	UT_ASSERT_EQ(offsetof(xl_undo_block_write, slot_off), 14);
+	UT_ASSERT_EQ((int)UNDO_BLOCK_HDR_PREFIX_LEN, 40);
 }
 
 
@@ -289,6 +310,7 @@ main(void)
 {
 	UT_RUN(test_stage3_catversion_at_or_above_spec_3_16);
 	UT_RUN(test_stage3_undo_opcodes_registered_and_info_mask_clear);
+	UT_RUN(test_stage3_undo_block_write_wal_abi);
 	UT_RUN(test_stage3_capability_dump_category_names);
 	UT_RUN(test_stage3_sqlstate_mvcc_surface_encodable);
 	UT_RUN(test_stage3_wait_events_count_snapshot_93);
