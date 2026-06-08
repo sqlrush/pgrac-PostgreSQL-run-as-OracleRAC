@@ -177,6 +177,14 @@ extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *
 extern uint32 cluster_undo_segment_scan_max_existing(uint8 owner_instance);
 
 /*
+ * spec-3.18 D3.2 (review finding 2):  restart resume must pick the live active
+ * segment (SEGMENT_ACTIVE, FULL flag clear), not the highest-numbered file --
+ * reuse-first can make the active a low-numbered reborn slot.  Returns 0 when
+ * none is resumable or the pool is ambiguous (>1 writable-active -> fail-closed).
+ */
+extern uint32 cluster_undo_segment_scan_resumable_active(uint8 owner_instance);
+
+/*
  * spec-3.13 D3: COMMITTED -> RECYCLABLE advancement outcome.
  */
 typedef enum ClusterUndoSegTryRecycle {

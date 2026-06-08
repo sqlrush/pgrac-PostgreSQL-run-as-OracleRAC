@@ -238,17 +238,26 @@ choose_victim(void)
 
 /*
  * Flush one buffered-dirty slot to disk (D2b write-back).  Caller MUST hold a
- * pin on slotno so it cannot be evicted across the I/O.  Snapshots the image +
- * its protecting LSN under the content lock and clears dirty, then OUTSIDE the
- * lock XLogFlush(lsn) (WAL-before-data) + write-through + fsync.  A no-op if the
- * slot is no longer dirty (a concurrent flush / evict won the race).
+ * pin on slotno so it cannot be evicted across the I/O.
+ *
+ *	Review finding 1 (8.A):  dirty is cleared ONLY AFTER the write succeeds, and
+ *	only if no newer write landed meanwhile.  Clearing dirty before the write
+ *	(the original code) would, on a write ERROR, leave the slot
+ *	new-in-memory / clean / stale-on-disk -- a later clean eviction or disk
+ *	re-read would then return stale undo.  So:  snapshot the image + its
+ *	protecting LSN under the content lock (dirty stays set), XLogFlush
+ *	(WAL-before-data) + write-through + fsync OUTSIDE the lock, then re-acquire
+ *	and clear dirty only when last_wal_lsn is still the snapshotted one.  A
+ *	concurrent re-dirty (newer LSN -- the owning backend racing the
+ *	checkpointer) keeps dirty set so its image is flushed by a later
+ *	checkpoint / eviction.
  */
 static void
 flush_dirty_slot(int slotno)
 {
 	UndoBufSlot *s = &UndoBufSlots[slotno];
 	PGAlignedBlock localbuf;
-	XLogRecPtr wal_lsn = InvalidXLogRecPtr;
+	XLogRecPtr flushed_lsn = InvalidXLogRecPtr;
 	uint32 seg = 0;
 	uint8 owner = 0;
 	uint32 blk = 0;
@@ -257,23 +266,64 @@ flush_dirty_slot(int slotno)
 	LWLockAcquire(&s->content_lock, LW_EXCLUSIVE);
 	if (s->dirty) {
 		memcpy(localbuf.data, SLOT_DATA(slotno), BLCKSZ);
-		wal_lsn = s->last_wal_lsn;
+		flushed_lsn = s->last_wal_lsn;
 		seg = s->segment_id;
 		owner = s->owner;
 		blk = s->block_no;
-		s->dirty = false;
-		need_write = true;
+		need_write = true; /* NB: dirty NOT cleared here */
 	}
 	LWLockRelease(&s->content_lock);
+	if (!need_write)
+		return;
 
-	if (need_write) {
-		XLogFlush(wal_lsn); /* WAL-before-data */
-		if (!cluster_undo_smgr_write_block(seg, owner, blk, localbuf.data, /* do_fsync = */ true))
-			ereport(ERROR, (errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
-							errmsg("cluster undo buffer write-back flush failed "
-								   "seg=%u owner=%u block=%u",
-								   seg, owner, blk)));
+	XLogFlush(flushed_lsn); /* WAL-before-data */
+	if (!cluster_undo_smgr_write_block(seg, owner, blk, localbuf.data, /* do_fsync = */ true))
+		ereport(ERROR, (errcode(ERRCODE_CLUSTER_UNDO_RECORD_INVALID_UBA),
+						errmsg("cluster undo buffer write-back flush failed "
+							   "seg=%u owner=%u block=%u",
+							   seg, owner, blk)));
+
+	/* Write durable -> clear dirty unless a newer write re-dirtied the slot. */
+	LWLockAcquire(&s->content_lock, LW_EXCLUSIVE);
+	if (s->dirty && s->last_wal_lsn == flushed_lsn)
+		s->dirty = false;
+	LWLockRelease(&s->content_lock);
+}
+
+
+/*
+ * cluster_undo_buf_invalidate_segment -- spec-3.18 D3.2 (review finding 3).
+ *
+ *	Drop every pool slot belonging to a segment that is being reborn in place
+ *	(cluster_undo_segment_reuse_in_place, generation+1).  The pool keys blocks by
+ *	(segment_id, owner, block_no) WITHOUT a generation, so an old-generation
+ *	cached block would otherwise keep hitting the same key after reuse and serve
+ *	stale undo.  A reused segment is RECYCLABLE (retention-cleared -- no live
+ *	reader/writer may dereference it) and any dirty block is WAL-protected, so we
+ *	DROP without flushing:  on crash, redo replays the old XLOG_UNDO_BLOCK_WRITE
+ *	then the reuse + new writes in LSN order (last-writer-wins).  Caller holds
+ *	lifecycle_lock (the reuse path).
+ */
+void
+cluster_undo_buf_invalidate_segment(uint32 segment_id, uint8 owner)
+{
+	if (UndoBufPool == NULL)
+		return;
+
+	LWLockAcquire(&UndoBufPool->map_lock, LW_EXCLUSIVE);
+	for (int i = 0; i < UndoBufPool->nslots; i++) {
+		UndoBufSlot *s = &UndoBufSlots[i];
+
+		if (s->valid && s->segment_id == segment_id && s->owner == owner) {
+			/* A recyclable segment must have no pinned blocks (no live user). */
+			Assert(pg_atomic_read_u32(&s->pincount) == 0);
+			s->valid = false;
+			s->dirty = false;
+			s->io_in_progress = false;
+			s->last_wal_lsn = InvalidXLogRecPtr;
+		}
 	}
+	LWLockRelease(&UndoBufPool->map_lock);
 }
 
 

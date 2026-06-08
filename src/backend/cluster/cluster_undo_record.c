@@ -756,9 +756,18 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	 * block below picks one winner via active_segment_id publication.
 	 */
 	if (UndoRecordShared->active_segment_id == 0) {
-		uint32 max_existing = cluster_undo_segment_scan_max_existing(owner_instance);
-		if (max_existing > ensured_segment_id)
-			ensured_segment_id = max_existing;
+		/*
+		 * spec-3.18 D3.2 (review finding 2): resume to the LIVE active segment
+		 * (SEGMENT_ACTIVE, not FULL), not merely the highest-numbered file --
+		 * reuse-first can make the active a low-numbered reborn slot while a
+		 * high-numbered one is COMMITTED / RECYCLABLE / ACTIVE-FULL.  The
+		 * claim's B1 first_free_block then rebuilds the high-water from that
+		 * segment's bitmap.  If none is resumable (or ambiguous), keep the
+		 * ensured/created segment and let the claim activate / autoextend it.
+		 */
+		uint32 resumed = cluster_undo_segment_scan_resumable_active(owner_instance);
+		if (resumed != 0)
+			ensured_segment_id = resumed;
 	}
 
 	if (!cluster_undo_local_head_ensure(tt_slot_segment_id, tt_slot_offset, &local_head_idx))

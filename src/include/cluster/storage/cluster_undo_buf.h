@@ -105,6 +105,16 @@ extern void cluster_undo_buf_unpin(ClusterUndoBufPin *pin);
 extern void cluster_undo_buf_flush_all(bool is_checkpoint);
 
 /*
+ * spec-3.18 D3.2 (review finding 3):  drop all pool slots for a segment being
+ * reborn in place (reuse-in-place, generation+1).  The pool key carries no
+ * generation, so old-generation cached blocks must be invalidated on reuse to
+ * avoid serving stale undo under the same (segment, block) key.  Caller holds
+ * lifecycle_lock;  the segment is RECYCLABLE + WAL-protected so slots are
+ * dropped without flushing.
+ */
+extern void cluster_undo_buf_invalidate_segment(uint32 segment_id, uint8 owner);
+
+/*
  * cluster_undo_buf_writeback_allowed -- the alpha gate (interface-lock §5).
  *	Returns false during the D1 phase (buffered write-back has no WAL
  *	protection yet).  The cluster.undo_buffer_writeback GUC check_hook (in

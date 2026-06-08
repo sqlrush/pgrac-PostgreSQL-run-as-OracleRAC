@@ -48,6 +48,7 @@
 #include "cluster/cluster_undo_segment_init.h" /* fresh header builder (D4 reuse) */
 #include "access/xlog.h"					   /* XLogFlush (3.13 v0.3 (1)) */
 #include "cluster/storage/cluster_undo_alloc.h"
+#include "cluster/storage/cluster_undo_buf.h" /* invalidate_segment on reuse (3.18 D3.2) */
 #include "cluster/storage/cluster_undo_xlog.h"
 #include "miscadmin.h"
 #include "storage/bufpage.h"
@@ -629,6 +630,15 @@ cluster_undo_segment_reuse_in_place(uint32 segment_id, uint8 owner_instance, uin
 	if (!cluster_undo_smgr_fsync_segment_file(segment_id, owner_instance))
 		return 0;
 
+	/*
+	 * spec-3.18 D3.2 (review finding 3): drop the reborn segment's old-
+	 * generation cached data blocks from the undo buffer pool -- the pool keys
+	 * blocks by (segment, block) with no generation, so a stale slot would
+	 * otherwise keep hitting the same key (recyclable + WAL-protected -> drop
+	 * without flush).
+	 */
+	cluster_undo_buf_invalidate_segment(segment_id, owner_instance);
+
 	cluster_undo_record_note_segment_reuse();
 
 	return segment_id;
@@ -996,4 +1006,49 @@ cluster_undo_segment_scan_max_existing(uint8 owner_instance)
 	}
 
 	return max_found;
+}
+
+
+/*
+ * cluster_undo_segment_scan_resumable_active -- spec-3.18 D3.2 (review finding
+ * 2).  Restart resume must pick the segment that is actually the live active
+ * one, NOT merely the highest-numbered existing file:  reuse-first
+ * (cluster_undo_segment_reuse_first_recyclable) can make the active segment a
+ * LOW-numbered reborn slot while a HIGH-numbered one sits COMMITTED /
+ * RECYCLABLE / ACTIVE-FULL.  Scan the headers and return the segment whose
+ * state is SEGMENT_ACTIVE and whose FULL flag is clear -- the unique writable
+ * active segment.  Returns 0 when none is resumable (caller uses the
+ * ensured/created segment + autoextend), and fail-closes to 0 if it finds more
+ * than one writable-active segment (the allocator keeps exactly one;  two means
+ * a corrupt/ambiguous pool -- don't guess, force a fresh claim).
+ */
+uint32
+cluster_undo_segment_scan_resumable_active(uint8 owner_instance)
+{
+	uint32 base_segment_id;
+	uint32 slot;
+	uint32 found = 0;
+
+	if (owner_instance < 1 || owner_instance > UNDO_OWNER_INSTANCE_MAX)
+		return 0;
+
+	base_segment_id = (uint32)(owner_instance - 1) * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
+
+	for (slot = 0; slot < CLUSTER_UNDO_SEGS_PER_INSTANCE; slot++) {
+		PGAlignedBlock blockbuf;
+		UndoSegmentHeaderData *hdr;
+		uint32 probe_id = base_segment_id + slot;
+
+		if (!read_segment_header_via_smgr(probe_id, owner_instance, blockbuf.data, &hdr))
+			break; /* gap or end of pool (file absent / unreadable) */
+
+		if (hdr->segment_state == SEGMENT_ACTIVE
+			&& (hdr->segment_flags & UNDO_SEGMENT_FLAG_FULL) == 0) {
+			if (found != 0)
+				return 0; /* >1 writable-active -> ambiguous, fail-closed */
+			found = probe_id;
+		}
+	}
+
+	return found;
 }

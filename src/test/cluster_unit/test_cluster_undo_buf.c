@@ -338,11 +338,49 @@ UT_TEST(test_undo_buf_evicts_when_full)
 }
 
 
+/* ===== U8 — invalidate_segment drops a segment's slots (reuse, finding 3) ===== */
+UT_TEST(test_undo_buf_invalidate_segment)
+{
+	ClusterUndoBufPin pin;
+	char *img;
+
+	fresh_pool();
+
+	/* Cache block 3 of segment 1 and block 3 of segment 2 (two misses). */
+	img = cluster_undo_buf_pin(1, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	UT_ASSERT_NOT_NULL(img);
+	cluster_undo_buf_unpin(&pin);
+	img = cluster_undo_buf_pin(2, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	UT_ASSERT_NOT_NULL(img);
+	cluster_undo_buf_unpin(&pin);
+	UT_ASSERT_EQ(smgr_read_calls, 2);
+
+	/* Both re-read as hits (no new disk reads). */
+	img = cluster_undo_buf_pin(1, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	cluster_undo_buf_unpin(&pin);
+	img = cluster_undo_buf_pin(2, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	cluster_undo_buf_unpin(&pin);
+	UT_ASSERT_EQ(smgr_read_calls, 2);
+
+	/* Invalidate segment 1 (reuse-in-place):  its slot is dropped, segment 2's survives. */
+	cluster_undo_buf_invalidate_segment(1, 0);
+
+	img = cluster_undo_buf_pin(2, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	cluster_undo_buf_unpin(&pin);
+	UT_ASSERT_EQ(smgr_read_calls, 2); /* segment 2 still cached -> hit */
+
+	img = cluster_undo_buf_pin(1, 0, 3, CLUSTER_UNDO_BUF_SHARED, &pin);
+	cluster_undo_buf_unpin(&pin);
+	UT_ASSERT_EQ(smgr_read_calls, 3); /* segment 1 dropped -> miss (re-read from disk) */
+}
+
+
 int
 main(void)
 {
 	UT_RUN(test_undo_buf_writeback_gated_off);
 	UT_RUN(test_undo_buf_writeback_gate_truth_table);
+	UT_RUN(test_undo_buf_invalidate_segment);
 	UT_RUN(test_undo_buf_block0_not_poolable);
 	UT_RUN(test_undo_buf_miss_then_hit);
 	UT_RUN(test_undo_buf_write_through);
