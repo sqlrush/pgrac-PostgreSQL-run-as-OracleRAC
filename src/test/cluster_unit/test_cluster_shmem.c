@@ -51,6 +51,7 @@
  */
 #include "postgres.h"
 
+#include "cluster/cluster_conf.h"
 #include "cluster/cluster_shmem.h"
 
 /*
@@ -262,12 +263,23 @@ errmsg_internal(const char *fmt pg_attribute_unused(), ...)
 	return 0;
 }
 
+/* spec-3.18 D2b: cluster_undo_buf check_hook references errdetail. */
+int
+errdetail(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+
 void
 errfinish(const char *filename pg_attribute_unused(), int lineno pg_attribute_unused(),
 		  const char *funcname pg_attribute_unused())
 {
 	/* never called when errstart returned false, but stub anyway */
 }
+
+/* spec-3.18 D2b: cluster_undo_buf writeback latch reads ClusterConfShmem
+ * (cluster_conf_has_peers); NULL => single-node => latch does not block. */
+ClusterConf *ClusterConfShmem = NULL;
 
 /*
  * MemoryContext / palloc stubs for stage-1.3 registry path.  The unit
@@ -361,6 +373,12 @@ cluster_gcs_block_dedup_module_init(void)
  * cluster_sinval_module_init (cluster_sinval.c). */
 void
 cluster_sinval_module_init(void)
+{}
+
+/* spec-3.18 D1 stub: cluster_init_shmem_module also calls
+ * cluster_undo_buf_register_region (cluster_undo_buf.c, not linked here). */
+void
+cluster_undo_buf_register_region(void)
 {}
 
 /* spec-3.1 D2 + D5 stub: cluster_init_shmem_module also calls

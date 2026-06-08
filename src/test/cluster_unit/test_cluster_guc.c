@@ -46,6 +46,7 @@
  */
 #include "postgres.h"
 
+#include "cluster/cluster_conf.h" /* ClusterConf type for the D2b latch stub */
 #include "cluster/cluster_guc.h"
 
 /*
@@ -140,6 +141,39 @@ DefineCustomBoolVariable(const char *name pg_attribute_unused(),
  * GUC_check_errdetail_string global) so cluster_guc.o links standalone
  * even though check_hooks are never invoked in this unit test. */
 char *GUC_check_errdetail_string = NULL;
+
+/*
+ * spec-3.18 D2b:  cluster_undo_buffer_writeback_check_hook references
+ * ClusterConfShmem (via cluster_conf_has_peers) + ereport(WARNING) (errstart/
+ * errfinish/errmsg/errhint/errdetail).  The hook is never invoked in this unit
+ * test, so these are link-only stubs.
+ */
+ClusterConf *ClusterConfShmem = NULL;
+
+bool
+errstart(int elevel pg_attribute_unused(), const char *domain pg_attribute_unused())
+{
+	return false; /* never starts an ereport in this test */
+}
+void
+errfinish(const char *filename pg_attribute_unused(), int lineno pg_attribute_unused(),
+		  const char *funcname pg_attribute_unused())
+{}
+int
+errmsg(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errhint(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
+int
+errdetail(const char *fmt pg_attribute_unused(), ...)
+{
+	return 0;
+}
 
 void
 GUC_check_errcode(int sqlerrcode pg_attribute_unused())
