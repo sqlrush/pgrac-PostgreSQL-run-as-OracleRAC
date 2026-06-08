@@ -160,6 +160,11 @@ UNIT_STUB_SUPP=(
   --suppress=redundantAssignment:src/test/cluster_unit/test_cluster_undo_buf.c
   --suppress=unreadVariable:src/test/cluster_unit/test_cluster_undo_buf.c
   --suppress=nullPointerOutOfMemory:src/test/cluster_unit/test_cluster_undo_buf.c
+  # spec-3.18 D2: the FPI/delta apply tests fill their output buffer via
+  # cluster_undo_apply_block_write_{fpi,delta}, which cppcheck cannot model;
+  # the CI cppcheck version flags reads of the filled image (oh->block_lsn /
+  # bh->block_lsn) as uninitvar despite the buffer being memset/zero-init.
+  --suppress=uninitvar:src/test/cluster_unit/test_cluster_stage3_acceptance.c
   # spec-3.1 D9: tt_status test stub parameters mirror real prototypes
   # whose pointer args can't be widened to const without breaking callers.
   --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_tt_status.c
