@@ -4,13 +4,16 @@
  *	  pgrac spec-3.18 D1 — per-instance undo block buffer pool.
  *
  *	  AD-014 form restoration:  active undo DATA blocks live in this in-memory
- *	  shmem pool instead of being direct-written per record.  D1 ships the
- *	  pool infrastructure in a durability-NEUTRAL form (interface-lock §3):
- *	    - read-through cache + write-through writes (do_fsync=false;  fsync
- *	      stays at cluster_undo_xact_precommit_flush, NOT per-unpin);
- *	    - buffered write-back is forbidden until the D2 alpha
- *	      (cluster_undo_buf_writeback_allowed() == false + a GUC check_hook
- *	      hard-rejects turning it on);
+ *	  shmem pool instead of being direct-written per record.  D1 shipped the
+ *	  pool in a durability-NEUTRAL form;  D2b activates buffered write-back:
+ *	    - read-through cache;  writes are write-through (do_fsync=false) when
+ *	      write-back is off, or buffered-dirty when on;
+ *	    - write-back (cluster_undo_buf_writeback_allowed()) requires the pool +
+ *	      cluster.undo_buffer_writeback on + NO peers (hard single-node latch,
+ *	      see that function).  Dirty blocks are WAL-protected
+ *	      (XLOG_UNDO_BLOCK_WRITE) and made durable by the checkpoint write-back
+ *	      flush (cluster_undo_buf_flush_all) + eviction flush;  with write-back
+ *	      off, durability stays at cluster_undo_xact_precommit_flush;
  *	    - block 0 (segment header + durable TT slots) is NOT poolable.
  *
  *	  Concurrency (NOTES):  a miss does disk I/O OUTSIDE the pool map_lock —
@@ -44,7 +47,8 @@
 
 #include "postgres.h"
 
-#include "access/xlog.h" /* XLogFlush — WAL-before-data on write-back (D2b) */
+#include "access/xlog.h"		  /* XLogFlush — WAL-before-data on write-back (D2b) */
+#include "cluster/cluster_conf.h" /* cluster_conf_has_peers — single-node gate (D2b) */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_undo_smgr.h"
 #include "cluster/storage/cluster_undo_buf.h"
@@ -55,7 +59,7 @@
 
 /* GUCs (registered in cluster_guc.c). */
 extern int cluster_undo_buffers;		   /* pool slot count;  0 = disabled */
-extern bool cluster_undo_buffer_writeback; /* must stay off in D1 (check_hook) */
+extern bool cluster_undo_buffer_writeback; /* D2b: write-back on (single-node only) */
 
 /* One pool slot.  BLCKSZ data lives in a parallel array (alignment). */
 typedef struct UndoBufSlot {
@@ -91,18 +95,31 @@ static char *UndoBufData = NULL;
 
 /*
  * cluster_undo_buf_writeback_allowed -- is buffered write-back active?
- *	D2b: write-back runs when the pool exists AND cluster.undo_buffer_writeback
- *	is on.  The pool is REQUIRED -- dirty blocks are made durable by the
- *	checkpoint write-back flush (cluster_undo_buf_flush_all from CheckPointGuts)
- *	+ eviction flush, which is what makes the DELAY_CHKPT_START guarantee real;
- *	with no pool, fall back to always-FPI write-through (D2a).  WAL protection
- *	(XLOG_UNDO_BLOCK_WRITE FPI/delta + redo) is unconditional, so flipping the
- *	GUC is safe (spec-3.18 §2.6 v0.8).
+ *	D2b: write-back runs when ALL of:
+ *	  1. the pool exists (cluster.undo_buffers > 0).  REQUIRED -- dirty blocks
+ *	     are made durable by the checkpoint write-back flush
+ *	     (cluster_undo_buf_flush_all from CheckPointGuts) + eviction flush,
+ *	     which is what makes the DELAY_CHKPT_START guarantee real;  with no
+ *	     pool, fall back to always-FPI write-through (D2a).
+ *	  2. cluster.undo_buffer_writeback is on.
+ *	  3. the node has NO peers (cluster_conf_has_peers() == false).  HARD
+ *	     SINGLE-NODE LATCH (spec-3.18 §3.3 v0.9):  write-back leaves committed
+ *	     undo in this node's pool (data file lags), durable only via WAL +
+ *	     local checkpoint flush.  A remote node reading it from shared storage
+ *	     would see STALE / missing undo until a future Cache Fusion + multi-
+ *	     node-recovery spec makes cross-node undo write-back-aware.  Until then
+ *	     a peered topology MUST use the always-FPI write-through path (D2a),
+ *	     where every commit's undo is fsync'd to shared storage.  Topology is
+ *	     postmaster-static after cluster_conf_load(), so this never flips mid-
+ *	     run.  A real runtime guard, not Assert (L214/L218) nor a default.
+ *
+ *	WAL protection (XLOG_UNDO_BLOCK_WRITE FPI/delta + redo) is unconditional,
+ *	so toggling the GUC in a single-node topology is safe.
  */
 bool
 cluster_undo_buf_writeback_allowed(void)
 {
-	return UndoBufPool != NULL && cluster_undo_buffer_writeback;
+	return UndoBufPool != NULL && cluster_undo_buffer_writeback && !cluster_conf_has_peers();
 }
 
 

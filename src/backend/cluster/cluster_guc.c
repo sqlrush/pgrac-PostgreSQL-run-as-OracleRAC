@@ -38,6 +38,7 @@
 
 #include "utils/guc.h"
 
+#include "cluster/cluster_conf.h"	  /* cluster_conf_has_peers (spec-3.18 D2b latch) */
 #include "cluster/cluster_cr_cache.h" /* cluster_cr_cache_max_blocks (spec-3.10 D4) */
 #include "cluster/cluster_guc.h"
 #include "cluster/storage/cluster_undo_buf.h" /* cluster_undo_buf_writeback_allowed (spec-3.18 D1) */
@@ -580,21 +581,36 @@ cluster_ges_retransmit_max_attempts_check_hook(int *newval, void **extra, GucSou
 }
 
 /*
- * spec-3.18 D2b:  undo buffer write-back is now WAL-protected
- * (XLOG_UNDO_BLOCK_WRITE FPI/delta + redo) and made durable by the checkpoint
- * write-back flush (CheckPointGuts -> cluster_undo_buf_flush_all) + eviction
- * flush + DELAY_CHKPT_START, so enabling the GUC is safe.  The D1 hard-reject
- * is removed (it called cluster_undo_buf_writeback_allowed(), which is now the
- * GUC itself -> circular).  When the pool is disabled (cluster.undo_buffers =
- * 0) write-back simply has no effect -- writeback_allowed() stays false and
- * undo writes use the direct write-through path -- so no validation is needed.
+ * spec-3.18 D2b:  undo buffer write-back is WAL-protected (XLOG_UNDO_BLOCK_WRITE
+ * FPI/delta + redo) and made durable by the checkpoint write-back flush
+ * (CheckPointGuts -> cluster_undo_buf_flush_all) + eviction flush +
+ * DELAY_CHKPT_START, so enabling the GUC is safe in a SINGLE-NODE topology.
+ *
+ * The hard enforcement is the runtime latch in
+ * cluster_undo_buf_writeback_allowed() (pool exists && GUC on && no peers) --
+ * write-back is structurally impossible while the node has peers, because
+ * buffered undo is durable only via local WAL + checkpoint flush and a remote
+ * node reading shared storage would see stale undo (no Cache Fusion yet).
+ *
+ * This hook only adds operator-visible feedback:  warn when the GUC is turned
+ * on in a peered topology (it will silently no-op back to write-through).  At
+ * initial startup ClusterConfShmem is not yet loaded, so cluster_conf_has_peers()
+ * is safely false (no spurious warning);  the warning fires on a SIGHUP that
+ * enables it after the cluster config is up.  Accept the value either way --
+ * the runtime latch, not a rejection, is the safety boundary.
  */
 static bool
 cluster_undo_buffer_writeback_check_hook(bool *newval, void **extra, GucSource source)
 {
-	(void)newval;
 	(void)extra;
 	(void)source;
+	if (*newval && cluster_conf_has_peers())
+		ereport(WARNING,
+				(errmsg("cluster.undo_buffer_writeback has no effect in a multi-node cluster"),
+				 errdetail("Buffered undo write-back is durable only via local WAL + checkpoint "
+						   "flush;  a peer reading shared storage would see stale undo."),
+				 errhint("Undo continues to use the write-through path (per-commit fsync to "
+						 "shared storage).  Single-node deployments may enable write-back.")));
 	return true;
 }
 
@@ -798,9 +814,10 @@ cluster_init_guc(void)
 
 	DefineCustomBoolVariable("cluster.undo_buffer_writeback",
 							 gettext_noop("Enable buffered write-back for the undo buffer pool."),
-							 gettext_noop("MUST stay off until the spec-3.18 D2 WAL-protection "
-										  "alpha;  the check_hook hard-rejects turning it on.  "
-										  "Off = write-through (durability identical to today)."),
+							 gettext_noop("On = buffered undo, durable via WAL + checkpoint flush "
+										  "(drops the per-commit undo fsync).  SINGLE-NODE only -- "
+										  "ignored when the node has peers.  Off = write-through "
+										  "(per-commit fsync to shared storage)."),
 							 &cluster_undo_buffer_writeback, false, PGC_SIGHUP, 0,
 							 cluster_undo_buffer_writeback_check_hook, NULL, NULL);
 

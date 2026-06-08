@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cluster/cluster_conf.h" /* ClusterConf type for the single-node latch stub */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_undo_smgr.h"
 #include "cluster/storage/cluster_undo_buf.h"
@@ -73,6 +74,10 @@ ExceptionalCondition(const char *conditionName pg_attribute_unused(),
 /* ----- GUC globals the pool reads ----- */
 int cluster_undo_buffers = 4; /* small pool for evict testing */
 bool cluster_undo_buffer_writeback = false;
+
+/* ----- single-node latch: cluster_conf_has_peers() reads ClusterConfShmem;
+ * NULL => no peers => latch does not block write-back (U1-U6 are single-node). */
+ClusterConf *ClusterConfShmem = NULL;
 
 /* ----- shmem stub:  one malloc'd region, "found" on re-init ----- */
 static void *shmem_buf = NULL;
@@ -202,10 +207,44 @@ fresh_pool(void)
 }
 
 
-/* ===== U1 — writeback gate is hard-false in D1 ===== */
+/* ===== U1 — writeback gate: off by default (GUC off) ===== */
 UT_TEST(test_undo_buf_writeback_gated_off)
 {
+	fresh_pool();
+	cluster_undo_buffer_writeback = false; /* default */
+	ClusterConfShmem = NULL;			   /* single-node */
 	UT_ASSERT_EQ((int)cluster_undo_buf_writeback_allowed(), 0);
+}
+
+
+/* ===== U7 — D2b gate truth table: GUC + pool + single-node latch ===== */
+UT_TEST(test_undo_buf_writeback_gate_truth_table)
+{
+	ClusterConf conf_two_nodes;
+
+	fresh_pool(); /* pool exists (cluster_undo_buffers = 4) */
+
+	/* GUC on + pool + single-node (no ClusterConfShmem) -> write-back ON. */
+	cluster_undo_buffer_writeback = true;
+	ClusterConfShmem = NULL;
+	UT_ASSERT_EQ((int)cluster_undo_buf_writeback_allowed(), 1);
+
+	/* HARD SINGLE-NODE LATCH: GUC on + pool but peered -> write-back OFF. */
+	memset(&conf_two_nodes, 0, sizeof(conf_two_nodes));
+	conf_two_nodes.node_count = 2;
+	ClusterConfShmem = &conf_two_nodes;
+	UT_ASSERT_EQ((int)cluster_undo_buf_writeback_allowed(), 0);
+
+	/* node_count == 1 is still single-node -> write-back ON. */
+	conf_two_nodes.node_count = 1;
+	UT_ASSERT_EQ((int)cluster_undo_buf_writeback_allowed(), 1);
+
+	/* GUC off -> OFF regardless of topology. */
+	cluster_undo_buffer_writeback = false;
+	ClusterConfShmem = NULL;
+	UT_ASSERT_EQ((int)cluster_undo_buf_writeback_allowed(), 0);
+
+	cluster_undo_buffer_writeback = false; /* restore default for later tests */
 }
 
 
@@ -303,6 +342,7 @@ int
 main(void)
 {
 	UT_RUN(test_undo_buf_writeback_gated_off);
+	UT_RUN(test_undo_buf_writeback_gate_truth_table);
 	UT_RUN(test_undo_buf_block0_not_poolable);
 	UT_RUN(test_undo_buf_miss_then_hit);
 	UT_RUN(test_undo_buf_write_through);
