@@ -178,6 +178,60 @@ UT_TEST(test_bitmap_mark_used_idempotent)
 	UT_ASSERT_EQ(bitmap[1], 0x01);
 }
 
+/* ---- spec-3.18 D3.2 (A1): batch mark_range_used ---- */
+UT_TEST(test_bitmap_mark_range_used)
+{
+	uint8 bitmap[UNDO_FREE_BITMAP_BYTES];
+
+	memset(bitmap, 0, sizeof(bitmap));
+
+	/* Mark [4, 8) used in one pass. */
+	UT_ASSERT(UndoSegmentBitmap_mark_range_used(bitmap, 4, 4, UNDO_BLOCKS_PER_SEGMENT));
+	UT_ASSERT(UndoSegmentBitmap_mark_used(bitmap, 4) == false); /* already set */
+	UT_ASSERT(UndoSegmentBitmap_mark_used(bitmap, 7) == false);
+	UT_ASSERT(UndoSegmentBitmap_mark_used(bitmap, 3) == true); /* 3 was NOT in range */
+	UT_ASSERT(UndoSegmentBitmap_mark_used(bitmap, 8) == true); /* 8 was NOT in range */
+
+	/* Idempotent: re-marking an overlapping range is fine. */
+	UT_ASSERT(UndoSegmentBitmap_mark_range_used(bitmap, 4, 4, UNDO_BLOCKS_PER_SEGMENT));
+
+	/* fail-closed: block 0 / zero-length / past-end ranges rejected. */
+	UT_ASSERT(!UndoSegmentBitmap_mark_range_used(bitmap, 0, 4, UNDO_BLOCKS_PER_SEGMENT));
+	UT_ASSERT(!UndoSegmentBitmap_mark_range_used(bitmap, 4, 0, UNDO_BLOCKS_PER_SEGMENT));
+	UT_ASSERT(!UndoSegmentBitmap_mark_range_used(bitmap, UNDO_BLOCKS_PER_SEGMENT - 1, 4,
+												 UNDO_BLOCKS_PER_SEGMENT));
+	/* exactly to the end is allowed. */
+	UT_ASSERT(UndoSegmentBitmap_mark_range_used(bitmap, UNDO_BLOCKS_PER_SEGMENT - 2, 2,
+												UNDO_BLOCKS_PER_SEGMENT));
+}
+
+/* ---- spec-3.18 D3.2 (B1): first_free_block restart resume ---- */
+UT_TEST(test_bitmap_first_free_block)
+{
+	uint8 bitmap[UNDO_FREE_BITMAP_BYTES];
+
+	/* Empty (all free) -> first free data block is 1 (block 0 skipped). */
+	memset(bitmap, 0, sizeof(bitmap));
+	UT_ASSERT_EQ((int)UndoSegmentBitmap_first_free_block(bitmap, UNDO_BLOCKS_PER_SEGMENT), 1);
+
+	/* Contiguous prefix [1,10) used -> high-water resumes at 10. */
+	UT_ASSERT(UndoSegmentBitmap_mark_range_used(bitmap, 1, 9, UNDO_BLOCKS_PER_SEGMENT));
+	UT_ASSERT_EQ((int)UndoSegmentBitmap_first_free_block(bitmap, UNDO_BLOCKS_PER_SEGMENT), 10);
+
+	/* Full segment (block 0 + all data blocks set) -> 0. */
+	memset(bitmap, 0xFF, sizeof(bitmap));
+	UT_ASSERT_EQ((int)UndoSegmentBitmap_first_free_block(bitmap, UNDO_BLOCKS_PER_SEGMENT), 0);
+
+	/* 8.A corruption guard: a used block AFTER a free one (hole) -> 0
+	 * (fail-closed; do not resume into a fragmented bitmap). */
+	memset(bitmap, 0, sizeof(bitmap));
+	UndoSegmentBitmap_mark_used(bitmap, 1);
+	UndoSegmentBitmap_mark_used(bitmap, 2);
+	/* block 3 free, block 4 used -> hole */
+	UndoSegmentBitmap_mark_used(bitmap, 4);
+	UT_ASSERT_EQ((int)UndoSegmentBitmap_first_free_block(bitmap, UNDO_BLOCKS_PER_SEGMENT), 0);
+}
+
 /* ---- T14: bitmap count_free_capped short-circuits at cap+1 ---- */
 UT_TEST(test_bitmap_count_free_capped_short_circuit)
 {
@@ -282,6 +336,8 @@ main(int argc, char **argv)
 	UT_RUN(test_state_can_become_active_legal_transitions);
 	UT_RUN(test_state_can_become_active_fail_closed);
 	UT_RUN(test_bitmap_mark_used_idempotent);
+	UT_RUN(test_bitmap_mark_range_used);
+	UT_RUN(test_bitmap_first_free_block);
 	UT_RUN(test_bitmap_count_free_capped_short_circuit);
 	UT_RUN(test_bitmap_is_full_margin);
 	UT_RUN(test_segment_flags_is_full);

@@ -195,6 +195,16 @@ extern bool cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_
 												 uint32 block_no);
 extern bool cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance);
 
+/* spec-3.18 D3.2:  batch mark a [first_block, first_block+nblocks) range used
+ * in ONE block-0 read + write + fsync (A1; the extent-claim batch mark).  NOT
+ * a loop over the per-block helper.  Range out of bounds -> false fail-closed.
+ * Caller holds lifecycle_lock. */
+extern bool cluster_undo_segment_mark_block_range_used(uint32 segment_id, uint8 owner_instance,
+													   uint32 first_block, uint32 nblocks);
+/* spec-3.18 D3.2:  restart high-water resume (B1) -- first free data block in
+ * the segment's bitmap (>= 1), 0 if full / on a corrupt (holey) bitmap. */
+extern uint32 cluster_undo_segment_first_free_block(uint32 segment_id, uint8 owner_instance);
+
 /* D5 retention base (tail_block) update (spec-3.8). */
 extern bool cluster_undo_segment_tail_block_init(uint32 segment_id, uint8 owner_instance,
 												 BlockNumber initial_tail);
@@ -405,6 +415,65 @@ static inline bool
 UndoSegmentBitmap_is_full(const uint8 *bitmap, uint32 bytes)
 {
 	return UndoSegmentBitmap_count_free_capped(bitmap, bytes, 1) <= 1;
+}
+
+/*
+ * spec-3.18 D3.2 (A1):  mark a whole [first_block, first_block + nblocks) data
+ * range used in one pass (the extent-claim batch mark; the backend wrapper
+ * does ONE block-0 read + ONE write + fsync around this, not N).  Returns
+ * false (fail-closed) when the range is out of bounds:  first_block must be a
+ * data block (>= 1) and the range must stay within [1, blocks_per_segment);
+ * block 0 (the header) is never markable here.  Idempotent: bits already set
+ * are left set.  uint64 math avoids first_block + nblocks overflow.
+ */
+static inline bool
+UndoSegmentBitmap_mark_range_used(uint8 *bitmap, uint32 first_block, uint32 nblocks,
+								  uint32 blocks_per_segment)
+{
+	uint64 last;
+	uint32 b;
+
+	if (first_block < 1 || nblocks == 0)
+		return false;
+	last = (uint64)first_block + nblocks;
+	if (last > (uint64)blocks_per_segment)
+		return false;
+
+	for (b = first_block; b < first_block + nblocks; b++)
+		(void)UndoSegmentBitmap_mark_used(bitmap, b); /* idempotent */
+	return true;
+}
+
+/*
+ * spec-3.18 D3.2 (B1):  reconstruct the extent high-water on restart -- the
+ * first free data block (>= 1), or 0 when the segment is full.  In the extent
+ * model the bitmap is a contiguous prefix (blocks [1, high-water) are all
+ * claimed-and-marked, [high-water, end) all free), because extents allocate
+ * sequentially and mark precedes any record write -- so the first free block
+ * IS the high-water, and resuming there never overwrites a block that holds
+ * data (marked ⊇ has-data).  As a corruption guard (8.A) the scan fail-closes
+ * (returns 0) if it finds a used block AFTER a free one (a hole => the prefix
+ * invariant is broken => do not resume into it; force autoextend/rollover).
+ */
+static inline uint32
+UndoSegmentBitmap_first_free_block(const uint8 *bitmap, uint32 blocks_per_segment)
+{
+	uint32 b;
+	uint32 first_free = 0;
+
+	for (b = 1; b < blocks_per_segment; b++) {
+		uint32 byte_idx = b / 8;
+		uint8 bit_mask = (uint8)(1u << (b % 8));
+		bool used = (bitmap[byte_idx] & bit_mask) != 0;
+
+		if (!used) {
+			if (first_free == 0)
+				first_free = b; /* first hole */
+		} else if (first_free != 0) {
+			return 0; /* used block after a free one: prefix broken -> fail-closed */
+		}
+	}
+	return first_free; /* 0 => segment full (no free data block) */
 }
 
 static inline bool

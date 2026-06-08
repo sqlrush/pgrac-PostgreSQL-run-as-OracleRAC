@@ -735,6 +735,55 @@ cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_instance, ui
 }
 
 
+/*
+ * cluster_undo_segment_mark_block_range_used -- spec-3.18 D3.2 (A1).
+ *
+ *	Mark a whole extent [first_block, first_block+nblocks) used in ONE block-0
+ *	read + ONE write + fsync (vs N for the per-block helper).  Idempotent;
+ *	range out of bounds -> false (fail-closed; caller must not proceed).  Caller
+ *	holds lifecycle_lock so concurrent block-0 mutations are serialized.
+ */
+bool
+cluster_undo_segment_mark_block_range_used(uint32 segment_id, uint8 owner_instance,
+										   uint32 first_block, uint32 nblocks)
+{
+	PGAlignedBlock blockbuf;
+	UndoSegmentHeaderData *hdr;
+
+	if (!read_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data, &hdr))
+		return false;
+
+	/* Pure-kernel batch mutator (cluster_unit-tested);  fail-closed on bad range. */
+	if (!UndoSegmentBitmap_mark_range_used(hdr->free_block_bitmap, first_block, nblocks,
+										   UNDO_BLOCKS_PER_SEGMENT))
+		return false;
+
+	return write_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data);
+}
+
+
+/*
+ * cluster_undo_segment_first_free_block -- spec-3.18 D3.2 (B1).
+ *
+ *	Reconstruct the extent high-water on restart: the first free data block in
+ *	the segment's bitmap (>= 1), or 0 when the segment is full or the bitmap is
+ *	corrupt (a used block after a free one -> the kernel fail-closes to 0).
+ *	Caller treats 0 as "this segment cannot host a new extent" -> autoextend /
+ *	rollback to a fresh segment.
+ */
+uint32
+cluster_undo_segment_first_free_block(uint32 segment_id, uint8 owner_instance)
+{
+	PGAlignedBlock blockbuf;
+	UndoSegmentHeaderData *hdr;
+
+	if (!read_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data, &hdr))
+		return 0;
+
+	return UndoSegmentBitmap_first_free_block(hdr->free_block_bitmap, UNDO_BLOCKS_PER_SEGMENT);
+}
+
+
 bool
 cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
 {
