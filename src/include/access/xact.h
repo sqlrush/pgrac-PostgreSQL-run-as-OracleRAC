@@ -382,11 +382,16 @@ typedef struct xl_xact_tt_commit
 	uint32		segment_id;
 	uint16		slot_offset;
 	uint16		wrap;
-	TransactionId xid;			/* slot owner xid (may differ from the commit's xid? no -- same) */
+	TransactionId xid;			/* slot owner xid; always == the committing xid (non-prepared) */
 	uint8		instance;		/* owner instance (1..128) for path resolution */
 	uint8		_pad[3];
 	SCN			commit_scn;
 } xl_xact_tt_commit;
+
+StaticAssertDecl(sizeof(xl_xact_tt_commit) == 24,
+				 "xl_xact_tt_commit must be 24 bytes — mirrors xl_undo_tt_slot_commit (D4.1)");
+StaticAssertDecl(offsetof(xl_xact_tt_commit, commit_scn) == 16,
+				 "xl_xact_tt_commit.commit_scn must be at offset 16 (SCN 8-byte alignment; D4.1)");
 
 typedef struct xl_xact_commit
 {

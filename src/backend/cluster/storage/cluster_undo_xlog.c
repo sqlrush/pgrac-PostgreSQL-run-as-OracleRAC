@@ -316,12 +316,18 @@ cluster_undo_emit_block_write(uint8 instance, uint32 segment_id, uint32 block_no
 	 * FPI-vs-delta decision (§2.6 v0.8).  Always-FPI while write-back is gated
 	 * off (D2a): the full image self-repairs torn writes with no checkpoint-
 	 * relative decision.  With write-back on (D2b): emit a 3-range delta unless
-	 * this is the block's first touch since the last checkpoint (old_block_lsn
-	 * <= RedoRecPtr), full_page_writes is off, or the block is fresh
-	 * (old_block_lsn invalid) -- those require a full image so crash redo can
-	 * rebuild the pre-checkpoint bytes a delta would not carry.  The caller
-	 * holds DELAY_CHKPT_START across this + the block write, which (with undo
-	 * blocks in the checkpoint-flush set) closes the FPW race.
+	 * a full image is required:
+	 *   - the block is fresh (old_block_lsn invalid) -- a delta has no on-disk
+	 *     base to apply onto, so the first write must carry the whole block; OR
+	 *   - full_page_writes is ON and this is the block's first touch since the
+	 *     last checkpoint (old_block_lsn <= RedoRecPtr) -- the checkpoint flush
+	 *     of this block may have torn, so the first post-checkpoint write FPIs
+	 *     to give redo a clean base.
+	 * When full_page_writes is OFF the storage guarantees atomic block writes
+	 * (no torn writes), so the checkpoint-flushed block is an intact delta base
+	 * -- a delta is safe (matching PG, which also omits full-page images then).
+	 * The caller holds DELAY_CHKPT_START across this + the block write, which
+	 * (with undo blocks in the checkpoint-flush set) closes the FPW race.
 	 */
 	if (cluster_undo_buf_writeback_allowed()) {
 		XLogRecPtr redo;
@@ -350,7 +356,9 @@ cluster_undo_emit_block_write(uint8 instance, uint32 segment_id, uint32 block_no
 		GetFullPageWriteInfo(&stale_redo, &do_page_writes);
 		(void)stale_redo; /* discarded; GetRedoRecPtr() is the authoritative redo */
 		redo = GetRedoRecPtr();
-		use_delta = do_page_writes && !XLogRecPtrIsInvalid(old_block_lsn) && old_block_lsn > redo;
+		/* delta unless fresh (no base) or FPW-on first-post-checkpoint touch. */
+		use_delta
+			= !XLogRecPtrIsInvalid(old_block_lsn) && (!do_page_writes || old_block_lsn > redo);
 	}
 
 	memset(&rec, 0, sizeof(rec));

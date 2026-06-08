@@ -633,8 +633,17 @@ claim_undo_extent(ClusterUndoExtent *ext, uint8 owner_instance, uint32 ensured_s
 	}
 
 	if (needs_activation) {
+		/*
+		 * review P1-C: init tail_block (the retention base) ONLY for a fresh
+		 * (ALLOCATED) segment.  A restart-resumed segment is already ACTIVE on
+		 * disk with a cleaner-advanced tail_block -- resetting it to 1 would
+		 * make the cleaner re-scan + over-retain after every restart.
+		 */
+		bool is_fresh
+			= (cluster_undo_segment_read_state(seg, owner_instance) == (uint8)SEGMENT_ALLOCATED);
+
 		if (!cluster_undo_segment_mark_active(seg, owner_instance)
-			|| !cluster_undo_segment_tail_block_init(seg, owner_instance, 1)) {
+			|| (is_fresh && !cluster_undo_segment_tail_block_init(seg, owner_instance, 1))) {
 			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 			return CLAIM_IO_FAIL;
 		}
@@ -807,11 +816,20 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 		/*
 		 * spec-3.18 D3.3 (Q2 hybrid): a residual extent carried over from a
 		 * previous transaction is reusable ONLY while its segment is still the
-		 * active one.  The active segment is never recycled, so a residual in it
-		 * is safe;  but once the allocator rolled over to a new active segment
-		 * the old one may be FULL / COMMITTED / RECYCLABLE / reborn, so drop the
-		 * stale residual and re-claim.  active_segment_id is read as a hint here
-		 * (the claim re-validates under lifecycle_lock).
+		 * active one.  The active segment is never recycled (recycle requires
+		 * COMMITTED/RECYCLABLE state), so a residual whose segment_id still
+		 * equals active_segment_id can never point at a reborn segment -> safe.
+		 * Once the allocator rolled over (segment_id != active), the old segment
+		 * may be FULL / COMMITTED / RECYCLABLE / reborn, so drop the residual.
+		 *
+		 * The active_segment_id read here is an INTENTIONALLY relaxed (unlocked)
+		 * hint.  A stale read cannot cause data loss: the worst case is reusing a
+		 * residual whose segment just rolled to FULL -- but those blocks are
+		 * already claimed by us (bitmap-marked) and a FULL segment is not yet
+		 * recyclable (retention horizon), so writing our own pre-claimed blocks
+		 * is still correct.  Block 0 / record writes never go through the stale
+		 * path uncrosschecked because the per-record write only touches our own
+		 * extent's claimed blocks.
 		 */
 		if (ext->segment_id != CLUSTER_UNDO_EXTENT_NONE
 			&& ext->segment_id != UndoRecordShared->active_segment_id)

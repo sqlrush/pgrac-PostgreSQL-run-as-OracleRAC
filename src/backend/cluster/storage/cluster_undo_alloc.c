@@ -808,6 +808,28 @@ cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance)
 }
 
 
+/*
+ * cluster_undo_segment_read_state -- spec-3.18 D3.2 (review finding P1-C).
+ *
+ *	Return the segment's on-disk lifecycle state, or SEGMENT_INVALID when the
+ *	header is unreadable.  Used by the extent claim to tell a freshly-created
+ *	(ALLOCATED) segment -- which needs tail_block initialized -- from a restart-
+ *	resumed (already ACTIVE) one whose cleaner-advanced tail_block must NOT be
+ *	reset to 1.
+ */
+uint8
+cluster_undo_segment_read_state(uint32 segment_id, uint8 owner_instance)
+{
+	PGAlignedBlock blockbuf;
+	UndoSegmentHeaderData *hdr;
+
+	if (!read_segment_header_via_smgr(segment_id, owner_instance, blockbuf.data, &hdr))
+		return (uint8)SEGMENT_INVALID;
+
+	return hdr->segment_state;
+}
+
+
 /* ============================================================
  * spec-3.8 D2: Autoextend lazy at exhaustion
  *

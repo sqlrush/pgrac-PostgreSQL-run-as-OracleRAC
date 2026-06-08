@@ -315,8 +315,19 @@ cluster_undo_buf_invalidate_segment(uint32 segment_id, uint8 owner)
 		UndoBufSlot *s = &UndoBufSlots[i];
 
 		if (s->valid && s->segment_id == segment_id && s->owner == owner) {
-			/* A recyclable segment must have no pinned blocks (no live user). */
-			Assert(pg_atomic_read_u32(&s->pincount) == 0);
+			/*
+			 * A recyclable segment must have no pinned blocks (no live
+			 * reader/writer).  A real runtime guard, not Assert (stripped in
+			 * release -- L214/L218):  a pinned slot here means a retention
+			 * invariant breach (someone is using a recyclable segment), which
+			 * would already be corrupting in-flight I/O -- fail-closed PANIC
+			 * rather than silently invalidate a slot under an active pin.
+			 */
+			if (pg_atomic_read_u32(&s->pincount) != 0)
+				ereport(PANIC,
+						(errmsg("cluster undo buffer: pinned slot in segment being "
+								"reused seg=%u owner=%u slot=%d pincount=%u",
+								segment_id, (unsigned)owner, i, pg_atomic_read_u32(&s->pincount))));
 			s->valid = false;
 			s->dirty = false;
 			s->io_in_progress = false;

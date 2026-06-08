@@ -353,7 +353,9 @@ cluster_undo_apply_block_write_delta(char *block, const xl_undo_block_write *rec
 {
 	const char *p = delta_body;
 
-	memcpy(block, p, UNDO_BLOCK_HDR_PREFIX_LEN); /* header prefix [0,40) */
+	/* header prefix [0, UNDO_BLOCK_HDR_PREFIX_LEN=40); excludes block_lsn @40
+	 * (set from the record LSN, never carried in the delta body). */
+	memcpy(block, p, UNDO_BLOCK_HDR_PREFIX_LEN);
 	p += UNDO_BLOCK_HDR_PREFIX_LEN;
 	memcpy(block + rec->rec_off, p, rec->rec_len); /* new record */
 	p += rec->rec_len;

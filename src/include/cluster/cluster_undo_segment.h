@@ -195,6 +195,11 @@ extern bool cluster_undo_segment_mark_block_used(uint32 segment_id, uint8 owner_
 												 uint32 block_no);
 extern bool cluster_undo_segment_is_full(uint32 segment_id, uint8 owner_instance);
 
+/* spec-3.18 D3.2 (review P1-C): on-disk segment lifecycle state, or
+ * SEGMENT_INVALID if unreadable.  The extent claim uses it to init tail_block
+ * only for a fresh (ALLOCATED) segment, not a restart-resumed ACTIVE one. */
+extern uint8 cluster_undo_segment_read_state(uint32 segment_id, uint8 owner_instance);
+
 /* spec-3.18 D3.2:  batch mark a [first_block, first_block+nblocks) range used
  * in ONE block-0 read + write + fsync (A1; the extent-claim batch mark).  NOT
  * a loop over the per-block helper.  Range out of bounds -> false fail-closed.
