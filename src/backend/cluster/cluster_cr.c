@@ -32,7 +32,9 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/transam.h" /* spec-3.11 D6/C1b: TransactionIdDidCommit, TransactionIdIsNormal */
+#include "access/transam.h"	   /* spec-3.11 D6/C1b: TransactionIdDidCommit, TransactionIdIsNormal */
+#include "access/xact.h"	   /* spec-3.19 D3: TransactionIdIsCurrentTransactionId */
+#include "storage/procarray.h" /* spec-3.19 D3: TransactionIdIsInProgress */
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
@@ -984,6 +986,44 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 		return false;
 	if ((int32)uba_origin_node_id(slot->undo_segment_head) != cluster_node_id)
 		return false;
+
+	/*
+	 * spec-3.19 D3: live-tuple xmin guard (fail-closed toward invisible).
+	 *
+	 * The CR image occupant of this offset can differ from the LIVE occupant
+	 * after HOT line-pointer reuse + 8-slot ITL recycling, so the historical-
+	 * image decision below must NOT be applied to a live tuple that is not
+	 * itself a committed, fully-finished version.  Without this guard the gate
+	 * reports the historical version's visibility for a live version whose own
+	 * xmin HeapTupleSatisfiesUpdate then rejects -> TM_Invisible ("attempted to
+	 * update invisible tuple", spec-3.19 D0/D1).
+	 *
+	 * The verdict must match what HeapTupleSatisfiesUpdate uses, NOT a CLOG-only
+	 * test: the disagreement window is the COMMIT-IN-PROGRESS gap.  A committing
+	 * xact sets its CLOG commit bit (TransactionIdDidCommit -> true) BEFORE it
+	 * leaves the ProcArray (ProcArrayEndTransaction).  During that gap the native
+	 * SatisfiesUpdate path still sees the writer via TransactionIdIsInProgress and
+	 * returns TM_Invisible (D0 captured xmin{commit=1 inprog=1}).  So the live
+	 * version is a valid visible update target only when its xmin is BOTH
+	 * committed AND no longer in progress; otherwise (still in progress, in the
+	 * commit gap, or aborted) it is visible to no snapshot -> invisible.
+	 *
+	 * Own-instance only (tier-3 above): the live xmin's CLOG + ProcArray state is
+	 * local-authoritative.  Our own write is excluded (self-modification is
+	 * handled by the native path).  The construct-time prune already drops
+	 * post-read_scn *committed* versions; this guard closes the in-progress /
+	 * commit-gap / aborted versions the prune cannot key off commit_scn.  The
+	 * snapshot's correct older version is found by the normal chain walk.
+	 */
+	{
+		TransactionId live_xmin = HeapTupleHeaderGetRawXmin(tup);
+
+		if (TransactionIdIsNormal(live_xmin) && !TransactionIdIsCurrentTransactionId(live_xmin)
+			&& (!TransactionIdDidCommit(live_xmin) || TransactionIdIsInProgress(live_xmin))) {
+			*out_visible = false;
+			return true;
+		}
+	}
 
 	/*
 	 * Gate fired: construct the read_scn block image (full-block CR, spec-3.10)
