@@ -397,6 +397,7 @@ extern int cluster_undo_segments_per_instance;
 extern char *cluster_undo_tablespace_path;
 extern int cluster_undo_segment_size_mb;
 extern int cluster_undo_record_inline_max_bytes;
+extern int cluster_undo_extent_blocks; /* spec-3.18 D3 extent granularity */
 
 /*
  * spec-3.8 D9 NEW GUCs (registered in Step 7):

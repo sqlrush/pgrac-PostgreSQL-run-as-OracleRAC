@@ -213,6 +213,7 @@ int cluster_undo_segments_per_instance = 16;
 char *cluster_undo_tablespace_path = NULL; /* set in DefineCustomStringVariable */
 int cluster_undo_segment_size_mb = 32;
 int cluster_undo_record_inline_max_bytes = 1024;
+int cluster_undo_extent_blocks = 4; /* spec-3.18 D3 extent granularity */
 
 /*
  * spec-3.8 D9 NEW GUCs (Step 7 真注册;Step 3 先 declare 让 build pass):
@@ -1501,6 +1502,17 @@ cluster_init_guc(void)
 										 "toast-overflow path 推 spec-3.X."),
 							&cluster_undo_record_inline_max_bytes, 1024, 16, 8192, PGC_SIGHUP, 0,
 							NULL, NULL, NULL);
+
+	DefineCustomIntVariable(
+		"cluster.undo_extent_blocks",
+		gettext_noop("Undo block extent size claimed per transaction."),
+		gettext_noop("Spec-3.18 D3.  A transaction claims a run of this many "
+					 "consecutive undo data blocks on its first write and then "
+					 "advances a backend-local cursor within the extent -- only "
+					 "an extent claim touches the shared lifecycle lock, which "
+					 "removes the per-record cursor_lock serial hot-spot.  "
+					 "1 = per-block (debug; the pre-D3 behavior).  Default 4."),
+		&cluster_undo_extent_blocks, 4, 1, 256, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	/*
 	 * spec-3.8 D9 — 2 NEW undo lifecycle GUCs.
