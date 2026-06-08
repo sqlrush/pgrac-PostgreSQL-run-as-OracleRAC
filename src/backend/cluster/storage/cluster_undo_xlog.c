@@ -640,12 +640,12 @@ cluster_tt_durable_redo_stamp_slot(uint8 instance, uint32 segment_id, uint16 slo
 static void
 cluster_undo_redo_tt_slot_commit(XLogReaderState *record)
 {
-	xl_undo_tt_slot_commit *rec;
+	const xl_undo_tt_slot_commit *rec;
 
 	if (XLogRecGetDataLen(record) != sizeof(*rec))
 		ereport(PANIC, (errmsg("invalid XLOG_UNDO_TT_SLOT_COMMIT record length: %u",
 							   XLogRecGetDataLen(record))));
-	rec = (xl_undo_tt_slot_commit *)XLogRecGetData(record);
+	rec = (const xl_undo_tt_slot_commit *)XLogRecGetData(record);
 
 	cluster_tt_durable_redo_stamp_slot(rec->instance, rec->segment_id, rec->slot_offset, rec->wrap,
 									   rec->xid, rec->commit_scn);

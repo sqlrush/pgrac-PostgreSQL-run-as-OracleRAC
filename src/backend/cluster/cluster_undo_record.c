@@ -435,7 +435,7 @@ static bool
 read_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, char *buf)
 {
 	ClusterUndoBufPin pin;
-	char *img;
+	const char *img;
 
 	/*
 	 * spec-3.18 D1:  read-through the undo buffer pool for DATA blocks.  A NULL
@@ -521,7 +521,7 @@ cluster_undo_wal_protect_block(uint32 segment_id, uint8 owner_instance, uint32 b
 	UndoBlockHeader *blkhdr = (UndoBlockHeader *)block_buf;
 	XLogRecPtr lsn;
 	int saved_delay_flags;
-	bool ok;
+	bool ok = false; /* assigned in PG_TRY; init silences cppcheck uninitvar */
 
 	if (!cluster_undo_buf_writeback_allowed()) {
 		/* D2a: always-FPI, write-through (no checkpoint-race window). */
@@ -622,7 +622,7 @@ claim_undo_extent(ClusterUndoExtent *ext, uint8 owner_instance, uint32 ensured_s
 		/* Segment full / corrupt bitmap -> autoextend (reuse-first inside). */
 		uint32 old_seg = seg;
 		bool at_hard_cap = false;
-		uint32 new_seg;
+		uint32 new_seg = 0; /* assigned in PG_TRY; init silences cppcheck uninitvar */
 
 		/*
 		 * PGRAC (spec-3.18 D7): attribute the autoextend file-create + fsync I/O
@@ -1256,7 +1256,7 @@ cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at
 {
 	uint8 owner_instance = (uint8)(node_id + 1);
 	uint32 cur;
-	uint32 new_segment_id;
+	uint32 new_segment_id = 0; /* assigned in PG_TRY; init silences cppcheck uninitvar */
 
 	if (out_at_hard_cap != NULL)
 		*out_at_hard_cap = false;

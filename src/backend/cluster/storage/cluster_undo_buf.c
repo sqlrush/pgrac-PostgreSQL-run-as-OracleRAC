@@ -482,7 +482,7 @@ cluster_undo_buf_pin(uint32 segment_id, uint8 owner, uint32 block_no, ClusterUnd
 
 
 void
-cluster_undo_buf_mark_dirty(ClusterUndoBufPin *pin, XLogRecPtr wal_lsn)
+cluster_undo_buf_mark_dirty(const ClusterUndoBufPin *pin, XLogRecPtr wal_lsn)
 {
 	UndoBufSlot *s;
 

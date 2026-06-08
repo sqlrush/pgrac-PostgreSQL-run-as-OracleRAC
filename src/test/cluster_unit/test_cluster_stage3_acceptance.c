@@ -176,7 +176,7 @@ UT_TEST(test_stage3_undo_block_write_wal_abi)
 UT_TEST(test_stage3_undo_block_write_fpi_apply)
 {
 	char image[BLCKSZ];
-	char out[BLCKSZ];
+	char out[BLCKSZ] = { 0 }; /* filled by the FPI apply; init silences cppcheck uninitvar */
 	UndoBlockHeader *ih = (UndoBlockHeader *)image;
 	UndoBlockHeader *oh = (UndoBlockHeader *)out;
 
@@ -205,7 +205,7 @@ UT_TEST(test_stage3_undo_block_write_delta_apply)
 	char base[BLCKSZ];
 	xl_undo_block_write rec;
 	char body[UNDO_BLOCK_HDR_PREFIX_LEN + 64 + 8]; /* hdr_prefix(40) + rec(64) + slot(8) */
-	UndoBlockHeader *bh = (UndoBlockHeader *)base;
+	const UndoBlockHeader *bh = (const UndoBlockHeader *)base;
 
 	/* Existing on-disk block image (the redo base). */
 	memset(base, 0x11, BLCKSZ);

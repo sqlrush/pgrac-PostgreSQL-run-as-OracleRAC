@@ -97,7 +97,7 @@ extern char *cluster_undo_buf_pin(uint32 segment_id, uint8 owner, uint32 block_n
  *	write-through pwrite (do_fsync=false).  Caller MUST already hold an
  *	EXCLUSIVE pin and have finished mutating + (D2) XLogInsert.
  */
-extern void cluster_undo_buf_mark_dirty(ClusterUndoBufPin *pin, XLogRecPtr wal_lsn);
+extern void cluster_undo_buf_mark_dirty(const ClusterUndoBufPin *pin, XLogRecPtr wal_lsn);
 
 /* Release a pin (drops the content lock). */
 extern void cluster_undo_buf_unpin(ClusterUndoBufPin *pin);

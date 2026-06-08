@@ -149,6 +149,17 @@ SHAREDFS_SUPP=(
 # finding for cluster_unit test stubs.
 UNIT_STUB_SUPP=(
   --suppress=constParameterPointer:src/test/cluster_unit/test_cluster_*.c
+  # spec-3.18 D1/D7: test_cluster_undo_buf reuses a single `img` scratch
+  # pointer to hold cluster_undo_buf_pin() results across U-cases.  The
+  # const/redundant-assignment/null-recheck findings are artifacts of that
+  # scratch-reuse + the UT_ASSERT_NOT_NULL() macro, not production code;
+  # the shmem ShmemInitStruct stub's malloc() cannot fail in a single-
+  # threaded unit test (abort-on-OOM is the harness default).
+  --suppress=constVariablePointer:src/test/cluster_unit/test_cluster_undo_buf.c
+  --suppress=nullPointerRedundantCheck:src/test/cluster_unit/test_cluster_undo_buf.c
+  --suppress=redundantAssignment:src/test/cluster_unit/test_cluster_undo_buf.c
+  --suppress=unreadVariable:src/test/cluster_unit/test_cluster_undo_buf.c
+  --suppress=nullPointerOutOfMemory:src/test/cluster_unit/test_cluster_undo_buf.c
   # spec-3.1 D9: tt_status test stub parameters mirror real prototypes
   # whose pointer args can't be widened to const without breaking callers.
   --suppress=constParameterCallback:src/test/cluster_unit/test_cluster_tt_status.c
