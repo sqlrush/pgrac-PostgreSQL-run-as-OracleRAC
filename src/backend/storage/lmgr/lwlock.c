@@ -234,6 +234,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"ClusterTTSlot",
 	/* PGRAC LWTRANCHE_CLUSTER_UNDO_CLEANER: spec-3.13 Undo Cleaner state */
 	"ClusterUndoCleaner",
+	/* PGRAC LWTRANCHE_CLUSTER_UNDO_BUF: spec-3.18 D1 undo buffer pool map_lock */
+	"ClusterUndoBuf",
 #endif
 };
 
