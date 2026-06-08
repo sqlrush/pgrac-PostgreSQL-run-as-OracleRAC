@@ -8,13 +8,14 @@
  *	  record.  This header declares the pool API locked by
  *	  pgrac:docs/spec-3.18-d1d2-interface-lock.md (v1.1).
  *
- *	  D1 SCOPE (pre-D2, no durability change — interface-lock §3):
- *	    - read-through cache + write-through writes (do_fsync=false; fsync
- *	      stays at cluster_undo_xact_precommit_flush, NOT per-unpin).
- *	    - buffered dirty (write-back) is FORBIDDEN until the D2 WAL-protection
- *	      alpha:  cluster.undo_buffer_writeback defaults off AND a GUC
- *	      check_hook hard-rejects turning it on (Assert is stripped in
- *	      production — L214/L218).
+ *	  D1/D2 SCOPE (interface-lock §3, then D2b):
+ *	    - with cluster.undo_buffer_writeback off, this is a read-through cache
+ *	      with write-through pwrite(do_fsync=false); fsync stays at the legacy
+ *	      precommit path, not per-unpin.
+ *	    - with cluster.undo_buffer_writeback on, dirty DATA blocks are protected
+ *	      by XLOG_UNDO_BLOCK_WRITE and flushed by checkpoint / eviction.  The
+ *	      runtime latch in cluster_undo_buf_writeback_allowed() disables this
+ *	      path while peers exist;  the GUC check hook only warns.
  *	    - DATA blocks only (block_no >= 1) are poolable;  block 0 (segment
  *	      header + durable TT slots, modified via byte-targeted
  *	      cluster_undo_smgr_{read,write}_header_bytes) is NOT pooled — pooling
@@ -115,12 +116,11 @@ extern void cluster_undo_buf_flush_all(bool is_checkpoint);
 extern void cluster_undo_buf_invalidate_segment(uint32 segment_id, uint8 owner);
 
 /*
- * cluster_undo_buf_writeback_allowed -- the alpha gate (interface-lock §5).
- *	Returns false during the D1 phase (buffered write-back has no WAL
- *	protection yet).  The cluster.undo_buffer_writeback GUC check_hook (in
- *	cluster_guc.c) hard-rejects setting the GUC on when this returns false —
- *	a real runtime guard, not Assert (stripped in production) nor default.
- *	Flips to true only after the D2 crash-restart redo proof.
+ * cluster_undo_buf_writeback_allowed -- runtime write-back latch.
+ *	Returns true only when the pool exists, the GUC is on, and the node has no
+ *	peers.  That last condition is the production safety guard: D2b durability
+ *	is local WAL + local checkpoint flush, so multi-node write-back remains off
+ *	until Cache-Fusion-aware undo shipping/recovery exists.
  */
 extern bool cluster_undo_buf_writeback_allowed(void);
 

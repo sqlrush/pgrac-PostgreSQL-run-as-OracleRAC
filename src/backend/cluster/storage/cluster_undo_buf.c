@@ -415,8 +415,15 @@ cluster_undo_buf_pin(uint32 segment_id, uint8 owner, uint32 block_no, ClusterUnd
 
 			pg_atomic_fetch_add_u32(&s->pincount, 1);
 			LWLockRelease(&UndoBufPool->map_lock);
-			flush_dirty_slot(slotno);
-			pg_atomic_fetch_sub_u32(&s->pincount, 1);
+			PG_TRY();
+			{
+				flush_dirty_slot(slotno);
+			}
+			PG_FINALLY();
+			{
+				pg_atomic_fetch_sub_u32(&s->pincount, 1);
+			}
+			PG_END_TRY();
 			slotno = -1;
 			continue; /* re-lookup / re-pick a clean victim */
 		}
@@ -566,8 +573,15 @@ cluster_undo_buf_flush_all(bool is_checkpoint)
 		if (!pinned)
 			continue;
 
-		flush_dirty_slot(i);
-		pg_atomic_fetch_sub_u32(&s->pincount, 1);
+		PG_TRY();
+		{
+			flush_dirty_slot(i);
+		}
+		PG_FINALLY();
+		{
+			pg_atomic_fetch_sub_u32(&s->pincount, 1);
+		}
+		PG_END_TRY();
 	}
 }
 

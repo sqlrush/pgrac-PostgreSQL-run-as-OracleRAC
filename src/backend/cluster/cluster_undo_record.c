@@ -520,6 +520,7 @@ cluster_undo_wal_protect_block(uint32 segment_id, uint8 owner_instance, uint32 b
 {
 	UndoBlockHeader *blkhdr = (UndoBlockHeader *)block_buf;
 	XLogRecPtr lsn;
+	int saved_delay_flags;
 	bool ok;
 
 	if (!cluster_undo_buf_writeback_allowed()) {
@@ -531,8 +532,16 @@ cluster_undo_wal_protect_block(uint32 segment_id, uint8 owner_instance, uint32 b
 								/* do_fsync = */ false, lsn);
 	}
 
-	/* D2b: DELAY_CHKPT_START spans the decision + insert + block write. */
-	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+	/*
+	 * D2b: DELAY_CHKPT_START spans the decision + insert + block write.  Save
+	 * and restore the backend-local flags instead of blindly clearing START, so
+	 * a future caller cannot accidentally lose an outer delay-checkpoint flag.
+	 * The current undo-write path should not be nested inside another START
+	 * window; keep that contract visible in assert builds.
+	 */
+	saved_delay_flags = MyProc->delayChkptFlags;
+	Assert((saved_delay_flags & DELAY_CHKPT_START) == 0);
+	MyProc->delayChkptFlags = saved_delay_flags | DELAY_CHKPT_START;
 	PG_TRY();
 	{
 		lsn = cluster_undo_emit_block_write(owner_instance, segment_id, block_no, block_buf,
@@ -543,7 +552,7 @@ cluster_undo_wal_protect_block(uint32 segment_id, uint8 owner_instance, uint32 b
 	}
 	PG_FINALLY();
 	{
-		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
+		MyProc->delayChkptFlags = saved_delay_flags;
 	}
 	PG_END_TRY();
 	return ok;
@@ -577,10 +586,12 @@ typedef enum UndoExtentClaimResult {
  *	  - batch-mark the claimed range used (A1, one block-0 RMW + fsync);
  *	  - advance the shared high-water + publish active_segment_id.
  *
- *	On success *ext is a held extent parked at its first (fresh) block.  Errors
- *	release the lock first (caller ereports).  Activation mirrors the pre-D3
- *	path: mark_active + tail_block_init(1) whenever a segment becomes active
- *	(tail_block=1 is the conservative retention base, safe on restart resume).
+ *	On success *ext is a held extent parked at its first (fresh) block.  Error
+ *	returns release the lock first (caller ereports);  ERROR thrown by lower
+ *	file/WAL allocation paths is cleanup-rethrown after releasing the lock.
+ *	Activation mirrors the pre-D3 path: mark_active + tail_block_init(1)
+ *	whenever a segment becomes active (tail_block=1 is the conservative
+ *	retention base, safe on restart resume).
  */
 static UndoExtentClaimResult
 claim_undo_extent(ClusterUndoExtent *ext, uint8 owner_instance, uint32 ensured_segment_id,
@@ -621,7 +632,17 @@ claim_undo_extent(ClusterUndoExtent *ext, uint8 owner_instance, uint32 ensured_s
 		 * to its LWLock tranche (A1: no double-attribution of the lock wait).
 		 */
 		pgstat_report_wait_start(WAIT_EVENT_CLUSTER_UNDO_EXTENT_CLAIM);
-		new_seg = cluster_undo_segment_extend_or_create(owner_instance, &at_hard_cap);
+		PG_TRY();
+		{
+			new_seg = cluster_undo_segment_extend_or_create(owner_instance, &at_hard_cap);
+		}
+		PG_CATCH();
+		{
+			pgstat_report_wait_end();
+			LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 		pgstat_report_wait_end();
 
 		if (new_seg == 0) {
@@ -1252,7 +1273,16 @@ cluster_undo_tt_rollover_locked(int node_id, uint32 old_segment_id, bool *out_at
 		return cur;
 	}
 
-	new_segment_id = cluster_undo_segment_extend_or_create(owner_instance, out_at_hard_cap);
+	PG_TRY();
+	{
+		new_segment_id = cluster_undo_segment_extend_or_create(owner_instance, out_at_hard_cap);
+	}
+	PG_CATCH();
+	{
+		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	if (new_segment_id == 0) {
 		LWLockRelease(&UndoRecordShared->lifecycle_lock.lock);
 		return 0;

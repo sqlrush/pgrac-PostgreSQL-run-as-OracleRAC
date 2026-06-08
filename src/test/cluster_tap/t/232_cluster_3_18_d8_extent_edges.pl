@@ -18,9 +18,12 @@
 #	      perturbed by host IPC state.
 #	  L2  (U-E3 crash-mid-claim resume):  a backend claims a fresh extent and
 #	      writes only the head of it (committed), then a crash leaves the rest
-#	      claimed-but-unwritten.  The shmem next_extent_block cache is reset on
-#	      restart, so the cursor is rebuilt from the on-disk used-bitmap (B1) --
-#	      the unwritten blocks are unmarked, hence reclaimed, not leaked.  Restart
+#	      claimed-but-unwritten.  A1 batch-marks the whole claimed range before
+#	      any record write, so restart rebuilds the cursor from the on-disk
+#	      used-bitmap (B1) after the claimed range rather than immediately
+#	      reusing those unwritten blocks.  That is a bounded within-segment
+#	      space cost, not a correctness leak: no UBA points at the unwritten
+#	      blocks, and they are reclaimed when the whole segment recycles.  Restart
 #	      must replay with no PANIC, keep the committed data, and let subsequent
 #	      undo writes/reads resume correctly.
 #
@@ -102,7 +105,8 @@ my $counter = sub {
 	# Checkpoint so the post-checkpoint undo writes below must replay on restart.
 	$node->safe_psql('postgres', 'CHECKPOINT');
 	# A small committed write claims a fresh extent and writes only the head of
-	# it; the rest of the extent stays claimed-but-unwritten.
+	# it; the rest of the extent stays claimed-but-unwritten but remains marked
+	# used until whole-segment recycle (A1).
 	$node->safe_psql('postgres', q{UPDATE l2 SET v = 'c' WHERE id = 1});
 
 	$node->stop('immediate');    # crash: shmem next_extent_block cache is lost
@@ -111,8 +115,8 @@ my $counter = sub {
 	is($node->safe_psql('postgres', q{SELECT string_agg(id||':'||v, ',' ORDER BY id) FROM l2}),
 		'1:c,2:b', 'L2 committed data intact after crash-mid-claim restart');
 
-	# Subsequent undo writes must resume cleanly: the bitmap-rebuilt cursor
-	# reclaims the unwritten blocks (no leak) and new records land correctly.
+	# Subsequent undo writes must resume cleanly: the bitmap-rebuilt cursor skips
+	# the claimed-but-unwritten tail and new records land correctly.
 	$node->safe_psql('postgres', q{INSERT INTO l2 VALUES (3,'d'),(4,'e')});
 	$node->safe_psql('postgres', q{UPDATE l2 SET v = 'f' WHERE id = 2});
 	is($node->safe_psql('postgres', q{SELECT string_agg(id||':'||v, ',' ORDER BY id) FROM l2}),
