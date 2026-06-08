@@ -804,6 +804,19 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	{
 		ClusterUndoExtent *ext = &cluster_undo_current_extent;
 
+		/*
+		 * spec-3.18 D3.3 (Q2 hybrid): a residual extent carried over from a
+		 * previous transaction is reusable ONLY while its segment is still the
+		 * active one.  The active segment is never recycled, so a residual in it
+		 * is safe;  but once the allocator rolled over to a new active segment
+		 * the old one may be FULL / COMMITTED / RECYCLABLE / reborn, so drop the
+		 * stale residual and re-claim.  active_segment_id is read as a hint here
+		 * (the claim re-validates under lifecycle_lock).
+		 */
+		if (ext->segment_id != CLUSTER_UNDO_EXTENT_NONE
+			&& ext->segment_id != UndoRecordShared->active_segment_id)
+			ext->segment_id = CLUSTER_UNDO_EXTENT_NONE; /* stale residual -> re-claim */
+
 		for (;;) {
 			if (!cluster_undo_extent_exhausted(ext)
 				&& cluster_undo_block_has_space(ext->cur_free_offset, ext->cur_slot_count,
@@ -1086,10 +1099,16 @@ cluster_undo_record_xact_reset(void)
 	memset(cluster_undo_local_heads, 0, sizeof(cluster_undo_local_heads));
 	cluster_undo_local_head_count = 0;
 	cluster_undo_touched_seg_count = 0;
-	/* spec-3.18 D3: drop the backend-local extent at xact end.  Residual blocks
-	 * are not reused (D3.3 will add the Q2 hybrid residual cache);  they are
-	 * reclaimed when the whole segment recycles -- no leak (mini-plan §7). */
-	memset(&cluster_undo_current_extent, 0, sizeof(cluster_undo_current_extent));
+	/*
+	 * spec-3.18 D3.3 (Q2 hybrid): the backend-local extent is NOT dropped at
+	 * xact end -- the next transaction on this backend reuses the residual
+	 * blocks, amortizing the extent-claim frequency (lifecycle_lock + the A1
+	 * batch-mark fsync) across small transactions.  cluster_undo_record_alloc
+	 * validates the residual (ext->segment_id == active_segment_id) before
+	 * reuse and drops it on a segment rollover (the active segment is never
+	 * recycled, so a residual in it is always safe).  A block may then hold
+	 * records from several transactions -- correct (UBA addresses by row).
+	 */
 	/* P0 perf hardening: drop the cached undo segment fd at xact end to bound
 	 * stale-fd exposure (e.g. a recycled segment) across transactions. */
 	cluster_undo_smgr_fd_cache_reset();
