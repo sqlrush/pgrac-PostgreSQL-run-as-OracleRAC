@@ -1429,7 +1429,7 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 				cluster_cr_count_xmax_resolved();
 				xmax_status = CLUSTER_TT_STATUS_COMMITTED;
 				scn_decision = cluster_visibility_decide_by_scn(xmax_cscn, snapshot->read_scn);
-				break; /* fall through to the verdict switch below */
+				break; /* exits this resolve switch; the verdict switch below decides */
 
 			case CLUSTER_CR_XMAX_RECYCLED:
 				if (cluster_cr_retention_proof_valid(snapshot->read_scn)) {

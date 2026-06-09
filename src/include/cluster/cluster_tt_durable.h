@@ -83,11 +83,11 @@ extern bool cluster_tt_durable_slot_match(uint8 slot_status, TransactionId slot_
  * into INVISIBLE; every other result fails closed (53R9F).
  */
 typedef enum ClusterTTDurableResolve {
-	CLUSTER_TT_DURABLE_RESOLVED_SCN,		/* exactly 1 xid-match, valid commit_scn */
-	CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH, /* 0 xid-matches after a complete scan */
-	CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN, /* 1 xid-match, commit_scn unstamped (delayed cleanout) */
-	CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP,		  /* >1 xid-matches (raw-xid wrap residue) */
-	CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE		  /* degraded node / unreadable existing segment */
+	CLUSTER_TT_DURABLE_RESOLVED_SCN,		  /* 1 match, valid commit_scn */
+	CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH,	  /* 0 matches, complete scan */
+	CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN, /* 1 match, unstamped scn (delayed cleanout) */
+	CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP,		  /* >1 matches (raw-xid wrap residue) */
+	CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE		  /* degraded / unreadable segment */
 } ClusterTTDurableResolve;
 
 /*
