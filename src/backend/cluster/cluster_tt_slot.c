@@ -109,6 +109,18 @@ typedef struct ClusterTTSlotShmem {
 	pg_atomic_uint64 tt_slot_retain_skip_count; /* COMMITTED slot kept (>= horizon) */
 	pg_atomic_uint64 retention_recycle_count;	/* COMMITTED slot recycled (< horizon) */
 
+	/*
+	 * spec-3.22: a COMMITTED slot recycled while the retention gate was NOT
+	 * enforcing (GUC off, or an InvalidScn horizon) -- an UNSOUND recycle for the
+	 * spec-3.22 0-match theorem (the slot's commit_scn was not proven below the
+	 * horizon).  Incarnation-scoped (reset to 0 on shmem init): a pre-restart
+	 * unsound recycle cannot false-hide a row from any post-restart reader, whose
+	 * read_scn is at or after every pre-restart commit.  Non-zero disqualifies the
+	 * RECYCLED_ZERO_MATCH -> invisible shortcut for this node's lifetime
+	 * (cluster_cr_retention_proof_valid fails closed).
+	 */
+	pg_atomic_uint64 retention_off_recycle_count;
+
 	/* spec-3.13 D5: entries refused for recycle because wrap reached
 	 * TT_WRAP_MAX (ABA fail-fast guard; cleared only by whole-segment
 	 * rollover/reuse which resets wraps to 0).  Bumped by BOTH selection
@@ -370,8 +382,18 @@ cluster_tt_slot_alloc_ext(uint32 segment_id, TransactionId top_xid, bool *out_re
 
 		/* spec-3.12 D5: a COMMITTED slot recycled past the horizon (ABORTED was
 		 * never retention-gated, so it does not count). */
-		if (was_committed && ClusterTTSlotShm != NULL)
+		if (was_committed && ClusterTTSlotShm != NULL) {
 			pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_recycle_count, 1);
+
+			/*
+			 * spec-3.22: if this COMMITTED recycle was NOT horizon-gated (GUC off
+			 * -> immediate recycle C6, or an InvalidScn horizon -> recyclable
+			 * returns true freely), the slot's commit_scn was NOT proven below the
+			 * horizon.  Record it so the xmax 0-match shortcut fails closed for
+			 * this incarnation (cluster_cr_retention_proof_valid). */
+			if (!gate_enabled || !SCN_VALID(horizon))
+				pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_off_recycle_count, 1);
+		}
 	} else {
 		/*
 		 * No FREE and no retention-eligible slot.  Hand the reason back so the
@@ -439,8 +461,15 @@ cluster_tt_slot_gc_current_pass(SCN horizon, ClusterUndoCleanerPassStats *stats)
 			continue; /* D5: ABA guard exhausted; wait for rollover/reuse */
 		}
 
-		if (e->status == CTS_COMMITTED && ClusterTTSlotShm != NULL)
+		if (e->status == CTS_COMMITTED && ClusterTTSlotShm != NULL) {
 			pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_recycle_count, 1);
+			/* spec-3.22: defense in depth -- this pass is meant to run only with a
+			 * valid horizon (caller gate enabled), but an InvalidScn horizon would
+			 * make recyclable() pass a COMMITTED slot ungated; record it so the
+			 * xmax 0-match shortcut fails closed (cluster_cr_retention_proof_valid). */
+			if (!SCN_VALID(horizon))
+				pg_atomic_fetch_add_u64(&ClusterTTSlotShm->retention_off_recycle_count, 1);
+		}
 		tt_slot_entry_recycle_locked(e, InvalidTransactionId);
 		gcd++;
 	}
@@ -759,6 +788,7 @@ cluster_tt_slot_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTSlotShm->retention_horizon_scn, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_retain_skip_count, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->retention_recycle_count, 0);
+		pg_atomic_init_u64(&ClusterTTSlotShm->retention_off_recycle_count, 0);
 		pg_atomic_init_u64(&ClusterTTSlotShm->tt_slot_wrap_retired_count, 0);
 		SpinLockInit(&ClusterTTSlotShm->protected_lock);
 		ClusterTTSlotShm->protected_count = 0;
@@ -792,6 +822,21 @@ cluster_tt_slot_retention_recycle_count(void)
 	if (ClusterTTSlotShm == NULL)
 		return 0;
 	return pg_atomic_read_u64(&ClusterTTSlotShm->retention_recycle_count);
+}
+
+/*
+ * cluster_tt_slot_retention_off_recycle_count -- spec-3.22: count of COMMITTED
+ * slots recycled this incarnation while the retention gate was NOT enforcing.
+ * A non-zero value means the spec-3.22 0-match theorem cannot be trusted (an
+ * unsound recycle may have removed a committed-after slot), so the xmax gate's
+ * RECYCLED_ZERO_MATCH -> invisible shortcut must fail closed (53R9F).
+ */
+uint64
+cluster_tt_slot_retention_off_recycle_count(void)
+{
+	if (ClusterTTSlotShm == NULL)
+		return 0;
+	return pg_atomic_read_u64(&ClusterTTSlotShm->retention_off_recycle_count);
 }
 
 uint64

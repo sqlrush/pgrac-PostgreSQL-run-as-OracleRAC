@@ -54,6 +54,8 @@
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_tt_durable.h"			/* spec-3.11 D6: watermark by-xid resolve */
+#include "cluster/cluster_tt_slot.h"			/* spec-3.22: retention_off_recycle_count */
+#include "cluster/cluster_undo_retention.h"		/* spec-3.22: retention horizon proof */
 #include "cluster/cluster_visibility_resolve.h" /* spec-3.21: cluster_vis_cr_xmax_verdict */
 #include "cluster/cluster_uba.h"
 #include "cluster/cluster_undo_record.h"
@@ -82,6 +84,18 @@ typedef struct ClusterCRShared {
 	pg_atomic_uint64 cr_cache_miss_count;
 	pg_atomic_uint64 cr_cache_evict_count;
 	pg_atomic_uint64 cr_cache_install_count;
+	/*
+	 * spec-3.22 D3: xmax recycled-slot resolve outcome split (4 buckets) so the
+	 * 53R9F drop is observable and the residual fail-closed is monitorable
+	 * (feeds spec-3.23).  resolved = exact commit_scn compared; recycled_invisible
+	 * = durable 0-match proven below horizon -> invisible; invalid_or_ambiguous =
+	 * delayed-cleanout / wrap residue fail-closed; scan_unavail_or_no_proof =
+	 * degraded scan or a recycled 0-match without a valid retention proof.
+	 */
+	pg_atomic_uint64 cr_xmax_resolved_count;
+	pg_atomic_uint64 cr_xmax_recycled_invisible_count;
+	pg_atomic_uint64 cr_xmax_invalid_or_ambiguous_count;
+	pg_atomic_uint64 cr_xmax_scan_unavail_or_no_proof_count;
 } ClusterCRShared;
 
 static ClusterCRShared *CRShared = NULL;
@@ -133,6 +147,10 @@ cluster_cr_shmem_init(void)
 		pg_atomic_init_u64(&CRShared->cr_cache_miss_count, 0);
 		pg_atomic_init_u64(&CRShared->cr_cache_evict_count, 0);
 		pg_atomic_init_u64(&CRShared->cr_cache_install_count, 0);
+		pg_atomic_init_u64(&CRShared->cr_xmax_resolved_count, 0);
+		pg_atomic_init_u64(&CRShared->cr_xmax_recycled_invisible_count, 0);
+		pg_atomic_init_u64(&CRShared->cr_xmax_invalid_or_ambiguous_count, 0);
+		pg_atomic_init_u64(&CRShared->cr_xmax_scan_unavail_or_no_proof_count, 0);
 	}
 }
 
@@ -178,6 +196,12 @@ CR_COUNTER_ACCESSOR(cluster_cr_cache_hit_count, cr_cache_hit_count)
 CR_COUNTER_ACCESSOR(cluster_cr_cache_miss_count, cr_cache_miss_count)
 CR_COUNTER_ACCESSOR(cluster_cr_cache_evict_count, cr_cache_evict_count)
 CR_COUNTER_ACCESSOR(cluster_cr_cache_install_count, cr_cache_install_count)
+/* spec-3.22 D3: xmax recycled-slot resolve outcome buckets. */
+CR_COUNTER_ACCESSOR(cluster_cr_xmax_resolved_count, cr_xmax_resolved_count)
+CR_COUNTER_ACCESSOR(cluster_cr_xmax_recycled_invisible_count, cr_xmax_recycled_invisible_count)
+CR_COUNTER_ACCESSOR(cluster_cr_xmax_invalid_or_ambiguous_count, cr_xmax_invalid_or_ambiguous_count)
+CR_COUNTER_ACCESSOR(cluster_cr_xmax_scan_unavail_or_no_proof_count,
+					cr_xmax_scan_unavail_or_no_proof_count)
 
 
 /* ============================================================
@@ -937,6 +961,85 @@ cluster_visibility_decide_tuple(HeapTuple htup, Snapshot snapshot, Buffer buffer
 }
 
 /*
+ * spec-3.22: the xmax recycled-slot resolve outcome.  The exact scratch/overlay
+ * sources plus the durable by-xid resolve (ClusterTTDurableResolve) collapse here
+ * into the four cases the gate acts on.  INVALID_OR_AMBIGUOUS and SCAN_UNAVAILABLE
+ * both fail closed; they stay distinct only for the D3 counter buckets.
+ */
+typedef enum ClusterCrXmaxResolve {
+	CLUSTER_CR_XMAX_RESOLVED_SCN,		  /* exact commit_scn -> compare to read_scn */
+	CLUSTER_CR_XMAX_RECYCLED,			  /* durable 0-match -> invisible IFF proof holds */
+	CLUSTER_CR_XMAX_INVALID_OR_AMBIGUOUS, /* delayed-cleanout / wrap residue -> fail closed */
+	CLUSTER_CR_XMAX_SCAN_UNAVAILABLE	  /* degraded / unreadable scan -> fail closed */
+} ClusterCrXmaxResolve;
+
+/*
+ * cluster_cr_retention_proof_valid -- spec-3.22 §2.2: prove that a durable
+ * 0-match (the deleter's TT slot was recycled) implies the deleter committed
+ * below the retention horizon, hence before this reader's snapshot, hence the
+ * delete is visible at read_scn (the CR tuple is INVISIBLE).  Returns true only
+ * when EVERY leg holds; otherwise a 0-match is just missing information and the
+ * caller fails closed (规则 8.A -- never a guess, never Option A):
+ *
+ *	(a) own-instance node (a durable scan was actually possible);
+ *	(b) the retention GUC is on right now;
+ *	(c) no COMMITTED slot was recycled ungated this incarnation -- an off-window
+ *	    could have recycled a committed-after slot, so a 0-match would not prove
+ *	    below-horizon (spec-3.22 retention_off_recycle_count);
+ *	(d) the current horizon is valid (cluster enabled -- a real lower bound);
+ *	(e) the horizon is not newer than this reader's read_scn -- i.e. the reader is
+ *	    protected by the horizon, so a slot recycled below the horizon committed
+ *	    before this reader's snapshot.  A normal backend reader publishes its
+ *	    read_scn, so the horizon (min over live readers) never exceeds it; this
+ *	    leg fails closed only for an offline/stale read_scn (R8).
+ */
+static bool
+cluster_cr_retention_proof_valid(SCN read_scn)
+{
+	SCN horizon;
+
+	if (cluster_node_id < 0)
+		return false; /* (a) */
+	if (!cluster_undo_retention_horizon_enabled)
+		return false; /* (b) currently off */
+	if (cluster_tt_slot_retention_off_recycle_count() != 0)
+		return false; /* (c) an ungated recycle happened this incarnation */
+
+	horizon = cluster_undo_retention_horizon();
+	if (!SCN_VALID(horizon))
+		return false; /* (d) cluster disabled / no horizon */
+
+	/* (e) horizon must not be newer than read_scn (scn_time_cmp keeps the gate). */
+	return scn_time_cmp(horizon, read_scn) <= 0;
+}
+
+/* spec-3.22 D3: xmax resolve outcome counters (lock-free; bumped at the gate). */
+static void
+cluster_cr_count_xmax_resolved(void)
+{
+	if (CRShared != NULL)
+		pg_atomic_fetch_add_u64(&CRShared->cr_xmax_resolved_count, 1);
+}
+static void
+cluster_cr_count_xmax_recycled_invisible(void)
+{
+	if (CRShared != NULL)
+		pg_atomic_fetch_add_u64(&CRShared->cr_xmax_recycled_invisible_count, 1);
+}
+static void
+cluster_cr_count_xmax_invalid_or_ambiguous(void)
+{
+	if (CRShared != NULL)
+		pg_atomic_fetch_add_u64(&CRShared->cr_xmax_invalid_or_ambiguous_count, 1);
+}
+static void
+cluster_cr_count_xmax_scan_unavail_or_no_proof(void)
+{
+	if (CRShared != NULL)
+		pg_atomic_fetch_add_u64(&CRShared->cr_xmax_scan_unavail_or_no_proof_count, 1);
+}
+
+/*
  * cluster_cr_resolve_xmax_commit_scn -- resolve the EXACT commit_scn of a
  * committed own-instance deleter (cr_xmax) recorded on a CR image, for the
  * spec-3.21 xmax-side visibility decision.  Returns true + *out_scn on success.
@@ -955,7 +1058,7 @@ cluster_visibility_decide_tuple(HeapTuple htup, Snapshot snapshot, Buffer buffer
  *	fails closed (53R9F); rule 8.A: an unresolved deleter is NEVER treated as a
  *	committed-before-read_scn delete (which would false-hide a live row).
  */
-static bool
+static ClusterCrXmaxResolve
 cluster_cr_resolve_xmax_commit_scn(const char *cr_page, uint8 itl_idx, TransactionId cr_xmax,
 								   SCN *out_scn)
 {
@@ -984,7 +1087,7 @@ cluster_cr_resolve_xmax_commit_scn(const char *cr_page, uint8 itl_idx, Transacti
 			 */
 			if (SCN_VALID(slot->commit_scn)) {
 				*out_scn = slot->commit_scn;
-				return true;
+				return CLUSTER_CR_XMAX_RESOLVED_SCN;
 			}
 
 			/* Source 2: BOC / overlay by the exact key (ref + local_xid). */
@@ -1004,18 +1107,33 @@ cluster_cr_resolve_xmax_commit_scn(const char *cr_page, uint8 itl_idx, Transacti
 						|| result.status == CLUSTER_TT_STATUS_CLEANED_OUT)
 					&& SCN_VALID(result.commit_scn)) {
 					*out_scn = result.commit_scn;
-					return true;
+					return CLUSTER_CR_XMAX_RESOLVED_SCN;
 				}
 			}
 		}
 	}
 
-	/* Source 3: durable TT by exact xid (survives ITL slot recycle). */
-	if (cluster_tt_slot_durable_lookup_by_xid(cr_xmax, out_scn) && SCN_VALID(*out_scn))
-		return true;
-
-	*out_scn = InvalidScn;
-	return false; /* unresolved -> caller fails closed (53R9F). */
+	/*
+	 * Source 3: durable TT by exact xid (survives ITL slot recycle).  spec-3.22:
+	 * consume the finer-grained resolve enum so a 0-match (RECYCLED_ZERO_MATCH ->
+	 * provably below horizon, IF the gate's retention proof holds) is no longer
+	 * conflated with a delayed-cleanout / wrap / unreadable miss (all fail closed).
+	 */
+	switch (cluster_tt_slot_durable_resolve_by_xid(cr_xmax, out_scn)) {
+	case CLUSTER_TT_DURABLE_RESOLVED_SCN:
+		return CLUSTER_CR_XMAX_RESOLVED_SCN; /* *out_scn set by the resolve */
+	case CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH:
+		*out_scn = InvalidScn;
+		return CLUSTER_CR_XMAX_RECYCLED;
+	case CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN:
+	case CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP:
+		*out_scn = InvalidScn;
+		return CLUSTER_CR_XMAX_INVALID_OR_AMBIGUOUS;
+	case CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE:
+	default:
+		*out_scn = InvalidScn;
+		return CLUSTER_CR_XMAX_SCAN_UNAVAILABLE;
+	}
 }
 
 ClusterVisibilityDecision
@@ -1297,19 +1415,56 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 
 			/*
 			 * The live slot was recycled to a newer writer (slot->xid != cr_xmax):
-			 * resolve cr_xmax's EXACT commit_scn by exact xid (P1-a: no proxy) and
-			 * compare to read_scn, or fail closed (53R9F).
+			 * resolve cr_xmax's commit-state by exact xid (P1-a: no proxy).  A
+			 * durable 0-match (RECYCLED) is provably below the retention horizon --
+			 * hence before this snapshot, hence the delete is visible -> the CR
+			 * tuple is INVISIBLE -- but only when the retention proof holds; all
+			 * other resolves either compare an exact commit_scn or fail closed
+			 * (53R9F).  spec-3.22 §2.2 / 规则 8.A: a 0-match without proof is missing
+			 * information, never an Option-A guess.
 			 */
-			if (!cluster_cr_resolve_xmax_commit_scn(cr_page, cr_tup->t_itl_slot_idx, cr_xmax,
-													&xmax_cscn))
+			switch (cluster_cr_resolve_xmax_commit_scn(cr_page, cr_tup->t_itl_slot_idx, cr_xmax,
+													   &xmax_cscn)) {
+			case CLUSTER_CR_XMAX_RESOLVED_SCN:
+				cluster_cr_count_xmax_resolved();
+				xmax_status = CLUSTER_TT_STATUS_COMMITTED;
+				scn_decision = cluster_visibility_decide_by_scn(xmax_cscn, snapshot->read_scn);
+				break; /* fall through to the verdict switch below */
+
+			case CLUSTER_CR_XMAX_RECYCLED:
+				if (cluster_cr_retention_proof_valid(snapshot->read_scn)) {
+					cluster_cr_count_xmax_recycled_invisible();
+					*out_visible = false; /* deleter proven below horizon -> invisible */
+					return true;
+				}
+				cluster_cr_count_xmax_scan_unavail_or_no_proof();
+				ereport(
+					ERROR,
+					(errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+					 errmsg("cluster CR cannot resolve commit_scn for recycled deleting xmax %u",
+							cr_xmax),
+					 errhint("the deleter's TT slot was recycled but the retention proof is "
+							 "unavailable (retention off, invalid horizon, or a read_scn older "
+							 "than the horizon); retry with a fresh snapshot.")));
+
+			case CLUSTER_CR_XMAX_INVALID_OR_AMBIGUOUS:
+				cluster_cr_count_xmax_invalid_or_ambiguous();
 				ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
 								errmsg("cluster CR cannot resolve commit_scn for deleting xmax %u",
 									   cr_xmax),
-								errhint("ITL slot recycled and no own-instance commit_scn-by-xid "
-										"history source yet (Stage 4.1); retry with a fresh "
-										"snapshot.")));
-			xmax_status = CLUSTER_TT_STATUS_COMMITTED;
-			scn_decision = cluster_visibility_decide_by_scn(xmax_cscn, snapshot->read_scn);
+								errhint("delayed cleanout (commit_scn not yet stamped) or xid-wrap "
+										"residue; retry with a fresh snapshot.")));
+
+			case CLUSTER_CR_XMAX_SCAN_UNAVAILABLE:
+			default:
+				cluster_cr_count_xmax_scan_unavail_or_no_proof();
+				ereport(
+					ERROR,
+					(errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+					 errmsg("cluster CR durable scan unavailable for deleting xmax %u", cr_xmax),
+					 errhint("degraded node or an unreadable undo segment prevented a complete "
+							 "by-xid scan; retry with a fresh snapshot.")));
+			}
 		}
 
 		switch (cluster_vis_cr_xmax_verdict(xmax_status, scn_decision)) {

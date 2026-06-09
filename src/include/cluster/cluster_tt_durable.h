@@ -73,6 +73,43 @@ extern bool cluster_tt_durable_slot_match(uint8 slot_status, TransactionId slot_
 										  SCN slot_commit_scn, TransactionId want_xid);
 
 /*
+ * spec-3.22: durable by-xid RESOLVE result.  Splits the spec-3.21 recycled-slot
+ * fail-closed into the provably-invisible case (RECYCLED_ZERO_MATCH after a
+ * complete scan) versus the genuinely-unresolvable edges, fixing the §2.4
+ * conflation: a 0-xid-match (slot recycled to a new owner -> commit_scn proven
+ * below the retention horizon by the caller's proof) is NOT the same as a
+ * 1-xid-match whose commit_scn is not yet stamped (delayed cleanout -> retained,
+ * NOT below horizon).  Only the caller's retention proof turns RECYCLED_ZERO_MATCH
+ * into INVISIBLE; every other result fails closed (53R9F).
+ */
+typedef enum ClusterTTDurableResolve {
+	CLUSTER_TT_DURABLE_RESOLVED_SCN,		/* exactly 1 xid-match, valid commit_scn */
+	CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH, /* 0 xid-matches after a complete scan */
+	CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN, /* 1 xid-match, commit_scn unstamped (delayed cleanout) */
+	CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP,		  /* >1 xid-matches (raw-xid wrap residue) */
+	CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE		  /* degraded node / unreadable existing segment */
+} ClusterTTDurableResolve;
+
+/*
+ * cluster_tt_durable_classify -- pure classifier mapping the by-xid scan tallies
+ *	to the resolve verdict.  No I/O; unit-tested truth table (spec-3.22 D1).
+ *
+ *	  xid_matches        : COMMITTED durable slots whose xid == the target,
+ *	                       counted INDEPENDENT of commit_scn validity (§2.4).
+ *	  match_has_valid_scn: when xid_matches == 1, whether that slot's commit_scn
+ *	                       is valid (RESOLVED) or unstamped (XID_MATCH_INVALID_SCN).
+ *	  scan_complete      : the full existing-segment range was read with no
+ *	                       unreadable existing segment, on an own-instance node.
+ *
+ *	Precedence: >1 is definitive AMBIGUOUS_WRAP (wins even over an incomplete
+ *	scan); else an incomplete scan is SCAN_UNAVAILABLE (a 0/1 tally is untrusted);
+ *	else 0 -> RECYCLED_ZERO_MATCH, 1+valid -> RESOLVED_SCN, 1+invalid ->
+ *	XID_MATCH_INVALID_SCN.
+ */
+extern ClusterTTDurableResolve
+cluster_tt_durable_classify(int xid_matches, bool match_has_valid_scn, bool scan_complete);
+
+/*
  * cluster_tt_slot_durable_commit -- durably stamp commit_scn (status COMMITTED)
  *	on the own-instance TT slot (segment_id, slot_offset) owned by `xid`/`wrap`.
  *	Emits XLOG_UNDO_TT_SLOT_COMMIT (before the commit record -- caller is in the
@@ -123,8 +160,26 @@ extern bool cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset
  *	(recycled / overwritten) or more than one (xid wrap residue ambiguity) ->
  *	false -> caller fail-closes (53R9F; spec-3.11 §2.2 / C4 / 规则 8.A).
  *	Cost O(local_segments * TT_SLOTS_PER_SEGMENT); bounded by spec-3.12 retention.
+ *
+ *	spec-3.22: a thin wrapper over cluster_tt_slot_durable_resolve_by_xid that is
+ *	true IFF RESOLVED_SCN -- the xmin-side caller (spec-3.11) keeps its existing
+ *	binary contract untouched while the xmax-side gate (spec-3.22) consumes the
+ *	finer-grained enum below.
  */
 extern bool cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn);
+
+/*
+ * cluster_tt_slot_durable_resolve_by_xid -- spec-3.22: the by-xid scan returning
+ *	the finer-grained ClusterTTDurableResolve enum (instead of lookup_by_xid's
+ *	bool).  Counts xid-matches independent of commit_scn validity so a delayed-
+ *	cleanout slot (XID_MATCH_INVALID_SCN) is never conflated with a recycled slot
+ *	(RECYCLED_ZERO_MATCH).  Distinguishes an unreadable existing segment / degraded
+ *	node (SCAN_UNAVAILABLE) from a genuine 0-match, so the xmax gate can only treat
+ *	a 0-match as proof-of-below-horizon after a complete scan.  Sets *commit_scn on
+ *	RESOLVED_SCN, else InvalidScn.
+ */
+extern ClusterTTDurableResolve cluster_tt_slot_durable_resolve_by_xid(TransactionId xid,
+																	  SCN *commit_scn);
 
 
 /*

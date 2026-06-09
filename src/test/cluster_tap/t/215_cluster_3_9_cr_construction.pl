@@ -92,7 +92,8 @@ my $node0 = $pair->node0;
 # ----------
 my $cr_rows = $node0->safe_psql('postgres',
 	q{SELECT count(*) FROM pg_cluster_state WHERE category='cr'});
-is($cr_rows, '13', 'L2 cr category has 13 counter rows (9 + 4 spec-3.10 cache)');
+is($cr_rows, '17',
+	'L2 cr category has 17 counter rows (9 + 4 spec-3.10 cache + 4 spec-3.22 xmax resolve buckets)');
 
 
 # ----------

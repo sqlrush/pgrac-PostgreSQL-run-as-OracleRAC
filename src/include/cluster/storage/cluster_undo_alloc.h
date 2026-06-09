@@ -177,6 +177,16 @@ extern uint32 cluster_undo_segment_extend_or_create(uint8 owner_instance, bool *
 extern uint32 cluster_undo_segment_scan_max_existing(uint8 owner_instance);
 
 /*
+ * spec-3.22: lock-free probe for whether the (owner_instance, segment_id) undo
+ * segment file exists on disk.  Used by the by-xid durable resolve to tell a
+ * genuinely-absent segment (a sound scan skip) from an existing-but-unreadable
+ * one (an incomplete scan -> SCAN_UNAVAILABLE, never a recycled 0-match).  A pure
+ * access(F_OK); takes no lock (existence is monotone -- segments are never
+ * deleted once allocated, only recycled in place).
+ */
+extern bool cluster_undo_segment_file_exists(uint8 owner_instance, uint32 segment_id);
+
+/*
  * spec-3.18 D3.2 (review finding 2):  restart resume must pick the live active
  * segment (SEGMENT_ACTIVE, FULL flag clear), not the highest-numbered file --
  * reuse-first can make the active a low-numbered reborn slot.  Returns 0 when

@@ -111,6 +111,35 @@ cluster_tt_durable_slot_match(uint8 slot_status, TransactionId slot_xid, SCN slo
 
 
 /*
+ * cluster_tt_durable_classify -- spec-3.22 pure classifier (no I/O).  See the
+ * header for the contract; the precedence below is what makes the §2.4 split
+ * sound: a 0-xid-match is only a RECYCLED proof after a COMPLETE scan, and an
+ * owned-by-xid unstamped slot is a 1-match (retained), never a 0-match.
+ */
+ClusterTTDurableResolve
+cluster_tt_durable_classify(int xid_matches, bool match_has_valid_scn, bool scan_complete)
+{
+	/* >1 is definitive ambiguity (raw-xid wrap residue): fail-closed even if the
+	 * scan was incomplete -- we already have two candidates and cannot pick. */
+	if (xid_matches > 1)
+		return CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP;
+
+	/* An incomplete scan cannot be trusted to a 0- or 1-tally: a missed segment
+	 * could hold the owner (turning 0 into 1) or a second match (turning 1 into
+	 * ambiguous).  Never let it masquerade as RECYCLED_ZERO_MATCH (规则 8.A). */
+	if (!scan_complete)
+		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE;
+
+	if (xid_matches == 0)
+		return CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH;
+
+	/* xid_matches == 1 */
+	return match_has_valid_scn ? CLUSTER_TT_DURABLE_RESOLVED_SCN
+							   : CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN;
+}
+
+
+/*
  * tt_slot_write_committed -- the per-slot 32B targeted RMW shared by the
  * WAL-emitting durable commit (2PC, standalone 0x30) and the spec-3.18 D4.1
  * fold path (no 0x30; the delta rides the commit record).  Read the slot
@@ -289,8 +318,8 @@ cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset, Transactio
 }
 
 
-bool
-cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
+ClusterTTDurableResolve
+cluster_tt_slot_durable_resolve_by_xid(TransactionId xid, SCN *commit_scn)
 {
 	int node;
 	uint8 owner;
@@ -298,13 +327,19 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 	uint32 seg_hi;
 	uint32 segment_id;
 	PGAlignedBlock blockbuf;
-	int matches = 0;
+	int xid_matches = 0;
+	bool match_has_valid_scn = false;
+	bool scan_complete = true;
 	SCN found = InvalidScn;
+	ClusterTTDurableResolve result;
 
-	if (commit_scn == NULL || !TransactionIdIsNormal(xid))
-		return false;
+	if (commit_scn == NULL)
+		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE; /* programming error: fail-closed */
+	*commit_scn = InvalidScn;
+	if (!TransactionIdIsNormal(xid))
+		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE;
 	if (cluster_node_id < 0)
-		return false; /* single-node degraded: no durable TT scan */
+		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE; /* single-node degraded: no scan */
 
 	node = cluster_node_id;
 	owner = (uint8)(node + 1);
@@ -314,52 +349,70 @@ cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
 	cluster_tt_durable_count_by_xid_scan();
 
 	/*
-	 * spec-3.11 §2.2 / C4 / 规则 8.A: scan the local node's segment headers for a
-	 * COMMITTED slot owned by xid.  Exactly one match resolves precisely; zero
-	 * (recycled / overwritten) or >1 (raw-xid wrap residue) fails closed.
+	 * spec-3.22: scan the local node's segment headers for COMMITTED slots owned
+	 * by xid, counting them INDEPENDENT of commit_scn validity (§2.4).  This is
+	 * the soundness split the xmax gate needs:
+	 *   - 0 xid-matches after a COMPLETE scan = the slot was recycled to a new
+	 *     owner; spec-3.12 only recycles a COMMITTED slot once its commit_scn is
+	 *     strictly below the retention horizon, so a 0-match is provably below
+	 *     horizon (the caller's retention proof then turns it INVISIBLE);
+	 *   - 1 xid-match with an UNSTAMPED commit_scn = a delayed-cleanout slot that
+	 *     is RETAINED (not recycled), so it is NOT below horizon -- it must stay
+	 *     fail-closed, never be conflated with a 0-match;
+	 *   - >1 = raw-xid wrap residue (ambiguous);
+	 *   - an EXISTING but unreadable segment makes the scan incomplete, so a
+	 *     0-match cannot be trusted (规则 8.A) -> SCAN_UNAVAILABLE.
 	 *
-	 * Single-match soundness under spec-3.12 retention: an xid commits exactly
-	 * once, so it stamps at most one durable COMMITTED slot across all segments.
-	 * Recycle (D2) only OVERWRITES a slot with a new owner xid (the old xid then
-	 * resolves to 0 matches -> fail-closed), and rollover (D2b) keeps a rolled-
-	 * away segment's durable slots intact while never reusing their offsets, so
-	 * recycle can never raise the count to >1.  C4: this lookup is reached only
-	 * for a writer newer than read_scn (its ITL was recycled with a watermark
-	 * newer than read_scn, so the writer's commit_scn is at or newer than the
-	 * horizon), whose slot retention keeps alive -> the match is guaranteed to
-	 * hit.  spec-3.13 xid index is a scan-cost optimization (§6 risk), not a
-	 * correctness change.
+	 * Distinguishing "segment absent" (sound skip) from "existing but unreadable"
+	 * (incomplete scan): cluster_undo_smgr_read_block returns false for both, so
+	 * on a miss we probe cluster_undo_segment_file_exists().  Cost is O(local
+	 * segments) as before; spec-3.13's xid index is the scan-cost optimization
+	 * (§6 R4), not a correctness change.
 	 */
 	cluster_tt_durable_io_wait_start();
 	for (segment_id = seg_lo; segment_id <= seg_hi; segment_id++) {
 		UndoSegmentHeaderData *hdr;
 		uint16 i;
 
-		if (!cluster_undo_smgr_read_block(segment_id, owner, 0, blockbuf.data))
-			continue; /* segment file never allocated -> skip */
+		if (!cluster_undo_smgr_read_block(segment_id, owner, 0, blockbuf.data)) {
+			/* absent segment -> sound skip; existing+unreadable -> incomplete. */
+			if (cluster_undo_segment_file_exists(owner, segment_id))
+				scan_complete = false;
+			continue;
+		}
 
 		hdr = (UndoSegmentHeaderData *)blockbuf.data;
 		for (i = 0; i < TT_SLOTS_PER_SEGMENT; i++) {
 			const TTSlot *s = &hdr->tt_slots[i];
 
-			if (s->status == (uint8)TT_SLOT_COMMITTED && s->xid == xid
-				&& SCN_VALID(s->commit_scn)) {
-				matches++;
-				found = s->commit_scn;
-				if (matches > 1) {
-					cluster_tt_durable_io_wait_end();
-					return false; /* ambiguous -> fail-closed (规则 8.A) */
+			if (s->status == (uint8)TT_SLOT_COMMITTED && s->xid == xid) {
+				xid_matches++;
+				if (SCN_VALID(s->commit_scn)) {
+					match_has_valid_scn = true;
+					found = s->commit_scn;
 				}
 			}
 		}
 	}
 	cluster_tt_durable_io_wait_end();
 
-	if (matches != 1)
-		return false; /* 0 = not found (recycled/overwritten) */
+	result = cluster_tt_durable_classify(xid_matches, match_has_valid_scn, scan_complete);
+	if (result == CLUSTER_TT_DURABLE_RESOLVED_SCN)
+		*commit_scn = found;
+	return result;
+}
 
-	*commit_scn = found;
-	return true;
+
+bool
+cluster_tt_slot_durable_lookup_by_xid(TransactionId xid, SCN *commit_scn)
+{
+	/*
+	 * spec-3.22: thin wrapper preserving the spec-3.11 xmin-side binary contract
+	 * (true IFF exactly one resolved match; every other enum -> false).  The
+	 * xmax-side gate (spec-3.22) consumes the enum directly via resolve_by_xid.
+	 */
+	return cluster_tt_slot_durable_resolve_by_xid(xid, commit_scn)
+		   == CLUSTER_TT_DURABLE_RESOLVED_SCN;
 }
 
 

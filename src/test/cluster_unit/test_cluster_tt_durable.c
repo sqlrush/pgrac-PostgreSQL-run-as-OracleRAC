@@ -58,6 +58,7 @@ scn_time_cmp(SCN a, SCN b)
 #include "cluster/cluster_tt_slot.h"
 #include "cluster/cluster_undo_segment.h"
 #include "cluster/cluster_undo_smgr.h"
+#include "cluster/storage/cluster_undo_alloc.h" /* spec-3.22: file_exists prototype */
 #include "cluster/storage/cluster_undo_xlog.h"
 
 #undef printf
@@ -210,6 +211,21 @@ cluster_undo_smgr_read_block(uint32 segment_id, uint8 owner_instance pg_attribut
 		return false; /* other segments "don't exist" -> by-xid skips them */
 	memcpy(buf, g_canned_block, BLCKSZ);
 	return true;
+}
+
+/*
+ * spec-3.22: a segment that file_exists() reports present but read_block() fails
+ * = an unreadable existing segment (I/O error) -> the by-xid scan is incomplete
+ * -> SCAN_UNAVAILABLE (never a 0-match).  Default 0 = "no existing segment is
+ * unreadable", so every read_block miss is a genuinely-absent segment (sound
+ * skip) and the scan stays complete -- matching the legacy by-xid behavior.
+ */
+static uint32 g_unreadable_existing_segment = 0;
+
+bool
+cluster_undo_segment_file_exists(uint8 owner_instance pg_attribute_unused(), uint32 segment_id)
+{
+	return segment_id == g_unreadable_existing_segment;
 }
 
 
@@ -384,6 +400,148 @@ UT_TEST(test_by_xid_two_match_ambiguous_failclosed)
 }
 
 /* ============================================================
+ *	U7: spec-3.22 durable by-xid RESOLVE enum + pure classifier.
+ *
+ *	cluster_tt_durable_classify maps the scan tallies to the resolve
+ *	verdict; the §2.4 fix is that a slot OWNED BY xid with an unstamped
+ *	(invalid) commit_scn is a 1-match (XID_MATCH_INVALID_SCN, retained,
+ *	NOT below horizon) -- never conflated with a 0-match (recycled,
+ *	provably below horizon).  scan_complete gates the 0/1 tally so an
+ *	unreadable existing segment is SCAN_UNAVAILABLE, never a 0-match.
+ * ============================================================ */
+
+/* --- pure classifier truth table (no I/O) --- */
+UT_TEST(test_classify_zero_match_complete_is_recycled)
+{
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(0, false, true),
+				 (int)CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH);
+}
+UT_TEST(test_classify_one_valid_complete_is_resolved)
+{
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(1, true, true),
+				 (int)CLUSTER_TT_DURABLE_RESOLVED_SCN);
+}
+UT_TEST(test_classify_one_invalid_complete_is_invalid_scn)
+{
+	/* §2.4: owned-by-xid but commit_scn unstamped -> retained, NOT recycled. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(1, false, true),
+				 (int)CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN);
+}
+UT_TEST(test_classify_two_match_is_ambiguous_regardless)
+{
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(2, true, true),
+				 (int)CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP);
+	/* >1 is definitive ambiguity -- wins even over an incomplete scan. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(2, false, false),
+				 (int)CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP);
+}
+UT_TEST(test_classify_incomplete_scan_is_unavailable)
+{
+	/* incomplete scan beats a 0- or 1-tally: cannot prove recycled / resolved. */
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(0, false, false),
+				 (int)CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE);
+	UT_ASSERT_EQ((int)cluster_tt_durable_classify(1, true, false),
+				 (int)CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE);
+}
+
+/* --- resolve-by-xid scan (mocked smgr) --- */
+UT_TEST(test_resolve_zero_match_recycled)
+{
+	SCN got = scn_encode(1, 9);
+
+	cluster_node_id = 0;
+	g_unreadable_existing_segment = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	/* slot recycled to a DIFFERENT owner xid -> 0 matches for the target. */
+	seed_block_slot(5, TT_SLOT_COMMITTED, 999, scn_encode(1, 50));
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH);
+	UT_ASSERT_EQ((int)SCN_VALID(got), 0); /* commit_scn cleared on non-RESOLVED */
+}
+UT_TEST(test_resolve_one_valid_resolved)
+{
+	SCN got = InvalidScn;
+
+	cluster_node_id = 0;
+	g_unreadable_existing_segment = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(3, TT_SLOT_COMMITTED, 12345, scn_encode(1, 77));
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_RESOLVED_SCN);
+	UT_ASSERT_EQ((int)(scn_local(got)), 77);
+}
+UT_TEST(test_resolve_xid_match_invalid_scn_not_recycled)
+{
+	SCN got = scn_encode(1, 9);
+
+	/* THE conflation fix: COMMITTED slot owned by xid, commit_scn unstamped.
+	 * Legacy lookup_by_xid counted this as 0 (SCN_VALID gate) -> looked
+	 * recycled.  The resolve enum must report XID_MATCH_INVALID_SCN. */
+	cluster_node_id = 0;
+	g_unreadable_existing_segment = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(7, TT_SLOT_COMMITTED, 12345, InvalidScn);
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_XID_MATCH_INVALID_SCN);
+	UT_ASSERT_EQ((int)SCN_VALID(got), 0);
+}
+UT_TEST(test_resolve_two_match_ambiguous)
+{
+	SCN got = InvalidScn;
+
+	cluster_node_id = 0;
+	g_unreadable_existing_segment = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(3, TT_SLOT_COMMITTED, 12345, scn_encode(1, 77));
+	seed_block_slot(9, TT_SLOT_COMMITTED, 12345, scn_encode(1, 88));
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_AMBIGUOUS_WRAP);
+}
+UT_TEST(test_resolve_node_degraded_unavailable)
+{
+	SCN got = InvalidScn;
+
+	/* single-node degraded: NO durable scan possible -> SCAN_UNAVAILABLE,
+	 * never a 0-match (which would false-prove "recycled below horizon"). */
+	cluster_node_id = -1;
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE);
+	cluster_node_id = 0; /* restore for later tests */
+}
+UT_TEST(test_resolve_unreadable_existing_segment_unavailable)
+{
+	SCN got = InvalidScn;
+
+	/* an existing segment that fails to read -> incomplete scan -> UNAVAILABLE,
+	 * never a 0-match.  Segment 2 is not the canned block (read_block fails) but
+	 * file_exists() reports it present (I/O error on a real segment). */
+	cluster_node_id = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	g_unreadable_existing_segment = 2;
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_resolve_by_xid(12345, &got),
+				 (int)CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE);
+	g_unreadable_existing_segment = 0; /* restore */
+}
+UT_TEST(test_resolve_lookup_wrapper_maps_resolved_only)
+{
+	/* the thin wrapper (xmin-side caller) is true IFF RESOLVED_SCN. */
+	SCN got = InvalidScn;
+
+	cluster_node_id = 0;
+	g_unreadable_existing_segment = 0;
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(3, TT_SLOT_COMMITTED, 12345, scn_encode(1, 77));
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_lookup_by_xid(12345, &got), 1);
+	UT_ASSERT_EQ((int)(scn_local(got)), 77);
+
+	/* unstamped owned-by-xid -> wrapper false (was already false legacy-side). */
+	memset(g_canned_block, 0, sizeof(g_canned_block));
+	seed_block_slot(3, TT_SLOT_COMMITTED, 12345, InvalidScn);
+	UT_ASSERT_EQ((int)cluster_tt_slot_durable_lookup_by_xid(12345, &got), 0);
+}
+
+
+/* ============================================================
  *	U6: cluster_undo_segment_tt_header_scan_pass (spec-3.13 D2-B,
  *	scan-only) — classification + zero-write invariant.
  * ============================================================ */
@@ -519,7 +677,7 @@ UT_TEST(test_redo_decide_abort_shares_commit_table)
 int
 main(int argc, char **argv)
 {
-	UT_PLAN(18);
+	UT_PLAN(36);
 
 	UT_RUN(test_layout_sizes);
 
@@ -543,6 +701,19 @@ main(int argc, char **argv)
 	UT_RUN(test_by_xid_zero_match_miss);
 	UT_RUN(test_by_xid_one_match);
 	UT_RUN(test_by_xid_two_match_ambiguous_failclosed);
+
+	UT_RUN(test_classify_zero_match_complete_is_recycled);
+	UT_RUN(test_classify_one_valid_complete_is_resolved);
+	UT_RUN(test_classify_one_invalid_complete_is_invalid_scn);
+	UT_RUN(test_classify_two_match_is_ambiguous_regardless);
+	UT_RUN(test_classify_incomplete_scan_is_unavailable);
+	UT_RUN(test_resolve_zero_match_recycled);
+	UT_RUN(test_resolve_one_valid_resolved);
+	UT_RUN(test_resolve_xid_match_invalid_scn_not_recycled);
+	UT_RUN(test_resolve_two_match_ambiguous);
+	UT_RUN(test_resolve_node_degraded_unavailable);
+	UT_RUN(test_resolve_unreadable_existing_segment_unavailable);
+	UT_RUN(test_resolve_lookup_wrapper_maps_resolved_only);
 
 	UT_RUN(test_scan_pass_classifies_inventory);
 	UT_RUN(test_scan_pass_writes_nothing);

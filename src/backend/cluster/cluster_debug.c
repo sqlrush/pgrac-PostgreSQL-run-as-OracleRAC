@@ -1591,6 +1591,10 @@ dump_undo(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_undo_segment_retain_skip_count()));
 	emit_row(rsinfo, "undo", "retention_recycle_count",
 			 fmt_int64((int64)cluster_tt_slot_retention_recycle_count()));
+	/* spec-3.22: ungated COMMITTED recycles this incarnation (0 = the xmax
+	 * 0-match invisible shortcut is sound; non-zero disqualifies it). */
+	emit_row(rsinfo, "undo", "retention_off_recycle_count",
+			 fmt_int64((int64)cluster_tt_slot_retention_off_recycle_count()));
 	emit_row(rsinfo, "undo", "tt_retention_rollover_count",
 			 fmt_int64((int64)cluster_undo_tt_retention_rollover_count()));
 
@@ -1641,6 +1645,15 @@ dump_cr(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_cr_cache_evict_count()));
 	emit_row(rsinfo, "cr", "cr_cache_install_count",
 			 fmt_int64((int64)cluster_cr_cache_install_count()));
+	/* spec-3.22 D3: xmax recycled-slot resolve outcome buckets. */
+	emit_row(rsinfo, "cr", "cr_xmax_resolved_count",
+			 fmt_int64((int64)cluster_cr_xmax_resolved_count()));
+	emit_row(rsinfo, "cr", "cr_xmax_recycled_invisible_count",
+			 fmt_int64((int64)cluster_cr_xmax_recycled_invisible_count()));
+	emit_row(rsinfo, "cr", "cr_xmax_invalid_or_ambiguous_count",
+			 fmt_int64((int64)cluster_cr_xmax_invalid_or_ambiguous_count()));
+	emit_row(rsinfo, "cr", "cr_xmax_scan_unavail_or_no_proof_count",
+			 fmt_int64((int64)cluster_cr_xmax_scan_unavail_or_no_proof_count()));
 }
 
 #endif /* USE_PGRAC_CLUSTER */

@@ -1032,6 +1032,28 @@ cluster_undo_segment_scan_max_existing(uint8 owner_instance)
 
 
 /*
+ * cluster_undo_segment_file_exists -- spec-3.22 lock-free existence probe.
+ *
+ *	Resolves the segment path and checks access(F_OK).  Lock-free and side-effect
+ *	free: existence is monotone (an allocated segment file is never deleted, only
+ *	recycled in place), so the by-xid resolve can use this to distinguish an
+ *	absent segment (sound scan skip) from an existing-but-unreadable one
+ *	(incomplete scan -> SCAN_UNAVAILABLE).  Returns false on a bad path / range.
+ */
+bool
+cluster_undo_segment_file_exists(uint8 owner_instance, uint32 segment_id)
+{
+	char path[MAXPGPATH];
+
+	if (owner_instance < 1 || owner_instance > UNDO_OWNER_INSTANCE_MAX)
+		return false;
+	if (cluster_undo_path_resolve(owner_instance, segment_id, path, sizeof(path)) != 0)
+		return false;
+	return access(path, F_OK) == 0;
+}
+
+
+/*
  * cluster_undo_segment_scan_resumable_active -- spec-3.18 D3.2 (review finding
  * 2).  Restart resume must pick the segment that is actually the live active
  * one, NOT merely the highest-numbered existing file:  reuse-first

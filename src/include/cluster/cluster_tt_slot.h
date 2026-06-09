@@ -412,6 +412,7 @@ extern uint32 cluster_tt_slot_unprotect_xid(TransactionId xid);
 extern bool cluster_tt_slot_is_protected(uint32 segment_id, uint16 slot_offset);
 extern uint32 cluster_tt_slot_protected_count(void);
 extern uint64 cluster_tt_slot_retention_recycle_count(void);
+extern uint64 cluster_tt_slot_retention_off_recycle_count(void); /* spec-3.22 */
 
 
 /*
