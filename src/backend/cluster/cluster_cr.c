@@ -600,7 +600,6 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 		const ClusterItlSlotData *slots;
 		ClusterCRCandidateChain chains[CLUSTER_ITL_INITRANS_DEFAULT];
 		int nchains;
-		int i;
 		uint32 steps = 0;
 		uint32 max_steps = (uint32)cluster_cr_chain_walk_max_steps;
 		bool watermark_exceeds = false; /* spec-3.11 D6: durable resolve gate */
@@ -712,7 +711,7 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 
 			BufferGetTag(buf, &cur_locator, &cur_fork, &cur_block);
 
-			for (i = 0; i < nchains; i++)
+			for (int i = 0; i < nchains; i++)
 				cr_walk_chain(dst_page, chains[i].undo_segment_head, read_scn, chains, nchains,
 							  &steps, max_steps, cur_locator, cur_fork, cur_block);
 		}
