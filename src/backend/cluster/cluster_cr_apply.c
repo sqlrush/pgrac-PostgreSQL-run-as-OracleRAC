@@ -291,11 +291,33 @@ cr_restore_full_image(char *scratch_page, OffsetNumber off, const char *image_by
 
 	itemid = PageGetItemId(page, off);
 	if (ItemIdIsNormal(itemid)) {
-		if (ItemIdGetLength(itemid) == image_length) {
+		/*
+		 * spec-3.20 D3.C (8.A restore identity guard): same length is NOT proof
+		 * of identity.  After D3.A block-scope filtering the record is for this
+		 * block, but within a block a HOT line pointer can be pruned and reused
+		 * by an UNRELATED row of equal length; a length-only memcpy would then
+		 * silently overwrite a foreign tuple and return a wrong CR image (the
+		 * spec-3.20 D0 P0/8.A finding).  Overwrite only when the occupant is
+		 * provably the version this undo record peels:
+		 *   - occ.xmin == img.xmin : same transaction (multi-update of this row);
+		 *   - occ.xmin == img.xmax : the occupant was created by the txn that
+		 *                            updated the image (the chain link).
+		 * Anything else fails closed (different length, or a foreign same-length
+		 * occupant).  D0 confirmed every legitimate same-length restore matches
+		 * one of these (all observed "foreign?" cases were occ.xmin==img.xmin
+		 * same-txn multi-updates).
+		 */
+		HeapTupleHeader occ = (HeapTupleHeader)PageGetItem(page, itemid);
+		HeapTupleHeader img = (HeapTupleHeader)image_bytes;
+		TransactionId occ_xmin = HeapTupleHeaderGetRawXmin(occ);
+
+		if (ItemIdGetLength(itemid) == image_length
+			&& (occ_xmin == HeapTupleHeaderGetRawXmin(img)
+				|| occ_xmin == HeapTupleHeaderGetRawXmax(img))) {
 			memcpy(PageGetItem(page, itemid), image_bytes, image_length);
 			return true;
 		}
-		return false; /* §v0.6 B5/C4: foreign identity -> fail closed */
+		return false; /* foreign / different-length identity -> fail closed */
 	}
 
 	/* UNUSED / LP_DEAD slot (reuser pruned / old version freed) -> re-add. */

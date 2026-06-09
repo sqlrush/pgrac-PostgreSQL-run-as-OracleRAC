@@ -39,6 +39,7 @@
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/relfilelocator.h" /* spec-3.20 D3.A: RelFileLocatorEquals (F8 block-scope) */
 #include "storage/shmem.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
@@ -272,7 +273,8 @@ cr_check_error_injections(void)
  */
 static void
 cr_walk_chain(char *scratch_page, UBA start_uba, SCN read_scn,
-			  const ClusterCRCandidateChain *chains, int nchains, uint32 *steps, uint32 max_steps)
+			  const ClusterCRCandidateChain *chains, int nchains, uint32 *steps, uint32 max_steps,
+			  RelFileLocator cur_locator, ForkNumber cur_fork, BlockNumber cur_block)
 {
 	UBA uba = start_uba;
 	PGAlignedBlock record_buf;
@@ -326,6 +328,42 @@ cr_walk_chain(char *scratch_page, UBA start_uba, SCN read_scn,
 		/* I-chain-1: normal SCN stop. */
 		if (scn_time_cmp(hdr->write_scn, read_scn) <= 0)
 			break;
+
+		/*
+		 * spec-3.20 D3.B: every physical INSERT/UPDATE/DELETE/ITL undo record is
+		 * written with a valid target relation (cluster_undo_record.c sets it
+		 * from the heap relation's locator).  A missing/invalid target locator is
+		 * undo corruption, NOT a skippable cross-block record -- fail closed
+		 * rather than silently drop it (which would hide the corruption and could
+		 * leave a post-read_scn version unrolled).
+		 */
+		if (!RelFileNumberIsValid(hdr->target_locator.relNumber))
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("cluster CR undo record has an invalid target relation"),
+							errhint("undo chain corruption suspected; retry the transaction.")));
+
+		/*
+		 * spec-3.20 D3.A (F8): block-scope filter.  The prev_uba chain is
+		 * transaction-GLOBAL -- a single txn (e.g. a TPC-B statement updating
+		 * pgbench_accounts + _tellers + _branches + inserting _history) chains
+		 * undo records across multiple relations/forks/blocks.  We are
+		 * reconstructing ONE block (cur_locator/cur_fork/cur_block), so a record
+		 * targeting any other relation/fork/block must NOT be inverse-applied to
+		 * this scratch page: doing so lands a foreign old image at target_offset
+		 * (DIFFLEN -> fail-closed, or -- worse -- a same-length SILENT overwrite
+		 * that returns a wrong CR image, the spec-3.20 D0 P0/8.A finding).
+		 *
+		 * Skip-apply but KEEP walking prev_uba: the global chain can hold a
+		 * deeper record that DOES belong to this block (records between read_scn
+		 * and this block's head write_scn for other blocks are interleaved).
+		 * Stopping here would truncate this block's legitimate history.  The
+		 * header already carries the full physical target (HC213).
+		 */
+		if (!RelFileLocatorEquals(hdr->target_locator, cur_locator) || hdr->target_fork != cur_fork
+			|| hdr->target_block != cur_block) {
+			uba = hdr->prev_uba;
+			continue;
+		}
 
 		switch (hdr->record_type) {
 		case UNDO_RECORD_INSERT: {
@@ -662,9 +700,22 @@ cluster_cr_construct_block_into(Buffer buf, SCN read_scn, char *dst_page)
 		(void)cluster_cr_prune_post_snapshot_versions(dst_page, chains, nchains);
 		PageRepairFragmentation((Page)dst_page);
 
-		for (i = 0; i < nchains; i++)
-			cr_walk_chain(dst_page, chains[i].undo_segment_head, read_scn, chains, nchains, &steps,
-						  max_steps);
+		/*
+		 * spec-3.20 D3.A (F8): the physical identity of the block we are
+		 * reconstructing, so cr_walk_chain can drop undo records the same
+		 * transaction wrote against OTHER relations/forks/blocks.
+		 */
+		{
+			RelFileLocator cur_locator;
+			ForkNumber cur_fork;
+			BlockNumber cur_block;
+
+			BufferGetTag(buf, &cur_locator, &cur_fork, &cur_block);
+
+			for (i = 0; i < nchains; i++)
+				cr_walk_chain(dst_page, chains[i].undo_segment_head, read_scn, chains, nchains,
+							  &steps, max_steps, cur_locator, cur_fork, cur_block);
+		}
 
 		(void)cluster_cr_prune_post_snapshot_versions(dst_page, chains, nchains);
 
