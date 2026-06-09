@@ -2,18 +2,19 @@
 # .github/workflows/nightly.yml
 #    linkdb full coverage CI (Tier 2 of 3-tier CI model).
 #
-#    Runs the heavy parts that fast.yml intentionally skips:
-#      - Linux Build+Test: ALL cluster_tap files (110) + PG 219 + cluster_unit
-#        + cluster_regress (the authoritative full surface)
-#      - macOS Build+Test: PG 219 + cluster_unit + cluster_regress + a curated
-#        cluster_tap SMOKE subset (full cluster_tap was the ~22min wallclock
-#        bottleneck; Linux is the primary target — see build-test-full)
-#      - Cross-platform build/PG-regression parity + macOS smoke of key cluster
-#        paths incl. the concurrency-sensitive spec-3.19 234/235
+#    Runs the heavy parts that fast.yml intentionally skips, sharded for
+#    wallclock:
+#      - linux-pg-regress: PG 219 three-mode (own job, off the TAP path)
+#      - linux-cluster-tap: ALL cluster_tap files (110) split into 3 parallel
+#        shards (foundation / stage2-gcs / stage3-mvcc) + cluster_unit
+#        (+ cluster_regress on the foundation shard)
+#      - build-test-macos: PG 219 + cluster_unit + cluster_regress + a curated
+#        cluster_tap SMOKE subset (the full cluster_tap on macOS was the
+#        wallclock bottleneck; Linux is the primary target)
 #
-#    Per CLAUDE.md rule 20.A revised, ship-time tag verification
-#    requires both fast.yml green (push gate) AND nightly.yml green
-#    (this workflow) on the same commit (or its main-branch ancestor).
+#    Per CLAUDE.md rule 20.A revised, ship-time tag verification requires
+#    both fast.yml green (push gate) AND nightly.yml green (this workflow)
+#    on the same commit (or its main-branch ancestor).
 #
 # Author: SqlRush <sqlrush@gmail.com>
 #
@@ -24,8 +25,12 @@
 #   - workflow_dispatch (manual trigger by maintainer)
 #   - push to tags v* (mandatory ship-time verification)
 #
-# Total wallclock target: ≤ 18 min (Linux full is now the bottleneck after
-# macOS moved to smoke; was ~26 min when macOS ran the full cluster_tap)
+# Total wallclock target: ≤ 14 min (Linux TAP shards + pg-regress + macOS
+# smoke all run in parallel; the slowest shard is the bound).  Was ~26 min
+# (single macOS full cluster_tap job) before sharding + macOS smoke.
+# Trade-off: more runner-minutes (each shard self-builds) for less wallclock,
+# per the maintainer's "GitHub job sharding is more stable than prove -j"
+# guidance (TAP has port/tmp/IPC/cluster-node resource contention).
 # ----------------------------------------------------------------------
 
 name: linkdb nightly full CI
@@ -44,31 +49,20 @@ concurrency:
 jobs:
 
   # ====================================================================
-  # Tier 2.1 — Build+Test matrix (Linux full / macOS smoke)
+  # Tier 2.1a — Linux PG 219 three-mode regression (own job)
   # --------------------------------------------------------------------
-  # Both: deps -> configure -> build -> install -> PG 219.
-  # Linux: + the FULL cluster-check (all 110 cluster_tap + cluster_unit +
-  #   cluster_regress) -- the authoritative full surface.
-  # macOS: + cluster_unit + cluster_regress + a curated cluster_tap SMOKE
-  #   subset only (the full cluster_tap on macOS was the ~22min nightly
-  #   bottleneck; Linux is the primary deployment target).  macOS still
-  #   compile-guards every platform difference and smokes the highest-risk
-  #   cluster paths incl. spec-3.19 234/235.
+  # Kept off the cluster_tap shard critical path: PG 219 (~5 min) on any
+  # TAP shard would dominate it.  Build + install + make check only.
   # ====================================================================
-  build-test-full:
-    name: Full Build+Test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  linux-pg-regress:
+    name: Linux PG 219 regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
@@ -77,8 +71,135 @@ jobs:
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Configure (--enable-cluster)
+        run: |
+          ./configure \
+            --prefix=$HOME/pgrac-install \
+            --enable-cassert --enable-debug \
+            --with-openssl --with-icu --with-lz4 --with-zstd \
+            --enable-cluster --enable-tap-tests
+
+      - name: Build and install
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN)
+          make install
+
+      - name: Run PG regression tests (219 tests)
+        run: make check
+
+      - name: Upload regression diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-pg-regress-diffs
+          path: |
+            src/test/regress/regression.diffs
+            src/test/regress/regression.out
+            src/test/regress/log/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ====================================================================
+  # Tier 2.1b — Linux cluster_tap (ALL 110 files, 3 parallel shards)
+  # --------------------------------------------------------------------
+  # Shards by leading test-file number (no per-test timing yet, so file
+  # ranges are the proxy; foundation 39 / stage2-gcs 38 / stage3-mvcc 33):
+  #   foundation  001-071  framework, GUC, shmem, wait events, ITL/PCM
+  #               + cluster_unit + cluster_regress (run once here)
+  #   stage2-gcs  072-202  IC/CSSD/quorum/GRD/GCS, 2-node ClusterPair,
+  #               Stage 2 acceptance (the 2-node tests are the slowest)
+  #   stage3-mvcc 203-235  Stage 3 MVCC/undo/CR/retention/cleaner/2PC/
+  #               recovery/spec-3.18/spec-3.19
+  # ====================================================================
+  linux-cluster-tap:
+    name: Linux cluster_tap (${{ matrix.shard.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - { name: foundation,  lo: 1,   hi: 71,  regress: true }
+          - { name: stage2-gcs,  lo: 72,  hi: 202, regress: false }
+          - { name: stage3-mvcc, lo: 203, hi: 299, regress: false }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libreadline-dev zlib1g-dev libicu-dev \
+            liblz4-dev libzstd-dev libssl-dev libxml2-dev \
+            libipc-run-perl pkg-config
+
+      - name: Configure (--enable-cluster)
+        run: |
+          ./configure \
+            --prefix=$HOME/pgrac-install \
+            --enable-cassert --enable-debug \
+            --with-openssl --with-icu --with-lz4 --with-zstd \
+            --enable-cluster --enable-tap-tests
+
+      - name: Build and install
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN)
+          make install
+
+      - name: Run cluster_unit
+        run: make -C src/test/cluster_unit check
+
+      - name: Run cluster_regress (foundation shard only)
+        if: matrix.shard.regress
+        run: make -C src/test/cluster_regress check
+
+      - name: Run cluster_tap shard ${{ matrix.shard.name }}
+        env:
+          # Stage 2 perf smoke (t/202) blocks on Linux; it lands in the
+          # stage2-gcs shard.  Harmless to set everywhere — only t/202 reads it.
+          STAGE2_PERF_HARD_GATE: '1'
+        run: |
+          SEL=$(cd src/test/cluster_tap && for f in t/*.pl; do \
+            n=$(basename "$f" .pl | cut -d_ -f1); \
+            d=$((10#$n)); \
+            if [ "$d" -ge ${{ matrix.shard.lo }} ] && [ "$d" -le ${{ matrix.shard.hi }} ]; then \
+              printf '%s ' "$f"; \
+            fi; \
+          done)
+          echo "shard ${{ matrix.shard.name }} files: $SEL"
+          test -n "$SEL" || { echo "ERROR: empty shard selection"; exit 1; }
+          make -C src/test/cluster_tap check PROVE_TESTS="$SEL"
+
+      - name: Upload cluster_tap diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-cluster-tap-diffs-${{ matrix.shard.name }}
+          path: |
+            src/test/cluster_tap/tmp_check/log/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ====================================================================
+  # Tier 2.1c — macOS Build+Test (smoke)
+  # --------------------------------------------------------------------
+  # macOS keeps build + PG 219 + cluster_unit + cluster_regress + a curated
+  # cluster_tap SMOKE subset only (the full cluster_tap on macOS was the
+  # ~22min nightly bottleneck; Linux runs the full suite, sharded, above).
+  # The smoke deliberately INCLUDES the concurrency-sensitive spec-3.19
+  # 234/235 (macOS shmem/IPC behaviour is exactly where those matter most).
+  # ====================================================================
+  build-test-macos:
+    name: macOS Build+Test (smoke)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install macOS dependencies
-        if: runner.os == 'macOS'
         run: |
           brew install readline icu4c lz4 zstd openssl@3 libxml2 cpanminus pkg-config || true
           cpanm --local-lib=$HOME/perl5 --notest IPC::Run IO::Tty
@@ -97,37 +218,15 @@ jobs:
             --with-openssl --with-icu --with-lz4 --with-zstd \
             --enable-cluster --enable-tap-tests
 
-      - name: Build
+      - name: Build and install
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            make -j$(getconf _NPROCESSORS_ONLN)
-          else
-            make -j$(sysctl -n hw.ncpu)
-          fi
-
-      - name: Install
-        run: make install
+          make -j$(sysctl -n hw.ncpu)
+          make install
 
       - name: Run PG regression tests (219 tests)
         run: make check
 
-      # Linux runs the FULL suite (all cluster_tap files + cluster_unit +
-      # cluster_regress).  macOS runs a curated smoke subset only: the full
-      # cluster_tap on macOS was the nightly wallclock bottleneck (~22 min) and
-      # Linux is the primary target.  macOS keeps build + PG 219 + cluster_unit
-      # + cluster_regress + a curated cluster smoke that deliberately INCLUDES
-      # the concurrency-sensitive spec-3.19 234/235 (macOS shmem/IPC behaviour
-      # is exactly where those matter most).
-      - name: Run cluster-check full (Linux — unit + tap full + regress)
-        if: runner.os == 'Linux'
-        env:
-          # Stage 2 perf smoke blocks on Linux (the no-peer path is validated
-          # here; perf stays report-only elsewhere per perf.yml policy).
-          STAGE2_PERF_HARD_GATE: '1'
-        run: make -C src/test cluster-check
-
-      - name: Run cluster smoke (macOS — unit + regress + curated TAP)
-        if: runner.os == 'macOS'
+      - name: Run cluster smoke (unit + regress + curated TAP)
         run: |
           make -C src/test/cluster_unit check
           make -C src/test/cluster_regress check
@@ -138,7 +237,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-regression-diffs-${{ matrix.os }}
+          name: nightly-regression-diffs-macos
           path: |
             src/test/regress/regression.diffs
             src/test/regress/regression.out
@@ -151,7 +250,7 @@ jobs:
   # Tier 2.2 — Stage 2 acceptance medium representative job
   # --------------------------------------------------------------------
   # Self-contained Ubuntu job.  It intentionally rebuilds/install locally
-  # instead of assuming workspace or install artifacts from build-test-full.
+  # instead of assuming workspace or install artifacts from other jobs.
   # Runs the Stage 2 acceptance TAPs with longer knobs than fast-gate and
   # uploads the generated JSON reports.
   # ====================================================================
