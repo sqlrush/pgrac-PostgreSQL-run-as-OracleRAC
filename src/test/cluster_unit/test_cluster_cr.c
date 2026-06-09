@@ -290,7 +290,15 @@ UT_TEST(test_update_inverse_restores_old_image)
 	char old_image[TEST_TUPLE_LEN];
 	HeapTupleHeader live;
 
+	/*
+	 * spec-3.20 D3.C restore identity guard: a same-length overwrite is allowed
+	 * only when the occupant is provably the version this record peels
+	 * (occupant.xmin == image.xmin same-txn, or == image.xmax chain link).  The
+	 * all-0xAB image has xmin == 0xABABABAB; seed the occupant's xmin to match so
+	 * this LEGITIMATE restore succeeds and overwrites the bytes.
+	 */
 	memset(old_image, 0xAB, sizeof(old_image));
+	tuple_at(page, TEST_TUPLE_OFFSET)->t_choice.t_heap.t_xmin = (TransactionId)0xABABABABU;
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.target_offset = TEST_TUPLE_OFFSET;
 	memset(&p, 0, sizeof(p));
@@ -301,6 +309,34 @@ UT_TEST(test_update_inverse_restores_old_image)
 	live = tuple_at(page, TEST_TUPLE_OFFSET);
 	UT_ASSERT_EQ(((unsigned char *)live)[0], 0xAB);
 	UT_ASSERT_EQ(((unsigned char *)live)[TEST_TUPLE_LEN - 1], 0xAB);
+}
+
+/* spec-3.20 D2/U1: a same-length FOREIGN occupant (xmin matches neither the
+ * image's xmin nor its xmax) must NOT be silently overwritten -- D3.C fails
+ * closed.  Guards the silent-corruption case where a HOT line pointer reused by
+ * an unrelated equal-length row would otherwise be clobbered by an old image. */
+UT_TEST(test_update_inverse_foreign_samelen_fail_closed)
+{
+	Page page = build_page_with_tuple();
+	UndoRecordHeader hdr;
+	UndoUpdatePayload p;
+	char old_image[TEST_TUPLE_LEN];
+	HeapTupleHeader img = (HeapTupleHeader)old_image;
+
+	memset(old_image, 0, sizeof(old_image));
+	img->t_choice.t_heap.t_xmin = (TransactionId)1000; /* image creator */
+	img->t_choice.t_heap.t_xmax = (TransactionId)1001; /* image updater */
+	/* occupant created by an UNRELATED txn -> matches neither image xmin/xmax. */
+	tuple_at(page, TEST_TUPLE_OFFSET)->t_choice.t_heap.t_xmin = (TransactionId)9999;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.target_offset = TEST_TUPLE_OFFSET;
+	memset(&p, 0, sizeof(p));
+
+	UT_ASSERT_EQ(
+		(int)cluster_cr_apply_update_inverse(synthetic_page, &hdr, &p, old_image, TEST_TUPLE_LEN),
+		0);
+	/* occupant untouched (xmin still 9999, not silently overwritten). */
+	UT_ASSERT_EQ((int)tuple_at(page, TEST_TUPLE_OFFSET)->t_choice.t_heap.t_xmin, 9999);
 }
 
 UT_TEST(test_update_inverse_len_mismatch_false)
@@ -350,6 +386,10 @@ UT_TEST(test_delete_inverse_restores_full_image)
 	HeapTupleHeader live;
 
 	memset(full_image, 0xCD, sizeof(full_image));
+	/* spec-3.20 D3.C: occupant xmin must match the image (== 0xCDCDCDCD) for the
+	 * legitimate same-length restore; a delete-inverse restores the same row's
+	 * pre-delete image, so xmin is preserved across the delete. */
+	tuple_at(page, TEST_TUPLE_OFFSET)->t_choice.t_heap.t_xmin = (TransactionId)0xCDCDCDCDU;
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.target_offset = TEST_TUPLE_OFFSET;
 	memset(&p, 0, sizeof(p));
@@ -502,6 +542,8 @@ UT_TEST(test_insert_then_update_inverse_sequence)
 
 	/* update inverse first restores an image, then insert inverse removes it */
 	memset(old_image, 0x11, sizeof(old_image));
+	/* spec-3.20 D3.C: occupant xmin must match the image (== 0x11111111). */
+	tuple_at(page, TEST_TUPLE_OFFSET)->t_choice.t_heap.t_xmin = (TransactionId)0x11111111U;
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.target_offset = TEST_TUPLE_OFFSET;
 	memset(&up, 0, sizeof(up));
@@ -906,6 +948,7 @@ main(int argc, char **argv)
 	UT_RUN(test_insert_inverse_pruned_idempotent);
 
 	UT_RUN(test_update_inverse_restores_old_image);
+	UT_RUN(test_update_inverse_foreign_samelen_fail_closed); /* spec-3.20 D2/U1 */
 	UT_RUN(test_update_inverse_len_mismatch_false);
 	UT_RUN(test_update_inverse_null_bytes_false);
 	UT_RUN(test_delete_inverse_restores_full_image);
