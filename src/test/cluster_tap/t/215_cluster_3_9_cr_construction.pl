@@ -7,8 +7,8 @@
 #	  L1  ClusterPair up + GUC cluster.cr_chain_walk_max_steps default 4096
 #	      + cluster.cr_mvcc_gate default on + 53R9F/53R9G registered + the
 #	      4 CR injection points present in pg_stat_cluster_injections
-#	  L2  pg_cluster_state cr category has 13 rows (9 cluster_cr counters +
-#	      4 spec-3.10 CR cache counters)
+#	  L2  pg_cluster_state cr category has 17 rows (9 cluster_cr counters +
+#	      4 spec-3.10 CR cache counters + 4 spec-3.22 xmax resolve buckets)
 #	  L3  cluster_cr_test_construct on a real ITL heap block succeeds
 #	      (high read_scn → chain walk stops immediately) → cr_construct_count++
 #	  L4  53R9F: arm cr_snapshot_too_old + invoke (single session) → CR's
