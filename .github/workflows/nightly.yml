@@ -3,9 +3,13 @@
 #    linkdb full coverage CI (Tier 2 of 3-tier CI model).
 #
 #    Runs the heavy parts that fast.yml intentionally skips:
-#      - macOS Build+Test full cluster_tap (49 files)
-#      - Linux Build+Test full cluster_tap + PG 219 three-mode
-#      - Cross-platform parity coverage
+#      - Linux Build+Test: ALL cluster_tap files (110) + PG 219 + cluster_unit
+#        + cluster_regress (the authoritative full surface)
+#      - macOS Build+Test: PG 219 + cluster_unit + cluster_regress + a curated
+#        cluster_tap SMOKE subset (full cluster_tap was the ~22min wallclock
+#        bottleneck; Linux is the primary target — see build-test-full)
+#      - Cross-platform build/PG-regression parity + macOS smoke of key cluster
+#        paths incl. the concurrency-sensitive spec-3.19 234/235
 #
 #    Per CLAUDE.md rule 20.A revised, ship-time tag verification
 #    requires both fast.yml green (push gate) AND nightly.yml green
@@ -20,7 +24,8 @@
 #   - workflow_dispatch (manual trigger by maintainer)
 #   - push to tags v* (mandatory ship-time verification)
 #
-# Total wallclock target: ≤ 25 min (matrix Linux + macOS in parallel)
+# Total wallclock target: ≤ 18 min (Linux full is now the bottleneck after
+# macOS moved to smoke; was ~26 min when macOS ran the full cluster_tap)
 # ----------------------------------------------------------------------
 
 name: linkdb nightly full CI
@@ -39,10 +44,16 @@ concurrency:
 jobs:
 
   # ====================================================================
-  # Tier 2.1 — Full Build+Test matrix (Linux + macOS)
+  # Tier 2.1 — Build+Test matrix (Linux full / macOS smoke)
   # --------------------------------------------------------------------
-  # All 49 cluster_tap files + PG 219 + cluster_unit + cluster_regress.
-  # Mirrors what the legacy ci.yml ran on every push.
+  # Both: deps -> configure -> build -> install -> PG 219.
+  # Linux: + the FULL cluster-check (all 110 cluster_tap + cluster_unit +
+  #   cluster_regress) -- the authoritative full surface.
+  # macOS: + cluster_unit + cluster_regress + a curated cluster_tap SMOKE
+  #   subset only (the full cluster_tap on macOS was the ~22min nightly
+  #   bottleneck; Linux is the primary deployment target).  macOS still
+  #   compile-guards every platform difference and smokes the highest-risk
+  #   cluster paths incl. spec-3.19 234/235.
   # ====================================================================
   build-test-full:
     name: Full Build+Test (${{ matrix.os }})
@@ -100,14 +111,28 @@ jobs:
       - name: Run PG regression tests (219 tests)
         run: make check
 
-      - name: Run cluster-check (unit + tap full + regress)
+      # Linux runs the FULL suite (all cluster_tap files + cluster_unit +
+      # cluster_regress).  macOS runs a curated smoke subset only: the full
+      # cluster_tap on macOS was the nightly wallclock bottleneck (~22 min) and
+      # Linux is the primary target.  macOS keeps build + PG 219 + cluster_unit
+      # + cluster_regress + a curated cluster smoke that deliberately INCLUDES
+      # the concurrency-sensitive spec-3.19 234/235 (macOS shmem/IPC behaviour
+      # is exactly where those matter most).
+      - name: Run cluster-check full (Linux — unit + tap full + regress)
+        if: runner.os == 'Linux'
         env:
-          # Keep Stage 2 perf smoke blocking on Linux, where fast/nightly
-          # already validated the no-peer path.  macOS hosted runners are
-          # retained for build/TAP parity but perf remains report-only, matching
-          # perf.yml's warn-only shared-runner policy.
-          STAGE2_PERF_HARD_GATE: ${{ runner.os == 'Linux' && '1' || '0' }}
+          # Stage 2 perf smoke blocks on Linux (the no-peer path is validated
+          # here; perf stays report-only elsewhere per perf.yml policy).
+          STAGE2_PERF_HARD_GATE: '1'
         run: make -C src/test cluster-check
+
+      - name: Run cluster smoke (macOS — unit + regress + curated TAP)
+        if: runner.os == 'macOS'
+        run: |
+          make -C src/test/cluster_unit check
+          make -C src/test/cluster_regress check
+          SMOKE="t/001_single_node_smoke.pl t/005_wait_events_catalog.pl t/020_shmem_registry.pl t/068_wal_xl_scn.pl t/215_cluster_3_9_cr_construction.pl t/219_cluster_3_11_durable_tt_slot.pl t/226_stage3_mvcc_acceptance_capability.pl t/234_cluster_3_19_dml_boundary.pl t/235_cluster_3_19_snapshot_isolation.pl"
+          make -C src/test/cluster_tap check PROVE_TESTS="$SMOKE"
 
       - name: Upload regression diffs on failure
         if: failure()
