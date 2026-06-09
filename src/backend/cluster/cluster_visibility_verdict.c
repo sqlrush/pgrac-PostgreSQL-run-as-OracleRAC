@@ -115,6 +115,59 @@ cluster_vis_update_xmax_verdict(ClusterTTStatus status, bool is_delete)
 	}
 }
 
+/*
+ * spec-3.21 §2.3: CR image xmax-side MVCC verdict (pure; mirrors OBS-1 amend
+ * MVCC-accurate, the multixact-member table at cluster_visibility_resolve.c).
+ *
+ *	ABORTED / IN_PROGRESS / SUBCOMMITTED -> the delete never committed at the
+ *	snapshot, so the row was LIVE at read_scn -> VISIBLE.  This is the spec-3.21
+ *	fix: the prior cluster_visibility_decide_cr_tuple treated ANY valid xmax as
+ *	"deleted" -> invisible, which false-hid a hot row whose deleter was still in
+ *	progress and produced silent UPDATE 0 / lost updates (D0.6: 538 cases).
+ *
+ *	COMMITTED / CLEANED_OUT -> invisible only if the delete is visible at
+ *	read_scn, i.e. exact commit_scn <= read_scn (cluster_visibility_decide_by_scn
+ *	returns VISIBLE for the delete; we invert to INVISIBLE for the tuple).  A
+ *	delete committed after read_scn leaves the row VISIBLE.
+ *
+ *	UNKNOWN, or COMMITTED with an unresolved commit_scn (committed_scn_decision
+ *	== CLUSTER_VISIBILITY_UNKNOWN), -> CVV_FAILCLOSED_UNKNOWN.  The caller raises
+ *	53R9F; never silently invisible (rule 8.A; P1-a forbids a CLOG/write_scn proxy).
+ *
+ *	committed_scn_decision is the caller's cluster_visibility_decide_by_scn(
+ *	commit_scn, read_scn); kept in the caller so this stays a pure status->verdict
+ *	function (no scn_time_cmp dependency).
+ */
+ClusterVisVerdict
+cluster_vis_cr_xmax_verdict(ClusterTTStatus xmax_status,
+							ClusterVisibilityDecision committed_scn_decision)
+{
+	switch (xmax_status) {
+	case CLUSTER_TT_STATUS_ABORTED:
+	case CLUSTER_TT_STATUS_IN_PROGRESS:
+	case CLUSTER_TT_STATUS_SUBCOMMITTED:
+		/* Deleter not committed at read_scn -> row live -> visible. */
+		return CVV_VISIBLE;
+	case CLUSTER_TT_STATUS_COMMITTED:
+	case CLUSTER_TT_STATUS_CLEANED_OUT:
+		switch (committed_scn_decision) {
+		case CLUSTER_VISIBILITY_VISIBLE:
+			/* delete visible at read_scn (commit_scn <= read_scn) -> tuple gone */
+			return CVV_INVISIBLE;
+		case CLUSTER_VISIBILITY_INVISIBLE:
+			/* delete not yet visible (commit_scn > read_scn) -> tuple live */
+			return CVV_VISIBLE;
+		case CLUSTER_VISIBILITY_UNKNOWN:
+		default:
+			/* InvalidScn / unresolved commit_scn -> fail-closed, not invisible */
+			return CVV_FAILCLOSED_UNKNOWN;
+		}
+	case CLUSTER_TT_STATUS_UNKNOWN:
+	default:
+		return CVV_FAILCLOSED_UNKNOWN;
+	}
+}
+
 ClusterVisVerdict
 cluster_vis_dirty_verdict(ClusterTTStatus status, bool is_xmax, bool is_delete)
 {

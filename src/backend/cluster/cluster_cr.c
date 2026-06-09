@@ -50,9 +50,11 @@
 #include "cluster/cluster_cr_cache.h"
 #include "cluster/cluster_guc.h" /* cluster_cr_chain_walk_max_steps, cluster_node_id */
 #include "cluster/cluster_inject.h"
+#include "cluster/cluster_itl.h" /* spec-3.21: cluster_itl_get_tt_ref (xmax overlay key) */
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_shmem.h"
-#include "cluster/cluster_tt_durable.h" /* spec-3.11 D6: watermark by-xid resolve */
+#include "cluster/cluster_tt_durable.h"			/* spec-3.11 D6: watermark by-xid resolve */
+#include "cluster/cluster_visibility_resolve.h" /* spec-3.21: cluster_vis_cr_xmax_verdict */
 #include "cluster/cluster_uba.h"
 #include "cluster/cluster_undo_record.h"
 #include "cluster/cluster_undo_record_api.h"
@@ -934,6 +936,86 @@ cluster_visibility_decide_tuple(HeapTuple htup, Snapshot snapshot, Buffer buffer
 	return cr_decide_by_infomask(tup);
 }
 
+/*
+ * cluster_cr_resolve_xmax_commit_scn -- resolve the EXACT commit_scn of a
+ * committed own-instance deleter (cr_xmax) recorded on a CR image, for the
+ * spec-3.21 xmax-side visibility decision.  Returns true + *out_scn on success.
+ *
+ *	Exact-key source order (spec-3.21 D2; never a CLOG/write_scn proxy -- P1-a):
+ *	  1. the CR SCRATCH page ITL slot at itl_idx, IFF slot.xid == cr_xmax (the
+ *	     scratch ITL is rolled back to read_scn state in cluster_cr_apply.c) and
+ *	     its commit_scn is stamped -- the read_scn-era commit stamp;
+ *	  2. the BOC / spec-3.6 overlay by the exact key (the scratch slot's ITL ref
+ *	     + local_xid == cr_xmax) -- a delayed-cleanout writer whose slot stamp is
+ *	     still InvalidScn;
+ *	  3. the durable TT by exact xid -- survives an ITL slot recycle.
+ *	A slot/xid mismatch (recycle) or InvalidScn at every source -> false, and the
+ *	caller fails closed (53R9F); rule 8.A: an unresolved deleter is NEVER treated
+ *	as a committed-before-read_scn delete (which would false-hide a live row).
+ */
+static bool
+cluster_cr_resolve_xmax_commit_scn(const char *cr_page, uint8 itl_idx, TransactionId cr_xmax,
+								   SCN *out_scn)
+{
+	Page page = (Page)cr_page; /* read-only ITL access on the scratch image */
+
+	*out_scn = InvalidScn;
+
+	/* Sources 1+2 require the scratch slot to still hold cr_xmax exactly. */
+	if (itl_idx != CLUSTER_ITL_SLOT_UNALLOCATED && itl_idx < CLUSTER_ITL_INITRANS_DEFAULT
+		&& PageHasItl(page)) {
+		const ClusterItlSlotData *slot = &ClusterPageGetItlSlots(page)[itl_idx];
+
+		if (slot->xid == cr_xmax) {
+			ClusterUndoTTSlotRef ref;
+
+			/*
+			 * Source 1: the rolled-back scratch slot's own commit stamp.  NB: a
+			 * lock-only ITL undo record for this same slot index, inverse-applied
+			 * during the chain walk, can restore prev_commit_scn (= InvalidScn)
+			 * over cr_xmax's later-stamped commit_scn while leaving slot.xid ==
+			 * cr_xmax (cluster_cr_apply_itl_inverse restores commit_scn/flags/
+			 * undo_segment_head but not xid).  In that case this and Source 2
+			 * (whose ref came from the same rolled-back slot) both miss, and
+			 * Source 3 (durable scan by exact xid) is the true authoritative
+			 * fallback.  Never a wrong scn -- a stale InvalidScn just falls through.
+			 */
+			if (SCN_VALID(slot->commit_scn)) {
+				*out_scn = slot->commit_scn;
+				return true;
+			}
+
+			/* Source 2: BOC / overlay by the exact key (ref + local_xid). */
+			if (cluster_itl_get_tt_ref(page, itl_idx, &ref)) {
+				ClusterTTStatusKey key;
+				ClusterTTStatusResult result;
+
+				memset(&key, 0, sizeof(key));
+				key.origin_node_id = ref.origin_node_id;
+				key.undo_segment_id = ref.undo_segment_id;
+				key.tt_slot_id = ref.tt_slot_id;
+				key.cluster_epoch = ref.cluster_epoch;
+				key.local_xid = cr_xmax;
+
+				if (cluster_tt_status_lookup_exact(&key, &result) && result.authoritative
+					&& (result.status == CLUSTER_TT_STATUS_COMMITTED
+						|| result.status == CLUSTER_TT_STATUS_CLEANED_OUT)
+					&& SCN_VALID(result.commit_scn)) {
+					*out_scn = result.commit_scn;
+					return true;
+				}
+			}
+		}
+	}
+
+	/* Source 3: durable TT by exact xid (survives ITL slot recycle). */
+	if (cluster_tt_slot_durable_lookup_by_xid(cr_xmax, out_scn) && SCN_VALID(*out_scn))
+		return true;
+
+	*out_scn = InvalidScn;
+	return false; /* unresolved -> caller fails closed (53R9F). */
+}
+
 ClusterVisibilityDecision
 cluster_visibility_decide_cr_tuple(HeapTuple htup, Snapshot snapshot)
 {
@@ -1138,6 +1220,98 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 	}
 
 	decision = cluster_visibility_decide_cr_tuple(&cr_htup, snapshot);
-	*out_visible = (decision == CLUSTER_VISIBILITY_VISIBLE);
-	return true;
+	if (decision == CLUSTER_VISIBILITY_VISIBLE) {
+		/* xmax invalid -> the row was never deleted -> visible. */
+		*out_visible = true;
+		return true;
+	}
+
+	/*
+	 * spec-3.21 D1: the CR image carries a VALID xmax.  The pre-3.21 code
+	 * returned invisible here ("any valid xmax -> deleted at read_scn"), but a
+	 * valid xmax only proves SOME xact wrote a delete/lock mark -- not that the
+	 * delete COMMITTED at/before read_scn.  When the deleter is lock-only,
+	 * in-progress, aborted, or committed AFTER read_scn, the row was LIVE at the
+	 * snapshot and must be VISIBLE.  Mis-hiding it produced silent hot-row
+	 * UPDATE 0 / lost updates (D0.6: 538 in-progress false-invisibles).  Resolve
+	 * the deleter's commit-state vs read_scn instead (own-instance, tier-3).
+	 */
+	{
+		HeapTupleHeader cr_tup = cr_htup.t_data;
+		uint16 cr_infomask = cr_tup->t_infomask;
+		TransactionId cr_xmax;
+		ClusterTTStatus xmax_status;
+		ClusterVisibilityDecision scn_decision = CLUSTER_VISIBILITY_UNKNOWN;
+
+		/*
+		 * A lock-only xmax never deletes the tuple (spec-3.21 P1-c).
+		 * HEAP_XMAX_IS_LOCKED_ONLY also catches HEAP_LOCKED_UPGRADED (the legacy
+		 * multi-locker pattern has HEAP_XMAX_LOCK_ONLY set), so it is handled
+		 * here -- and HeapTupleGetUpdateXid below (reached only on the MULTI
+		 * branch) is thus never called on a lock-only multi (its internal
+		 * Assert(!LOCK_ONLY) holds).
+		 */
+		if (HEAP_XMAX_IS_LOCKED_ONLY(cr_infomask)) {
+			*out_visible = true;
+			return true;
+		}
+
+		/* MultiXact: decode the UPDATE member; a lockers-only multi has no
+		 * update xid -> visible.  Never treat the multi value as a plain xid. */
+		if (cr_infomask & HEAP_XMAX_IS_MULTI)
+			cr_xmax = HeapTupleGetUpdateXid(cr_tup);
+		else
+			cr_xmax = HeapTupleHeaderGetRawXmax(cr_tup);
+
+		if (!TransactionIdIsValid(cr_xmax) || TransactionIdIsCurrentTransactionId(cr_xmax)) {
+			/* lockers-only multi, or our own delete (native handles self). */
+			*out_visible = true;
+			return true;
+		}
+
+		/* Own-instance authoritative classification of the deleting xact. */
+		if (TransactionIdIsInProgress(cr_xmax))
+			xmax_status = CLUSTER_TT_STATUS_IN_PROGRESS;
+		else if (!TransactionIdDidCommit(cr_xmax))
+			xmax_status = CLUSTER_TT_STATUS_ABORTED;
+		else {
+			/* Committed deleter: invisible IFF the delete is visible at read_scn,
+			 * proven by the EXACT commit_scn (P1-a: no CLOG/write_scn proxy). */
+			SCN xmax_cscn;
+
+			if (!cluster_cr_resolve_xmax_commit_scn(cr_page, cr_tup->t_itl_slot_idx, cr_xmax,
+													&xmax_cscn))
+				ereport(ERROR, (errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+								errmsg("cluster CR cannot resolve commit_scn for deleting xmax %u",
+									   cr_xmax),
+								errhint("ITL slot recycled and overlay/durable TT miss; retry the "
+										"transaction with a fresh snapshot.")));
+			xmax_status = CLUSTER_TT_STATUS_COMMITTED;
+			scn_decision = cluster_visibility_decide_by_scn(xmax_cscn, snapshot->read_scn);
+		}
+
+		switch (cluster_vis_cr_xmax_verdict(xmax_status, scn_decision)) {
+		case CVV_VISIBLE:
+			*out_visible = true;
+			return true;
+		case CVV_INVISIBLE:
+			*out_visible = false;
+			return true;
+		case CVV_FAILCLOSED_UNKNOWN:
+		default:
+			/*
+			 * cluster_vis_cr_xmax_verdict only ever returns VISIBLE / INVISIBLE /
+			 * FAILCLOSED_UNKNOWN; the wait/conflict/gone verdicts (CVV_BEING_
+			 * MODIFIED / CVV_GONE_* / CVV_FAILCLOSED_CONFLICT) belong to the
+			 * SatisfiesUpdate/Dirty forks, not this snapshot-read gate.  Any of
+			 * them reaching here would be a verdict-table bug -> fail closed.
+			 */
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_CR_SNAPSHOT_TOO_OLD),
+					 errmsg("cluster CR xmax visibility unresolved for deleting xmax %u", cr_xmax),
+					 errhint("deleter commit_scn could not be proven against read_scn; retry.")));
+		}
+	}
+
+	pg_unreachable(); /* every verdict branch above returns or ereports */
 }

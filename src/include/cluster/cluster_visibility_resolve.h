@@ -155,6 +155,30 @@ extern ClusterVisVerdict cluster_vis_toast_verdict(ClusterTTStatus status);
 extern ClusterVisVerdict cluster_vis_update_xmin_verdict(ClusterTTStatus status);
 extern ClusterVisVerdict cluster_vis_update_xmax_verdict(ClusterTTStatus status, bool is_delete);
 
+/*
+ * spec-3.21 §2.3: CR image xmax-side MVCC visibility verdict.
+ *
+ *	The SatisfiesUpdate verdict above (cluster_vis_update_xmax_verdict) is
+ *	status-only: a COMMITTED deleter makes the live tuple GONE regardless of
+ *	SCN, because SatisfiesUpdate answers "is this tuple updatable NOW".  A
+ *	snapshot MVCC read of a CR image is different: a deleter that is uncommitted
+ *	(IN_PROGRESS / ABORTED) at read_scn, or committed AFTER read_scn, did not
+ *	delete the row as of the snapshot, so the row is VISIBLE.  Only a deleter
+ *	committed at/before read_scn (exact commit_scn) makes the CR tuple INVISIBLE.
+ *	An UNKNOWN status or an unresolved committed commit_scn (committed_scn_decision
+ *	== CLUSTER_VISIBILITY_UNKNOWN) is fail-closed (CVV_FAILCLOSED_UNKNOWN), never
+ *	silently invisible (rule 8.A / spec-3.21 P1-a: no CLOG/write_scn proxy).
+ *
+ *	committed_scn_decision is the caller's cluster_visibility_decide_by_scn(
+ *	commit_scn, read_scn) result, consulted only for COMMITTED / CLEANED_OUT.
+ *	Keeping the SCN compare in the caller leaves this a pure status->verdict
+ *	function (no scn_time_cmp link dependency; the SCN compare is unit-tested
+ *	separately by test_cluster_visibility_decide_scn).
+ */
+extern ClusterVisVerdict
+cluster_vis_cr_xmax_verdict(ClusterTTStatus xmax_status,
+							ClusterVisibilityDecision committed_scn_decision);
+
 /* OBS-3 Dirty: no wait_policy layer, so remote in-progress -> 53R9H. */
 extern ClusterVisVerdict cluster_vis_dirty_verdict(ClusterTTStatus status, bool is_xmax,
 												   bool is_delete);
