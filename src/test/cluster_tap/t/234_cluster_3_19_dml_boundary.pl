@@ -123,8 +123,13 @@ sub _run_workload
 	#   - CR reconstruct unavailable after ITL slot reuse (CR gate path; L2 only)
 	#   - undo record alloc failure (undo pool churn under autovacuum=off)
 	#   - deadlock / serialization / lock-timeout from same-row lock contention
+	#   - spec-3.21: cannot resolve a recycled committed deleter's commit_scn
+	#     (53R9F snapshot-too-old retryable; the documented B-boundary, never a
+	#     wrong/lost result -- the invariant still holds among committed txns)
 	my $tolerated = qr{cluster\ CR\ cannot\ reconstruct\ block
 		|cluster\ undo\ record\ alloc\ failed
+		|cluster\ CR\ cannot\ resolve\ commit_scn
+		|cluster\ CR\ xmax\ visibility\ unresolved
 		|deadlock\ detected
 		|could\ not\ serialize\ access
 		|canceling\ statement\ due\ to\ lock\ timeout}x;

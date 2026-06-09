@@ -149,6 +149,58 @@ UT_TEST(test_all_verdicts_in_range)
 }
 
 
+/*
+ * spec-3.21 §2.3: CR image xmax-side MVCC verdict.  Unlike the SatisfiesUpdate
+ * xmax verdict (status-only), the snapshot read must compare the committed
+ * deleter's commit_scn to read_scn.  The defining fix: an uncommitted deleter
+ * (IN_PROGRESS / ABORTED) means the row was LIVE at read_scn -> VISIBLE (the CR
+ * image still carries that xmax because the construct correctly stops the chain
+ * walk at write_scn <= read_scn).  spec-3.21 D0.6: 538 in-progress false-invisibles.
+ */
+UT_TEST(test_obs_cr_xmax_full_table)
+{
+	/* committed_scn_decision is the caller's decide_by_scn(commit_scn, read_scn):
+	 *   VISIBLE   = delete committed at/before read_scn  (commit_scn <= read_scn)
+	 *   INVISIBLE = delete committed after read_scn       (commit_scn  > read_scn)
+	 *   UNKNOWN   = commit_scn unresolved (InvalidScn). */
+
+	/* Uncommitted deleter -> row live at read_scn -> VISIBLE (scn decision N/A). */
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_IN_PROGRESS, CLUSTER_VISIBILITY_UNKNOWN),
+		(int)CVV_VISIBLE);
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_ABORTED, CLUSTER_VISIBILITY_UNKNOWN),
+		(int)CVV_VISIBLE);
+	UT_ASSERT_EQ((int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_SUBCOMMITTED,
+												  CLUSTER_VISIBILITY_UNKNOWN),
+				 (int)CVV_VISIBLE);
+
+	/* Committed delete at/before snapshot (decide VISIBLE) -> tuple INVISIBLE. */
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_COMMITTED, CLUSTER_VISIBILITY_VISIBLE),
+		(int)CVV_INVISIBLE);
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_CLEANED_OUT, CLUSTER_VISIBILITY_VISIBLE),
+		(int)CVV_INVISIBLE);
+
+	/* Committed delete AFTER snapshot (decide INVISIBLE) -> row live -> VISIBLE. */
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_COMMITTED, CLUSTER_VISIBILITY_INVISIBLE),
+		(int)CVV_VISIBLE);
+	UT_ASSERT_EQ((int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_CLEANED_OUT,
+												  CLUSTER_VISIBILITY_INVISIBLE),
+				 (int)CVV_VISIBLE);
+
+	/* Unknown status -> fail-closed, NEVER silently invisible. */
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_UNKNOWN, CLUSTER_VISIBILITY_UNKNOWN),
+		(int)CVV_FAILCLOSED_UNKNOWN);
+	/* Committed but commit_scn unresolved (decide UNKNOWN) -> fail-closed, not invisible. */
+	UT_ASSERT_EQ(
+		(int)cluster_vis_cr_xmax_verdict(CLUSTER_TT_STATUS_COMMITTED, CLUSTER_VISIBILITY_UNKNOWN),
+		(int)CVV_FAILCLOSED_UNKNOWN);
+}
+
 int
 main(void)
 {
@@ -157,6 +209,7 @@ main(void)
 	UT_RUN(test_obs2_update_xmin_full_table);
 	UT_RUN(test_obs2_update_xmax_full_table);
 	UT_RUN(test_obs3_dirty_full_table);
+	UT_RUN(test_obs_cr_xmax_full_table);
 	UT_RUN(test_all_verdicts_in_range);
 
 	UT_DONE();

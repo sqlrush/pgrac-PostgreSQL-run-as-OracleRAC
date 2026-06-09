@@ -67,6 +67,8 @@ sub _new_node
 my $tolerated =
   qr{cluster\ CR\ cannot\ reconstruct\ block
 	|cluster\ undo\ record\ alloc\ failed
+	|cluster\ CR\ cannot\ resolve\ commit_scn
+	|cluster\ CR\ xmax\ visibility\ unresolved
 	|ITL\ slot\ overflow
 	|deadlock\ detected
 	|could\ not\ serialize\ access
