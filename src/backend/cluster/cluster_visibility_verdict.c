@@ -126,7 +126,7 @@ cluster_vis_update_xmax_verdict(ClusterTTStatus status, bool is_delete)
  *	progress and produced silent UPDATE 0 / lost updates (D0.6: 538 cases).
  *
  *	COMMITTED / CLEANED_OUT -> invisible only if the delete is visible at
- *	read_scn, i.e. exact commit_scn <= read_scn (cluster_visibility_decide_by_scn
+ *	read_scn, i.e. exact commit_scn at/before read_scn (cluster_visibility_decide_by_scn
  *	returns VISIBLE for the delete; we invert to INVISIBLE for the tuple).  A
  *	delete committed after read_scn leaves the row VISIBLE.
  *
@@ -152,10 +152,10 @@ cluster_vis_cr_xmax_verdict(ClusterTTStatus xmax_status,
 	case CLUSTER_TT_STATUS_CLEANED_OUT:
 		switch (committed_scn_decision) {
 		case CLUSTER_VISIBILITY_VISIBLE:
-			/* delete visible at read_scn (commit_scn <= read_scn) -> tuple gone */
+			/* delete visible at read_scn (committed at/before snapshot) -> tuple gone */
 			return CVV_INVISIBLE;
 		case CLUSTER_VISIBILITY_INVISIBLE:
-			/* delete not yet visible (commit_scn > read_scn) -> tuple live */
+			/* delete not yet visible (committed after snapshot) -> tuple live */
 			return CVV_VISIBLE;
 		case CLUSTER_VISIBILITY_UNKNOWN:
 		default:
