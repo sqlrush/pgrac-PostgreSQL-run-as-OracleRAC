@@ -38,6 +38,9 @@
 
 name: linkdb nightly full CI
 
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
 on:
   schedule:
     - cron: '0 8 * * *'
@@ -69,14 +72,28 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
+            build-essential ccache \
             libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -85,6 +102,7 @@ jobs:
       - name: Build and install
         run: |
           make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
           make install
 
       - name: Run PG regression tests (219 tests)
@@ -128,6 +146,7 @@ jobs:
           - { name: stage2-gcs,        ranges: "100-118", unit: false, regress: false }
           - { name: stage3-core,       ranges: "203-225", unit: false, regress: false }
           - { name: stage3-recent,     ranges: "228-237", unit: false, regress: false }
+          - { name: stage4-wal,        ranges: "242-243", unit: false, regress: false }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,14 +155,29 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
+            build-essential ccache \
             libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-${{ matrix.shard.name }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-${{ matrix.shard.name }}-ccache-
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -152,6 +186,7 @@ jobs:
       - name: Build and install
         run: |
           make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
           make install
 
       - name: Run cluster_unit
@@ -217,7 +252,7 @@ jobs:
 
       - name: Install macOS dependencies
         run: |
-          brew install readline icu4c lz4 zstd openssl@3 libxml2 cpanminus pkg-config || true
+          brew install readline icu4c lz4 zstd openssl@3 libxml2 cpanminus pkg-config ccache || true
           cpanm --local-lib=$HOME/perl5 --notest IPC::Run IO::Tty
           {
             echo "PERL5LIB=$HOME/perl5/lib/perl5"
@@ -226,9 +261,23 @@ jobs:
             echo "CPPFLAGS=-I$(brew --prefix readline)/include -I$(brew --prefix zstd)/include -I$(brew --prefix lz4)/include -I$(brew --prefix openssl@3)/include -I$(brew --prefix icu4c)/include"
           } >> $GITHUB_ENV
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache clang" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -237,6 +286,7 @@ jobs:
       - name: Build and install
         run: |
           make -j$(sysctl -n hw.ncpu)
+          ccache --show-stats
           make install
 
       - name: Run PG regression tests (219 tests)
@@ -282,14 +332,28 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
+            build-essential ccache \
             libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -298,6 +362,7 @@ jobs:
       - name: Build and install
         run: |
           make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
           make install
 
       - name: Run Stage 2 acceptance TAP matrix
@@ -344,14 +409,28 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
+            build-essential ccache \
             libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -360,6 +439,7 @@ jobs:
       - name: Build and install
         run: |
           make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
           make install
 
       - name: Run Stage 3 static contract unit binary

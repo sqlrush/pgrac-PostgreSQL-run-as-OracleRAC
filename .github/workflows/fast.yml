@@ -19,7 +19,7 @@
 #                                       comment headers / commit msg
 #   2. linux-enable        (~5-7 min): build + install + cluster_unit +
 #                                       cluster_regress + smoke TAP
-#                                       subset (010 / 030 / 050)
+#                                       subset (010 / 030 / 050 / 200 / 226)
 #   3. linux-disable       (~3-4 min): build + PG 219 + binary symbol
 #                                       audit (--disable-cluster contract)
 #   4. macos-build-only    (~3-4 min): build only — cross-platform
@@ -36,6 +36,9 @@
 # ----------------------------------------------------------------------
 
 name: linkdb fast-gate CI
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 on:
   push:
@@ -60,13 +63,54 @@ jobs:
     name: Validate (comment headers + format + tidy + commit msg)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      code_changed: ${{ steps.changes.outputs.code_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Classify changed files
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Tag push: run the full fast gate."
+            exit 0
+          fi
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+
+          zero="0000000000000000000000000000000000000000"
+          if [[ -z "$base" || "$base" == "$zero" ]]; then
+            git diff-tree --no-commit-id --name-only -r "$head" > changed-files.txt
+          else
+            git diff --name-only "$base" "$head" > changed-files.txt
+          fi
+
+          echo "Changed files:"
+          cat changed-files.txt
+
+          if grep -Ev '^(docs/|specs/|README($|[.])|CHANGELOG($|[.])|ROADMAP($|[.])|.*[.]md$)' changed-files.txt | grep -q .; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Code-impacting change detected: heavy jobs enabled."
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Docs/spec-only change: heavy jobs skipped."
+          fi
+
       - name: Install lint tools
+        if: steps.changes.outputs.code_changed == 'true'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
@@ -83,18 +127,23 @@ jobs:
           echo "OK: no tmp_check / log / regression.diffs in tracked tree"
 
       - name: Check comment headers (CLAUDE.md rule 11)
+        if: steps.changes.outputs.code_changed == 'true'
         run: ./scripts/ci/check-comment-headers.sh
 
       - name: Check clang-format (cluster sources)
+        if: steps.changes.outputs.code_changed == 'true'
         run: ./scripts/ci/check-format.sh
 
       - name: Check clang-tidy (cluster sources, warn-only stage 0.7)
+        if: steps.changes.outputs.code_changed == 'true'
         run: ./scripts/ci/check-tidy.sh
 
       - name: Check SCN cmp gate (spec-1.15 Q8+L4)
+        if: steps.changes.outputs.code_changed == 'true'
         run: ./scripts/ci/check-scn-cmp-gate.sh
 
       - name: Check no CLOG overlay (spec-3.1 L176)
+        if: steps.changes.outputs.code_changed == 'true'
         run: ./scripts/ci/check-no-clog-overlay.sh
 
       - name: Lint commit message
@@ -117,6 +166,7 @@ jobs:
   linux-enable:
     name: Linux enable-cluster (unit + regress + smoke TAP)
     needs: validate
+    if: needs.validate.outputs.code_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -127,21 +177,37 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
+            build-essential ccache \
             libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev \
             libipc-run-perl pkg-config
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
             --enable-cluster --enable-tap-tests
 
       - name: Build
-        run: make -j$(getconf _NPROCESSORS_ONLN)
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
 
       - name: Install
         run: make install
@@ -152,19 +218,20 @@ jobs:
       - name: Run cluster_regress (7 SQL smoke tests)
         run: make -C src/test/cluster_regress check
 
-      - name: Run smoke TAP subset (010 + 030 + 050 + 200 + 202 + 226)
+      - name: Run smoke TAP subset (010 + 030 + 050 + 200 + 226)
         run: |
           # Tier 1 fast gate: TAP files covering basic catalog views,
           # acceptance lifecycle, smgr opt-in workflow + spec-2.40 Stage 2
-          # acceptance capability smoke (t/200) + perf smoke (t/202) +
+          # acceptance capability smoke (t/200) +
           # spec-3.17 Stage 3 MVCC capability cross-cutting smoke (t/226,
           # single-node, ~5s).
+          # t/202 perf smoke runs in nightly Stage 2 acceptance medium.
           # t/201 fault matrix NOT here (avoid fast-gate inject flake).
           # t/227 Stage 3 workload perf smoke runs pgbench (>30s) -> nightly.
           # Full cluster_tap suite + 2-node ClusterPair + heartbeat round-
           # trip + Stage 2/3 medium perf matrix tests run in nightly.yml.
           make -C src/test/cluster_tap check \
-            PROVE_TESTS="t/010_views.pl t/030_acceptance.pl t/050_shared_storage_initdb.pl t/200_stage2_acceptance_capability.pl t/202_stage2_acceptance_perf_smoke.pl t/226_stage3_mvcc_acceptance_capability.pl"
+            PROVE_TESTS="t/010_views.pl t/030_acceptance.pl t/050_shared_storage_initdb.pl t/200_stage2_acceptance_capability.pl t/226_stage3_mvcc_acceptance_capability.pl"
 
       - name: Upload regression diffs on failure
         if: failure()
@@ -189,6 +256,7 @@ jobs:
   linux-disable:
     name: Linux --disable-cluster regression
     needs: validate
+    if: needs.validate.outputs.code_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -199,12 +267,26 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            build-essential libreadline-dev zlib1g-dev libicu-dev \
+            build-essential ccache libreadline-dev zlib1g-dev libicu-dev \
             liblz4-dev libzstd-dev libssl-dev libxml2-dev pkg-config
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
 
       - name: Configure (--disable-cluster)
         run: |
-          ./configure \
+          CC="ccache gcc" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
@@ -213,6 +295,7 @@ jobs:
       - name: Build + Install
         run: |
           make -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
           make install
 
       - name: Run PG regression tests (must remain 219/219)
@@ -237,6 +320,7 @@ jobs:
   macos-build-only:
     name: macOS build-only (compile guard)
     needs: validate
+    if: needs.validate.outputs.code_changed == 'true'
     runs-on: macos-latest
     timeout-minutes: 12
     steps:
@@ -245,23 +329,39 @@ jobs:
 
       - name: Install macOS dependencies
         run: |
-          brew install readline icu4c lz4 zstd openssl@3 libxml2 pkg-config || true
+          brew install readline icu4c lz4 zstd openssl@3 libxml2 pkg-config ccache || true
           {
             echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix lz4)/lib/pkgconfig:$(brew --prefix zstd)/lib/pkgconfig"
             echo "LDFLAGS=-L$(brew --prefix readline)/lib -L$(brew --prefix zstd)/lib -L$(brew --prefix lz4)/lib -L$(brew --prefix openssl@3)/lib -L$(brew --prefix icu4c)/lib"
             echo "CPPFLAGS=-I$(brew --prefix readline)/include -I$(brew --prefix zstd)/include -I$(brew --prefix lz4)/include -I$(brew --prefix openssl@3)/include -I$(brew --prefix icu4c)/include"
           } >> $GITHUB_ENV
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=700M
+          ccache --zero-stats
+
       - name: Configure (--enable-cluster)
         run: |
-          ./configure \
+          CC="ccache clang" ./configure \
             --prefix=$HOME/pgrac-install \
             --enable-cassert --enable-debug \
             --with-openssl --with-icu --with-lz4 --with-zstd \
             --enable-cluster
 
       - name: Build
-        run: make -j$(sysctl -n hw.ncpu)
+        run: |
+          make -j$(sysctl -n hw.ncpu)
+          ccache --show-stats
 
       - name: Install + cluster_unit (link-level smoke)
         run: |
@@ -277,6 +377,7 @@ jobs:
   security:
     name: Security (cppcheck + scan-build)
     needs: validate
+    if: needs.validate.outputs.code_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
