@@ -45,7 +45,8 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_subtrans test_cluster_multixact test_cluster_undo_format \
         test_cluster_undo_record test_cluster_undo_lifecycle test_cluster_cr test_cluster_cr_cache test_cluster_tt_durable \
         test_cluster_retention test_cluster_undo_cleaner test_cluster_visibility_variants test_cluster_tt_2pc \
-        test_cluster_stage3_acceptance test_cluster_undo_buf test_cluster_undo_extent
+        test_cluster_stage3_acceptance test_cluster_undo_buf test_cluster_undo_extent \
+        test_cluster_wal_thread
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -927,6 +928,19 @@ test_cluster_undo_format: test_cluster_undo_format.c unit_test.h \
 # spec-3.7 D12: test_cluster_undo_record — 12 encode/decode round-trip
 # tests for UndoRecordHeader + 4 payloads + slot dir addressing.
 test_cluster_undo_record: test_cluster_undo_record.c unit_test.h \
+		$(CLUSTER_VERSION_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-4.1 D8: test_cluster_wal_thread — 12 pure-helper tests for the
+# per-thread WAL routing surface (identity mapping / dir name / page
+# header validator RL1 matrix / claim fill+validate+corruption).  All
+# helpers are header-inline (cluster_wal_thread.h); libpgcommon +
+# libpgport supply pg_crc32c (the test_cluster_undo_record linkage
+# pattern -- no module .o, no stubs).
+test_cluster_wal_thread: test_cluster_wal_thread.c unit_test.h \
 		$(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \

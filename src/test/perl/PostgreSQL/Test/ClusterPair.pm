@@ -52,6 +52,13 @@ use PostgreSQL::Test::Utils;
 #	                           the ->voting_disk_paths accessor to
 #	                           recover the file list (e.g., for fault
 #	                           injection in future Hardening v0.5+).
+#	  wal_threads_root       : boolean — opt-in spec-4.1 per-thread WAL
+#	                           layout harness.  Creates one shared
+#	                           tempdir; node N's WAL is relocated to
+#	                           <root>/thread_<N+1> via initdb -X and
+#	                           cluster.wal_threads_dir is set on both
+#	                           nodes.  Use ->wal_threads_root to reach
+#	                           the root (cross-thread pg_waldump etc.).
 #-----------------------------------------------------------------------
 sub new_pair
 {
@@ -91,9 +98,33 @@ sub new_pair
 		$voting_disks_csv = join(',', @voting_disk_paths);
 	}
 
+	# spec-4.1 opt-in: shared per-thread WAL root.  One tempdir both
+	# postmasters can reach; node N's WAL stream is relocated to
+	# <root>/thread_<N+1> via initdb -X (the bootstrap-managed
+	# relocation pgrac-init --wal-threads-dir performs in production)
+	# and cluster.wal_threads_dir points the startup validator at the
+	# root (cluster_wal_thread_init).
+	my $wal_threads_root;
+	if ($opts{wal_threads_root})
+	{
+		$wal_threads_root = PostgreSQL::Test::Utils::tempdir();
+	}
+
+	my $wal_node_index = 0;
 	for my $node ($node0, $node1)
 	{
-		$node->init;
+		if (defined $wal_threads_root)
+		{
+			my $thread_id = $wal_node_index + 1;
+			$node->init(extra => [ '-X', "$wal_threads_root/thread_$thread_id" ]);
+			$node->append_conf('postgresql.conf',
+				"cluster.wal_threads_dir = '$wal_threads_root'\n");
+		}
+		else
+		{
+			$node->init;
+		}
+		$wal_node_index++;
 
 		# spec-2.2 §3.3 -- enable cluster + tier1.  per L59 first-time
 		# GUC writes use append_conf (adjust_conf is replace-only).
@@ -180,6 +211,7 @@ EOC
 		pg_ports    => [ $pg_port_0, $pg_port_1 ],
 		ic_ports    => [ $ic_port_0, $ic_port_1 ],
 		voting_disk_paths => \@voting_disk_paths,
+		wal_threads_root  => $wal_threads_root,
 	}, $class;
 }
 
@@ -217,6 +249,9 @@ sub stop_pair
 sub node0   { return $_[0]->{node0}; }
 sub node1   { return $_[0]->{node1}; }
 sub ic_port { return $_[0]->{ic_ports}[ $_[1] ]; }
+
+# spec-4.1: shared per-thread WAL root (undef unless wal_threads_root => 1).
+sub wal_threads_root { return $_[0]->{wal_threads_root}; }
 
 #-----------------------------------------------------------------------
 # voting_disk_paths($self)
