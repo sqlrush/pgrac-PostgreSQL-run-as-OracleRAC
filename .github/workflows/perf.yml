@@ -112,6 +112,7 @@ jobs:
           make install
 
       - name: Stage off/on pgbench baseline (warn-only)
+        continue-on-error: true
         run: |
           PGRAC_ENABLE_INSTALL=$HOME/linkdb-install \
           PGRAC_DISABLE_INSTALL=$HOME/linkdb-disable-install \
@@ -129,6 +130,7 @@ jobs:
       # by one CI run.  warn-only (perf is never a hard gate, 规则 20.A).
       - name: Write-path four-quadrant matrix (warn-only, Linux)
         if: runner.os == 'Linux'
+        continue-on-error: true
         run: |
           mkdir -p scripts/perf/results
           PGRAC_ENABLE_INSTALL=$HOME/linkdb-install \
@@ -220,7 +222,7 @@ jobs:
           fi
           make install
 
-      - name: Run 2-node baseline (3 workload classes — warn-only)
+      - name: Run 2-node baseline (5 workload classes — report-only)
         run: |
           export PGRAC_ENABLE_INSTALL=$HOME/linkdb-install
           export PATH=$HOME/linkdb-install/bin:$PATH
@@ -232,17 +234,37 @@ jobs:
           export PG_REGRESS="$(pwd)/src/test/regress/pg_regress"
           # class 2/3/4 via Perl runner (ClusterPair fixture);
           # class 1 (single-node-no-peer) covered by existing perf-baseline job above.
+          status=0
           for class in 2node-local-affinity 2node-cross-node-visibility 2node-hot-row-lock 2node-subxact-nesting 2node-multixact-shared-lock; do
             echo "=== Running $class ==="
             rm -rf tmp_check  # avoid "File exists" Bail between classes
-            scripts/perf/run-2node-baseline.sh \
+            if scripts/perf/run-2node-baseline.sh \
               --mode="$class" \
               --scale="${PERF_SCALE:-10}" \
               --duration="${PERF_DURATION:-30}" \
               --clients="${PERF_CLIENTS:-4}" \
-              --jobs="${PERF_JOBS:-2}"
-            test -n "$(find scripts/perf/results -maxdepth 1 -name "3-4e-${class}-*.json" -print -quit)"
+              --jobs="${PERF_JOBS:-2}"; then
+              artifact=$(find scripts/perf/results -maxdepth 1 -name "3-4e-${class}-*.json" -print -quit)
+              if [ -n "$artifact" ]; then
+                echo "report artifact: $artifact"
+              else
+                echo "::warning::2-node perf class $class finished without a JSON artifact"
+                status=1
+              fi
+            else
+              echo "::warning::2-node perf class $class failed; continuing because perf is report-only"
+              status=1
+            fi
           done
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### 2-node perf baseline report-only failures"
+              echo
+              echo "One or more 2-node perf classes failed or missed an artifact."
+              echo "Build/configure failures still fail this workflow; pgbench perf legs are warning-only."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
 
       - name: Collect 2-node perf artifacts
         if: always()
