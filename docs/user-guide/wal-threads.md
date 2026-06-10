@@ -83,6 +83,13 @@ Two wait events cover the claim file I/O:
   primary's stamped stream regardless of its own `cluster.node_id`.
 - `pg_basebackup` from a relocated node produces a backup with a plain
   (empty) `pg_wal` directory, as with any symlinked `pg_wal`.
+  **The backup also copies the primary's `postgresql.conf`, including
+  its `cluster.wal_threads_dir` — before starting a standby from such
+  a backup, set `cluster.wal_threads_dir = ''` (or relocate the
+  standby's `pg_wal` into its own thread directory).**  Left as
+  copied, the startup validator refuses to start (SQLSTATE `53RA0`):
+  the backup's plain `pg_wal` does not resolve to the configured
+  thread directory.
 - `pg_resetwal` writes pages without a thread stamp (`thread: 0`); the
   server resumes stamping on the next start.  Mixed segments are
   valid.

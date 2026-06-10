@@ -18,7 +18,7 @@
  *	        string invariants;  runtime emission verified by t/226 L10.
  *	    L4  SQLSTATE 53R97 / 53R9C / 53R9D / 53R9E / 53R9G / 53R9H 全
  *	        encodable via MAKE_SQLSTATE (Stage 3 MVCC error surface).
- *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 93 (spec-3.13 D6
+ *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 95 (spec-3.13 D6
  *	        ship value;  update-required contract — any future spec adding
  *	        wait events MUST bump this snapshot).
  *	    L6  ClusterTTStatus 6-value enum (0-5) + TTSlotStatus 5 functional
@@ -285,14 +285,14 @@ UT_TEST(test_stage3_sqlstate_mvcc_surface_encodable)
 }
 
 
-/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 93 ===== */
+/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 95 ===== */
 
-UT_TEST(test_stage3_wait_events_count_snapshot_93)
+UT_TEST(test_stage3_wait_events_count_snapshot_95)
 {
-	/* spec-3.13 D6 ship value.  Update-required contract:  a future spec
+	/* spec-4.1 D7 value (93 + 2 wal-thread claim I/O).  Update-required contract:  a future spec
 	 * adding a wait event MUST bump this snapshot (it is current state, not
 	 * "==93 forever"). */
-	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 93);
+	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 95);
 }
 
 
@@ -384,7 +384,7 @@ main(void)
 	UT_RUN(test_stage3_undo_block_write_delta_apply);
 	UT_RUN(test_stage3_capability_dump_category_names);
 	UT_RUN(test_stage3_sqlstate_mvcc_surface_encodable);
-	UT_RUN(test_stage3_wait_events_count_snapshot_93);
+	UT_RUN(test_stage3_wait_events_count_snapshot_95);
 	UT_RUN(test_stage3_tt_enum_values_locked);
 	UT_RUN(test_stage3_retention_active_retains_invariant);
 	UT_RUN(test_stage3_bind_opcode_reserved);

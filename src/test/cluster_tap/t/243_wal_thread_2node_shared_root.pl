@@ -14,11 +14,15 @@
 #          independently (no shared write coordination, AD-009)
 #      L3  cross-thread read: node0's pg_waldump reads node1's stream at
 #          <root>/thread_2 over an explicit window (all-readable)
-#      L4  scope note: ANY data access around a pair-node restart is
-#          blocked by a pre-existing Stage-2 GCS gap (= roadmap 4.7,
-#          two signatures documented inline); restart legs therefore
-#          assert via the node-local SRF only.  Crash-cycle coverage
-#          of a routed stream lives in t/242 L4 (single node).
+#      L4  kill -9 + REAL own-stream strict crash recovery (checkpoint
+#          quiesce keeps heap records out of the redo window) + the
+#          survivor's stream proven untouched at the file level.  DATA
+#          access around a pair-node restart stays blocked by a
+#          pre-existing Stage-2 GCS gap (= roadmap 4.7, two signatures
+#          documented inline), so post-restart assertions use the
+#          node-local SRF only; survivor DML during the death window
+#          is 4.7 scope.  Crash coverage of a routed stream WITH data
+#          lives in t/242 L4 (single node).
 #      L5  foreign claim: node0's claim copied over node1's -> node1
 #          start refused (53RA1 "claimed by node 0"); restore -> ok;
 #          claim is write-once across restarts (claim_created=f)
@@ -67,7 +71,12 @@ sub window_dump
 }
 
 my $pair = PostgreSQL::Test::ClusterPair->new_pair('walthreads',
-	wal_threads_root => 1);
+	wal_threads_root => 1,
+	# L4 determinism: the crash-recovery leg quiesces with CHECKPOINT and
+	# must keep the redo window free of heap records (heap redo on a
+	# peer-configured node trips the pre-existing 4.7 GCS gap, see the
+	# scope note below); autovacuum could write into that window.
+	extra_conf => [ 'autovacuum = off' ]);
 my $root = $pair->wal_threads_root;
 my $node0 = $pair->node0;
 my $node1 = $pair->node1;
@@ -128,28 +137,51 @@ unlike($own0, qr/thread: 2/, 'L7 thread_1 stream carries no thread-2 pages');
 unlike($cross, qr/thread: 1/, 'L7 thread_2 stream carries no thread-1 pages');
 
 # ============================================================
-# L4 scope note -- node restart/crash data access on a pair is 4.7.
+# L4: kill -9 + own-stream strict crash recovery + stream isolation.
 #
-# A PRE-EXISTING Stage-2 gap (surfaced for the first time by this
-# spec's TAP work) blocks any data access around a peer node restart:
-#   (a) kill -9 + restart: heap redo in the startup process trips the
-#       cluster_gcs_block hook ("MyBackendId=-1 out of [1,
-#       MaxBackends]" FATAL) -- recovery cannot complete;
-#   (b) even clean restart: the restarted node's first access to a
+# Scope note (4.7 D0 evidence): a PRE-EXISTING Stage-2 gap, surfaced
+# for the first time by this spec's TAP work, blocks DATA access
+# around a peer node restart:
+#   (a) heap redo on a peer-configured node trips the
+#       cluster_gcs_block hook in the startup process
+#       ("MyBackendId=-1 out of [1, MaxBackends]" FATAL), so crash
+#       recovery with heap records in the redo window cannot complete;
+#   (b) even after a clean restart, the node's first access to a
 #       GCS-tracked block gets "master rejected transition_id=1 as
 #       illegal" -- its in-memory GCS state is gone while the peer
 #       retains the old view, and no rebuild protocol exists yet.
 # Both are literally roadmap 4.7 (crash recovery of GCS/PCM: block PCM
-# state + dirty buffer rebuild); registered as spec-4.1 ship notes /
-# 4.7 D0 evidence.  Crash-cycle coverage of the ROUTED stream itself
-# lives in t/242 L4 (single node, no peers).  The restart legs below
-# (L5/L6) therefore assert through the node-local pg_cluster_state SRF
-# only -- no table access after a restart.
+# state + dirty buffer rebuild).  Within those bounds this leg still
+# exercises the spec-L4 contract for the WAL layer itself: CHECKPOINT
+# quiesce keeps the redo window free of heap records (autovacuum off),
+# so kill -9 + restart drives REAL own-stream strict crash recovery
+# (the reader's expected-thread-id path) to completion; the survivor's
+# stream is proven untouched at the file level; post-restart
+# assertions stay on the node-local SRF (no table access).  Survivor
+# DML *during* the death window (GCS retransmit vs an undeclared-dead
+# peer) and post-restart data access remain 4.7 scope.
 # ============================================================
-note('4.7 pre-existing gap: pair-node restart blocks data access '
-	. '(crash: cluster_gcs_block MyBackendId=-1 FATAL in startup; '
-	. 'clean: master rejected transition_id as illegal) -- '
-	. 'see spec-4.1 ship notes; restart legs assert via SRF only');
+note('4.7 pre-existing gap pinned: pair-node restart blocks DATA access '
+	. '(crash w/ heap redo: cluster_gcs_block MyBackendId=-1 FATAL; '
+	. 'post-restart: master rejected transition_id as illegal) -- '
+	. 'L4 covers the WAL layer via checkpoint-quiesced crash recovery; '
+	. 'see spec-4.1 ship notes');
+
+$node1->safe_psql('postgres', 'CHECKPOINT');
+$node1->stop('immediate');
+
+# Survivor stream untouched + readable while the peer is dead
+# (file-level WAL-stream isolation; no node0 SQL in the death window).
+my $iso = window_dump($node0, "$root/thread_1", $l0a, $l0b);
+like($iso, qr/thread: 1/,
+	'L4 survivor thread_1 stream intact + readable during peer death');
+
+$node1->start;
+is(dumpkey($node1, 'dir_validated'), 't',
+	'L4 own-stream strict crash recovery completed (kill -9, quiesced redo window)');
+is(dumpkey($node1, 'claim_created'), 'f',
+	'L4 claim re-read across crash recovery, not re-created');
+$pair->wait_for_peer_state(0, 1, 'connected', 30);
 
 # ============================================================
 # L5: foreign claim (copied from thread_1) -> node1 refused.

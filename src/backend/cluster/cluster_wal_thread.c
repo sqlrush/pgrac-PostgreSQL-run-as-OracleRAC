@@ -251,7 +251,19 @@ claim_read(const char *path, ClusterWalThreadClaim *claim)
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_READ);
 	nread = read(fd, claim, sizeof(*claim));
 	pgstat_report_wait_end();
-	close(fd);
+
+	/*
+	 * Keep errno meaningful for the caller's %m: a short read (torn
+	 * claim) sets none, and close() may clobber whatever read() set.
+	 */
+	if (nread >= 0 && nread < (ssize_t)sizeof(*claim))
+		errno = EIO;
+	{
+		int save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+	}
 
 	return (nread == (ssize_t)sizeof(*claim)) ? 1 : -1;
 }
@@ -287,9 +299,17 @@ claim_create(const char *path, const char *dir, const ClusterWalThreadClaim *cla
 		pgstat_report_wait_end();
 		close(fd);
 	} else {
+		/*
+		 * Preserve the write()/pg_fsync() errno across close()/unlink()
+		 * so the caller's FATAL %m names the real failure; a short
+		 * write sets none, so supply EIO.
+		 */
+		int save_errno = (nwritten >= 0 && nwritten < (ssize_t)sizeof(*claim)) ? EIO : errno;
+
 		pgstat_report_wait_end();
 		close(fd);
 		(void)unlink(path); /* best-effort: do not leave a torn claim */
+		errno = save_errno;
 		return false;
 	}
 
@@ -299,8 +319,11 @@ claim_create(const char *path, const char *dir, const ClusterWalThreadClaim *cla
 		return false;
 	pgstat_report_wait_start(WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_WRITE);
 	if (pg_fsync(fd) != 0) {
+		int save_errno = errno;
+
 		pgstat_report_wait_end();
 		close(fd);
+		errno = save_errno;
 		return false;
 	}
 	pgstat_report_wait_end();

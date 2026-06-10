@@ -157,7 +157,7 @@ test_cluster_retention: test_cluster_retention.c unit_test.h \
 # enums / BIND reserved).  L7 makes a real call into cluster_tt_slot_recyclable
 # so it links cluster_undo_retention.o (scn_time_cmp stubbed locally, same as
 # test_cluster_retention).  Header-only otherwise.
-test_cluster_stage3_acceptance: test_cluster_stage3_acceptance.c unit_test.h \
+test_cluster_stage3_acceptance: test_cluster_stage3_acceptance.c unit_test.h ../../../src/include/cluster/cluster_views.h \
 		$(CLUSTER_UNDO_RETENTION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_UNDO_RETENTION_O) \
@@ -202,7 +202,7 @@ test_cluster_signal: test_cluster_signal.c unit_test.h $(CLUSTER_VERSION_O) \
 # test_cluster_views links cluster_views.o.  cluster_views.c calls
 # fmgr / tuplestore / wait event lookup machinery; the test stubs all
 # of them since the unit test only takes the SRF address (never invokes).
-test_cluster_views: test_cluster_views.c unit_test.h $(CLUSTER_VERSION_O) \
+test_cluster_views: test_cluster_views.c unit_test.h ../../../src/include/cluster/cluster_views.h $(CLUSTER_VERSION_O) \
 		$(CLUSTER_VIEWS_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) $(CLUSTER_VIEWS_O) -o $@
@@ -600,7 +600,7 @@ test_cluster_gcs_block: test_cluster_gcs_block.c unit_test.h $(CLUSTER_VERSION_O
 # fixed-size, dedup result enum, retry math, LWTRANCHE distinct, wait
 # events distinct, 85 cluster wait events).  Header-only;  behavioral
 # coverage in cluster_tap t/112.
-test_cluster_gcs_block_retransmit: test_cluster_gcs_block_retransmit.c unit_test.h \
+test_cluster_gcs_block_retransmit: test_cluster_gcs_block_retransmit.c unit_test.h ../../../src/include/cluster/cluster_views.h \
 		$(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \
@@ -680,7 +680,7 @@ test_cluster_sinval_ack: test_cluster_sinval_ack.c unit_test.h \
 # SQLSTATE 53R60/90-95 encodable, GUC enum + shmem_max_regions
 # boot_val=64 snapshot, RESERVED_0=0 sentinel).  Header-only;
 # behavioral coverage in cluster_tap t/200-202.
-test_cluster_stage2_acceptance: test_cluster_stage2_acceptance.c unit_test.h \
+test_cluster_stage2_acceptance: test_cluster_stage2_acceptance.c unit_test.h ../../../src/include/cluster/cluster_views.h \
 		$(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \

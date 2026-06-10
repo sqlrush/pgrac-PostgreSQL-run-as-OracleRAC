@@ -103,4 +103,48 @@ $pgconf = PostgreSQL::Test::Utils::slurp_file("$datadir/postgresql.conf");
 like($pgconf, qr/^cluster\.node_id\s*=\s*42\s*$/m,
 	'postgresql.conf now reflects the new --node-id after --force');
 
+# ----------
+# 6. --wal-threads-dir (spec-4.1): wrapper-level contract.
+# ----------
+
+# 6a. Relative path is rejected before anything is touched.
+my $wroot = "$tempdir/walroot";
+command_fails(
+	[ 'pgrac-init', '-D', "$tempdir/d6a", '--node-id=3',
+		'--wal-threads-dir=relative/path' ],
+	'pgrac-init rejects a relative --wal-threads-dir');
+ok(!-d "$tempdir/d6a", 'rejected relative path bootstrapped nothing');
+
+# 6b. Success path: thread dir created, pg_wal relocated, GUC written.
+command_ok(
+	[ 'pgrac-init', '-D', "$tempdir/d6b", '--node-id=3',
+		"--wal-threads-dir=$wroot" ],
+	'pgrac-init --wal-threads-dir succeeds on a fresh PGDATA');
+ok(-d "$wroot/thread_4", 'thread_<node_id + 1> directory created');
+ok(-l "$tempdir/d6b/pg_wal", 'pg_wal is a symlink (initdb -X relocation)');
+{
+	my $target = readlink("$tempdir/d6b/pg_wal");
+	like($target, qr/thread_4/, 'pg_wal symlink targets thread_4');
+}
+my $conf6b = PostgreSQL::Test::Utils::slurp_file("$tempdir/d6b/postgresql.conf");
+like($conf6b, qr/^cluster\.wal_threads_dir\s*=\s*'\Q$wroot\E'\s*$/m,
+	'cluster.wal_threads_dir written to postgresql.conf');
+
+# 6c. Non-empty thread directory is refused (another node's stream).
+command_fails(
+	[ 'pgrac-init', '-D', "$tempdir/d6c", '--node-id=3',
+		"--wal-threads-dir=$wroot" ],
+	'pgrac-init refuses a non-empty thread directory');
+ok(!-d "$tempdir/d6c" || !-f "$tempdir/d6c/PG_VERSION",
+	'refused non-empty thread dir bootstrapped no PGDATA');
+
+# 6d. Already-initialised PGDATA is refused BEFORE touching the shared
+# root: no empty thread_N directory may be left behind.
+command_fails(
+	[ 'pgrac-init', '-D', $datadir, '--node-id=9',
+		"--wal-threads-dir=$wroot", '--force' ],
+	'pgrac-init refuses --wal-threads-dir on an initialised PGDATA');
+ok(!-d "$wroot/thread_10",
+	'failed relocation left no thread directory behind on the shared root');
+
 done_testing();

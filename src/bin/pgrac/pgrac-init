@@ -103,11 +103,17 @@ locate_pg_tool() {
 set_postgresql_conf_value() {
     local conf="$1" key="$2" value="$3"
     local key_re="${key//./\\.}"
-    local pattern="^[[:space:]]*#?[[:space:]]*${key_re}[[:space:]]*="
+    # Only UNcommented lines count as an existing setting.  The shipped
+    # postgresql.conf.sample carries commented documentation anchors
+    # (e.g. "#cluster.node_id = -1"); treating those as a live value
+    # made every fresh bootstrap demand --force (spec-4.1 review fix).
+    # A commented anchor is left in place and the live value appended:
+    # last-wins postgresql.conf semantics make the appended line rule.
+    local pattern="^[[:space:]]*${key_re}[[:space:]]*="
     local current
     if grep -Eq "$pattern" "$conf"; then
         current=$(grep -E "$pattern" "$conf" | tail -1 \
-                  | sed -E "s/^[[:space:]]*#?[[:space:]]*${key_re}[[:space:]]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//")
+                  | sed -E "s/^[[:space:]]*${key_re}[[:space:]]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//")
         if [ "$current" = "$value" ]; then
             return 0
         fi
@@ -299,6 +305,12 @@ if [ -n "$WAL_THREADS_DIR" ]; then
         /*) ;;
         *) die "--wal-threads-dir must be an absolute path (got \"$WAL_THREADS_DIR\")" ;;
     esac
+    # Refuse an already-initialised PGDATA BEFORE touching the shared
+    # WAL root: a failing command must not leave an empty thread_N
+    # directory behind on shared storage.
+    if [ -f "$TARGET_PGDATA/PG_VERSION" ]; then
+        die "--wal-threads-dir cannot relocate an already-initialised PGDATA (move pg_wal manually, see the pgrac manual)"
+    fi
     THREAD_ID=$((NODE_ID + 1))
     THREAD_DIR="$WAL_THREADS_DIR/thread_$THREAD_ID"
     mkdir -p "$THREAD_DIR" || die "could not create \"$THREAD_DIR\""
@@ -314,9 +326,6 @@ fi
 if [ -d "$TARGET_PGDATA" ] && [ -n "$(ls -A "$TARGET_PGDATA" 2>/dev/null)" ]; then
     if [ -f "$TARGET_PGDATA/PG_VERSION" ]; then
         echo "$PROGNAME: PGDATA \"$TARGET_PGDATA\" already initialised, skipping initdb"
-        if [ -n "$WAL_THREADS_DIR" ]; then
-            die "--wal-threads-dir cannot relocate an already-initialised PGDATA (move pg_wal manually, see the pgrac manual)"
-        fi
     else
         die "PGDATA \"$TARGET_PGDATA\" exists but is not a PG data directory"
     fi
