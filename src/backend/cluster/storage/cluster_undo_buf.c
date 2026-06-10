@@ -532,6 +532,31 @@ cluster_undo_buf_unpin(ClusterUndoBufPin *pin)
 	pin->slot = -1;
 }
 
+/*
+ * spec-3.25 D1b: lock-free window reference.
+ *
+ *	The deferred-merge window must keep its block's pool slot resident (a
+ *	reader re-filling an evicted slot from disk would miss the pending,
+ *	not-yet-WAL'd records), WITHOUT holding the content lock across the
+ *	window (that would block every reader).  pincount alone gates eviction
+ *	(choose_victim skips pincount != 0), so an extra reference taken while
+ *	the caller still HOLDS an EXCLUSIVE pin (pincount >= 1 -- no eviction
+ *	race) is sufficient.  Released by slot index at the window flush.
+ */
+void
+cluster_undo_buf_addref(const ClusterUndoBufPin *pin)
+{
+	Assert(pin != NULL && pin->slot >= 0);
+	pg_atomic_fetch_add_u32(&UndoBufSlots[pin->slot].pincount, 1);
+}
+
+void
+cluster_undo_buf_unref_slot(int slot)
+{
+	Assert(slot >= 0 && UndoBufSlots != NULL);
+	pg_atomic_fetch_sub_u32(&UndoBufSlots[slot].pincount, 1);
+}
+
 
 void
 cluster_undo_buf_flush_all(bool is_checkpoint)

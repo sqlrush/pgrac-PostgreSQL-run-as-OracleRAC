@@ -88,6 +88,16 @@ cluster_undo_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec->has_fpi ? "(full image)" : "(3-range delta)");
 		break;
 	}
+	case XLOG_UNDO_BLOCK_WRITE_MULTI: {
+		xl_undo_block_write_multi *xlrec = (xl_undo_block_write_multi *)payload;
+
+		appendStringInfo(buf, "instance %u seg %u block %u %s rec_len %u slot_len %u",
+						 (unsigned)xlrec->instance, (unsigned)xlrec->segment_id,
+						 (unsigned)xlrec->block_no,
+						 xlrec->has_fpi ? "(full image)" : "(3-span multi delta)",
+						 (unsigned)xlrec->rec_len, (unsigned)xlrec->slot_len);
+		break;
+	}
 	default:
 		appendStringInfo(buf, "unknown op %u", info);
 		break;
@@ -111,6 +121,8 @@ cluster_undo_identify(uint8 info)
 		return "UNDO_SEGMENT_REUSE";
 	case XLOG_UNDO_BLOCK_WRITE:
 		return "UNDO_BLOCK_WRITE";
+	case XLOG_UNDO_BLOCK_WRITE_MULTI:
+		return "UNDO_BLOCK_WRITE_MULTI";
 	default:
 		return NULL;
 	}

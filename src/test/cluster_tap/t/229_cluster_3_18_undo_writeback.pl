@@ -103,19 +103,27 @@ is($node->safe_psql('postgres', q{SELECT v FROM t_cr_wb WHERE id = 1}),
 # after the first (post-checkpoint) full image, the rest are deltas.
 $node->safe_psql('postgres', 'CHECKPOINT');
 my $start_wal = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
+# spec-3.25 D1b: one merged record per (xact, block) -- a fresh backend per
+# UPDATE would claim a fresh extent every time and emit only first-touch FPIs.
+# Drive the txns through ONE backend so the residual-extent reuse makes txn 2+
+# hit an already-WAL'd block => the delta form is exercised deterministically.
+my $bg2 = $node->background_psql('postgres');
 for my $r (1 .. 8)
 {
-	$node->safe_psql('postgres', qq{UPDATE t318b SET v = 'd$r' WHERE id <= 4});
+	$bg2->query_safe(qq{UPDATE t318b SET v = 'd$r' WHERE id <= 4});
 }
+$bg2->quit;
 my $cur_wal = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 my ($waldump, $stderr) = run_command(
 	[ $node->installed_command('pg_waldump'),
 	  '-p', $node->data_dir . '/pg_wal',
 	  '-r', 'ClusterUndo', '-s', $start_wal, '-e', $cur_wal ]);
-my $n_fpi   = () = $waldump =~ /UNDO_BLOCK_WRITE.*\(full image\)/g;
-my $n_delta = () = $waldump =~ /UNDO_BLOCK_WRITE.*\(3-range delta\)/g;
+my $n_fpi = () = $waldump =~ /UNDO_BLOCK_WRITE.*\(full image\)/g;
+# spec-3.25 D1b: the delta form is now the merged multi record ("3-span multi
+# delta"); the old per-record "3-range delta" still counts (mixed WAL replays).
+my $n_delta = () = $waldump =~ /UNDO_BLOCK_WRITE.*\((?:3-range delta|3-span multi delta)\)/g;
 ok($n_fpi >= 1,   "L2 at least one full-image XLOG_UNDO_BLOCK_WRITE (n=$n_fpi)");
-ok($n_delta >= 1, "L2 at least one 3-range-delta XLOG_UNDO_BLOCK_WRITE (n=$n_delta)");
+ok($n_delta >= 1, "L2 at least one delta XLOG_UNDO_BLOCK_WRITE[_MULTI] (n=$n_delta)");
 
 # ============================================================
 # L3: CHECKPOINT flushes the buffered-dirty undo (no PANIC).
@@ -158,22 +166,31 @@ $bg5->query_safe('COMMIT');
 $bg5->quit;
 
 my $undo_dir = $node->data_dir . '/pg_undo/instance_0';
-my ($active_path, $active_block, $expected);
-for my $path (glob("$undo_dir/seg_*.dat"))
-{
-	for (my $b = 1; $b < 64; $b++)
-	{
-		my $blk = read_block($path, $b);
-		next unless defined $blk;
-		next unless unpack('L<', substr($blk, 0, 4)) == UNDO_BLOCK_MAGIC;
-		$active_path  = $path;
-		$active_block = $b;
-		$expected     = $blk;   # last (highest) magic block = the straddling extent
-	}
-}
-ok(defined $active_path, "L5 active undo data block located (block $active_block)");
 
+# spec-3.25 D1b: a mid-txn CHECKPOINT no longer persists the straddling
+# block's pending bytes (the pool copy stays clean until the merged-record
+# flush at COMMIT), so a pre-crash DISK scan cannot locate the straddling
+# block any more.  Locate it from the WAL instead: the LAST full-image undo
+# block write is the post-checkpoint first-touch FPI of exactly the block
+# this leg must corrupt-and-repair.
 $node->stop('immediate');
+
+my ($first_seg) = sort glob($node->data_dir . '/pg_wal/0*');
+my ($wd5, $wd5_err) = run_command(
+	[ $node->installed_command('pg_waldump'),
+	  '-r', 'ClusterUndo', $first_seg ]);
+my ($active_seg, $active_block, $expected);
+while ($wd5 =~ /UNDO_BLOCK_WRITE(?:_MULTI)?\b.*?seg (\d+) block (\d+) \(full image\)/g)
+{
+	($active_seg, $active_block) = ($1, $2);
+}
+ok(defined $active_block,
+	"L5 straddling undo block located from WAL (seg "
+	  . ($active_seg // '?') . " block " . ($active_block // '?') . ")");
+my $active_path = "$undo_dir/seg_" . ($active_seg // 0) . ".dat";
+ok(-e $active_path, "L5 segment file exists ($active_path)");
+$expected = read_block($active_path, $active_block);
+
 corrupt_block_prefix($active_path, $active_block, 512, "\xEE");
 $node->start;
 

@@ -102,6 +102,10 @@ extern void cluster_undo_buf_mark_dirty(const ClusterUndoBufPin *pin, XLogRecPtr
 /* Release a pin (drops the content lock). */
 extern void cluster_undo_buf_unpin(ClusterUndoBufPin *pin);
 
+/* spec-3.25 D1b: deferred-merge window residency reference (see .c). */
+extern void cluster_undo_buf_addref(const ClusterUndoBufPin *pin);
+extern void cluster_undo_buf_unref_slot(int slot);
+
 /* checkpoint / shutdown flush hook.  is_checkpoint=true on checkpoint. */
 extern void cluster_undo_buf_flush_all(bool is_checkpoint);
 

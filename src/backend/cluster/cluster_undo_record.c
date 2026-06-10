@@ -201,6 +201,52 @@ static bool cluster_undo_touched_in_xact = false;
 static ClusterUndoExtent cluster_undo_current_extent = { 0 };
 
 /*
+ * spec-3.25 D1b: deferred per-(xact,block) undo WAL merge.
+ *
+ *	D0 (clean CI run 27257818226) measured the per-record XLOG_UNDO_BLOCK_WRITE
+ *	emission at 63% of ALL WAL bytes (4.25 records/txn, 1:1 with record_alloc).
+ *	Records one transaction appends to one block are physically contiguous, so
+ *	ONE record (XLOG_UNDO_BLOCK_WRITE_MULTI) can carry them all: alloc mutates
+ *	this backend-local image and extends the spans; the WAL emission + the pool
+ *	copy-in + mark_dirty are deferred to the FLUSH points:
+ *
+ *	  - block switch / segment switch (cluster_undo_record_alloc),
+ *	  - cluster_undo_xact_precommit_flush (commit AND 2PC PREPARE: the merged
+ *	    record reaches WAL before the commit/prepare record -- same durable
+ *	    ordering as the old per-record emission),
+ *	  - cluster_undo_record_xact_reset (abort: emitting keeps exact parity
+ *	    with the old per-record behaviour, where an aborted xact's records
+ *	    were already WAL'd; on flush failure the pending image is dropped --
+ *	    an aborted xact's undo needs no durability).
+ *
+ *	WAL-before-data holds by construction: the shared pool image and its dirty
+ *	state advance ONLY inside the flush (write_undo_block with the new LSN), so
+ *	write-back / checkpoint / eviction never see undo bytes whose WAL is not
+ *	inserted.  A crash before the flush loses only an uncommitted transaction's
+ *	undo, which no reader may need (own changes are native-self-visible, remote
+ *	in-progress is invisible, the 3.21 exact-key resolver only consults
+ *	non-own xids).  Write-through mode (writeback off) keeps the per-record
+ *	path: t/228's D2a always-FPI semantics are unchanged.
+ */
+typedef struct ClusterUndoPendingBlock {
+	bool active;
+	uint8 owner_instance;
+	uint32 segment_id;
+	uint32 block_no;
+	XLogRecPtr old_block_lsn; /* block LSN at image load (FPI-vs-delta input) */
+	uint16 rec_lo;			  /* records span [rec_lo, rec_hi) */
+	uint16 rec_hi;
+	uint16 slot_min_off; /* slot-dir span endpoints (direction-agnostic) */
+	uint16 slot_max_off;
+	uint32 nrecords;
+	int ref_slot;	  /* pool residency reference (eviction gate); -1 = none */
+	char buf[BLCKSZ]; /* mutation source; pool image mirrors it per record */
+} ClusterUndoPendingBlock;
+static ClusterUndoPendingBlock cluster_undo_pending = { 0 };
+
+static bool cluster_undo_pending_flush_internal(bool error_on_fail);
+
+/*
  * P0 perf hardening (2026-05-31): per-backend touched-undo-segment list.
  *
  *	cluster_undo_record_alloc() no longer fsyncs each record (that serialized
@@ -451,9 +497,17 @@ read_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, char *
 }
 
 
+/*
+ * keep_clean (spec-3.25 D1b): install the bytes into the pool image so READERS
+ * see them immediately, but do NOT mark the slot dirty -- its WAL is deferred
+ * to the merged-record flush, and an un-WAL'd dirty block must never reach
+ * disk (write-back / checkpoint flush only dirty slots).  ref_slot_out, when
+ * non-NULL, additionally takes a window residency reference (eviction gate)
+ * while the EXCLUSIVE pin is still held and reports the slot index.
+ */
 static bool
-write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const char *buf,
-				 bool do_fsync, XLogRecPtr wal_lsn)
+write_undo_block_ext(uint32 segment_id, uint8 owner_instance, uint32 block_no, const char *buf,
+					 bool do_fsync, XLogRecPtr wal_lsn, bool keep_clean, int *ref_slot_out)
 {
 	ClusterUndoBufPin pin;
 	char *img;
@@ -474,8 +528,17 @@ write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const
 	 */
 	img = cluster_undo_buf_pin(segment_id, owner_instance, block_no, CLUSTER_UNDO_BUF_EXCLUSIVE,
 							   &pin);
-	if (img == NULL)
+	if (img == NULL) {
+		/*
+		 * spec-3.25 D1b: a keep_clean install has no WAL yet -- a direct disk
+		 * write here would put data ahead of its WAL.  Unreachable in practice
+		 * (the deferral path requires writeback_allowed() => pool enabled);
+		 * fail closed if it ever is.
+		 */
+		if (keep_clean)
+			return false;
 		return cluster_undo_smgr_write_block(segment_id, owner_instance, block_no, buf, false);
+	}
 
 	/*
 	 * PG_FINALLY guarantees the EXCLUSIVE pin + content lock are released even
@@ -487,8 +550,15 @@ write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const
 	{
 		memcpy(img, buf, BLCKSZ);
 		/* wal_lsn = the XLOG_UNDO_BLOCK_WRITE LSN (spec-3.18 D2): write-through
-		 * (gate off) writes now; write-back (gate on) defers behind this LSN. */
-		cluster_undo_buf_mark_dirty(&pin, wal_lsn);
+		 * (gate off) writes now; write-back (gate on) defers behind this LSN.
+		 * keep_clean (spec-3.25 D1b): readers see the bytes, dirty + WAL come
+		 * at the merged-record flush. */
+		if (!keep_clean)
+			cluster_undo_buf_mark_dirty(&pin, wal_lsn);
+		if (ref_slot_out != NULL && *ref_slot_out < 0) {
+			cluster_undo_buf_addref(&pin);
+			*ref_slot_out = pin.slot;
+		}
 	}
 	PG_FINALLY();
 	{
@@ -496,6 +566,15 @@ write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const
 	}
 	PG_END_TRY();
 	return true;
+}
+
+/* Compatibility wrapper: the pre-D1b call shape. */
+static bool
+write_undo_block(uint32 segment_id, uint8 owner_instance, uint32 block_no, const char *buf,
+				 bool do_fsync, XLogRecPtr wal_lsn)
+{
+	return write_undo_block_ext(segment_id, owner_instance, block_no, buf, do_fsync, wal_lsn, false,
+								NULL);
 }
 
 
@@ -555,6 +634,87 @@ cluster_undo_wal_protect_block(uint32 segment_id, uint8 owner_instance, uint32 b
 		MyProc->delayChkptFlags = saved_delay_flags;
 	}
 	PG_END_TRY();
+	return ok;
+}
+
+/*
+ * cluster_undo_pending_flush_internal -- spec-3.25 D1b flush point.
+ *
+ *	Emit ONE XLOG_UNDO_BLOCK_WRITE_MULTI covering every record this xact
+ *	appended to the pending block, then install the image (pool copy-in +
+ *	mark_dirty with the new LSN via write_undo_block) -- the only point the
+ *	shared image and dirty state advance, so WAL-before-data holds by
+ *	construction.  Mirrors cluster_undo_wal_protect_block's two modes:
+ *	write-back holds DELAY_CHKPT_START across decision+insert+install;
+ *	write-through (GUC flipped off mid-window) drains always-FPI style.
+ *
+ *	error_on_fail=true (commit/prepare): failure ereport(ERROR)s -- never a
+ *	silent half-durable commit.  false (block-switch: caller maps to
+ *	InvalidUba; abort: caller drops the pending image).
+ */
+static bool
+cluster_undo_pending_flush_internal(bool error_on_fail)
+{
+	ClusterUndoPendingBlock *p = &cluster_undo_pending;
+	UndoBlockHeader *blkhdr;
+	XLogRecPtr lsn;
+	uint16 slot_off;
+	uint16 slot_len;
+	int saved_delay_flags;
+	bool ok = false; /* assigned below; init silences cppcheck uninitvar */
+
+	if (!p->active)
+		return true;
+
+	Assert(p->nrecords > 0);
+	Assert(p->rec_hi > p->rec_lo);
+	Assert(p->slot_min_off <= p->slot_max_off);
+	blkhdr = (UndoBlockHeader *)p->buf;
+	slot_off = p->slot_min_off;
+	slot_len = (uint16)(p->slot_max_off - p->slot_min_off + sizeof(UndoSlotDirEntry));
+
+	if (!cluster_undo_buf_writeback_allowed()) {
+		lsn = cluster_undo_emit_block_write_multi(
+			p->owner_instance, p->segment_id, p->block_no, p->buf, p->old_block_lsn, p->rec_lo,
+			(uint16)(p->rec_hi - p->rec_lo), slot_off, slot_len);
+		blkhdr->block_lsn = lsn;
+		ok = write_undo_block(p->segment_id, p->owner_instance, p->block_no, p->buf,
+							  /* do_fsync = */ false, lsn);
+	} else {
+		saved_delay_flags = MyProc->delayChkptFlags;
+		Assert((saved_delay_flags & DELAY_CHKPT_START) == 0);
+		MyProc->delayChkptFlags = saved_delay_flags | DELAY_CHKPT_START;
+		PG_TRY();
+		{
+			lsn = cluster_undo_emit_block_write_multi(
+				p->owner_instance, p->segment_id, p->block_no, p->buf, p->old_block_lsn, p->rec_lo,
+				(uint16)(p->rec_hi - p->rec_lo), slot_off, slot_len);
+			blkhdr->block_lsn = lsn;
+			ok = write_undo_block(p->segment_id, p->owner_instance, p->block_no, p->buf,
+								  /* do_fsync = */ false, lsn);
+		}
+		PG_FINALLY();
+		{
+			MyProc->delayChkptFlags = saved_delay_flags;
+		}
+		PG_END_TRY();
+	}
+
+	if (ok) {
+		if (p->ref_slot >= 0) {
+			cluster_undo_buf_unref_slot(p->ref_slot);
+			p->ref_slot = -1;
+		}
+		p->active = false;
+		if (UndoRecordShared != NULL)
+			pg_atomic_fetch_add_u64(&UndoRecordShared->block_write_count, 1);
+	} else if (error_on_fail) {
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("cluster undo deferred block write failed (segment %u block %u)",
+						p->segment_id, p->block_no),
+				 errhint("The merged undo WAL record could not be installed before commit.")));
+	}
 	return ok;
 }
 
@@ -741,7 +901,9 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	uint32 free_offset;
 	uint16 slot_count;
 	uint16 new_slot_idx;
-	char block_buf[BLCKSZ];
+	char wt_block_buf[BLCKSZ]; /* write-through scratch (defer path uses pending.buf) */
+	char *block_buf;
+	bool use_defer;
 	UndoBlockHeader *blkhdr;
 	UndoRecordHeader *rechdr;
 	UndoSlotDirEntry *slot;
@@ -913,23 +1075,65 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 		slot_count = ext->cur_slot_count;
 	}
 
-	/* Read current block (or zeroed if first write to this block). */
-	if (slot_count == 0) {
-		/* Fresh block — init zeroed buffer + header. */
-		memset(block_buf, 0, BLCKSZ);
+	/*
+	 * spec-3.25 D1b: choose the deferred-merge path.  A pending image for THIS
+	 * block keeps draining even if the GUC flipped off mid-window (the cursor
+	 * state describes pending.buf, not the stale pool copy).
+	 */
+	use_defer = cluster_undo_buf_writeback_allowed()
+				|| (cluster_undo_pending.active && cluster_undo_pending.segment_id == segment_id
+					&& cluster_undo_pending.owner_instance == owner_instance
+					&& cluster_undo_pending.block_no == current_block);
+
+	if (use_defer && cluster_undo_pending.active
+		&& (cluster_undo_pending.segment_id != segment_id
+			|| cluster_undo_pending.owner_instance != owner_instance
+			|| cluster_undo_pending.block_no != current_block)) {
+		/* Block/segment switch: emit the previous block's merged record. */
+		if (!cluster_undo_pending_flush_internal(false))
+			return InvalidUba;
+	}
+
+	if (use_defer && cluster_undo_pending.active) {
+		/* Same (xact, block): keep appending into the pending image. */
+		block_buf = cluster_undo_pending.buf;
 		blkhdr = (UndoBlockHeader *)block_buf;
-		blkhdr->magic = PGRAC_UNDO_BLOCK_MAGIC;
-		blkhdr->block_version = UNDO_BLOCK_VERSION_1;
-		blkhdr->slot_count = 0;
-		blkhdr->free_offset = sizeof(UndoBlockHeader);
-		blkhdr->first_change_scn = current_scn;
-		blkhdr->first_change_lsn = GetXLogWriteRecPtr();
-		blkhdr->crc64 = 0;
 	} else {
-		/* Mid-extent block we already wrote -> read it back from the pool. */
-		if (!read_undo_block(segment_id, owner_instance, current_block, block_buf))
-			return InvalidUba; /* I/O fail (no shared lock held in D3 path) */
-		blkhdr = (UndoBlockHeader *)block_buf;
+		block_buf = use_defer ? cluster_undo_pending.buf : wt_block_buf;
+
+		/* Read current block (or zeroed if first write to this block). */
+		if (slot_count == 0) {
+			/* Fresh block — init zeroed buffer + header. */
+			memset(block_buf, 0, BLCKSZ);
+			blkhdr = (UndoBlockHeader *)block_buf;
+			blkhdr->magic = PGRAC_UNDO_BLOCK_MAGIC;
+			blkhdr->block_version = UNDO_BLOCK_VERSION_1;
+			blkhdr->slot_count = 0;
+			blkhdr->free_offset = sizeof(UndoBlockHeader);
+			blkhdr->first_change_scn = current_scn;
+			blkhdr->first_change_lsn = GetXLogWriteRecPtr();
+			blkhdr->crc64 = 0;
+		} else {
+			/* Mid-extent block we already wrote -> read it back from the pool. */
+			if (!read_undo_block(segment_id, owner_instance, current_block, block_buf))
+				return InvalidUba; /* I/O fail (no shared lock held in D3 path) */
+			blkhdr = (UndoBlockHeader *)block_buf;
+		}
+
+		if (use_defer) {
+			/* Start a pending window for this block. */
+			cluster_undo_pending.active = true;
+			cluster_undo_pending.owner_instance = owner_instance;
+			cluster_undo_pending.segment_id = segment_id;
+			cluster_undo_pending.block_no = current_block;
+			cluster_undo_pending.old_block_lsn = blkhdr->block_lsn;
+			cluster_undo_pending.rec_lo = (uint16)free_offset;
+			cluster_undo_pending.rec_hi = (uint16)free_offset;
+			cluster_undo_pending.slot_min_off = PG_UINT16_MAX;
+			cluster_undo_pending.slot_max_off = 0;
+			cluster_undo_pending.nrecords = 0;
+			cluster_undo_pending.ref_slot = -1;
+		}
 	}
 
 	/* Construct UndoRecordHeader at free_offset. */
@@ -979,12 +1183,42 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	 * or write-back + checkpoint-flush (gate on) are chosen inside it.
 	 */
 	Assert(current_block >= 1); /* data blocks only; block 0 is the segment header */
-	if (!cluster_undo_wal_protect_block(
-			segment_id, owner_instance, current_block, block_buf, blkhdr->block_lsn,
-			(uint16)free_offset, (uint16)record_length, (uint16)UNDO_SLOT_DIR_OFFSET(new_slot_idx)))
-		return InvalidUba; /* I/O fail (no shared lock held in D3 path) */
+	if (use_defer) {
+		/*
+		 * spec-3.25 D1b: extend the pending spans instead of emitting WAL per
+		 * record.  block_write_count is bumped at the flush (its semantics is
+		 * now per-EMISSION; record_alloc_count / block_write_count = the
+		 * bundle factor).
+		 */
+		uint16 this_slot_off = (uint16)UNDO_SLOT_DIR_OFFSET(new_slot_idx);
 
-	pg_atomic_fetch_add_u64(&UndoRecordShared->block_write_count, 1);
+		cluster_undo_pending.rec_hi = (uint16)(free_offset + record_length);
+		if (this_slot_off < cluster_undo_pending.slot_min_off)
+			cluster_undo_pending.slot_min_off = this_slot_off;
+		if (this_slot_off > cluster_undo_pending.slot_max_off)
+			cluster_undo_pending.slot_max_off = this_slot_off;
+		cluster_undo_pending.nrecords++;
+
+		/*
+		 * Mirror the bytes into the pool image NOW (keep_clean: readers --
+		 * e.g. a concurrent CR walking this still-open xact's chain -- see
+		 * the record immediately, exactly as pre-D1b), take the window
+		 * residency reference on the first record, and leave dirty + WAL to
+		 * the merged flush.
+		 */
+		if (!write_undo_block_ext(segment_id, owner_instance, current_block, block_buf,
+								  /* do_fsync = */ false, InvalidXLogRecPtr,
+								  /* keep_clean = */ true, &cluster_undo_pending.ref_slot))
+			return InvalidUba;
+	} else {
+		if (!cluster_undo_wal_protect_block(segment_id, owner_instance, current_block, block_buf,
+											blkhdr->block_lsn, (uint16)free_offset,
+											(uint16)record_length,
+											(uint16)UNDO_SLOT_DIR_OFFSET(new_slot_idx)))
+			return InvalidUba; /* I/O fail (no shared lock held in D3 path) */
+
+		pg_atomic_fetch_add_u64(&UndoRecordShared->block_write_count, 1);
+	}
 	/* block_flush_count is no longer bumped per-record: fsync is deferred to the
 	 * per-xact precommit flush (P0 perf hardening). */
 
@@ -1097,6 +1331,14 @@ cluster_undo_xact_precommit_flush(void)
 {
 	int i;
 
+	/*
+	 * spec-3.25 D1b: the deferred merged undo WAL record must be inserted
+	 * BEFORE the commit / prepare record (same durable ordering the old
+	 * per-record emission gave).  Runs before BOTH early returns below: the
+	 * pending image exists exactly on the write-back path.
+	 */
+	(void)cluster_undo_pending_flush_internal(true);
+
 	if (cluster_undo_touched_seg_count == 0)
 		return;
 
@@ -1146,6 +1388,25 @@ cluster_undo_xact_precommit_flush(void)
 void
 cluster_undo_record_xact_reset(void)
 {
+	/*
+	 * spec-3.25 D1b: drain a still-pending merged record.  Commit/prepare
+	 * already drained at precommit (no-op here); this is the ABORT path --
+	 * emitting keeps exact parity with the old per-record behaviour (an
+	 * aborted xact's records were already WAL'd).  On failure just drop the
+	 * pending image: an aborted xact's undo needs no durability.
+	 */
+	if (cluster_undo_pending.active && !cluster_undo_pending_flush_internal(false)) {
+		ereport(WARNING, (errmsg("cluster undo deferred block write dropped at abort "
+								 "(segment %u block %u, %u records)",
+								 cluster_undo_pending.segment_id, cluster_undo_pending.block_no,
+								 cluster_undo_pending.nrecords)));
+		if (cluster_undo_pending.ref_slot >= 0) {
+			cluster_undo_buf_unref_slot(cluster_undo_pending.ref_slot);
+			cluster_undo_pending.ref_slot = -1;
+		}
+		cluster_undo_pending.active = false;
+	}
+
 	cluster_undo_touched_in_xact = false;
 	memset(cluster_undo_local_heads, 0, sizeof(cluster_undo_local_heads));
 	cluster_undo_local_head_count = 0;

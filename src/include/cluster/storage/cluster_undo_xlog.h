@@ -60,6 +60,9 @@
 #define XLOG_UNDO_SEGMENT_REUSE 0x50   /* spec-3.13 D4: whole-segment rebirth */
 #define XLOG_UNDO_TT_SLOT_ABORT 0x60   /* spec-3.15 D5: prepared rollback targeted abort */
 #define XLOG_UNDO_BLOCK_WRITE 0x70 /* spec-3.18 D2: undo data-block change (FPI/3-range delta) */
+#define XLOG_UNDO_BLOCK_WRITE_MULTI                                                                \
+	0x80 /* spec-3.25 D1b: one record covers N contiguous undo records + their                     \
+		  * slot-dir span (deferred per-(xact,block) merge); 0x70 redo kept (Q7-A) */
 
 StaticAssertDecl((XLOG_UNDO_SEGMENT_INIT & XLR_INFO_MASK) == 0,
 				 "cluster undo WAL opcodes must leave XLR_INFO_MASK bits clear");
@@ -363,6 +366,50 @@ cluster_undo_apply_block_write_delta(char *block, const xl_undo_block_write *rec
 	((UndoBlockHeader *)block)->block_lsn = record_lsn;
 }
 
+/*
+ * spec-3.25 D1b: multi-record sibling of xl_undo_block_write.  One record
+ * covers N physically contiguous undo records one transaction appended to one
+ * block, plus their N contiguous slot-dir entries as a single span (slot_off =
+ * the LOWEST entry offset, slot_len = N * sizeof(UndoSlotDirEntry)); has_fpi=1
+ * degenerates to a BLCKSZ image applied by the shared FPI helper.
+ *
+ *   delta body layout: hdr prefix [0,40) ++ records span ++ slot-dir span
+ */
+typedef struct xl_undo_block_write_multi {
+	uint32 segment_id;		 /* offset  0;  4 B */
+	uint32 block_no;		 /* offset  4;  4 B; >= 1 */
+	uint8 instance;			 /* offset  8;  1 B */
+	uint8 has_fpi;			 /* offset  9;  1 B; 1 => BLCKSZ image; 0 => 3-span delta */
+	uint16 rec_off;			 /* offset 10;  2 B; records span start */
+	uint16 rec_len;			 /* offset 12;  2 B; records span length */
+	uint16 slot_off;		 /* offset 14;  2 B; slot-dir span start (lowest offset) */
+	uint16 slot_len;		 /* offset 16;  2 B; slot-dir span length */
+	uint16 _pad;			 /* offset 18;  2 B; explicit (uint32 members align to 4; L45) */
+} xl_undo_block_write_multi; /* total 20 B */
+
+StaticAssertDecl(sizeof(xl_undo_block_write_multi) == 20,
+				 "spec-3.25: xl_undo_block_write_multi is 20 bytes, no implicit padding");
+
+/*
+ * cluster_undo_apply_block_write_multi_delta -- D1b 3-span delta apply (pure;
+ * cluster_unit-tested).  Same contract as the single-record delta apply, with
+ * the slot-dir span length carried in the record.  The redo caller MUST have
+ * validated all bounds (fail-closed) before calling.
+ */
+static inline void
+cluster_undo_apply_block_write_multi_delta(char *block, const xl_undo_block_write_multi *rec,
+										   const char *delta_body, XLogRecPtr record_lsn)
+{
+	const char *p = delta_body;
+
+	memcpy(block, p, UNDO_BLOCK_HDR_PREFIX_LEN);
+	p += UNDO_BLOCK_HDR_PREFIX_LEN;
+	memcpy(block + rec->rec_off, p, rec->rec_len); /* records span */
+	p += rec->rec_len;
+	memcpy(block + rec->slot_off, p, rec->slot_len); /* slot-dir span */
+	((UndoBlockHeader *)block)->block_lsn = record_lsn;
+}
+
 
 /*
  * Public API.
@@ -455,5 +502,18 @@ extern void cluster_undo_desc(StringInfo buf, XLogReaderState *record);
  */
 extern const char *cluster_undo_identify(uint8 info);
 
+/*
+ * cluster_undo_emit_block_write_multi (spec-3.25 D1b)
+ *	  Backend: emit one XLOG_UNDO_BLOCK_WRITE_MULTI covering all records this
+ *	  transaction appended to one undo data block (deferred merge).  Same
+ *	  FPI-vs-delta decision as cluster_undo_emit_block_write; old_block_lsn is
+ *	  the block LSN captured when the pending image was loaded.  Returns the
+ *	  record LSN.
+ */
+extern XLogRecPtr cluster_undo_emit_block_write_multi(uint8 instance, uint32 segment_id,
+													  uint32 block_no, const char *block_image,
+													  XLogRecPtr old_block_lsn, uint16 rec_off,
+													  uint16 rec_len, uint16 slot_off,
+													  uint16 slot_len);
 
 #endif /* CLUSTER_UNDO_XLOG_H */
