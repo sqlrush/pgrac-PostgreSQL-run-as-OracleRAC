@@ -48,6 +48,7 @@
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
 #include "cluster/cluster_shmem.h"
+#include "cluster/cluster_wal_state.h" /* spec-4.2 ensure() */
 #include "cluster/cluster_wal_thread.h"
 #include "miscadmin.h" /* IsUnderPostmaster, DataDir */
 #include "port/atomics.h"
@@ -74,7 +75,12 @@ typedef struct ClusterWalThreadShmemData {
 	uint8 dir_validated;  /* routing validation passed */
 	uint8 claim_created;  /* this boot created the claim file */
 	uint8 _pad[3];
-	char _reserved[16]; /* spec-4.2 registry headroom */
+
+	/* spec-4.2 D5: WAL-state registry refresh-failure counter (bumped by
+	 * cluster_stats on best-effort refresh failures, read by the dump
+	 * SRF in any backend). */
+	pg_atomic_uint64 wal_state_refresh_fail_count;
+	char _reserved[8]; /* remaining headroom */
 } ClusterWalThreadShmemData;
 
 static ClusterWalThreadShmemData *cluster_wal_thread_shmem = NULL;
@@ -99,6 +105,7 @@ cluster_wal_thread_shmem_init(void)
 		cluster_wal_thread_shmem->dir_validated = 0;
 		cluster_wal_thread_shmem->claim_created = 0;
 		memset(cluster_wal_thread_shmem->_pad, 0, sizeof(cluster_wal_thread_shmem->_pad));
+		pg_atomic_init_u64(&cluster_wal_thread_shmem->wal_state_refresh_fail_count, 0);
 		memset(cluster_wal_thread_shmem->_reserved, 0, sizeof(cluster_wal_thread_shmem->_reserved));
 	}
 }
@@ -181,6 +188,23 @@ bool
 cluster_wal_thread_claim_created(void)
 {
 	return cluster_wal_thread_shmem != NULL && cluster_wal_thread_shmem->claim_created != 0;
+}
+
+/* spec-4.2: refresh-failure counter (L19-tolerant on both sides). */
+uint64
+cluster_wal_thread_refresh_fail_fetch_add(void)
+{
+	if (cluster_wal_thread_shmem == NULL)
+		return 1; /* no shmem -> pretend non-first so callers stay quiet */
+	return pg_atomic_fetch_add_u64(&cluster_wal_thread_shmem->wal_state_refresh_fail_count, 1);
+}
+
+uint64
+cluster_wal_thread_refresh_fail_read(void)
+{
+	if (cluster_wal_thread_shmem == NULL)
+		return 0;
+	return pg_atomic_read_u64(&cluster_wal_thread_shmem->wal_state_refresh_fail_count);
 }
 
 /* ----------------------------------------------------------------
@@ -453,6 +477,16 @@ cluster_wal_thread_init(void)
 
 	ereport(LOG, (errmsg("pgrac WAL thread routing validated: thread %u at \"%s\"", (unsigned)tid,
 						 thread_dir)));
+
+	/*
+	 * spec-4.2: bring up the ClusterWalState registry (create-once or
+	 * validate; FATAL 53RA2 inside on corruption/IO).  The own slot is
+	 * NOT touched here: ACTIVE is published only after recovery has
+	 * succeeded, at the phase4 -> CLUSTER_PHASE_RUNNING transition
+	 * (spec-4.2 v0.2 P1).
+	 */
+	CLUSTER_INJECTION_POINT("cluster-wal-state-ensure-pre");
+	(void)cluster_wal_state_ensure();
 }
 
 #else /* !USE_PGRAC_CLUSTER */

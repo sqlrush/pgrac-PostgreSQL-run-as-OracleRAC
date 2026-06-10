@@ -677,6 +677,14 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 # the file manually (errhint carries the procedure).
 53RA1    E    ERRCODE_CLUSTER_WAL_THREAD_CLAIM_CONFLICT                        cluster_wal_thread_claim_conflict
 
+# spec-4.2 D5:  ClusterWalState registry (pgrac_wal_state on the shared
+# WAL root) I/O or corruption failure.  Fires at postmaster startup when
+# the registry header cannot be created/validated or the own slot ACTIVE
+# publish fails (startup-grade fail-closed), and at clean shutdown when
+# the STOPPED publish fails.  Periodic cluster_stats refreshes are
+# best-effort and never raise this (LOG-once + counter instead).
+53RA2    E    ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE                             cluster_wal_state_io_failure
+
 Section: Class 54 - Program Limit Exceeded
 
 # this is for wired-in limits, not resource exhaustion problems (class borrowed from DB2)

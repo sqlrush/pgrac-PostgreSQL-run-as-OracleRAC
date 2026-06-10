@@ -51,7 +51,7 @@
  *	internal table in cluster_views.c stays in sync with the enum.
  */
 #define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
-	95 /* spec-4.1 D7: +2 WAL thread claim read/write; was 93 (spec-3.13) */
+	97 /* spec-4.2 D5: +2 WAL state registry read/write; was 95 (spec-4.1) */
 
 
 /*

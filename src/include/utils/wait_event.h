@@ -472,6 +472,10 @@ typedef enum {
 	 * storage, not routed through cluster_shared_fs). */
 	WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_READ,
 	WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_WRITE,
+	/* spec-4.2 D5: ClusterWalState registry slot/header I/O (startup +
+	 * clean shutdown + cluster_stats periodic refresh). */
+	WAIT_EVENT_CLUSTER_WAL_STATE_READ,
+	WAIT_EVENT_CLUSTER_WAL_STATE_WRITE,
 	/* spec-2.28 Sprint A Step 4 D9:  fence-lite backend interrupt check
 	 * wait event.  Backend ProcessInterrupts hook (postgres.c D4) sets
 	 * this wait event briefly while reading + clearing ClusterFenceFreeze

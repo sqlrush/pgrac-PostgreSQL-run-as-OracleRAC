@@ -240,6 +240,10 @@ extern void cluster_wal_thread_shmem_register(void);
 
 /* Dump accessors (cluster_debug.c category 'wal_thread'). */
 extern uint64 cluster_wal_thread_page_stamp_count(void);
+/* spec-4.2: WAL-state refresh-failure counter carved from the region's
+ * reserved space (cross-process visible for the dump SRF). */
+extern uint64 cluster_wal_thread_refresh_fail_fetch_add(void);
+extern uint64 cluster_wal_thread_refresh_fail_read(void);
 extern uint16 cluster_wal_thread_dump_thread_id(void);
 extern bool cluster_wal_thread_dir_configured(void);
 extern bool cluster_wal_thread_dir_validated(void);

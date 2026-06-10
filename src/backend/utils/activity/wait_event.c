@@ -1383,6 +1383,12 @@ pgstat_get_wait_cluster_bgproc(WaitEventCluster w)
 	case WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_WRITE:
 		event_name = "ClusterWalThreadClaimWrite";
 		break;
+	case WAIT_EVENT_CLUSTER_WAL_STATE_READ:
+		event_name = "ClusterWalStateRead";
+		break;
+	case WAIT_EVENT_CLUSTER_WAL_STATE_WRITE:
+		event_name = "ClusterWalStateWrite";
+		break;
 	case WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK:
 		event_name = "ClusterFenceBackendInterruptCheck";
 		break;

@@ -211,6 +211,9 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	/* spec-4.1 D7: WAL thread claim file I/O (2 events;cluster_wal_thread). */
 	WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_READ,
 	WAIT_EVENT_CLUSTER_WAL_THREAD_CLAIM_WRITE,
+	/* spec-4.2 D5: WAL state registry I/O (2 events;cluster_wal_state). */
+	WAIT_EVENT_CLUSTER_WAL_STATE_READ,
+	WAIT_EVENT_CLUSTER_WAL_STATE_WRITE,
 	/* spec-2.28 D9: fence-lite backend interrupt check wait event. */
 	WAIT_EVENT_CLUSTER_FENCE_BACKEND_INTERRUPT_CHECK,
 	/* spec-2.29 D9: reconfig coordinator LMON tick wait event. */

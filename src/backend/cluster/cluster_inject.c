@@ -426,6 +426,22 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	 */
 	{ .name = "cluster-wal-thread-validate-pre" },
 	{ .name = "cluster-wal-thread-claim-create-fail" },
+
+	/*
+	 * spec-4.2 D5 — ClusterWalState registry (2 NEW points).
+	 *
+	 *	cluster-wal-state-ensure-pre:
+	 *	  Observational.  Fires in cluster_wal_thread_init right before
+	 *	  cluster_wal_state_ensure() (postmaster startup, only when
+	 *	  cluster.wal_threads_dir is set).
+	 *
+	 *	cluster-wal-state-write-fail:
+	 *	  Decision-style (cluster_injection_should_skip): when armed,
+	 *	  the own-slot publish simulates a write failure so the FATAL
+	 *	  53RA2 path is exercisable without real storage faults.
+	 */
+	{ .name = "cluster-wal-state-ensure-pre" },
+	{ .name = "cluster-wal-state-write-fail" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)
