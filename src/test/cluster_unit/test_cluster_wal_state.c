@@ -4,7 +4,7 @@
  *	  pgrac spec-4.2 D6 — cluster_unit tests for the ClusterWalState
  *	  registry pure helpers (cluster_wal_state.h, header-only inline).
  *
- *	  14 tests covering:
+ *	  15 tests covering:
  *	    T1   header sizeof == 512 + offsetof locks (incl. explicit
  *	         _pad_12 at 12..15 -- v0.2 P2)
  *	    T2   slot sizeof == 512 + offsetof locks
@@ -21,7 +21,9 @@
  *	    T11  foreign node identity -> FOREIGN (owner mode)
  *	    T12  reader mode (expect_node = -1) accepts any node
  *	    T13  state enum on-disk values locked (ACTIVE=1 / STOPPED=2)
- *	    T14  crc covers tli/lsn/scn fields (flip each -> bad crc)
+ *	    T14  EMPTY requires the full 512B zero: zeroed fields + body
+ *	         garbage -> CORRUPT (round-2 P1, absence-as-proof)
+ *	    T15  crc covers tli/lsn/scn fields (flip each -> bad crc)
  *
  *	  Linkage mirrors test_cluster_wal_thread: header-only inclusion +
  *	  libpgcommon/libpgport for pg_crc32c -- no module .o, no stubs.
@@ -238,6 +240,30 @@ UT_TEST(test_state_enum_on_disk_values)
 	UT_ASSERT_EQ((int)CLUSTER_WAL_SLOT_STATE_STOPPED, 2);
 }
 
+/*
+ * EMPTY demands the full 512B be zero (spec-4.2 round-2 P1): zeroed
+ * magic/version/state/crc glued to body garbage is CORRUPT, not EMPTY.
+ */
+UT_TEST(test_slot_zero_fields_nonzero_body_is_corrupt)
+{
+	ClusterWalStateSlot s;
+	const char *reason = NULL;
+
+	memset(&s, 0, sizeof(s));
+	s.highest_lsn = 1;
+	UT_ASSERT_EQ((int)cluster_wal_state_slot_classify(&s, 4, -1, &reason),
+				 (int)CLUSTER_WAL_SLOT_CORRUPT);
+
+	memset(&s, 0, sizeof(s));
+	s._reserved[100] = 1;
+	UT_ASSERT_EQ((int)cluster_wal_state_slot_classify(&s, 4, -1, &reason),
+				 (int)CLUSTER_WAL_SLOT_CORRUPT);
+
+	memset(&s, 0, sizeof(s));
+	UT_ASSERT_EQ((int)cluster_wal_state_slot_classify(&s, 4, -1, &reason),
+				 (int)CLUSTER_WAL_SLOT_EMPTY);
+}
+
 UT_TEST(test_crc_covers_watermark_fields)
 {
 	ClusterWalStateSlot s;
@@ -263,7 +289,7 @@ UT_TEST(test_crc_covers_watermark_fields)
 int
 main(int argc, char **argv)
 {
-	UT_PLAN(14);
+	UT_PLAN(15);
 
 	UT_RUN(test_header_layout_locks);
 	UT_RUN(test_slot_layout_locks);
@@ -278,6 +304,7 @@ main(int argc, char **argv)
 	UT_RUN(test_slot_foreign_identity);
 	UT_RUN(test_slot_reader_mode_any_node);
 	UT_RUN(test_state_enum_on_disk_values);
+	UT_RUN(test_slot_zero_fields_nonzero_body_is_corrupt);
 	UT_RUN(test_crc_covers_watermark_fields);
 
 	UT_DONE();

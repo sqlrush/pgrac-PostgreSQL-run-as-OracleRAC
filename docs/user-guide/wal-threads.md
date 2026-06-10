@@ -76,9 +76,15 @@ its WAL stream is in use (`active`), was shut down cleanly (`stopped`),
 and how far it had written.  A node marks itself `active` only once it
 has finished recovery and is about to serve; a crashed node simply stops
 refreshing its slot.  The file is created automatically on first start
-and never needs manual editing; if it reports as corrupt (SQLSTATE
-`53RA2`), confirm the shared storage is healthy, remove the file, and
-restart — it is rebuilt empty and repopulates as nodes start.
+and never needs manual editing; if it reports as corrupt, has the wrong
+size (it is a fixed 66048 bytes and is never resized in place), or this
+node's slot turns out to be owned by a different node id (all SQLSTATE
+`53RA2`), startup is refused and the file is left untouched.  A
+foreign-owned slot usually means `cluster.wal_threads_dir` points at the
+wrong shared directory or two nodes share the same `cluster.node_id` —
+fix the configuration.  For corruption or a wrong-sized file, confirm
+the shared storage is healthy, remove the file, and restart — it is
+rebuilt empty and repopulates as nodes start.
 
 Four wait events cover the shared-storage bookkeeping I/O:
 `ClusterWalThreadClaimRead`/`Write` (claim file) and

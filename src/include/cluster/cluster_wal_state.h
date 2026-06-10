@@ -194,6 +194,24 @@ cluster_wal_state_slot_fill(ClusterWalStateSlot *s, uint16 thread_id, int32 node
 }
 
 /*
+ * EMPTY means the full 512B block is zero.  Checking only a few header
+ * fields would classify "zero header + garbage body" as EMPTY -- an
+ * absence-as-proof hole (spec-4.2 user codereview round 2, P1).
+ */
+static inline bool
+cluster_wal_state_slot_is_zero(const ClusterWalStateSlot *s)
+{
+	const unsigned char *p = (const unsigned char *)s;
+	size_t i;
+
+	for (i = 0; i < sizeof(ClusterWalStateSlot); i++) {
+		if (p[i] != 0)
+			return false;
+	}
+	return true;
+}
+
+/*
  * Slot classification.
  *
  *	expect_thread: the slot number being read (self-description check).
@@ -209,7 +227,7 @@ cluster_wal_state_slot_classify(const ClusterWalStateSlot *s, uint16 expect_thre
 	const char *reason = NULL;
 	ClusterWalSlotVerdict v = CLUSTER_WAL_SLOT_OK;
 
-	if (s->magic == 0 && s->version == 0 && s->state == 0 && s->crc == 0) {
+	if (cluster_wal_state_slot_is_zero(s)) {
 		v = CLUSTER_WAL_SLOT_EMPTY;
 		reason = "empty";
 	} else if (s->magic != CLUSTER_WAL_STATE_SLOT_MAGIC) {

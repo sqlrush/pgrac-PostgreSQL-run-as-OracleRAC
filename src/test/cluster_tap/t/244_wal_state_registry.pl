@@ -23,10 +23,16 @@
 #      L8   foreign/corrupt NEIGHBOUR slots never block this node and
 #           surface as their own slots only (no cross-slot bleed)
 #      L9   wal_threads_dir unset -> registry_ready=f, no file
-#      L9b  recovery failure does not publish ACTIVE: a mis-linked
-#           pg_wal FATALs in 4.1 validation (before recovery) and the
-#           slot keeps its previous content
+#      L9b  startup failure before recovery does not publish ACTIVE: a
+#           mis-linked pg_wal FATALs in the spec-4.1 claim validation
+#           (pre-StartupXLOG) and the slot keeps its previous content.
+#           NB: this does NOT exercise a mid-StartupXLOG failure; the
+#           publish site (phase -> RUNNING) is after both.
 #      L10  dump keys 10/10 under wal_thread; wait events 2/2
+#      L11  own slot owned by a FOREIGN node_id (valid CRC) -> startup
+#           FATAL 53RA2; the slot is never overwritten (round-2 P1)
+#      L12  registry truncated to 512B -> startup FATAL 53RA2 (fixed
+#           66048; never resized in place) (round-2 P1)
 #
 #    Author: SqlRush <sqlrush@gmail.com>
 #    Spec: spec-4.2-wal-thread-metadata-catalog.md (FROZEN v1.0)
@@ -64,6 +70,42 @@ sub read_slot_raw
 	my ($started_at) = unpack('q', substr($buf, 24, 8));
 	return { magic => $magic, thread_id => $thread_id, node_id => $node_id,
 		state => $state, started_at => $started_at };
+}
+
+# CRC32C (Castagnoli, reflected, poly 0x82F63B78) -- must match PG's
+# pg_crc32c so a crafted slot classifies OK (L11 needs a VALID foreign
+# slot; a torn one would self-heal instead of FATAL).
+sub crc32c
+{
+	my ($data) = @_;
+	my $crc = 0xFFFFFFFF;
+	foreach my $b (unpack('C*', $data))
+	{
+		$crc ^= $b;
+		for (1 .. 8)
+		{
+			$crc = ($crc >> 1) ^ (($crc & 1) ? 0x82F63B78 : 0);
+		}
+	}
+	return $crc ^ 0xFFFFFFFF;
+}
+
+sub read_file_raw
+{
+	my ($path) = @_;
+	open my $fh, '<:raw', $path or die "open $path: $!";
+	local $/;
+	my $data = <$fh>;
+	close $fh;
+	return $data;
+}
+
+sub write_file_raw
+{
+	my ($path, $data) = @_;
+	open my $fh, '+<:raw', $path or die "open $path: $!";
+	syswrite($fh, $data) == length($data) or die "write $path: $!";
+	close $fh;
 }
 
 sub patch_byte
@@ -224,7 +266,9 @@ is(dumpkey($flat, 'registry_slot_state'), '-', 'L9 slot state placeholder');
 $flat->stop;
 
 # ============================================================
-# L9b: recovery-path failure does not publish ACTIVE.
+# L9b: pre-recovery startup failure does not publish ACTIVE.
+# (The 4.1 claim validation FATALs before StartupXLOG; ACTIVE is
+# published only at phase -> RUNNING, after recovery succeeded.)
 # ============================================================
 $node->stop;
 my $stopped_before = read_slot_raw($regfile, 4);
@@ -253,6 +297,57 @@ is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_stat_cluster_wait_events
 		  WHERE name IN ('ClusterWalStateRead', 'ClusterWalStateWrite')}),
 	'2', 'L10 registry I/O wait events registered');
+
+# ============================================================
+# L11: valid own slot owned by a FOREIGN node_id -> startup refused;
+# the slot is evidence and is never overwritten (round-2 P1).
+# ============================================================
+$node->stop;
+my $full_image = read_file_raw($regfile);
+is(length($full_image), 66048, 'L11 precondition: full registry image saved');
+{
+	# Rewrite slot 4's node_id 3 -> 7 and recompute a VALID crc.
+	my $slot = substr($full_image, 2048, 512);
+	substr($slot, 8, 4) = pack('l', 7);
+	substr($slot, 504, 4) = pack('L', crc32c(substr($slot, 0, 504)));
+	my $patched = $full_image;
+	substr($patched, 2048, 512) = $slot;
+	write_file_raw($regfile, $patched);
+}
+is(read_slot_raw($regfile, 4)->{node_id}, 7, 'L11 crafted slot says node 7');
+$log_off = -s $node->logfile;
+is($node->start(fail_ok => 1), 0, 'L11 start refused: own slot owned by another node');
+$log = PostgreSQL::Test::Utils::slurp_file($node->logfile, $log_off);
+like($log, qr/slot 4 is owned by node 7, but this node is 3/,
+	'L11 FATAL names the foreign owner (53RA2)');
+is(read_slot_raw($regfile, 4)->{node_id}, 7,
+	'L11 foreign slot left untouched (evidence preserved)');
+write_file_raw($regfile, $full_image);
+$node->start;
+is(dumpkey($node, 'registry_slot_state'), 'active',
+	'L11 restored registry starts and republishes ACTIVE');
+
+# ============================================================
+# L12: truncated registry -> startup refused (fixed 66048 bytes,
+# never resized in place) (round-2 P1).
+# ============================================================
+$node->stop;
+$full_image = read_file_raw($regfile);
+truncate($regfile, 512) or die "truncate: $!";
+$log_off = -s $node->logfile;
+is($node->start(fail_ok => 1), 0, 'L12 start refused on truncated registry');
+$log = PostgreSQL::Test::Utils::slurp_file($node->logfile, $log_off);
+like($log, qr/unexpected size 512, expected 66048/,
+	'L12 FATAL names the size mismatch (53RA2)');
+is(-s $regfile, 512, 'L12 registry never auto-resized');
+{
+	open my $fh, '>:raw', $regfile or die;
+	syswrite($fh, $full_image) == 66048 or die;
+	close $fh;
+}
+$node->start;
+is(dumpkey($node, 'registry_slot_state'), 'active',
+	'L12 restored registry starts and republishes ACTIVE');
 
 $node->stop;
 

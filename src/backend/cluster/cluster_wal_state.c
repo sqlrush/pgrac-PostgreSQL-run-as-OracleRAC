@@ -169,6 +169,7 @@ cluster_wal_state_ensure(void)
 	ClusterWalStateHeader header;
 	int got;
 	const char *reason = NULL;
+	struct stat st;
 
 	if (!registry_configured())
 		return false;
@@ -229,7 +230,24 @@ cluster_wal_state_ensure(void)
 						errmsg("could not open WAL state registry \"%s\": %m", path),
 						errhint("Check that the shared WAL storage is reachable.")));
 
-	/* Exists (possibly created by a concurrent first boot): validate. */
+	/*
+	 * Exists (possibly created by a concurrent first boot): validate.
+	 * The layout is a fixed 66048 bytes; a valid header glued to a
+	 * truncated (or extended) slot area must not pass, and the file is
+	 * never auto-resized (spec-4.2 user codereview round 2, P1).
+	 */
+	if (stat(path, &st) != 0)
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+						errmsg("could not stat WAL state registry \"%s\": %m", path),
+						errhint("Check that the shared WAL storage is reachable.")));
+	if (st.st_size != (off_t)CLUSTER_WAL_STATE_FILE_SIZE)
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+						errmsg("WAL state registry \"%s\" has unexpected size %lld, expected %d",
+							   path, (long long)st.st_size, CLUSTER_WAL_STATE_FILE_SIZE),
+						errhint("The registry is never resized in place.  After confirming the "
+								"shared storage, remove the file and restart (it is rebuilt "
+								"empty; slots repopulate as nodes start).")));
+
 	got = read_block(path, 0, &header);
 	if (got <= 0)
 		ereport(FATAL, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
@@ -283,10 +301,29 @@ write_own_slot(const ClusterWalStateSlot *slot)
 void
 cluster_wal_state_publish_active(void)
 {
+	ClusterWalStateSlot cur;
 	ClusterWalStateSlot slot;
 
 	if (!registry_configured())
 		return;
+
+	/*
+	 * Read-before-write (spec-4.2 §3.4b, user codereview round 2 P1):
+	 * a well-formed own slot claimed by ANOTHER node_id is evidence --
+	 * a registry on the wrong shared root, a node_id misconfiguration,
+	 * or tampering -- and must never be overwritten.  EMPTY (first
+	 * boot) and CORRUPT (torn write) self-repair: the owner write below
+	 * is the repair.
+	 */
+	if (cluster_wal_state_read_slot(cluster_wal_thread_id(), &cur) == CLUSTER_WAL_SLOT_OK
+		&& cur.node_id != cluster_node_id)
+		ereport(FATAL,
+				(errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+				 errmsg("WAL state registry slot %u is owned by node %d, but this node is %d",
+						(unsigned)cluster_wal_thread_id(), (int)cur.node_id, cluster_node_id),
+				 errdetail("The slot is valid and is left untouched."),
+				 errhint("cluster.wal_threads_dir may point at the wrong shared WAL root, or "
+						 "another node is configured with the same cluster.node_id.")));
 
 	fill_own_slot(&slot, CLUSTER_WAL_SLOT_STATE_ACTIVE, (int64)GetCurrentTimestamp());
 	if (!write_own_slot(&slot))
@@ -310,14 +347,30 @@ cluster_wal_state_publish_stopped(void)
 {
 	ClusterWalStateSlot cur;
 	ClusterWalStateSlot slot;
+	ClusterWalSlotVerdict v;
 	int64 started_at;
 
 	if (!registry_configured())
 		return;
 
-	started_at = (cluster_wal_state_read_slot(cluster_wal_thread_id(), &cur) == CLUSTER_WAL_SLOT_OK)
-					 ? cur.started_at
-					 : (int64)GetCurrentTimestamp();
+	v = cluster_wal_state_read_slot(cluster_wal_thread_id(), &cur);
+
+	/*
+	 * Same foreign-owner gate as publish_active(), demoted to WARNING:
+	 * shutdown is never blocked, but foreign evidence is never erased
+	 * either (spec-4.2 user codereview round 2 P1).
+	 */
+	if (v == CLUSTER_WAL_SLOT_OK && cur.node_id != cluster_node_id) {
+		ereport(WARNING,
+				(errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+				 errmsg("not publishing STOPPED: WAL state registry slot %u is owned by node %d, "
+						"but this node is %d",
+						(unsigned)cluster_wal_thread_id(), (int)cur.node_id, cluster_node_id),
+				 errhint("The foreign slot is left untouched as evidence.")));
+		return;
+	}
+
+	started_at = (v == CLUSTER_WAL_SLOT_OK) ? cur.started_at : (int64)GetCurrentTimestamp();
 
 	fill_own_slot(&slot, CLUSTER_WAL_SLOT_STATE_STOPPED, started_at);
 	if (!write_own_slot(&slot))
@@ -394,10 +447,14 @@ cluster_wal_state_registry_ready(void)
 {
 	char path[MAXPGPATH];
 	ClusterWalStateHeader header;
+	struct stat st;
 
 	if (!registry_configured())
 		return false;
 	registry_path(path, sizeof(path));
+	/* Same fixed-size discipline as ensure(): reader surface, no FATAL. */
+	if (stat(path, &st) != 0 || st.st_size != (off_t)CLUSTER_WAL_STATE_FILE_SIZE)
+		return false;
 	if (read_block(path, 0, &header) != 1)
 		return false;
 	return cluster_wal_state_header_validate(&header, NULL);
