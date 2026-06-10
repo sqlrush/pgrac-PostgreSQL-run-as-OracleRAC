@@ -907,6 +907,15 @@ void
 cluster_wal_state_refresh_own_slot(void)
 {}
 
+/* spec-4.3 D5 stub: recovery plan snapshot (cluster_recovery_plan.c
+ * not linked; dump_recovery's plan keys read '-' / none). */
+#include "cluster/cluster_recovery_plan.h"
+bool
+cluster_recovery_plan_snapshot(ClusterRecoveryPlan *out pg_attribute_unused())
+{
+	return false;
+}
+
 uint64
 cluster_wal_thread_page_stamp_count(void)
 {

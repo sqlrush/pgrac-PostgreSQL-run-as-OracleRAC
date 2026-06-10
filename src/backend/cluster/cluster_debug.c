@@ -96,6 +96,8 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_undo_cleaner.h" /* dump_undo_cleaner (spec-3.13 D1) */
 #include "cluster/cluster_lmon.h"		  /* cluster_lmon_status (spec-1.11 Sprint B D12) */
 #include "cluster/cluster_guc.h"
+#include "catalog/pg_control.h" /* DBState (spec-4.3 plan dump) */
+#include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_ic.h"				/* ClusterICOps_Active, ClusterICTier */
 #include "cluster/cluster_ic_tier1.h"		/* listener metadata accessors (Hardening v1.0.1 F3) */
 #include "cluster/cluster_scn.h"			/* SCN typedef (stage 1.4) */
@@ -1468,11 +1470,61 @@ dump_gcs(ReturnSetInfo *rsinfo)
  *	baseline tracking.
  */
 /*
- * dump_recovery -- spec-3.16 D5 recovery observability (4 rows).
+ * dbstate_text -- short token for a ControlFile DBState value
+ *	(spec-4.3 plan observability; underscore form for greppability).
+ */
+static const char *
+dbstate_text(uint32 dbstate)
+{
+	switch ((DBState)dbstate) {
+	case DB_STARTUP:
+		return "starting_up";
+	case DB_SHUTDOWNED:
+		return "shutdowned";
+	case DB_SHUTDOWNED_IN_RECOVERY:
+		return "shutdowned_in_recovery";
+	case DB_SHUTDOWNING:
+		return "shutting_down";
+	case DB_IN_CRASH_RECOVERY:
+		return "in_crash_recovery";
+	case DB_IN_ARCHIVE_RECOVERY:
+		return "in_archive_recovery";
+	case DB_IN_PRODUCTION:
+		return "in_production";
+	}
+	return "unknown";
+}
+
+/*
+ * verdict_csv -- comma list of threads whose plan verdict matches;
+ *	"-" when none.  Palloc'd (SRF per-call context).
+ */
+static const char *
+verdict_csv(const ClusterRecoveryPlan *plan, ClusterRecoveryThreadVerdict want)
+{
+	StringInfoData buf;
+	uint16 tid;
+
+	initStringInfo(&buf);
+	for (tid = 1; tid <= CLUSTER_RECOVERY_PLAN_THREADS; tid++) {
+		if (plan->verdict[tid] == (uint8)want)
+			appendStringInfo(&buf, "%s%u", buf.len > 0 ? "," : "", (unsigned)tid);
+	}
+	if (buf.len == 0)
+		return "-";
+	return buf.data;
+}
+
+/*
+ * dump_recovery -- spec-3.16 D5 recovery observability (4 rows) +
+ *	spec-4.3 D5 recovery plan surface (13 rows; 4 -> 17 total).
  */
 static void
 dump_recovery(ReturnSetInfo *rsinfo)
 {
+	ClusterRecoveryPlan plan;
+	bool have_plan;
+
 	emit_row(rsinfo, "recovery", "recovery_undo_redo_applies",
 			 fmt_int64((int64)cluster_vis_get_recovery_undo_redo_applies()));
 	emit_row(rsinfo, "recovery", "recovery_undo_redo_skips",
@@ -1481,6 +1533,32 @@ dump_recovery(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_vis_get_recovery_2pc_standby_rebuilds()));
 	emit_row(rsinfo, "recovery", "recovery_overlay_rebuild_count",
 			 fmt_int64((int64)cluster_vis_get_recovery_overlay_rebuild_count()));
+
+	/* spec-4.3 D5: recovery plan (observational; '-' before a plan). */
+	have_plan = cluster_recovery_plan_snapshot(&plan);
+	emit_row(rsinfo, "recovery", "plan_state",
+			 !have_plan ? "none" : (plan.failed ? "failed" : "generated"));
+	emit_row(rsinfo, "recovery", "plan_generated_at",
+			 have_plan ? fmt_timestamptz((TimestampTz)plan.generated_at) : "-");
+	emit_row(rsinfo, "recovery", "plan_own_thread",
+			 have_plan ? fmt_int64((int64)plan.own_thread) : "-");
+	emit_row(rsinfo, "recovery", "plan_threads_scanned",
+			 have_plan ? fmt_int64((int64)plan.threads_scanned) : "-");
+	emit_row(rsinfo, "recovery", "plan_crashed_candidates",
+			 have_plan ? verdict_csv(&plan, CLUSTER_RECOVERY_THREAD_CRASHED_CANDIDATE) : "-");
+	emit_row(rsinfo, "recovery", "plan_n_clean", have_plan ? fmt_int64((int64)plan.n_clean) : "-");
+	emit_row(rsinfo, "recovery", "plan_n_empty", have_plan ? fmt_int64((int64)plan.n_empty) : "-");
+	emit_row(rsinfo, "recovery", "plan_n_crashed_candidate",
+			 have_plan ? fmt_int64((int64)plan.n_crashed_candidate) : "-");
+	emit_row(rsinfo, "recovery", "plan_n_alive", have_plan ? fmt_int64((int64)plan.n_alive) : "-");
+	emit_row(rsinfo, "recovery", "plan_n_unknown",
+			 have_plan ? fmt_int64((int64)plan.n_unknown) : "-");
+	emit_row(rsinfo, "recovery", "plan_unknown_threads",
+			 have_plan ? verdict_csv(&plan, CLUSTER_RECOVERY_THREAD_UNKNOWN) : "-");
+	emit_row(rsinfo, "recovery", "plan_dbstate_at_startup",
+			 have_plan ? dbstate_text(plan.dbstate_at_startup) : "-");
+	emit_row(rsinfo, "recovery", "plan_local_recovery_needed",
+			 have_plan ? fmt_bool(plan.local_recovery_needed) : "-");
 }
 
 

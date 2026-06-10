@@ -633,6 +633,12 @@ void
 cluster_wal_thread_shmem_register(void)
 {}
 
+/* spec-4.3 D4 stub: recovery plan shmem region (L104). */
+void cluster_recovery_plan_shmem_register(void);
+void
+cluster_recovery_plan_shmem_register(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 
