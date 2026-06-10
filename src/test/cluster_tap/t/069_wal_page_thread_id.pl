@@ -9,10 +9,10 @@
 #    identical WAL stream invariant.
 #
 #    Test matrix (L1-L12):
-#      L1   全新 initdb 后 first WAL page header thread_id == 0 (legacy)
-#      L2   多个 commit → 多 page init → 全部 thread_id == 0
+#      L1   clustered node (node_id=7) stamps real thread_id == 8 (spec-4.1)
+#      L2   多个 commit → 多 page init → 全部 thread_id ∈ {0, 8},且 ≥1 个 8
 #      L3   bootstrap path placeholder (initdb 内部 BootStrapXLOG)
-#      L4   cluster.enabled=off 后 commit / page init → thread_id == 0
+#      L4   cluster.enabled=off 后新 page init → thread_id == 0 (LEGACY;页边界用 pg_switch_wal 对齐)
 #           (Q6 unconditional 写 0)
 #      L5   HC5 mixed-context: inject :skip with heavy commit workload
 #           → triggers XLogInsertRecord caller path (smoke; no PANIC)
@@ -22,7 +22,7 @@
 #           caller path)
 #      L8   Q3 validator hook: WAL page corrupted thread_id != 0 → recovery
 #           rejects with "invalid Stage 1 cluster fields"
-#      L9   XLogReaderGetThreadId() Stage 1 returns 0 (via pg_waldump)
+#      L9   XLogReaderGetThreadId() returns the real id 8 on clustered pages (spec-4.1)
 #      L10  Q5 unaligned access verified: smoke build pass + Q1=A
 #           StaticAssertDecl在 build time 已验证
 #      L11  xlp_cluster_flags == 0 invariant (via pg_waldump)
@@ -105,8 +105,9 @@ my $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (2); COMMIT;');
 my $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 my $dump = waldump_range($node, $start_lsn, $end_lsn);
-like($dump, qr/thread:\s*0/,
-	'L1 WAL page header thread_id == 0 (legacy sentinel)');
+# spec-4.1: cluster.enabled (default on) + node_id=7 -> pages stamp 8.
+like($dump, qr/thread:\s*8\b/,
+	'L1 WAL page header stamps the real thread id 8 (spec-4.1; node_id 7 + 1)');
 
 
 # ----------
@@ -119,8 +120,13 @@ for (1..50) {
 }
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $dump = waldump_range($node, $start_lsn, $end_lsn);
-unlike($dump, qr/thread:\s*[1-9]/,
-	'L2 50 commits never produce non-zero thread_id (Stage 1 unconditional 0)');
+{
+	my @ids = ($dump =~ /thread:\s*(\d+)/g);
+	ok((grep { $_ == 8 } @ids),
+		'L2 50 commits stamp the real thread id 8 (spec-4.1)');
+	is((scalar grep { $_ != 0 && $_ != 8 } @ids), 0,
+		'L2 no page ever carries a foreign thread id (only 0/8 legal here)');
+}
 
 
 # ----------
@@ -136,8 +142,8 @@ my $first_lsn = $node2->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node2->safe_psql('postgres', 'CHECKPOINT');
 my $first_dump = waldump_range($node2, $first_lsn, $first_lsn);
 # 即使 dump 范围空，也至少应当不报错 invalid cluster fields。
-unlike($first_dump, qr/invalid Stage 1 cluster fields/,
-	'L3 BootStrapXLOG-emitted page header passes Stage 1 invariant');
+unlike($first_dump, qr/invalid (Stage 1 )?cluster fields/,
+	'L3 BootStrapXLOG-emitted page header passes the cluster-field check');
 $node2->stop;
 
 
@@ -149,14 +155,19 @@ $node->stop;
 $node->append_conf('postgresql.conf', "cluster.enabled = off\n");
 $node->start;
 
+# spec-4.1: records can begin on a page initialised BEFORE the off
+# restart (still stamped 8); cross a page boundary first so the window
+# only covers pages initialised under enabled=off.
+$node->safe_psql('postgres', 'SELECT pg_switch_wal()');
+$node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (99); COMMIT;');
 $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (100); COMMIT;');
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $dump = waldump_range($node, $start_lsn, $end_lsn);
-like($dump, qr/thread:\s*0/,
-	'L4 cluster.enabled=off page init still writes thread_id == 0 (Q6 unconditional)');
+like($dump, qr/thread:\s*0\b/,
+	'L4 cluster.enabled=off page init writes thread_id == 0 (LEGACY)');
 unlike($dump, qr/thread:\s*[1-9]/,
-	'L4 cluster.enabled=off page init never produces non-zero thread_id');
+	'L4 cluster.enabled=off page init never produces a real thread id');
 
 # Restore cluster.enabled=on for L5+ tests
 $node->stop;
@@ -254,16 +265,17 @@ SKIP: {
 
 
 # ----------
-# L9: XLogReaderGetThreadId via pg_waldump shows 0 for every record.
+# L9: XLogReaderGetThreadId via pg_waldump shows the real id (spec-4.1).
 # ----------
 $start_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $node->safe_psql('postgres', 'BEGIN; INSERT INTO t1 VALUES (9999); COMMIT;');
 $end_lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 $dump = waldump_range($node, $start_lsn, $end_lsn);
 my @thread_lines = ($dump =~ /thread:\s*(\d+)/g);
-my $non_zero = grep { $_ != 0 } @thread_lines;
-is($non_zero, 0,
-	"L9 XLogReaderGetThreadId returns 0 across all records (got " . scalar(@thread_lines) . " records, $non_zero non-zero)");
+my $n_real = grep { $_ == 8 } @thread_lines;
+my $n_foreign = grep { $_ != 0 && $_ != 8 } @thread_lines;
+ok($n_real > 0 && $n_foreign == 0,
+	"L9 XLogReaderGetThreadId shows the real id 8 on clustered pages (got " . scalar(@thread_lines) . " records, $n_real real, $n_foreign foreign)");
 
 
 # ----------
@@ -285,7 +297,7 @@ ok($ret > 0,
 # ----------
 my $log_path = $node->logfile;
 my $log_content = slurp_file($log_path) || '';
-unlike($log_content, qr/invalid Stage 1 cluster fields/,
+unlike($log_content, qr/invalid (Stage 1 )?cluster fields/,
 	'L11 xlp_cluster_flags == 0 invariant holds (no validator hits)');
 
 
