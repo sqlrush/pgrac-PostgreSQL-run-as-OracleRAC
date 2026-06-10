@@ -49,6 +49,19 @@
 UT_DEFINE_GLOBALS();
 
 
+/*
+ * Assert backstop: cassert builds pull libpgport_srv objects (snprintf.c
+ * via the header's dir-name builder) that reference ExceptionalCondition.
+ */
+void
+ExceptionalCondition(const char *conditionName pg_attribute_unused(),
+					 const char *fileName pg_attribute_unused(),
+					 int lineNumber pg_attribute_unused())
+{
+	abort();
+}
+
+
 /* ---- T1: identity is LEGACY whenever the cluster is disabled ---- */
 UT_TEST(test_identity_disabled_is_legacy)
 {
