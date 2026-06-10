@@ -27,6 +27,7 @@ NODE_ID="0"
 CLUSTER_NAME="pgrac"
 INITDB_OPTS=""
 FORCE="no"
+WAL_THREADS_DIR=""
 
 # ---- helpers ----------------------------------------------------------
 
@@ -48,6 +49,11 @@ Options:
       --node-id=N            cluster node id (0..127, default 0)
       --cluster-name=NAME    cluster identifier written to pgrac.conf
                              (default "pgrac")
+      --wal-threads-dir=DIR  shared-storage root for the per-thread WAL
+                             layout: WAL goes to DIR/thread_<node-id + 1>
+                             (initdb -X) and cluster.wal_threads_dir is set
+                             in postgresql.conf (spec-4.1; requires an
+                             absolute path)
       --force                rewrite postgresql.conf cluster.node_id and
                              pgrac.conf even if PGDATA is already initialised
                              (initdb itself still refuses to clobber data)
@@ -209,6 +215,14 @@ while [ $# -gt 0 ]; do
         --cluster-name=*)
             CLUSTER_NAME="${1#*=}"
             ;;
+        --wal-threads-dir)
+            shift
+            [ $# -gt 0 ] || die "option --wal-threads-dir requires an argument"
+            WAL_THREADS_DIR="$1"
+            ;;
+        --wal-threads-dir=*)
+            WAL_THREADS_DIR="${1#*=}"
+            ;;
         --force)
             FORCE="yes"
             ;;
@@ -271,18 +285,45 @@ INITDB=$(locate_pg_tool initdb INITDB)
 
 warn_if_disable_cluster_build
 
+# ---- Step 0: per-thread WAL layout (spec-4.1) -------------------------
+#
+# thread_id = node_id + 1 (0 is the permanent legacy sentinel and never
+# becomes a directory name).  The thread directory is created here and
+# handed to initdb -X, which relocates pg_wal via the standard symlink
+# mechanism; the server validates the routing at startup
+# (cluster_wal_thread_init, FATAL 53RA0/53RA1 on mismatch).
+
+WAL_THREAD_XOPT=""
+if [ -n "$WAL_THREADS_DIR" ]; then
+    case "$WAL_THREADS_DIR" in
+        /*) ;;
+        *) die "--wal-threads-dir must be an absolute path (got \"$WAL_THREADS_DIR\")" ;;
+    esac
+    THREAD_ID=$((NODE_ID + 1))
+    THREAD_DIR="$WAL_THREADS_DIR/thread_$THREAD_ID"
+    mkdir -p "$THREAD_DIR" || die "could not create \"$THREAD_DIR\""
+    if [ -n "$(ls -A "$THREAD_DIR" 2>/dev/null)" ]; then
+        die "WAL thread directory \"$THREAD_DIR\" is not empty (another node's stream?)"
+    fi
+    WAL_THREAD_XOPT="-X $THREAD_DIR"
+    echo "$PROGNAME: WAL thread $THREAD_ID stream at \"$THREAD_DIR\""
+fi
+
 # ---- Step 1: initdb (if PGDATA empty / missing) -----------------------
 
 if [ -d "$TARGET_PGDATA" ] && [ -n "$(ls -A "$TARGET_PGDATA" 2>/dev/null)" ]; then
     if [ -f "$TARGET_PGDATA/PG_VERSION" ]; then
         echo "$PROGNAME: PGDATA \"$TARGET_PGDATA\" already initialised, skipping initdb"
+        if [ -n "$WAL_THREADS_DIR" ]; then
+            die "--wal-threads-dir cannot relocate an already-initialised PGDATA (move pg_wal manually, see the pgrac manual)"
+        fi
     else
         die "PGDATA \"$TARGET_PGDATA\" exists but is not a PG data directory"
     fi
 else
     echo "$PROGNAME: running initdb -D \"$TARGET_PGDATA\""
-    # shellcheck disable=SC2086 # INITDB_OPTS is intentionally word-split
-    "$INITDB" -D "$TARGET_PGDATA" $INITDB_OPTS
+    # shellcheck disable=SC2086 # INITDB_OPTS / WAL_THREAD_XOPT intentionally word-split
+    "$INITDB" -D "$TARGET_PGDATA" $WAL_THREAD_XOPT $INITDB_OPTS
 fi
 
 PG_CONF="$TARGET_PGDATA/postgresql.conf"
@@ -293,6 +334,10 @@ PGRAC_CONF="$TARGET_PGDATA/pgrac.conf"
 # ---- Step 2: cluster.node_id in postgresql.conf -----------------------
 
 set_postgresql_conf_value "$PG_CONF" "cluster.node_id" "$NODE_ID"
+
+if [ -n "$WAL_THREADS_DIR" ]; then
+    set_postgresql_conf_value "$PG_CONF" "cluster.wal_threads_dir" "'$WAL_THREADS_DIR'"
+fi
 
 # ---- Step 3: write pgrac.conf -----------------------------------------
 
