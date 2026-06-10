@@ -204,11 +204,21 @@ cluster_wal_state_ensure(void)
 
 		/* L47 create side: make the new dirent durable too. */
 		fd = BasicOpenFile(cluster_wal_threads_dir, O_RDONLY | PG_BINARY);
-		if (fd < 0 || pg_fsync(fd) != 0)
+		if (fd < 0)
+			ereport(FATAL,
+					(errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+					 errmsg("could not open WAL threads root \"%s\": %m", cluster_wal_threads_dir),
+					 errhint("Check that the shared WAL storage is writable.")));
+		if (pg_fsync(fd) != 0) {
+			int save_errno = errno;
+
+			close(fd);
+			errno = save_errno;
 			ereport(FATAL,
 					(errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
 					 errmsg("could not fsync WAL threads root \"%s\": %m", cluster_wal_threads_dir),
 					 errhint("Check that the shared WAL storage is writable.")));
+		}
 		close(fd);
 
 		ereport(LOG, (errmsg("pgrac WAL state registry created at \"%s\"", path)));
