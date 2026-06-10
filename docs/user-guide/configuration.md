@@ -40,6 +40,26 @@ SHOW "cluster.node_id";
 -- 0
 ```
 
+### `cluster.wal_threads_dir`
+
+| | |
+|---|---|
+| Type | string |
+| Default | `''` (flat `pg_wal` layout) |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` (written by `pgrac-init --wal-threads-dir`) |
+
+Shared-storage root of the per-thread WAL layout.  When set (must be
+an absolute path), `$PGDATA/pg_wal` must resolve to
+`<dir>/thread_<cluster.node_id + 1>`; startup is refused otherwise
+(SQLSTATE `53RA0` / `53RA1`).  See
+[Per-thread WAL layout](wal-threads.md).
+
+```text
+# postgresql.conf
+cluster.wal_threads_dir = '/shared/walroot'
+```
+
 ### `cluster.interconnect_tier`
 
 | | |
