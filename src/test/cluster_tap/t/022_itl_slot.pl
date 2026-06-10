@@ -206,8 +206,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-   '95',
-   'L12b pg_stat_cluster_wait_events returns 95 rows (spec-4.1)');
+   '97',
+   'L12b pg_stat_cluster_wait_events returns 97 rows (spec-4.2)');
 
 is($node->safe_psql(
 		'postgres',

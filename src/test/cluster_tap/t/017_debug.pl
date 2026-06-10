@@ -123,15 +123,15 @@ is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.fault_type'}),
-	'120',
-	'all 120 injection points have a .fault_type entry under inject category (spec-4.1 +2 wal-thread)');
+	'122',
+	'all 122 injection points have a .fault_type entry under inject category (spec-4.2 +2 wal-state)');
 
 is( $node->safe_psql(
 		'postgres',
 		q{SELECT count(*) FROM pg_cluster_state
 		   WHERE category='inject' AND key LIKE '%.hits'}),
-	'120',
-	'all 120 injection points have a .hits entry under inject category (spec-4.1 +2 wal-thread)');
+	'122',
+	'all 122 injection points have a .hits entry under inject category (spec-4.2 +2 wal-state)');
 
 
 # ----------
@@ -157,8 +157,8 @@ like($phase, qr/^(init|running|shutdown|\(unset\))$/,
 # ----------
 is( $node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'95',
-	'pg_stat_cluster_wait_events returns 95 rows (spec-4.1)');
+	'97',
+	'pg_stat_cluster_wait_events returns 97 rows (spec-4.2)');
 
 $node->stop;
 
