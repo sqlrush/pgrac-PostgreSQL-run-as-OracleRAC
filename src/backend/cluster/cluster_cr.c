@@ -1214,6 +1214,19 @@ cluster_cr_no_peer_fastpath_eligible(Snapshot snapshot)
 		return false;
 #endif
 
+	/*
+	 * Fail-closed topology check: the fast path requires the topology to be
+	 * KNOWN single-node.  cluster_conf_has_peers() alone is fail-OPEN here:
+	 * it returns false while ClusterConfShmem is NULL or not yet populated
+	 * (conf not loaded), which would route a multi-node deployment through
+	 * PG-native during that window (t/203/208/209 ClusterPair nodes caught
+	 * exactly this).  cluster_conf_node_count() == 1 holds only after a
+	 * successful load that declared exactly this node (single-node degraded
+	 * fallback included); 0 (not loaded) and >1 (peers) are both ineligible.
+	 */
+	if (cluster_conf_node_count() != 1)
+		return false;
+
 	return cluster_cr_no_peer_fastpath_decide(cluster_cr_gate_no_peer_fastpath,
 											  cluster_conf_has_peers(),
 											  snapshot->cluster_snapshot_session_local != 0);

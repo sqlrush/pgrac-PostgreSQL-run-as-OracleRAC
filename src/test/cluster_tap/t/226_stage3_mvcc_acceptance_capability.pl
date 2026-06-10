@@ -63,6 +63,11 @@ $node->append_conf('postgresql.conf',
 	"cluster.enabled = on\n"
 	  . "cluster.node_id = 0\n"
 	  . "cluster.allow_single_node = on\n"
+	  # spec-3.24 D1: pin the no-peer CR-gate fast path OFF -- this acceptance
+	  # test demonstrates the CR-construct CAPABILITY (L2 asserts
+	  # cr_construct_count advances), so it must drive the CR/SCN path.  The
+	  # product-default fast path itself is covered by t/239's differential.
+	  . "cluster.cr_gate_no_peer_fastpath = off\n"
 	  . "autovacuum = off\n"
 	  . "max_prepared_transactions = 10\n");
 $node->start;

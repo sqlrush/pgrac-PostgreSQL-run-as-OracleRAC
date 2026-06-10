@@ -77,6 +77,11 @@ $on->append_conf('postgresql.conf',
 	  . "cluster.allow_single_node = on\n"
 	  . "cluster.interconnect_tier = stub\n"
 	  . "cluster.cr_mvcc_gate = on\n"
+	  # spec-3.24 D1: pin the no-peer CR-gate fast path OFF.  This test's
+	  # intent is the spec-3.19 D3 live-xmin guard INSIDE the CR gate; with
+	  # the fast path on it would silently test PG-native instead (passing
+	  # for the wrong reason).  t/239 covers the fast-path differential.
+	  . "cluster.cr_gate_no_peer_fastpath = off\n"
 	  . "autovacuum = off\n");
 $on->start;
 
