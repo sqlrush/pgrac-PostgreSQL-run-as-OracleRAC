@@ -232,6 +232,30 @@ is(dumpkey($node1, 'dir_validated'), 't', 'L6 restored root validates again');
 is(-s $claim1, 40, 'L8 thread_1 claim is 40 bytes');
 is(-s $claim2, 40, 'L8 thread_2 claim is 40 bytes');
 
+# ============================================================
+# L9/L10 (spec-4.2): cross-node registry truth via raw slot reads.
+# ============================================================
+sub reg_slot_state
+{
+	my ($root, $tid) = @_;
+	open my $fh, '<:raw', "$root/pgrac_wal_state" or die "open: $!";
+	sysseek($fh, 512 + ($tid - 1) * 512, 0) or die;
+	sysread($fh, my $buf, 512) == 512 or die;
+	close $fh;
+	my (undef, undef, undef, undef, $state) = unpack('LSSlL', $buf);
+	return $state;
+}
+
+is(reg_slot_state($root, 1), 1, 'L9 node0 slot (thread 1) is ACTIVE');
+is(reg_slot_state($root, 2), 1, 'L9 node1 slot (thread 2) is ACTIVE');
+is(dumpkey($node0, 'registry_ready'), 't', 'L9 node0 sees the shared registry');
+
+$node1->stop;    # clean
+is(reg_slot_state($root, 2), 2,
+	'L10 node0 side reads node1 STOPPED from the shared registry');
+is(reg_slot_state($root, 1), 1, 'L10 node0 slot unaffected');
+$node1->start;
+
 $pair->stop_pair;
 
 done_testing();

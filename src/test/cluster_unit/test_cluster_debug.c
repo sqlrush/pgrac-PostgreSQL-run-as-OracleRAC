@@ -885,8 +885,28 @@ cluster_cr_xmax_scan_unavail_or_no_proof_count(void)
 	return 0;
 }
 
-/* spec-4.1 D7: per-thread WAL routing accessors (cluster_wal_thread.c) are
- * not linked here; stub the 5 accessors dump_wal_thread reads (L104). */
+/* spec-4.1 D7 + spec-4.2 D5: per-thread WAL routing / WAL-state registry
+ * accessors (cluster_wal_thread.c / cluster_wal_state.c) are not linked
+ * here; stub everything dump_wal_thread reads (L104). */
+#include "cluster/cluster_wal_state.h"
+bool
+cluster_wal_state_registry_ready(void)
+{
+	return false;
+}
+ClusterWalSlotVerdict
+cluster_wal_state_read_slot(uint16 thread_id pg_attribute_unused(),
+							ClusterWalStateSlot *slot_out pg_attribute_unused())
+{
+	return CLUSTER_WAL_SLOT_EMPTY;
+}
+void
+cluster_wal_state_publish_active(void)
+{}
+void
+cluster_wal_state_refresh_own_slot(void)
+{}
+
 uint64
 cluster_wal_thread_page_stamp_count(void)
 {

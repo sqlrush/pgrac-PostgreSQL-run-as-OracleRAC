@@ -344,6 +344,15 @@ cluster_lms_wait_for_ready(int timeout_ms pg_attribute_unused())
 UT_DEFINE_GLOBALS();
 
 
+/* spec-4.2 D3 stub: cluster_startup_phase.c publishes ACTIVE to the
+ * WAL-state registry at the phase->RUNNING transition; the registry
+ * module is not linked here (L104). */
+void cluster_wal_state_publish_active(void);
+void
+cluster_wal_state_publish_active(void)
+{}
+
+
 /* ============================================================
  * Compile-time anchors
  * ============================================================ */

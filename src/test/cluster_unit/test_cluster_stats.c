@@ -260,6 +260,14 @@ BackendType MyBackendType = B_INVALID;
 UT_DEFINE_GLOBALS();
 
 
+/* spec-4.2 D4 stub: cluster_stats.c refreshes the WAL-state registry
+ * slot each tick; the registry module is not linked here (L104). */
+void cluster_wal_state_refresh_own_slot(void);
+void
+cluster_wal_state_refresh_own_slot(void)
+{}
+
+
 /* ============================================================
  * Compile-time anchors
  * ============================================================ */

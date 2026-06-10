@@ -46,7 +46,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_undo_record test_cluster_undo_lifecycle test_cluster_cr test_cluster_cr_cache test_cluster_tt_durable \
         test_cluster_retention test_cluster_undo_cleaner test_cluster_visibility_variants test_cluster_tt_2pc \
         test_cluster_stage3_acceptance test_cluster_undo_buf test_cluster_undo_extent \
-        test_cluster_wal_thread
+        test_cluster_wal_thread test_cluster_wal_state
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -929,6 +929,21 @@ test_cluster_undo_format: test_cluster_undo_format.c unit_test.h \
 # tests for UndoRecordHeader + 4 payloads + slot dir addressing.
 test_cluster_undo_record: test_cluster_undo_record.c unit_test.h \
 		$(CLUSTER_VERSION_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+
+# spec-4.2 D6: test_cluster_wal_state — 14 pure-helper tests for the
+# ClusterWalState registry (header/slot 512B layout locks incl. the
+# single-source SLOT_OFFSET macro, fill/validate, CRC torn detection,
+# EMPTY/CORRUPT/FOREIGN classification).  Header-only inclusion;
+# libpgcommon + libpgport supply pg_crc32c.  The header dependency is
+# explicit per L229 (layout/StaticAssert snapshots must rebuild when
+# the header moves).
+test_cluster_wal_state: test_cluster_wal_state.c unit_test.h \
+		../../../src/include/cluster/cluster_wal_state.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \
 		$(top_builddir)/src/common/libpgcommon_srv.a \

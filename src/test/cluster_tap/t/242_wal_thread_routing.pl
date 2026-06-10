@@ -30,7 +30,7 @@
 #          inject shmem arming cannot survive into a first boot.]
 #      L12 pg_resetwal writes LEGACY pages; mixed legacy/real segments
 #          recover and serve queries
-#      L13 dump category self-enumeration: wal_thread has exactly 5 keys
+#      L13 dump category self-enumeration: wal_thread has exactly 10 keys
 #      L14 wait events registered: 2 ClusterWalThreadClaim* rows
 #
 #    Author: SqlRush <sqlrush@gmail.com>
@@ -315,7 +315,7 @@ like(wal_window_dump($node, $rlsn0, $rlsn1), qr/thread: 4/,
 # ============================================================
 is($node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE category = 'wal_thread'}),
-	'5', 'L13 wal_thread category has exactly 5 keys');
+	'10', 'L13 wal_thread category has exactly 10 keys (spec-4.2 +5 registry)');
 
 # ============================================================
 # L14: wait events registered.
