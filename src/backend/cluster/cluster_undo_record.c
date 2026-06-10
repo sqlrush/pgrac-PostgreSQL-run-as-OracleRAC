@@ -660,7 +660,6 @@ cluster_undo_pending_flush_internal(bool error_on_fail)
 	XLogRecPtr lsn;
 	uint16 slot_off;
 	uint16 slot_len;
-	int saved_delay_flags;
 	bool ok = false; /* assigned below; init silences cppcheck uninitvar */
 
 	if (!p->active)
@@ -681,7 +680,7 @@ cluster_undo_pending_flush_internal(bool error_on_fail)
 		ok = write_undo_block(p->segment_id, p->owner_instance, p->block_no, p->buf,
 							  /* do_fsync = */ false, lsn);
 	} else {
-		saved_delay_flags = MyProc->delayChkptFlags;
+		int saved_delay_flags = MyProc->delayChkptFlags;
 		Assert((saved_delay_flags & DELAY_CHKPT_START) == 0);
 		MyProc->delayChkptFlags = saved_delay_flags | DELAY_CHKPT_START;
 		PG_TRY();
@@ -901,6 +900,8 @@ cluster_undo_record_alloc(uint8 record_type, const ClusterUndoRecordTarget *targ
 	uint32 free_offset;
 	uint16 slot_count;
 	uint16 new_slot_idx;
+	/* cppcheck-suppress variableScope -- block_buf may alias this across the
+	 * whole tail; declaring it inside the write-through branch would dangle. */
 	char wt_block_buf[BLCKSZ]; /* write-through scratch (defer path uses pending.buf) */
 	char *block_buf;
 	bool use_defer;
