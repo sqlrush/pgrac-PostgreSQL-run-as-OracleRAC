@@ -61,6 +61,9 @@ int cluster_interconnect_tier = CLUSTER_IC_TIER_STUB;
 char *cluster_config_file = NULL;	   /* boot value filled by DefineCustomStringVariable */
 char *cluster_injection_points = NULL; /* boot value filled by DefineCustomStringVariable */
 char *cluster_wal_threads_dir = NULL;  /* spec-4.1 D5; '' = flat pg_wal layout */
+
+/* spec-4.3 D2: recovery-plan staleness threshold (observational only). */
+int cluster_recovery_stale_active_ms = 10000;
 int cluster_shared_storage_backend = CLUSTER_SHARED_FS_BACKEND_STUB;
 bool cluster_smgr_user_relations = false;
 int cluster_shmem_max_regions = 64;
@@ -749,6 +752,32 @@ cluster_init_guc(void)
 		cluster_wal_threads_dir_check_hook, /* check_hook */
 		NULL,								/* assign_hook */
 		NULL);								/* show_hook */
+
+	/*
+	 * cluster.recovery_stale_active_ms -- staleness window for the
+	 * spec-4.3 recovery plan pass.  An ACTIVE registry slot whose
+	 * last_updated is older than this is classified CRASHED_CANDIDATE
+	 * (fresher -> ALIVE).  Observational only in this stage: nothing
+	 * acts on the classification (spec-4.5 merged replay will).  The
+	 * default is 10x the cluster.cluster_stats_main_loop_interval
+	 * default (1000ms) so a peer with default refresh cadence has a
+	 * 10-tick margin before being reported as a crash candidate;
+	 * operators running a larger refresh interval on PEER nodes must
+	 * raise this accordingly (the slot does not carry the writer's
+	 * interval -- spec-4.3 §6 R2, slated for the spec-4.5 ABI review).
+	 */
+	DefineCustomIntVariable(
+		"cluster.recovery_stale_active_ms",
+		gettext_noop("Staleness window before an ACTIVE WAL-state slot is reported as a "
+					 "crash candidate."),
+		gettext_noop("Observational: the recovery plan only reports the classification."),
+		&cluster_recovery_stale_active_ms, 10000, /* boot value */
+		1000, 3600000,							  /* min / max */
+		PGC_POSTMASTER,							  /* plan runs once at startup */
+		GUC_UNIT_MS,							  /* flags */
+		NULL,									  /* check_hook */
+		NULL,									  /* assign_hook */
+		NULL);									  /* show_hook */
 
 	/*
 	 * cluster.injection_points -- comma-separated list of injection point

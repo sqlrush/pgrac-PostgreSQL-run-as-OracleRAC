@@ -131,6 +131,12 @@ extern char *cluster_config_file;
  */
 extern char *cluster_wal_threads_dir;
 
+/*
+ * cluster_recovery_stale_active_ms -- spec-4.3 recovery-plan staleness
+ * window (ms) for ACTIVE slots; observational classification only.
+ */
+extern int cluster_recovery_stale_active_ms;
+
 
 /*
  * cluster_injection_points -- comma-separated names to auto-arm at startup.

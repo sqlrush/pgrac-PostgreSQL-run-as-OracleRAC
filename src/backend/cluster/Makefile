@@ -58,6 +58,7 @@ OBJS = \
 	cluster_gcs_block.o \
 	cluster_gcs_block_dedup.o \
 	cluster_reconfig.o \
+	cluster_recovery_plan.o \
 	cluster_guc.o \
 	cluster_ic.o \
 	cluster_ic_chunk.o \
