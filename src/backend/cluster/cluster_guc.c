@@ -832,16 +832,17 @@ cluster_init_guc(void)
 		&cluster_undo_buffers, 2048, 0, 1048576, PGC_POSTMASTER, /* shmem sized once at init */
 		0, NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("cluster.undo_buffer_writeback",
-							 gettext_noop("Enable buffered write-back for the undo buffer pool."),
-							 gettext_noop("On = buffered undo, durable via WAL + checkpoint flush "
-										  "(drops the per-commit undo fsync).  DEFAULT ON since "
-										  "spec-3.25 D4 (auto semantics): the runtime guard forces "
-										  "write-through whenever the node has peers, so the default "
-										  "only takes effect on a single-node topology.  Off = "
-										  "write-through (per-commit fsync to shared storage)."),
-							 &cluster_undo_buffer_writeback, true, PGC_SIGHUP, 0,
-							 cluster_undo_buffer_writeback_check_hook, NULL, NULL);
+	DefineCustomBoolVariable(
+		"cluster.undo_buffer_writeback",
+		gettext_noop("Enable buffered write-back for the undo buffer pool."),
+		gettext_noop("On = buffered undo, durable via WAL + checkpoint flush "
+					 "(drops the per-commit undo fsync).  DEFAULT ON since "
+					 "spec-3.25 D4 (auto semantics): the runtime guard forces "
+					 "write-through whenever the node has peers, so the default "
+					 "only takes effect on a single-node topology.  Off = "
+					 "write-through (per-commit fsync to shared storage)."),
+		&cluster_undo_buffer_writeback, true, PGC_SIGHUP, 0,
+		cluster_undo_buffer_writeback_check_hook, NULL, NULL);
 
 	/*
 	 * spec-2.15:  cluster.grd_max_entries
