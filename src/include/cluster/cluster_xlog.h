@@ -16,6 +16,15 @@
  *	  thread_id = cluster_node_id + 1 so XLP_THREAD_ID_LEGACY (0) stays
  *	  permanently reserved as the sentinel.
  *
+ *	  spec-4.1 (per-thread WAL routing) activates that plan: real thread
+ *	  IDs are stamped by cluster_wal_thread_id() (cluster_wal_thread.h)
+ *	  and the reader-side check is cluster_xlog_validate_page_header()
+ *	  below, parameterised by the reader's expected own-stream thread id
+ *	  (XLP_THREAD_ID_INVALID = accept any valid id; frontend tools and
+ *	  standby replay stay permissive -- spec-4.1 RL1).  The Stage 1
+ *	  helpers below are retained verbatim as the strict legacy predicate
+ *	  for cluster_unit coverage of pre-activation streams.
+ *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -103,6 +112,50 @@ static inline bool
 cluster_xlog_validate_page_header_stage1_invariant(uint16 thread_id, uint16 cluster_flags)
 {
 	return thread_id == XLP_THREAD_ID_LEGACY && cluster_flags == XLP_CLUSTER_FLAGS_RESERVED;
+}
+
+
+/*
+ * CLUSTER_WAL_THREAD_MAX -- highest real thread id spec-4.1 can stamp.
+ *
+ *	thread_id = cluster.node_id + 1 and cluster.node_id is capped at 127
+ *	(cluster_guc.c), so real ids occupy [XLP_THREAD_ID_FIRST_REAL, 128].
+ *	The remaining range up to XLP_THREAD_ID_MAX_REAL (0xFFFE) stays
+ *	reserved for future expansion (spec-1.19 Q2 sentinel rule keeps 0
+ *	permanently legacy and 0xFFFF permanently invalid).
+ */
+#define CLUSTER_WAL_THREAD_MAX ((uint16)128)
+
+/*
+ * cluster_xlog_validate_page_header -- spec-4.1 activated check.
+ *
+ *	Replaces the Stage 1 invariant at the XLogReaderValidatePageHeader
+ *	call site (xlogreader.c; call-site shape unchanged per spec-1.19).
+ *	Frontend-safe pure arithmetic (pg_waldump links it inline).
+ *
+ *	Accepts:
+ *	  - cluster_flags == XLP_CLUSTER_FLAGS_RESERVED (still permanently 0)
+ *	  - thread_id == XLP_THREAD_ID_LEGACY (pre-activation / initdb /
+ *	    pg_resetwal pages; mixed segments are legal, spec-4.1 §3.1)
+ *	  - real ids in [XLP_THREAD_ID_FIRST_REAL, CLUSTER_WAL_THREAD_MAX],
+ *	    additionally required to equal `expected` when the reader runs
+ *	    own-stream strict (crash recovery sets expected to this node's
+ *	    thread id; XLP_THREAD_ID_INVALID means accept-any-valid, the
+ *	    default for frontend tools, walsenders and standby replay --
+ *	    spec-4.1 RL1: never reject upstream WAL with a local node_id).
+ */
+static inline bool
+cluster_xlog_validate_page_header(uint16 thread_id, uint16 cluster_flags, uint16 expected)
+{
+	if (cluster_flags != XLP_CLUSTER_FLAGS_RESERVED)
+		return false;
+	if (thread_id == XLP_THREAD_ID_LEGACY)
+		return true;
+	if (thread_id < XLP_THREAD_ID_FIRST_REAL || thread_id > CLUSTER_WAL_THREAD_MAX)
+		return false;
+	if (expected != XLP_THREAD_ID_INVALID && thread_id != expected)
+		return false;
+	return true;
 }
 
 

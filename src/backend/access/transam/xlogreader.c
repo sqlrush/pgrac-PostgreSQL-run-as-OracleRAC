@@ -180,6 +180,18 @@ XLogReaderAllocate(int wal_segment_size, const char *waldir,
 	/* system_identifier initialized to zeroes above */
 	state->private_data = private_data;
 	/* ReadRecPtr, EndRecPtr and readLen initialized to zeroes above */
+
+	/*
+	 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
+	 * What changed: spec-4.1 -- default to accept-any-valid thread id.
+	 * MCXT_ALLOC_ZERO above would leave 0 = XLP_THREAD_ID_LEGACY, which
+	 * would silently mean "reject every real id"; the permissive
+	 * sentinel must be explicit.  Only own-stream crash recovery
+	 * overrides this (InitWalRecovery, spec-4.1 RL1).
+	 * Why: frontend tools / walsenders / standby replay must accept any
+	 * valid thread id without cluster configuration.
+	 */
+	state->cluster_expected_thread_id = XLP_THREAD_ID_INVALID;
 	state->errormsg_buf = palloc_extended(MAX_ERRORMSG_LEN + 1,
 										  MCXT_ALLOC_NO_OOM);
 	if (!state->errormsg_buf)
@@ -1316,30 +1328,37 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 
 	/*
 	 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
-	 * What changed: spec-1.19 -- enforce Stage 1 invariant on the
-	 * xlp_thread_id + xlp_cluster_flags placeholder fields, delegating
-	 * the predicate to cluster_xlog_validate_page_header_stage1_invariant
-	 * (cluster_xlog.h) so cluster_unit tests can exercise the same
-	 * predicate without a full XLogReaderState fixture (Hardening v1.0.1
-	 * P2-2; codex review 2026-05-05).
+	 * What changed: spec-1.19 -- enforce the cluster-field invariant on
+	 * xlp_thread_id + xlp_cluster_flags, delegating the predicate to a
+	 * cluster_xlog.h inline helper so cluster_unit tests can exercise
+	 * the same predicate without a full XLogReaderState fixture
+	 * (Hardening v1.0.1 P2-2; codex review 2026-05-05).
+	 * spec-4.1: the helper body advanced from the Stage 1 strict-zero
+	 * invariant to cluster_xlog_validate_page_header (legacy 0 always
+	 * accepted; real ids range-checked against CLUSTER_WAL_THREAD_MAX
+	 * and, when state->cluster_expected_thread_id is not
+	 * XLP_THREAD_ID_INVALID, required to match it -- own-stream strict
+	 * crash recovery vs accept-any-valid tools/standby, spec-4.1 RL1).
+	 * The call-site shape is unchanged exactly as spec-1.19 promised.
 	 * Why: PG's preceding magic and info bits checks do NOT cover the
 	 * new cluster fields (user 反审 #2 / Q3 v0.2 → B).  Catches mixed
-	 * binaries and padding corruption.  Stage 2+ feature-034 will
-	 * update the helper body to a real range test
-	 * (XLP_THREAD_ID_FIRST_REAL .. XLP_THREAD_ID_MAX_REAL); the call
-	 * site here stays unchanged.
+	 * binaries, padding corruption, and a mis-linked pg_wal serving a
+	 * foreign thread's stream to recovery.
 	 */
-	if (!cluster_xlog_validate_page_header_stage1_invariant(hdr->xlp_thread_id,
-															hdr->xlp_cluster_flags))
+	if (!cluster_xlog_validate_page_header(hdr->xlp_thread_id,
+										   hdr->xlp_cluster_flags,
+										   state->cluster_expected_thread_id))
 	{
 		char		fname[MAXFNAMELEN];
 
 		XLogFileName(fname, state->seg.ws_tli, segno, state->segcxt.ws_segsize);
 
 		report_invalid_record(state,
-							  "invalid Stage 1 cluster fields in WAL page (thread_id=%u cluster_flags=%u; expected 0/0) in WAL segment %s, LSN %X/%X, offset %u",
+							  "invalid cluster fields in WAL page (thread_id=%u cluster_flags=%u; expected thread %u, %u=any) in WAL segment %s, LSN %X/%X, offset %u",
 							  hdr->xlp_thread_id,
 							  hdr->xlp_cluster_flags,
+							  state->cluster_expected_thread_id,
+							  XLP_THREAD_ID_INVALID,
 							  fname,
 							  LSN_FORMAT_ARGS(recptr),
 							  offset);

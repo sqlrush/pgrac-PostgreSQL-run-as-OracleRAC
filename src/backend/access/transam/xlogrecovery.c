@@ -20,6 +20,28 @@
  * src/backend/access/transam/xlogrecovery.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS (spec-4.1 v1.0)
+ *
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *	Spec: spec-4.1-per-thread-wal-routing.md
+ *
+ *	What changed:
+ *	  - InitWalRecovery(): after allocating the recovery xlogreader, set
+ *	    xlogreader->cluster_expected_thread_id to this node's WAL thread
+ *	    id (cluster_wal_thread_id()) -- but ONLY for plain crash
+ *	    recovery of the node's own stream (neither archive recovery nor
+ *	    standby mode requested) and only when the id is real.  Standby
+ *	    replay and archive recovery keep the permissive
+ *	    XLP_THREAD_ID_INVALID default so upstream WAL stamped with the
+ *	    primary's thread id is never rejected with a local node_id
+ *	    (spec-4.1 RL1).
+ *
+ *	Why:
+ *	  Own-stream strict validation is the read-time second defence
+ *	  (after cluster_wal_thread_init's startup directory check) against
+ *	  a mis-linked pg_wal serving another thread's stream to crash
+ *	  recovery (AD-009 per-instance redo thread, spec-4.1 Q4-A).
  */
 
 #include "postgres.h"
@@ -35,6 +57,10 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC: spec-4.1 own-stream strict thread-id for crash recovery. */
+#include "cluster/cluster_wal_thread.h"
+#endif
 #include "access/xlogarchive.h"
 #include "access/xlogprefetcher.h"
 #include "access/xlogreader.h"
@@ -589,6 +615,28 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 				 errmsg("out of memory"),
 				 errdetail("Failed while allocating a WAL reading processor.")));
 	xlogreader->system_identifier = ControlFile->system_identifier;
+
+#ifdef USE_PGRAC_CLUSTER
+
+	/*
+	 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
+	 * What changed: spec-4.1 -- own-stream strict thread-id acceptance
+	 * for plain crash recovery.  Archive recovery and standby mode keep
+	 * the accept-any-valid default set by XLogReaderAllocate: replayed
+	 * WAL may legitimately carry another node's (the primary's) thread
+	 * id and must never be rejected with this node's local identity
+	 * (spec-4.1 RL1).
+	 * Why: second defence against a mis-linked pg_wal serving a foreign
+	 * thread's stream to crash recovery (spec-4.1 Q4-A; the first is
+	 * cluster_wal_thread_init's startup directory check).
+	 */
+	if (!ArchiveRecoveryRequested && !StandbyModeRequested) {
+		uint16 own_thread = cluster_wal_thread_id();
+
+		if (own_thread != XLP_THREAD_ID_LEGACY)
+			xlogreader->cluster_expected_thread_id = own_thread;
+	}
+#endif
 
 	/*
 	 * Set the WAL decode buffer size.  This limits how far ahead we can read

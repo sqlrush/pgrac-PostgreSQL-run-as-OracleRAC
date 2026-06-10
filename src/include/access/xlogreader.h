@@ -316,6 +316,26 @@ struct XLogReaderState
 	 * data.
 	 */
 	bool		nonblocking;
+
+	/*
+	 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
+	 * What changed: spec-4.1 -- own-stream strict thread-id acceptance.
+	 * XLogReaderValidatePageHeader additionally requires a real (non
+	 * legacy) xlp_thread_id to equal this value, unless it is
+	 * XLP_THREAD_ID_INVALID (= accept any valid id, the
+	 * XLogReaderAllocate default).  Crash recovery reading this node's
+	 * own stream sets it to cluster_wal_thread_id()
+	 * (xlogrecovery.c::InitWalRecovery); frontend tools (pg_waldump /
+	 * pg_rewind), walsenders and standby replay keep the permissive
+	 * default so cross-thread diagnostics and physical replication of a
+	 * stamped stream are never rejected with a local node_id (spec-4.1
+	 * RL1).
+	 * Why: second defence (after the cluster_wal_thread_init startup
+	 * validation) against a mis-linked pg_wal serving another thread's
+	 * stream to recovery.  Appended at the struct tail: heap-allocated
+	 * via XLogReaderAllocate only, no embedded instances (spec-4.1 R7).
+	 */
+	uint16		cluster_expected_thread_id;
 };
 
 /*

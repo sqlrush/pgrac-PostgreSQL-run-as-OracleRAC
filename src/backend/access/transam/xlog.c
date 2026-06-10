@@ -65,6 +65,27 @@
  *	  starting at 1 (mapping `thread_id = cluster_node_id + 1`, so 0
  *	  remains permanently legacy).  Q1=A approve: reuse MAXALIGN
  *	  padding, no on-disk growth, no catversion bump.
+ *
+ * PGRAC MODIFICATIONS (spec-4.1 v1.0)
+ *
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *	Spec: spec-4.1-per-thread-wal-routing.md
+ *
+ *	What changed:
+ *	  - AdvanceXLInsertBuffer(): the spec-1.19 placeholder constant is
+ *	    replaced by cluster_wal_thread_stamp() (cluster_wal_thread.h)
+ *	    under USE_PGRAC_CLUSTER -- real thread id (cluster.node_id + 1)
+ *	    when clustered, LEGACY (0) otherwise; --disable-cluster builds
+ *	    keep the constant, so non-cluster WAL stays byte-identical.
+ *	  - BootStrapXLOG() is deliberately NOT changed: initdb-time WAL is
+ *	    always LEGACY-stamped (pre-cluster, L19 pre-RUNNING tolerance);
+ *	    mixed LEGACY/real pages are legal (spec-4.1 §3.1).
+ *
+ *	Why:
+ *	  spec-4.1 activates AD-009 per-instance redo thread identity on
+ *	  the write side.  Routing/layout validation lives in
+ *	  cluster_wal_thread_init() (ipci.c); the own-stream strict reader
+ *	  check lives in xlogreader.c + xlogrecovery.c (spec-4.1 RL1).
  */
 
 #include "postgres.h"
@@ -145,6 +166,8 @@
 #include "cluster/cluster_inject.h"
 /* PGRAC: spec-3.18 D2b undo buffer pool checkpoint write-back flush. */
 #include "cluster/storage/cluster_undo_buf.h"
+/* PGRAC: spec-4.1 per-thread WAL routing page-header stamp. */
+#include "cluster/cluster_wal_thread.h"
 #endif
 
 extern uint32 bootstrap_data_checksum_version;
@@ -1928,15 +1951,20 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 
 		/*
 		 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
-		 * What changed: spec-1.19 -- write Stage 1 placeholder cluster
-		 * fields (xlp_thread_id = LEGACY (0); xlp_cluster_flags =
-		 * RESERVED (0)).  Both writes are unconditional and produce a
+		 * What changed: spec-1.19 wrote Stage 1 placeholder cluster
+		 * fields (both permanently zero).  spec-4.1 activates the
+		 * placeholder: xlp_thread_id now carries this instance's real
+		 * thread id via cluster_wal_thread_stamp() -- node_id + 1 when
+		 * cluster.enabled and cluster.node_id >= 0, else the LEGACY (0)
+		 * sentinel, so non-cluster configurations (and --disable-cluster
+		 * builds, which keep the constant) still produce a
 		 * byte-identical WAL stream to vanilla PG (the MemSet above
-		 * already zeroed the bytes).
-		 * Why: the explicit zero writes document intent to future
-		 * readers and survive any future move of the MemSet pattern.
-		 * Stage 2+ feature-034 will write `cluster_node_id + 1` here so
-		 * zero remains permanently legacy (Q2 v0.2 sentinel rule).
+		 * already zeroed the bytes).  xlp_cluster_flags stays
+		 * permanently RESERVED (0).
+		 * Why: AD-009 per-instance redo thread identity; the stamp is
+		 * the only hot-path footprint of spec-4.1 (one call returning a
+		 * cached-global derivation + one conditional atomic counter
+		 * add; nofail, critical-section-safe).
 		 *
 		 * HC5 (mixed-context inject): cluster-wal-page-init-thread-id
 		 * fires below.  AdvanceXLInsertBuffer is called from
@@ -1947,7 +1975,11 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		 * Default fault types for this point are :skip / :warning
 		 * (PANIC-safe in either context).
 		 */
+#ifdef USE_PGRAC_CLUSTER
+		NewPage->xlp_thread_id = cluster_wal_thread_stamp();
+#else
 		NewPage->xlp_thread_id = XLP_THREAD_ID_LEGACY;
+#endif
 		NewPage->xlp_cluster_flags = XLP_CLUSTER_FLAGS_RESERVED;
 
 #ifdef USE_PGRAC_CLUSTER
