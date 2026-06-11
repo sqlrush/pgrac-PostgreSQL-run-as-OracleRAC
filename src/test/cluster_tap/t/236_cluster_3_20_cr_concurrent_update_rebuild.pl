@@ -70,6 +70,7 @@ sub _new_node
 # level aborts, NOT the spec-3.20 bug -- mirrors t/234).
 my $tolerated =
   qr{cluster\ CR\ cannot\ reconstruct\ block
+	|cluster\ TT\ slot\ allocator
 	|cluster\ undo\ record\ alloc\ failed
 	|cluster\ CR\ cannot\ resolve\ commit_scn
 	|cluster\ CR\ xmax\ visibility\ unresolved

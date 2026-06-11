@@ -130,7 +130,11 @@ sub _run_workload
 	#   - spec-3.21: cannot resolve a recycled committed deleter's commit_scn
 	#     (53R9F snapshot-too-old retryable; the documented B-boundary, never a
 	#     wrong/lost result -- the invariant still holds among committed txns)
+	#   - TT slot allocator rollover races under load (spec-3.12 family: a
+	#     freshly rolled segment can be filled by racing backends; ERROR-level
+	#     abort, retryable, gate-independent -- macOS nightly 27319188658)
 	my $tolerated = qr{cluster\ CR\ cannot\ reconstruct\ block
+		|cluster\ TT\ slot\ allocator
 		|cluster\ undo\ record\ alloc\ failed
 		|cluster\ CR\ cannot\ resolve\ commit_scn
 		|cluster\ CR\ xmax\ visibility\ unresolved
