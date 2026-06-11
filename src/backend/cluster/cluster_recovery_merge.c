@@ -223,6 +223,27 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 		return CLUSTER_MERGE_NO_NOT_COLD; /* warm -> 4.6/4.7, not us */
 
 	/*
+	 * spec-4.5 capability gate (A-closure item 4): merged recovery
+	 * replays a crashed peer's SHARED-storage pages.  No real
+	 * shared-data backend exists yet -- cluster_shared_fs LOCAL writes
+	 * each node's own PGDATA, STUB is pure md.c (spec-3.18 V-2).  With
+	 * neither providing genuinely shared data files, a peer's S-class
+	 * record cannot be honestly applied to shared storage.  Fail-closed
+	 * 53RA3 even when the operator set merged_recovery=on, so the
+	 * feature cannot be mis-engaged before the shared-storage backend
+	 * (roadmap 4.5a) lands.
+	 */
+	ereport(FATAL,
+			(errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+			 errmsg("merged k-way recovery is not supported without a shared-data storage backend"),
+			 errdetail("cluster.merged_recovery is on and crash candidates exist, but no shared "
+					   "data-file backend is available (cluster_shared_fs is stub/local, which is "
+					   "per-node, not shared)."),
+			 errhint("Recover this node's own stream with cluster.merged_recovery=off.  True "
+					 "shared-storage merged recovery awaits the shared-data backend (roadmap "
+					 "4.5a).")));
+
+	/*
 	 * §3.2 hard gate.  Collect every blocking reason, then FATAL 53RA3
 	 * once with the full list -- never silently fall back to single
 	 * stream (that would skip a crashed peer's committed WAL).
