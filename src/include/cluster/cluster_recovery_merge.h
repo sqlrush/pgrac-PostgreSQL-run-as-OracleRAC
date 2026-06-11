@@ -210,6 +210,29 @@ cluster_recmerge_heap_pop(ClusterRecmergeHeap *h, ClusterRecmergeHeapEntry *out)
 /* Backend engine (cluster_recovery_merge.c). */
 typedef struct ClusterRecoveryMergeState ClusterRecoveryMergeState;
 
+/* Engage decision (spec-4.5 §3.1).  Computed at the top of
+ * PerformWalRecovery before the redo loop.  ENGAGE means: merged
+ * recovery is on, this is a plain local crash with crash candidates
+ * and no ALIVE foreign node, AND the 53RA3 gate passed.  Every NO_*
+ * reason keeps today's single-stream recovery (never a failure). */
+typedef enum ClusterMergeEngage {
+	CLUSTER_MERGE_NO_DISABLED = 0,	 /* cluster.merged_recovery = off       */
+	CLUSTER_MERGE_NO_NOT_CONFIGURED, /* no wal_threads_dir / legacy id     */
+	CLUSTER_MERGE_NO_NO_PLAN,		 /* plan absent or failed               */
+	CLUSTER_MERGE_NO_NO_CANDIDATES,	 /* nothing crashed to merge in         */
+	CLUSTER_MERGE_NO_NOT_COLD,		 /* a foreign node is ALIVE (warm = 4.6) */
+	CLUSTER_MERGE_ENGAGE,			 /* gate passed below; do merged replay */
+} ClusterMergeEngage;
+
+/* Decide whether to engage; out_bitmap/out_start receive the merge set
+ * (candidates + own) and per-thread start LSNs when ENGAGE.  When the
+ * decision is ENGAGE but the 53RA3 gate fails, this FATALs 53RA3 with
+ * the blocking reasons -- it never silently downgrades to single
+ * stream (spec-4.5 §3.2). */
+extern ClusterMergeEngage cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo,
+														uint64 out_bitmap[2],
+														XLogRecPtr *out_start);
+
 extern ClusterRecoveryMergeState *cluster_recovery_merge_begin(const uint64 merge_bitmap[2],
 															   const XLogRecPtr *start_lsn,
 															   TimeLineID tli);

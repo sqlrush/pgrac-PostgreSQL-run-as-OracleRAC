@@ -44,7 +44,11 @@
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "cluster/cluster_guc.h"
+#include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_recovery_merge.h"
+#include "cluster/cluster_recovery_worker.h"
+#include "cluster/cluster_wal_thread.h"
+#include "lib/stringinfo.h"
 #include "storage/fd.h"
 #include "utils/wait_event.h"
 
@@ -150,6 +154,103 @@ stream_advance(ClusterRecoveryMergeState *st, int idx)
 		key.node = (int32)ms->thread_id - 1;
 		cluster_recmerge_heap_push(&st->heap, key, idx);
 	}
+}
+
+/*
+ * cluster_recovery_merge_decide -- §3.1 engage + §3.2 53RA3 gate.
+ */
+ClusterMergeEngage
+cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out_bitmap[2],
+							  XLogRecPtr *out_start)
+{
+	ClusterRecoveryPlan plan;
+	ClusterRecoveryWorkerPool pool;
+	bool have_pool;
+	uint16 tid;
+	StringInfoData blockers;
+
+	if (!cluster_merged_recovery)
+		return CLUSTER_MERGE_NO_DISABLED;
+	if (cluster_wal_threads_dir == NULL || cluster_wal_threads_dir[0] == '\0'
+		|| own_thread == XLP_THREAD_ID_LEGACY)
+		return CLUSTER_MERGE_NO_NOT_CONFIGURED;
+	if (!cluster_recovery_plan_snapshot(&plan) || plan.failed)
+		return CLUSTER_MERGE_NO_NO_PLAN;
+	if (plan.n_crashed_candidate == 0)
+		return CLUSTER_MERGE_NO_NO_CANDIDATES;
+	if (plan.n_alive > 0)
+		return CLUSTER_MERGE_NO_NOT_COLD; /* warm -> 4.6/4.7, not us */
+
+	/*
+	 * §3.2 hard gate.  Collect every blocking reason, then FATAL 53RA3
+	 * once with the full list -- never silently fall back to single
+	 * stream (that would skip a crashed peer's committed WAL).
+	 */
+	initStringInfo(&blockers);
+	if (plan.n_unknown > 0)
+		appendStringInfo(&blockers, "%s%u UNKNOWN plan thread(s)", blockers.len ? "; " : "",
+						 (unsigned)plan.n_unknown);
+	if (!fullPageWrites)
+		appendStringInfo(&blockers, "%slocal full_page_writes=off", blockers.len ? "; " : "");
+
+	have_pool = cluster_recovery_worker_pool_snapshot(&pool);
+
+	/* Build the merge set (candidates + own) and validate each. */
+	memset(out_bitmap, 0, sizeof(uint64) * 2);
+	for (tid = 1; tid <= CLUSTER_WAL_STATE_SLOT_COUNT; tid++) {
+		bool is_candidate = cluster_recovery_plan_candidate_test(&plan, tid);
+		ClusterWalStateSlot slot;
+
+		if (!is_candidate && tid != own_thread)
+			continue;
+
+		out_bitmap[(tid - 1) / 64] |= ((uint64)1 << ((tid - 1) % 64));
+
+		if (tid == own_thread) {
+			out_start[tid] = own_redo;
+			continue; /* own thread: gate items below are peer-only */
+		}
+
+		/* Candidate stream must have validated OK (or SKIPPED is fatal:
+		 * cold premise broke). */
+		if (have_pool) {
+			uint8 v = pool.stream_verdict[tid];
+
+			if (v == CLUSTER_RECOVERY_STREAM_SKIPPED)
+				appendStringInfo(&blockers, "%sthread %u stream SKIPPED (peer was alive)",
+								 blockers.len ? "; " : "", (unsigned)tid);
+			else if (v != CLUSTER_RECOVERY_STREAM_OK)
+				appendStringInfo(&blockers, "%sthread %u stream not OK (verdict %u)",
+								 blockers.len ? "; " : "", (unsigned)tid, (unsigned)v);
+		} else {
+			appendStringInfo(&blockers, "%sno stream-validation result for thread %u",
+							 blockers.len ? "; " : "", (unsigned)tid);
+		}
+
+		/* Candidate start point + fpw history from its slot. */
+		if (cluster_wal_state_read_slot(tid, &slot) != CLUSTER_WAL_SLOT_OK) {
+			appendStringInfo(&blockers, "%sthread %u slot unreadable", blockers.len ? "; " : "",
+							 (unsigned)tid);
+		} else {
+			if (slot.checkpoint_redo_lsn == 0)
+				appendStringInfo(&blockers, "%sthread %u has no checkpoint redo start",
+								 blockers.len ? "; " : "", (unsigned)tid);
+			if (slot.fpw_was_off != 0)
+				appendStringInfo(&blockers, "%sthread %u ran with full_page_writes=off",
+								 blockers.len ? "; " : "", (unsigned)tid);
+			out_start[tid] = (XLogRecPtr)slot.checkpoint_redo_lsn;
+		}
+	}
+
+	if (blockers.len > 0)
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+						errmsg("merged k-way recovery refused"), errdetail("%s.", blockers.data),
+						errhint("Resolve the shared WAL storage / configuration, or set "
+								"cluster.merged_recovery=off to recover this node's own "
+								"stream only (a crashed peer's committed WAL will not be "
+								"recovered).")));
+	pfree(blockers.data);
+	return CLUSTER_MERGE_ENGAGE;
 }
 
 ClusterRecoveryMergeState *
