@@ -336,6 +336,13 @@ struct XLogReaderState
 	 * via XLogReaderAllocate only, no embedded instances (spec-4.1 R7).
 	 */
 	uint16		cluster_expected_thread_id;
+
+	/*
+	 * PGRAC (spec-4.5 D3): last accepted xl_scn on this stream, for the
+	 * per-thread monotonicity check (scn must be non-decreasing in LSN
+	 * order; zero only as a stream prefix).  Reset by XLogBeginRead.
+	 */
+	uint64		cluster_last_scn;
 };
 
 /*
@@ -447,6 +454,8 @@ extern bool DecodeXLogRecord(XLogReaderState *state,
  */
 #define XLogRecGetTotalLen(decoder) ((decoder)->record->header.xl_tot_len)
 #define XLogRecGetPrev(decoder) ((decoder)->record->header.xl_prev)
+/* PGRAC spec-4.5: merged-recovery ordering key accessor. */
+#define XLogRecGetScn(decoder) ((decoder)->record->header.xl_scn)
 #define XLogRecGetInfo(decoder) ((decoder)->record->header.xl_info)
 #define XLogRecGetRmid(decoder) ((decoder)->record->header.xl_rmid)
 #define XLogRecGetXid(decoder) ((decoder)->record->header.xl_xid)

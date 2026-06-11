@@ -912,6 +912,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * not include the record header yet.
 	 */
 	rechdr->xl_xid = GetCurrentTransactionIdIfAny();
+	rechdr->xl_scn = 0;			/* PGRAC: stamped later in XLogInsertRecord (spec-4.5) */
 	rechdr->xl_tot_len = (uint32) total_len;
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;

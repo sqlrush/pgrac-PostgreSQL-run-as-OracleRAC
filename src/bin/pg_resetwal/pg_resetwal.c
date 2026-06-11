@@ -1107,6 +1107,7 @@ WriteEmptyXLOG(void)
 	recptr = (char *) page + SizeOfXLogLongPHD;
 	record = (XLogRecord *) recptr;
 	record->xl_prev = 0;
+	record->xl_scn = 0;			/* PGRAC: pg_resetwal stamps InvalidScn (spec-4.5 Q3) */
 	record->xl_xid = InvalidTransactionId;
 	record->xl_tot_len = SizeOfXLogRecord + SizeOfXLogRecordDataHeaderShort + sizeof(CheckPoint);
 	record->xl_info = XLOG_CHECKPOINT_SHUTDOWN;

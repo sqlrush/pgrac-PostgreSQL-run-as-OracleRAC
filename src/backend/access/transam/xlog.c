@@ -167,6 +167,7 @@
 /* PGRAC: spec-3.18 D2b undo buffer pool checkpoint write-back flush. */
 #include "cluster/storage/cluster_undo_buf.h"
 /* PGRAC: spec-4.1 per-thread WAL routing page-header stamp. */
+#include "cluster/cluster_scn.h" /* PGRAC: xl_scn stamp (spec-4.5) */
 #include "cluster/cluster_wal_thread.h"
 #endif
 
@@ -911,6 +912,21 @@ XLogInsertRecord(XLogRecData *rdata,
 
 	if (inserted)
 	{
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC modifications by SqlRush <sqlrush@gmail.com>:
+		 * What changed: spec-4.5 -- stamp xl_scn inside the insertion
+		 * critical section, after the LSN slot is reserved and before
+		 * the header CRC is finalised.  Slot ordering + Lamport
+		 * monotonicity make xl_scn non-decreasing in LSN order within
+		 * this WAL thread (AD-008 second extension, 专项 #4 §345).
+		 * Why: the k-way merged-recovery ordering key (spec-4.5 Q1/Q2).
+		 */
+		rechdr->xl_scn = (cluster_wal_thread_id() != XLP_THREAD_ID_LEGACY)
+							 ? (uint64) cluster_scn_current()
+							 : 0;
+#endif
+
 		/*
 		 * Now that xl_prev has been filled in, calculate CRC of the record
 		 * header.
@@ -4838,6 +4854,7 @@ BootStrapXLOG(void)
 	recptr = ((char *) page + SizeOfXLogLongPHD);
 	record = (XLogRecord *) recptr;
 	record->xl_prev = 0;
+	record->xl_scn = 0;			/* PGRAC: bootstrap stamps InvalidScn (spec-4.5 Q3) */
 	record->xl_xid = InvalidTransactionId;
 	record->xl_tot_len = SizeOfXLogRecord + SizeOfXLogRecordDataHeaderShort + sizeof(checkPoint);
 	record->xl_info = XLOG_CHECKPOINT_SHUTDOWN;

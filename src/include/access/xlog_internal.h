@@ -64,7 +64,7 @@
 /*
  * Each page of XLOG file has a header like this:
  */
-#define XLOG_PAGE_MAGIC 0xD113	/* can be used as WAL version indicator */
+#define XLOG_PAGE_MAGIC 0xD114 /* PGRAC spec-4.5: xl_scn record header (was 0xD113) */
 
 typedef struct XLogPageHeaderData
 {

@@ -575,13 +575,15 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 	 * record header.  Stage 1 always prints `thread: 0`; spec-1.21+
 	 * feature-037 will show real per-instance thread IDs.
 	 */
-	printf("rmgr: %-11s len (rec/tot): %6u/%6u, tx: %10u, lsn: %X/%08X, prev %X/%08X, thread: %u, ",
+	/* PGRAC spec-4.5: print the merged-recovery ordering key. */
+	printf("rmgr: %-11s len (rec/tot): %6u/%6u, tx: %10u, lsn: %X/%08X, prev %X/%08X, thread: %u, scn: " UINT64_FORMAT ", ",
 		   desc->rm_name,
 		   rec_len, XLogRecGetTotalLen(record),
 		   XLogRecGetXid(record),
 		   LSN_FORMAT_ARGS(record->ReadRecPtr),
 		   LSN_FORMAT_ARGS(xl_prev),
-		   XLogReaderGetThreadId(record));
+		   XLogReaderGetThreadId(record),
+		   XLogRecGetScn(record));
 
 	id = desc->rm_identify(info);
 	if (id == NULL)

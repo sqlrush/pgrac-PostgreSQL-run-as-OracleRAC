@@ -3,6 +3,14 @@
  *
  * Definitions for the WAL record format.
  *
+ * PGRAC MODIFICATIONS (spec-4.5 v1.0)
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *	Spec: spec-4.5-kway-scn-merge-replay.md
+ *	What changed: XLogRecord grew an 8-byte xl_scn (24 -> 32 bytes) with
+ *	xl_info/xl_rmid/xl_crc shifted so xl_crc remains the last header
+ *	field (CRC coverage of the new field is automatic).  Format break:
+ *	XLOG_PAGE_MAGIC and catversion are bumped (spec-4.5 D4).
+ *
  * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -43,14 +51,33 @@ typedef struct XLogRecord
 	uint32		xl_tot_len;		/* total len of entire record */
 	TransactionId xl_xid;		/* xact id */
 	XLogRecPtr	xl_prev;		/* ptr to previous record in log */
+
+	/*
+	 * PGRAC (spec-4.5, AD-008/AD-009 second extensions): per-record
+	 * Lamport SCN, stamped inside the WAL-insertion critical section so
+	 * it is non-decreasing in LSN order within one WAL thread.  This is
+	 * the k-way merged-recovery ordering key (scn -> lsn -> node).
+	 * InvalidScn (0) outside cluster mode / bootstrap / pg_resetwal;
+	 * zero values may only appear as a stream prefix.  xl_info/xl_rmid
+	 * moved below so xl_crc stays the LAST header field and the
+	 * existing CRC protocol (header bytes before xl_crc + payload)
+	 * covers xl_scn with no code change.
+	 */
+	uint64		xl_scn;
+
 	uint8		xl_info;		/* flag bits, see below */
 	RmgrId		xl_rmid;		/* resource manager for this record */
 	/* 2 bytes of padding here, initialize to zero */
-	pg_crc32c	xl_crc;			/* CRC for this record */
+	pg_crc32c	xl_crc;			/* CRC for this record -- MUST stay last */
 
 	/* XLogRecordBlockHeaders and XLogRecordDataHeader follow, no padding */
 
 } XLogRecord;
+
+StaticAssertDecl(sizeof(XLogRecord) == 32, "spec-4.5 XLogRecord is 32 bytes");
+StaticAssertDecl(offsetof(XLogRecord, xl_scn) == 16, "spec-4.5 xl_scn at offset 16");
+StaticAssertDecl(offsetof(XLogRecord, xl_crc) == 28,
+				 "spec-4.5 xl_crc stays the last header field");
 
 #define SizeOfXLogRecord	(offsetof(XLogRecord, xl_crc) + sizeof(pg_crc32c))
 

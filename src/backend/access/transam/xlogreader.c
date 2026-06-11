@@ -288,6 +288,7 @@ XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr)
 	ResetDecoder(state);
 
 	/* Begin at the passed-in record pointer. */
+	state->cluster_last_scn = 0; /* PGRAC: reset spec-4.5 monotonic check */
 	state->EndRecPtr = RecPtr;
 	state->NextRecPtr = RecPtr;
 	state->ReadRecPtr = InvalidXLogRecPtr;
@@ -1228,7 +1229,30 @@ ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 		 * check guards against torn WAL pages where a stale but valid-looking
 		 * WAL record starts on a sector boundary.
 		 */
-		if (record->xl_prev != PrevRecPtr)
+	#ifdef USE_PGRAC_CLUSTER
+	/* PGRAC spec-4.5 D3: per-thread xl_scn monotonicity + zero-prefix. */
+	if (record->xl_scn == 0)
+	{
+		if (state->cluster_last_scn != 0)
+		{
+			report_invalid_record(state,
+								  "xl_scn is zero after non-zero at %X/%X",
+								  LSN_FORMAT_ARGS(RecPtr));
+			return false;
+		}
+	}
+	else if (state->cluster_last_scn != 0 && record->xl_scn < state->cluster_last_scn)
+	{
+		report_invalid_record(state,
+							  "xl_scn went backwards at %X/%X (" UINT64_FORMAT " < " UINT64_FORMAT ")",
+							  LSN_FORMAT_ARGS(RecPtr),
+							  record->xl_scn, state->cluster_last_scn);
+		return false;
+	}
+	state->cluster_last_scn = Max(state->cluster_last_scn, record->xl_scn);
+#endif
+
+	if (record->xl_prev != PrevRecPtr)
 		{
 			report_invalid_record(state,
 								  "record with incorrect prev-link %X/%X at %X/%X",
