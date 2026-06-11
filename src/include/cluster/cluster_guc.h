@@ -137,6 +137,12 @@ extern char *cluster_wal_threads_dir;
  */
 extern int cluster_recovery_stale_active_ms;
 
+/*
+ * cluster_recovery_workers_max -- spec-4.4 stream-validation worker cap
+ * (dynamic bgworkers; 0 = plan-only).
+ */
+extern int cluster_recovery_workers_max;
+
 
 /*
  * cluster_injection_points -- comma-separated names to auto-arm at startup.

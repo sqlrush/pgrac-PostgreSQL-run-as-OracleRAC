@@ -64,6 +64,9 @@ char *cluster_wal_threads_dir = NULL;  /* spec-4.1 D5; '' = flat pg_wal layout *
 
 /* spec-4.3 D2: recovery-plan staleness threshold (observational only). */
 int cluster_recovery_stale_active_ms = 10000;
+
+/* spec-4.4 D2: recovery worker cap (0 = plan-only, no workers). */
+int cluster_recovery_workers_max = 4;
 int cluster_shared_storage_backend = CLUSTER_SHARED_FS_BACKEND_STUB;
 bool cluster_smgr_user_relations = false;
 int cluster_shmem_max_regions = 64;
@@ -778,6 +781,25 @@ cluster_init_guc(void)
 		NULL,									  /* check_hook */
 		NULL,									  /* assign_hook */
 		NULL);									  /* show_hook */
+
+	/*
+	 * cluster.recovery_workers_max -- cap on the spec-4.4 candidate
+	 * stream-validation workers (dynamic bgworkers; slots come out of
+	 * the max_worker_processes TOTAL pool, which parallel query also
+	 * draws from).  0 disables spawning (plan-only).  The default
+	 * leaves half of the default max_worker_processes(8) budget free.
+	 */
+	DefineCustomIntVariable(
+		"cluster.recovery_workers_max", gettext_noop("Maximum recovery stream-validation workers."),
+		gettext_noop("0 disables worker spawning; workers only run when the recovery "
+					 "plan reports crash candidates."),
+		&cluster_recovery_workers_max, 4, /* boot value */
+		0, 16,							  /* min / max (pool slots) */
+		PGC_POSTMASTER,					  /* launch happens at startup */
+		0,								  /* flags */
+		NULL,							  /* check_hook */
+		NULL,							  /* assign_hook */
+		NULL);							  /* show_hook */
 
 	/*
 	 * cluster.injection_points -- comma-separated list of injection point

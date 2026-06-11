@@ -44,6 +44,7 @@
 
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_recovery_plan.h"
+#include "cluster/cluster_recovery_worker.h" /* pool lives in this wrapper (spec-4.4 D5) */
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_wal_thread.h"
@@ -55,6 +56,9 @@
 typedef struct ClusterRecoveryPlanShmem {
 	pg_atomic_uint32 published;
 	ClusterRecoveryPlan plan;
+	/* spec-4.4 D5 (round-1 P1-2): the worker pool shares this region;
+	 * the plan semantics and the ClusterRecoveryPlan ABI are untouched. */
+	ClusterRecoveryWorkerPool pool;
 } ClusterRecoveryPlanShmem;
 
 static ClusterRecoveryPlanShmem *cluster_recovery_plan_shmem = NULL;
@@ -73,8 +77,14 @@ cluster_recovery_plan_shmem_init(void)
 	cluster_recovery_plan_shmem = (ClusterRecoveryPlanShmem *)ShmemInitStruct(
 		"pgrac recovery plan", cluster_recovery_plan_shmem_size(), &found);
 	if (!found) {
+		int slot;
+
 		pg_atomic_init_u32(&cluster_recovery_plan_shmem->published, 0);
 		memset(&cluster_recovery_plan_shmem->plan, 0, sizeof(ClusterRecoveryPlan));
+		memset(&cluster_recovery_plan_shmem->pool, 0, sizeof(ClusterRecoveryWorkerPool));
+		for (slot = 0; slot < CLUSTER_RECOVERY_WORKER_MAX_SLOTS; slot++)
+			pg_atomic_init_u32(&cluster_recovery_plan_shmem->pool.slot_state[slot],
+							   CLUSTER_RECOVERY_WORKER_UNUSED);
 	}
 }
 
@@ -228,6 +238,18 @@ cluster_recovery_plan_generate(uint32 dbstate_at_startup, bool local_recovery_ne
 								"WAL storage if they persist.")
 					  : 0));
 	pfree(candidates.data);
+}
+
+/*
+ * cluster_recovery_worker_pool_ptr -- the spec-4.4 worker pool rides
+ *	in this region (declared in cluster_recovery_worker.h).
+ */
+ClusterRecoveryWorkerPool *
+cluster_recovery_worker_pool_ptr(void)
+{
+	if (cluster_recovery_plan_shmem == NULL)
+		return NULL;
+	return &cluster_recovery_plan_shmem->pool;
 }
 
 /*
