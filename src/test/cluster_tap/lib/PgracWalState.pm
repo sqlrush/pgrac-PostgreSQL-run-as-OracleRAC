@@ -26,7 +26,7 @@ use warnings;
 
 use Exporter 'import';
 our @EXPORT_OK = qw(crc32c slot_offset read_file_raw write_file_raw
-  read_slot_raw patch_byte forge_slot_node_id);
+  read_slot_raw patch_byte forge_slot_node_id forge_slot_clone);
 
 sub crc32c
 {
@@ -78,13 +78,17 @@ sub read_slot_raw
 	sysread($fh, my $buf, 512) == 512 or die "short read";
 	close $fh;
 	my ($magic, $version, $thread_id, $node_id, $state) = unpack('LSSlL', $buf);
+	my ($tli) = unpack('L', substr($buf, 16, 4));
 	my ($started_at) = unpack('q', substr($buf, 24, 8));
+	my ($highest_lsn) = unpack('Q', substr($buf, 40, 8));
 	return {
 		magic => $magic,
 		thread_id => $thread_id,
 		node_id => $node_id,
 		state => $state,
-		started_at => $started_at
+		tli => $tli,
+		started_at => $started_at,
+		highest_lsn => $highest_lsn
 	};
 }
 
@@ -112,6 +116,23 @@ sub forge_slot_node_id
 	substr($slot, 8, 4) = pack('l', $node_id);
 	substr($slot, 504, 4) = pack('L', crc32c(substr($slot, 0, 504)));
 	substr($image, $off, 512) = $slot;
+	write_file_raw($regfile, $image);
+	return;
+}
+
+# Clone slot $src_tid's content into slot $dst_tid with the identity
+# fields rewritten (thread_id/node_id) and a recomputed VALID crc --
+# fabricates a CRC-valid foreign slot whose timestamps/watermarks are
+# inherited from the source (spec-4.4 t/246 striping leg).
+sub forge_slot_clone
+{
+	my ($regfile, $src_tid, $dst_tid) = @_;
+	my $image = read_file_raw($regfile);
+	my $slot = substr($image, slot_offset($src_tid), 512);
+	substr($slot, 6, 2) = pack('S', $dst_tid);
+	substr($slot, 8, 4) = pack('l', $dst_tid - 1);
+	substr($slot, 504, 4) = pack('L', crc32c(substr($slot, 0, 504)));
+	substr($image, slot_offset($dst_tid), 512) = $slot;
 	write_file_raw($regfile, $image);
 	return;
 }

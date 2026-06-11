@@ -98,6 +98,7 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "cluster/cluster_guc.h"
 #include "catalog/pg_control.h" /* DBState (spec-4.3 plan dump) */
 #include "cluster/cluster_recovery_plan.h"
+#include "cluster/cluster_recovery_worker.h"
 #include "cluster/cluster_ic.h"				/* ClusterICOps_Active, ClusterICTier */
 #include "cluster/cluster_ic_tier1.h"		/* listener metadata accessors (Hardening v1.0.1 F3) */
 #include "cluster/cluster_scn.h"			/* SCN typedef (stage 1.4) */
@@ -1518,7 +1519,8 @@ verdict_csv(const ClusterRecoveryPlan *plan, ClusterRecoveryThreadVerdict want)
 
 /*
  * dump_recovery -- spec-3.16 D5 recovery observability (4 rows) +
- *	spec-4.3 D5 recovery plan surface (13 rows; 4 -> 17 total).
+ *	spec-4.3 D5 recovery plan surface (13 rows) + spec-4.4 D6 worker
+ *	pool surface (8 rows; 25 total).
  */
 static void
 dump_recovery(ReturnSetInfo *rsinfo)
@@ -1560,6 +1562,73 @@ dump_recovery(ReturnSetInfo *rsinfo)
 			 have_plan ? dbstate_text(plan.dbstate_at_startup) : "-");
 	emit_row(rsinfo, "recovery", "plan_local_recovery_needed",
 			 have_plan ? fmt_bool(plan.local_recovery_needed) : "-");
+
+	/* spec-4.4 D6: worker pool surface (8 rows; 17 -> 25).  Counts are
+	 * derived from slot_state[] on read (round-1 P1-3: no concurrent
+	 * counters in shmem). */
+	{
+		ClusterRecoveryWorkerPool wp;
+		bool have_pool = cluster_recovery_worker_pool_snapshot(&wp);
+		int started = 0;
+		int done = 0;
+		int failed = 0;
+		int slot;
+		StringInfoData okcsv;
+		StringInfoData badcsv;
+		uint16 tid;
+		const char *pool_state = "idle";
+
+		if (have_pool) {
+			for (slot = 0; slot < CLUSTER_RECOVERY_WORKER_MAX_SLOTS; slot++) {
+				switch (pg_atomic_read_u32(&wp.slot_state[slot])) {
+				case CLUSTER_RECOVERY_WORKER_RUNNING:
+					started++;
+					break;
+				case CLUSTER_RECOVERY_WORKER_DONE:
+					started++;
+					done++;
+					break;
+				case CLUSTER_RECOVERY_WORKER_FAILED:
+					started++;
+					failed++;
+					break;
+				default:
+					break;
+				}
+			}
+			if (wp.workers_requested > 0) {
+				if (done + failed < (int)wp.workers_requested)
+					pool_state = "launched";
+				else
+					pool_state = (failed > 0) ? "partial-failed" : "done";
+			}
+		}
+
+		initStringInfo(&okcsv);
+		initStringInfo(&badcsv);
+		for (tid = 1; have_pool && tid <= CLUSTER_WAL_STATE_SLOT_COUNT; tid++) {
+			if (wp.stream_verdict[tid] == (uint8)CLUSTER_RECOVERY_STREAM_OK)
+				appendStringInfo(&okcsv, "%s%u", okcsv.len > 0 ? "," : "", (unsigned)tid);
+			else if (wp.stream_verdict[tid] == (uint8)CLUSTER_RECOVERY_STREAM_SUSPECT
+					 || wp.stream_verdict[tid] == (uint8)CLUSTER_RECOVERY_STREAM_UNREADABLE)
+				appendStringInfo(&badcsv, "%s%u", badcsv.len > 0 ? "," : "", (unsigned)tid);
+		}
+		if (okcsv.len == 0)
+			appendStringInfoString(&okcsv, "-");
+		if (badcsv.len == 0)
+			appendStringInfoString(&badcsv, "-");
+
+		emit_row(rsinfo, "recovery", "worker_pool_state", have_pool ? pool_state : "-");
+		emit_row(rsinfo, "recovery", "worker_generation",
+				 have_pool ? fmt_int64((int64)wp.generation) : "-");
+		emit_row(rsinfo, "recovery", "workers_requested",
+				 have_pool ? fmt_int64((int64)wp.workers_requested) : "-");
+		emit_row(rsinfo, "recovery", "workers_started", have_pool ? fmt_int64(started) : "-");
+		emit_row(rsinfo, "recovery", "workers_done", have_pool ? fmt_int64(done) : "-");
+		emit_row(rsinfo, "recovery", "workers_failed", have_pool ? fmt_int64(failed) : "-");
+		emit_row(rsinfo, "recovery", "stream_ok_threads", okcsv.data);
+		emit_row(rsinfo, "recovery", "stream_suspect_or_unreadable_threads", badcsv.data);
+	}
 }
 
 
