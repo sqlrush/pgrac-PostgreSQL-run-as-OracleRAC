@@ -194,6 +194,17 @@ extern char *cluster_shared_data_dir;
 
 
 /*
+ * cluster_shared_storage_uuid -- optional external-preset identity for the
+ *	cluster_fs shared root (spec-4.5a D2).  Matched against the shared-root
+ *	sentinel; empty means the first node generates a random uuid.
+ *
+ *	Boot default: "" (empty).
+ *	context:      PGC_POSTMASTER.
+ */
+extern char *cluster_shared_storage_uuid;
+
+
+/*
  * cluster_smgr_user_relations -- opt-in switch routing user-relation
  *	smgr operations through cluster_smgr (smgr_which=1) instead of
  *	md.c (smgr_which=0).  Default off keeps stage 0 / 1.1 behaviour

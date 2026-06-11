@@ -74,6 +74,8 @@ int cluster_recovery_merge_wait_timeout = 10000;
 int cluster_shared_storage_backend = CLUSTER_SHARED_FS_BACKEND_STUB;
 /* spec-4.5a D2: shared data root for the cluster_fs (shared_fs) backend. */
 char *cluster_shared_data_dir = NULL;
+/* spec-4.5a D2: optional external-preset shared-storage uuid (sentinel). */
+char *cluster_shared_storage_uuid = NULL;
 bool cluster_smgr_user_relations = false;
 int cluster_shmem_max_regions = 64;
 
@@ -919,6 +921,27 @@ cluster_init_guc(void)
 		check_cluster_shared_data_dir, /* check_hook */
 		NULL,						   /* assign_hook */
 		NULL);						   /* show_hook */
+
+	/*
+	 * cluster.shared_storage_uuid -- optional external-preset identity for
+	 * the shared root (spec-4.5a D2).  When set, every node must agree on
+	 * it and it is matched against the value recorded in the shared-root
+	 * sentinel (pgrac_shared.control); a mismatch is FATAL, catching two
+	 * nodes that point at different shared roots.  When empty, the first
+	 * node to attach generates and records a random uuid.
+	 */
+	DefineCustomStringVariable(
+		"cluster.shared_storage_uuid",
+		gettext_noop("Optional external identity for the cluster_fs shared root."),
+		gettext_noop("When set, all nodes must agree on this value and it is matched "
+					 "against the shared-root sentinel; a mismatch is FATAL.  When "
+					 "empty, the first node generates a random uuid."),
+		&cluster_shared_storage_uuid, "",
+		PGC_POSTMASTER, /* identity is frozen for the postmaster lifetime */
+		0,				/* flags */
+		NULL,			/* check_hook */
+		NULL,			/* assign_hook */
+		NULL);			/* show_hook */
 
 	/*
 	 * cluster.smgr_user_relations -- opt-in switch routing user-

@@ -262,5 +262,20 @@ extern const ClusterSharedFsOps cluster_shared_fs_local_ops;
 /* Stage 4.5a (spec-4.5a D1): first genuinely cross-node-shared backend. */
 extern const ClusterSharedFsOps cluster_shared_fs_sharedfs_ops;
 
+/*
+ * Stage 4.5a D2: cross-node shared-root sentinel (shared_fs backend).
+ *
+ *	cluster_shared_fs_sentinel_attach records cluster.node_id in the
+ *	<shared_data_dir>/pgrac_shared.control participant set (postmaster-
+ *	once, from the shared_fs init callback).
+ *
+ *	cluster_shared_fs_sentinel_has_participant reports whether node_id is
+ *	a participant; the merged-recovery capability gate uses it to refuse
+ *	to merge a crashed peer that never wrote to this shared root.  A
+ *	missing/corrupt sentinel returns false (fail-closed).
+ */
+extern void cluster_shared_fs_sentinel_attach(void);
+extern bool cluster_shared_fs_sentinel_has_participant(int node_id);
+
 
 #endif /* CLUSTER_SHARED_FS_H */

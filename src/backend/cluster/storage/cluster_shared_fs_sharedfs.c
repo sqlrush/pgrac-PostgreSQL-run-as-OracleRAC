@@ -57,16 +57,20 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "common/file_perm.h"
 #include "common/relpath.h"
+#include "miscadmin.h"
+#include "port/pg_crc32c.h"
 #include "storage/block.h"
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
+#include "cluster/cluster_conf.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
 #include "cluster/storage/cluster_shared_fs.h"
@@ -408,10 +412,253 @@ cluster_shared_fs_sharedfs_unlink(RelFileLocator rlocator, ForkNumber forknum)
 }
 
 
-/* Lifecycle: nothing to set up or tear down at the backend level. */
+/* ----------------------------------------------------------------
+ * Cross-node shared-root sentinel (spec-4.5a D2).
+ *
+ *	<shared_data_dir>/pgrac_shared.control is a small fixed-size control
+ *	file that PROVES two nodes point at the same shared root.  Each node
+ *	records its cluster.node_id in the participant set on attach; the
+ *	merged-recovery capability gate (cluster_recovery_merge.c) only
+ *	engages for a crashed peer whose node_id is a participant -- a lone
+ *	node pointing at its own empty directory is the only participant, so
+ *	the gate stays fail-closed.
+ *
+ *	Written THROUGH backend-internal raw path I/O (open/pread/pwrite/
+ *	fsync), NOT the ClusterSharedFsOps vtable (which only addresses
+ *	relation files by RelFileLocator/forknum -- there is no arbitrary
+ *	control-file callback).  Cross-node sharedness still holds because
+ *	every node's backend resolves the SAME absolute path under the root.
+ *
+ *	Cross-node write serialization uses flock(); on a shared mount where
+ *	advisory locks are unreliable a clobbered append merely drops a
+ *	participant, which makes the capability gate fail CLOSED (the node
+ *	re-attaches on its next start) -- never a false engage.
+ * ----------------------------------------------------------------
+ */
+#define PGRAC_SHARED_CONTROL_MAGIC 0x50475343 /* 'PGSC' */
+#define PGRAC_SHARED_CONTROL_VERSION 1
+#define PGRAC_SHARED_CONTROL_FILE "pgrac_shared.control"
+#define PGRAC_SHARED_UUID_LEN 33 /* 32 hex chars + NUL */
+
+typedef struct PgracSharedControl {
+	uint32 magic;
+	uint32 layout_version;
+	char storage_uuid[PGRAC_SHARED_UUID_LEN];
+	char _pad[3];
+	uint32 participant_count;
+	int32 participant_node_ids[CLUSTER_MAX_NODES];
+	pg_crc32c crc; /* over [0, offsetof(crc)) */
+} PgracSharedControl;
+
+static char *
+cluster_shared_fs_sentinel_path(void)
+{
+	return psprintf("%s/%s", cluster_shared_data_dir, PGRAC_SHARED_CONTROL_FILE);
+}
+
+static pg_crc32c
+cluster_shared_fs_sentinel_crc(const PgracSharedControl *c)
+{
+	pg_crc32c crc;
+
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, c, offsetof(PgracSharedControl, crc));
+	FIN_CRC32C(crc);
+	return crc;
+}
+
+static void
+cluster_shared_fs_sentinel_gen_uuid(char *out)
+{
+	uint8 raw[16];
+	static const char hex[] = "0123456789abcdef";
+	int i;
+
+	if (!pg_strong_random(raw, sizeof(raw)))
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("cluster_shared_fs: could not generate storage uuid")));
+	for (i = 0; i < 16; i++) {
+		out[i * 2] = hex[(raw[i] >> 4) & 0xf];
+		out[i * 2 + 1] = hex[raw[i] & 0xf];
+	}
+	out[32] = '\0';
+}
+
+/*
+ * Read + validate the control file.  Returns true on a structurally valid
+ * record; sets *reason on failure (a zero-length file fails with "empty").
+ */
+static bool
+cluster_shared_fs_sentinel_read(int fd, PgracSharedControl *out, const char **reason)
+{
+	ssize_t n = pg_pread(fd, out, sizeof(*out), 0);
+
+	if (n == 0) {
+		*reason = "empty";
+		return false;
+	}
+	if (n != (ssize_t)sizeof(*out)) {
+		*reason = "short read";
+		return false;
+	}
+	if (out->magic != PGRAC_SHARED_CONTROL_MAGIC) {
+		*reason = "bad magic";
+		return false;
+	}
+	if (out->layout_version != PGRAC_SHARED_CONTROL_VERSION) {
+		*reason = "bad version";
+		return false;
+	}
+	if (out->crc != cluster_shared_fs_sentinel_crc(out)) {
+		*reason = "bad crc";
+		return false;
+	}
+	if (out->participant_count > CLUSTER_MAX_NODES) {
+		*reason = "bad participant_count";
+		return false;
+	}
+	return true;
+}
+
+/*
+ * cluster_shared_fs_sentinel_attach -- record this node in the shared-root
+ *	participant set (postmaster-once; see the init callback).
+ */
+void
+cluster_shared_fs_sentinel_attach(void)
+{
+	char *path = cluster_shared_fs_sentinel_path();
+	int fd;
+	PgracSharedControl ctl;
+	const char *reason = NULL;
+	bool found = false;
+	uint32 i;
+
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0 && errno == ENOENT)
+		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
+	if (fd < 0)
+		ereport(FATAL, (errcode_for_file_access(),
+						errmsg("cluster_shared_fs: could not open shared-root sentinel \"%s\": %m",
+							   path)));
+
+	if (flock(fd, LOCK_EX) != 0)
+		ereport(FATAL, (errcode_for_file_access(),
+						errmsg("cluster_shared_fs: could not lock sentinel \"%s\": %m", path)));
+
+	if (!cluster_shared_fs_sentinel_read(fd, &ctl, &reason)) {
+		off_t sz = lseek(fd, 0, SEEK_END);
+
+		/* A non-empty file that fails validation is corruption: fail-closed. */
+		if (sz != 0)
+			ereport(FATAL, (errcode(ERRCODE_DATA_CORRUPTED),
+							errmsg("cluster_shared_fs: shared-root sentinel \"%s\" is corrupt (%s)",
+								   path, reason)));
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.magic = PGRAC_SHARED_CONTROL_MAGIC;
+		ctl.layout_version = PGRAC_SHARED_CONTROL_VERSION;
+		if (cluster_shared_storage_uuid != NULL && cluster_shared_storage_uuid[0] != '\0')
+			strlcpy(ctl.storage_uuid, cluster_shared_storage_uuid, sizeof(ctl.storage_uuid));
+		else
+			cluster_shared_fs_sentinel_gen_uuid(ctl.storage_uuid);
+	}
+
+	/* An external preset uuid must match the recorded identity. */
+	if (cluster_shared_storage_uuid != NULL && cluster_shared_storage_uuid[0] != '\0'
+		&& strcmp(ctl.storage_uuid, cluster_shared_storage_uuid) != 0)
+		ereport(
+			FATAL,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("cluster_shared_fs: shared-root sentinel uuid \"%s\" does not match "
+					"cluster.shared_storage_uuid \"%s\"",
+					ctl.storage_uuid, cluster_shared_storage_uuid),
+			 errhint("Two nodes point at different shared roots, or a stale sentinel exists.")));
+
+	for (i = 0; i < ctl.participant_count; i++) {
+		if (ctl.participant_node_ids[i] == cluster_node_id) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found) {
+		if (ctl.participant_count >= CLUSTER_MAX_NODES)
+			ereport(FATAL, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+							errmsg("cluster_shared_fs: shared-root participant set is full (%d)",
+								   CLUSTER_MAX_NODES)));
+		ctl.participant_node_ids[ctl.participant_count++] = cluster_node_id;
+		ctl.crc = cluster_shared_fs_sentinel_crc(&ctl);
+		if (pg_pwrite(fd, &ctl, sizeof(ctl), 0) != (ssize_t)sizeof(ctl))
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("cluster_shared_fs: could not write sentinel \"%s\": %m", path)));
+		if (pg_fsync(fd) != 0)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("cluster_shared_fs: could not fsync sentinel \"%s\": %m", path)));
+	}
+
+	if (flock(fd, LOCK_UN) != 0)
+		ereport(WARNING, (errcode_for_file_access(),
+						  errmsg("cluster_shared_fs: could not unlock sentinel \"%s\": %m", path)));
+	CloseTransientFile(fd);
+
+	elog(LOG,
+		 "cluster_shared_fs: attached to shared root \"%s\" (uuid %s, node %d, %u participant(s))",
+		 cluster_shared_data_dir, ctl.storage_uuid, cluster_node_id, ctl.participant_count);
+	pfree(path);
+}
+
+/*
+ * cluster_shared_fs_sentinel_has_participant -- is node_id in the shared-
+ *	root participant set?  A missing or corrupt sentinel returns false
+ *	(fail-closed: participation cannot be proven, so the capability gate
+ *	must not engage for that peer).
+ */
+bool
+cluster_shared_fs_sentinel_has_participant(int node_id)
+{
+	char *path = cluster_shared_fs_sentinel_path();
+	int fd;
+	PgracSharedControl ctl;
+	const char *reason = NULL;
+	bool found = false;
+
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0) {
+		pfree(path);
+		return false;
+	}
+	if (cluster_shared_fs_sentinel_read(fd, &ctl, &reason)) {
+		uint32 i;
+
+		for (i = 0; i < ctl.participant_count; i++) {
+			if (ctl.participant_node_ids[i] == node_id) {
+				found = true;
+				break;
+			}
+		}
+	}
+	CloseTransientFile(fd);
+	pfree(path);
+	return found;
+}
+
+
+/*
+ * Lifecycle.  The shared_fs backend attaches to the cross-node sentinel on
+ * init, postmaster-once: cluster_shared_fs_init runs from
+ * CreateSharedMemoryAndSemaphores (ipci.c), which the postmaster calls
+ * directly (IsUnderPostmaster == false) and EXEC_BACKEND children re-run
+ * (IsUnderPostmaster == true).  The attach is idempotent, but the guard
+ * keeps the single-writer intent explicit (CLAUDE.md rule 16).
+ */
 static void
 cluster_shared_fs_sharedfs_init(void)
-{}
+{
+	if (!IsUnderPostmaster)
+		cluster_shared_fs_sentinel_attach();
+}
 static void
 cluster_shared_fs_sharedfs_shutdown(void)
 {}

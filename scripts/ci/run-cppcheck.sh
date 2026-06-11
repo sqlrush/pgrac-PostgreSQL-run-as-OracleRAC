@@ -118,6 +118,23 @@ SHAREDFS_SUPP=(
   # the vtable shape fixed across stages.  Suppress at the callback
   # implementation file.
   --suppress=constParameterCallback:src/backend/cluster/storage/cluster_shared_fs_local.c
+  # Reason: spec-4.5a D1 cluster_shared_fs_sharedfs.c mirrors the local
+  # backend vtable callbacks (read/write/nblocks/truncate/immedsync) and
+  # hits the identical constParameterCallback false positive -- the handle
+  # parameter type is fixed by the ClusterSharedFsOps function-pointer
+  # signatures and cannot be const-widened without changing the vtable
+  # contract.  Same rationale and treatment as the local backend above.
+  --suppress=constParameterCallback:src/backend/cluster/storage/cluster_shared_fs_sharedfs.c
+  # Reason: spec-4.5a D1 sharedfs read/write/nblocks/truncate/immedsync use
+  # the same Assert(handle != NULL && handle->opened); handle->vfd pattern as
+  # the local backend -- PG Assert is non-trapping to cppcheck, so the guard
+  # reads as a redundant null check.  Same false positive, same treatment.
+  --suppress=nullPointerRedundantCheck:src/backend/cluster/storage/cluster_shared_fs_sharedfs.c
+  # Reason: spec-4.5a D2 PgracSharedControl._pad is deterministic alignment
+  # padding (the struct is written/read whole via pg_pwrite/pg_pread and its
+  # CRC covers [0, offsetof(crc)), so padding must be zeroed, not omitted);
+  # cppcheck cannot see the raw-I/O use of the member.
+  --suppress=unusedStructMember:src/backend/cluster/storage/cluster_shared_fs_sharedfs.c
   # Reason: stage-1.3 cluster_shmem_register_region uses the same
   # Assert(region != NULL); region->name pattern that triggers the
   # PG-Assert false positive (PG's Assert is non-trapping to cppcheck).

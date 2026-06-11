@@ -48,6 +48,7 @@
 #include "cluster/cluster_recovery_merge.h"
 #include "cluster/cluster_recovery_worker.h"
 #include "cluster/cluster_wal_thread.h"
+#include "cluster/storage/cluster_shared_fs.h" /* spec-4.5a D4: capability gate */
 #include "lib/stringinfo.h"
 #include "storage/fd.h"
 #include "utils/wait_event.h"
@@ -100,6 +101,9 @@ typedef struct MergeStream {
 	XLogSegNo seg_no;
 	char dir[MAXPGPATH];
 	bool exhausted;
+	XLogRecPtr valid_end; /* spec-4.5a D6: EndRecPtr of the last complete
+						   * record found by the pre-replay decode pass */
+	XLogRecPtr last_end;  /* EndRecPtr of the last record replay consumed */
 } MergeStream;
 
 struct ClusterRecoveryMergeState {
@@ -172,8 +176,24 @@ merge_page_read(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 	return XLOG_BLCKSZ;
 }
 
-/* Read one record on a stream; push its key on success, mark exhausted
- * on torn tail / read failure. */
+/*
+ * Read one record on a stream; push its key on success.
+ *
+ * spec-4.5a D5 (one-head-per-stream invariant): a stream is advanced only
+ * from begin (seed) or from next() AFTER its previous record was popped and
+ * consumed, so at most ONE entry per stream is ever in the heap.  The heap
+ * therefore only ever orders heads of DISTINCT streams by scn_recovery_cmp;
+ * two records of the same stream never meet there, and same-stream order is
+ * LSN by construction (each stream yields records in reader LSN order).
+ * per-thread xl_scn monotonicity is irrelevant to the heap.
+ *
+ * spec-4.5a D6 (torn-tail boundary): a decode failure is a NORMAL tail only
+ * when we have already consumed every complete record the pre-replay pass
+ * validated (last_end >= valid_end).  A failure BEFORE valid_end means a
+ * record the validation pass could decode is now undecodable at replay --
+ * real corruption -- and is fail-closed 53RA3, never a silent stream
+ * truncation that would drop a crashed peer's committed WAL.
+ */
 static void
 stream_advance(ClusterRecoveryMergeState *st, int idx)
 {
@@ -185,9 +205,23 @@ stream_advance(ClusterRecoveryMergeState *st, int idx)
 		return;
 	rec = XLogReadRecord(ms->reader, &errm);
 	if (rec == NULL) {
+		if (ms->last_end < ms->valid_end)
+			ereport(FATAL,
+					(errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+					 errmsg("merged recovery: WAL decode failed before the validated end on "
+							"thread %u",
+							(unsigned)ms->thread_id),
+					 errdetail("replay decoded through %X/%X but the pre-replay pass validated "
+							   "records through %X/%X%s%s.",
+							   LSN_FORMAT_ARGS(ms->last_end), LSN_FORMAT_ARGS(ms->valid_end),
+							   errm ? ": " : "", errm ? errm : ""),
+					 errhint("A crashed peer's WAL stream is corrupt between validation and "
+							 "replay; recover this node's own stream with "
+							 "cluster.merged_recovery=off.")));
 		ms->exhausted = true;
 		return;
 	}
+	ms->last_end = ms->reader->EndRecPtr;
 	{
 		ClusterRecmergeKey key;
 
@@ -224,35 +258,28 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 		return CLUSTER_MERGE_NO_NOT_COLD; /* warm -> 4.6/4.7, not us */
 
 	/*
-	 * spec-4.5 capability gate (A-closure item 4): merged recovery
-	 * replays a crashed peer's SHARED-storage pages.  No real
-	 * shared-data backend exists yet -- cluster_shared_fs LOCAL writes
-	 * each node's own PGDATA, STUB is pure md.c (spec-3.18 V-2).  With
-	 * neither providing genuinely shared data files, a peer's S-class
-	 * record cannot be honestly applied to shared storage.  Fail-closed
-	 * 53RA3 even when the operator set merged_recovery=on, so the
-	 * feature cannot be mis-engaged before the shared-storage backend
-	 * (roadmap 4.5a) lands.
+	 * spec-4.5a D4: capability gate.  Merged recovery replays a crashed
+	 * peer's SHARED-storage pages, so it requires a genuinely shared data
+	 * backend.  spec-4.5 shipped this fail-closed UNCONDITIONALLY because
+	 * cluster_shared_fs was stub/local only (per-node, not shared --
+	 * spec-3.18 V-2).  4.5a lifts the gate for the shared_fs backend (id
+	 * CLUSTER_FS) once a shared root is configured; stub/local still
+	 * fail-closed 53RA3 so a per-node backend can never mis-engage.  The
+	 * per-candidate "peer wrote to THIS shared root" check (sentinel
+	 * participant set) is folded into the §3.2 blocker loop below.
 	 */
-	ereport(FATAL,
-			(errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
-			 errmsg("merged k-way recovery is not supported without a shared-data storage backend"),
-			 errdetail("cluster.merged_recovery is on and crash candidates exist, but no shared "
-					   "data-file backend is available (cluster_shared_fs is stub/local, which is "
-					   "per-node, not shared)."),
-			 errhint("Recover this node's own stream with cluster.merged_recovery=off.  True "
-					 "shared-storage merged recovery awaits the shared-data backend (roadmap "
-					 "4.5a).")));
-
-	/*
-	 * PGRAC A-closure (spec-4.5, 2026-06-11): the capability FATAL above
-	 * is UNCONDITIONAL in this build, so everything below (the §3.2 gate
-	 * and the CLUSTER_MERGE_ENGAGE return) is skeleton-ship -- unreachable
-	 * until the shared-data backend (roadmap 4.5a) exists and the
-	 * capability guard is lifted.  pg_unreachable() in the ereport macro
-	 * suppresses the dead-code warning.  Kept structurally complete so
-	 * 4.5a re-enables it by deleting one ereport, not by re-deriving it.
-	 */
+	if (cluster_shared_storage_backend != CLUSTER_SHARED_FS_BACKEND_CLUSTER_FS
+		|| cluster_shared_data_dir == NULL || cluster_shared_data_dir[0] == '\0')
+		ereport(FATAL,
+				(errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+				 errmsg("merged k-way recovery is not supported without a shared-data storage "
+						"backend"),
+				 errdetail("cluster.merged_recovery is on and crash candidates exist, but "
+						   "cluster.shared_storage_backend is not the shared_fs (cluster_fs) "
+						   "backend with cluster.shared_data_dir set."),
+				 errhint("Set cluster.shared_storage_backend=cluster_fs and "
+						 "cluster.shared_data_dir to the shared mount, or recover this node's "
+						 "own stream with cluster.merged_recovery=off.")));
 
 	/*
 	 * §3.2 hard gate.  Collect every blocking reason, then FATAL 53RA3
@@ -306,6 +333,18 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 								 blockers.len ? "; " : "", (unsigned)tid, (unsigned)v);
 		}
 
+		/*
+			 * spec-4.5a D4: the peer must have written to THIS shared root.
+			 * Its node_id (= tid - 1) is recorded in the shared-root sentinel
+			 * participant set when it attached.  A peer absent from the set
+			 * never wrote here, so merging its stream would be dishonest --
+			 * fail-closed.
+			 */
+		if (!cluster_shared_fs_sentinel_has_participant((int)tid - 1))
+			appendStringInfo(&blockers,
+							 "%sthread %u peer (node %d) is not a shared-root participant",
+							 blockers.len ? "; " : "", (unsigned)tid, (int)tid - 1);
+
 		/* Candidate start point + fpw history from its slot. */
 		if (cluster_wal_state_read_slot(tid, &slot) != CLUSTER_WAL_SLOT_OK) {
 			appendStringInfo(&blockers, "%sthread %u slot unreadable", blockers.len ? "; " : "",
@@ -330,6 +369,48 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 								"recovered).")));
 	pfree(blockers.data);
 	return CLUSTER_MERGE_ENGAGE;
+}
+
+/*
+ * spec-4.5a D6: pre-replay decode pass.  Decode a thread's stream from
+ * start_lsn to its end with a throwaway reader, returning the EndRecPtr of
+ * the last COMPLETE record (or start_lsn if the stream has none).  This is
+ * the validated torn-tail boundary fed to stream_advance: replay must reach
+ * it; a decode failure before it is fail-closed corruption (D6), never a
+ * silent truncation of a crashed peer's committed WAL.  Computed here in the
+ * startup process (after merge_decide), so -- unlike spec-4.5a v0.5's
+ * worker-pool stream_valid_end_lsn ABI -- no cross-process concurrency or
+ * release/acquire is involved; the P1-3 torn-snapshot hazard cannot arise.
+ */
+static XLogRecPtr
+merge_compute_valid_end(const char *dir, XLogRecPtr start_lsn, TimeLineID tli)
+{
+	MergeStream tmp;
+	XLogReaderState *reader;
+	XLogRecPtr valid_end = start_lsn;
+	char *errm = NULL;
+
+	memset(&tmp, 0, sizeof(tmp));
+	tmp.seg_fd = -1;
+	strlcpy(tmp.dir, dir, sizeof(tmp.dir));
+	reader = XLogReaderAllocate(wal_segment_size, tmp.dir,
+								XL_ROUTINE(.page_read = merge_page_read,
+										   .segment_open = merge_segment_open,
+										   .segment_close = merge_segment_close),
+								&tmp);
+	if (reader == NULL)
+		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY),
+						errmsg("out of memory allocating merged-recovery validation reader")));
+	reader->seg.ws_tli = tli;
+	XLogBeginRead(reader, start_lsn);
+	while (XLogReadRecord(reader, &errm) != NULL)
+		valid_end = reader->EndRecPtr;
+	if (tmp.seg_fd >= 0) {
+		close(tmp.seg_fd);
+		tmp.seg_fd = -1;
+	}
+	XLogReaderFree(reader);
+	return valid_end;
 }
 
 ClusterRecoveryMergeState *
@@ -369,6 +450,8 @@ cluster_recovery_merge_begin(const uint64 merge_bitmap[2], const XLogRecPtr *sta
 							errmsg("out of memory allocating merged-recovery reader")));
 		ms->reader->seg.ws_tli = tli;
 		XLogBeginRead(ms->reader, start_lsn[tid]);
+		ms->valid_end = merge_compute_valid_end(ms->dir, start_lsn[tid], tli);
+		ms->last_end = start_lsn[tid];
 		idx++;
 	}
 	st->n_streams = idx;
