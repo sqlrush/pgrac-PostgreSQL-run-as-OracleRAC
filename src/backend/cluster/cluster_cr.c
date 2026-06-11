@@ -52,7 +52,8 @@
 #include "cluster/cluster_guc.h"  /* cluster_cr_chain_walk_max_steps, cluster_node_id */
 #include "cluster/cluster_inject.h"
 #include "cluster/cluster_itl.h"
-#include "cluster/cluster_recovery_merge.h" /* PGRAC: spec-4.5a is_materialized */ /* spec-3.21: cluster_itl_get_tt_ref (xmax overlay key) */
+#include "cluster/cluster_recovery_merge.h" /* PGRAC: spec-4.5a is_materialized */
+#include "cluster/cluster_remote_xact.h" /* PGRAC: spec-4.5a G5 outcome */ /* spec-3.21: cluster_itl_get_tt_ref (xmax overlay key) */
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_tt_durable.h"			/* spec-3.11 D6: watermark by-xid resolve */
@@ -1250,6 +1251,7 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 	HeapTupleData cr_htup;
 	ClusterVisibilityDecision decision;
 	bool remote_materialized = false;
+	int32 remote_origin = -1;
 
 	/*
 	 * Master switch (default on after spec-3.9 Hardening v1.0.1).  Turning it
@@ -1303,6 +1305,7 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 			if (!cluster_merged_instance_is_materialized((int)tuple_origin))
 				return CLUSTER_CR_NOT_APPLICABLE;
 			remote_materialized = true;
+			remote_origin = tuple_origin;
 		}
 	}
 
@@ -1338,18 +1341,31 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 		TransactionId live_xmin = HeapTupleHeaderGetRawXmin(tup);
 
 		/*
-		 * spec-4.5a D8: for a materialized-remote tuple the live xmin is the
-		 * PEER's xid; TransactionIdIsInProgress / TransactionIdDidCommit
-		 * would consult the LOCAL ProcArray / CLOG by raw xid -- a
-		 * cross-instance alias (AD-012 例外 9).  Until the per-origin
-		 * commit-outcome authority (spec-4.5a G5 / D10) is wired, this
-		 * commit-state question is unanswerable here: fail closed.
+		 * spec-4.5a D8/G5: for a materialized-remote tuple the live xmin is
+		 * the PEER's xid; the local ProcArray/CLOG would alias across
+		 * instances (AD-012 例外 9), so resolve the creator's outcome from
+		 * the per-origin authority (D10c) instead.  ABORTED creator ->
+		 * invisible; COMMITTED -> the guard does not fire (a committed,
+		 * finished creator is a valid version, fall through to construct);
+		 * INDOUBT (B stamped its TT then crashed) -> fail closed (规则 8.A).
 		 */
-		if (remote_materialized)
-			return CLUSTER_CR_FAILCLOSED;
+		if (remote_materialized) {
+			SCN rscn;
 
-		if (TransactionIdIsNormal(live_xmin) && !TransactionIdIsCurrentTransactionId(live_xmin)
-			&& (TransactionIdIsInProgress(live_xmin) || !TransactionIdDidCommit(live_xmin))) {
+			switch (cluster_remote_commit_outcome(remote_origin, live_xmin, &rscn)) {
+			case CLUSTER_REMOTE_XACT_COMMITTED:
+				break; /* finished creator -> construct CR image below */
+			case CLUSTER_REMOTE_XACT_ABORTED:
+				*out_visible = false;
+				return CLUSTER_CR_DECIDED;
+			case CLUSTER_REMOTE_XACT_INDOUBT:
+			default:
+				return CLUSTER_CR_FAILCLOSED;
+			}
+		} else if (TransactionIdIsNormal(live_xmin)
+				   && !TransactionIdIsCurrentTransactionId(live_xmin)
+				   && (TransactionIdIsInProgress(live_xmin)
+					   || !TransactionIdDidCommit(live_xmin))) {
 			*out_visible = false;
 			return CLUSTER_CR_DECIDED;
 		}
@@ -1468,17 +1484,38 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 		}
 
 		/*
-		 * spec-4.5a D8: the deleter's commit-state below is judged by the
-		 * LOCAL ProcArray / CLOG / durable-TT by raw xid -- all of which
-		 * alias across instances for a materialized-remote chain.  Fail
-		 * closed until the per-origin outcome authority (G5 / D10) and the
-		 * wrap-qualified remote TT lookup (G4 / D9) are wired.
+		 * spec-4.5a D8/G5: a materialized-remote deleter's commit-state comes
+		 * from the per-origin authority (D10c), NOT the local raw-xid
+		 * ProcArray/CLOG/durable-TT (AD-012 例外 9).  COMMITTED -> visible at
+		 * read_scn IFF the commit SCN is after read_scn (delete committed
+		 * after the snapshot -> row was live -> VISIBLE); ABORTED deleter ->
+		 * the row was never deleted -> VISIBLE; INDOUBT -> fail closed.
 		 */
-		if (remote_materialized)
-			return CLUSTER_CR_FAILCLOSED;
+		if (remote_materialized) {
+			/*
+			 * The per-origin authority gives the deleter's outcome; for a
+			 * COMMITTED deleter the SCN comparison feeds the SAME verdict
+			 * table the own-instance path uses (decide_by_scn(commit_scn,
+			 * read_scn) VISIBLE => the delete is visible at read_scn =>
+			 * tuple INVISIBLE), so the direction is the audited one.
+			 */
+			SCN rscn;
 
+			switch (cluster_remote_commit_outcome(remote_origin, cr_xmax, &rscn)) {
+			case CLUSTER_REMOTE_XACT_COMMITTED:
+				xmax_status = CLUSTER_TT_STATUS_COMMITTED;
+				scn_decision = cluster_visibility_decide_by_scn(rscn, snapshot->read_scn);
+				break;
+			case CLUSTER_REMOTE_XACT_ABORTED:
+				xmax_status = CLUSTER_TT_STATUS_ABORTED;
+				break;
+			case CLUSTER_REMOTE_XACT_INDOUBT:
+			default:
+				return CLUSTER_CR_FAILCLOSED;
+			}
+		}
 		/* Own-instance authoritative classification of the deleting xact. */
-		if (TransactionIdIsInProgress(cr_xmax))
+		else if (TransactionIdIsInProgress(cr_xmax))
 			xmax_status = CLUSTER_TT_STATUS_IN_PROGRESS;
 		else if (!TransactionIdDidCommit(cr_xmax))
 			xmax_status = CLUSTER_TT_STATUS_ABORTED;

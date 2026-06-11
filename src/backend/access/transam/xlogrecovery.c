@@ -132,6 +132,7 @@
 #ifdef USE_PGRAC_CLUSTER
 /* PGRAC: spec-4.1 own-stream strict thread-id for crash recovery. */
 #include "cluster/cluster_guc.h" /* PGRAC: spec-4.5a cluster_wal_threads_dir */
+#include "cluster/cluster_remote_xact.h" /* PGRAC: spec-4.5a G5 */
 #include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_recovery_merge.h"
 #include "cluster/cluster_recovery_worker.h"
@@ -2148,7 +2149,19 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 			/* G, S or MATERIALIZE_LOCAL: apply the peer's record.
 			 * (MATERIALIZE_LOCAL = RM_CLUSTER_UNDO: its redo handler
 			 * resolves pg_undo/instance_<owner> from the record itself,
-			 * materializing the peer's undo locally -- spec-4.5a P0-3.) */
+			 * materializing the peer's undo locally -- spec-4.5a P0-3.)
+			 *
+			 * spec-4.5a D10b (F1): a foreign XACT/CLOG record must NOT go
+			 * through ApplyWalRecord -- xact_redo_commit writes the LOCAL
+			 * pg_xact by raw xid, which aliases across instances and would
+			 * corrupt this node's own visibility.  Divert it into the
+			 * per-origin pg_xact_remote store (fail-closed on any
+			 * cross-instance side effect, P1-1) and consume the record. */
+			if (rec->xl_rmid == RM_XACT_ID || rec->xl_rmid == RM_CLOG_ID) {
+				cluster_recovery_merge_set_scn(rec->xl_scn);
+				cluster_remote_xact_apply((int)thread - 1, r);
+				goto advance;
+			}
 		}
 
 		cluster_recovery_merge_set_scn(rec->xl_scn);
@@ -2163,6 +2176,10 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 
 	cluster_recovery_merge_window_leave();
 	cluster_recovery_merge_end(st);
+
+	/* spec-4.5a G5: persist the per-origin outcomes materialized above so
+	 * backends can read them after recovery finishes. */
+	cluster_remote_xact_flush();
 
 	/* §3.3c: record how far each candidate was replayed. */
 	for (t = 1; t <= CLUSTER_WAL_STATE_SLOT_COUNT; t++) {

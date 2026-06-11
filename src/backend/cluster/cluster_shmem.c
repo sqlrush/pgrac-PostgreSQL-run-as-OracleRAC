@@ -53,8 +53,9 @@
 #include "utils/memutils.h" /* TopMemoryContext */
 #include "utils/timestamp.h"
 
-#include "cluster/cluster_conf.h"			/* cluster_conf_shmem_size / init */
-#include "cluster/cluster_elog.h"			/* CLUSTER_LOG */
+#include "cluster/cluster_conf.h"
+#include "cluster/cluster_remote_xact.h" /* PGRAC: spec-4.5a G5 SLRU */ /* cluster_conf_shmem_size / init */
+#include "cluster/cluster_elog.h"										/* CLUSTER_LOG */
 #include "cluster/cluster_guc.h"			/* cluster_node_id / cluster_shmem_max_regions */
 #include "cluster/cluster_ic.h"				/* cluster_ic_init / shutdown (stage 0.18) */
 #include "cluster/cluster_ic_tier1.h"		/* cluster_ic_tier1_shmem_register (spec-2.2 D3) */
@@ -745,6 +746,15 @@ cluster_request_shmem(void)
 	 */
 	cluster_grd_request_lwlocks();
 	cluster_ges_dedup_shmem_request();
+
+	/*
+	 * spec-4.5a G5: pg_xact_remote SLRU manages its own shmem (SimpleLru),
+	 * so it is reserved/requested directly here rather than through the
+	 * region registry (whose init_fn/size_fn contract is for plain
+	 * ShmemInitStruct regions).
+	 */
+	RequestAddinShmemSpace(cluster_remote_xact_shmem_size());
+	cluster_remote_xact_shmem_request();
 }
 
 /*
@@ -790,6 +800,9 @@ cluster_init_shmem(void)
 		region.init_fn();
 		CLUSTER_INJECTION_POINT("cluster-shmem-region-init-post");
 	}
+
+	/* spec-4.5a G5: SLRU init (self-managed shmem, outside the registry). */
+	cluster_remote_xact_shmem_init();
 
 	/*
 	 * spec-3.4b D8 / Q4 HC (L191): code-enforced automatic flush of the
