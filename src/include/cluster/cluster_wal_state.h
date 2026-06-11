@@ -297,6 +297,14 @@ extern bool cluster_wal_state_ensure(void);
 extern void cluster_wal_state_publish_active(void);
 extern void cluster_wal_state_publish_stopped(void);
 
+/* spec-4.5 owner writes (read-modify-preserve the extension region):
+ * publish this thread's checkpoint redo start after a checkpoint is
+ * durable (merged-recovery start point, Q5); mark the fpw_was_off
+ * sticky on the authoritative full_page_writes on->off path (§3.3d.3).
+ * Both best-effort: failure WARNs, never blocks. */
+extern void cluster_wal_state_publish_checkpoint_redo(uint64 redo_lsn);
+extern void cluster_wal_state_mark_fpw_off(void);
+
 /* cluster_stats periodic refresh (best-effort: LOG-once + counter on
  * failure, never FATAL). */
 extern void cluster_wal_state_refresh_own_slot(void);

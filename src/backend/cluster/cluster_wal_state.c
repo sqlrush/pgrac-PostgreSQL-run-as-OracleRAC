@@ -276,6 +276,25 @@ fill_own_slot(ClusterWalStateSlot *slot, uint32 state, int64 started_at)
 								(uint64)cluster_scn_current());
 }
 
+/*
+ * preserve_ext_region -- carry the spec-4.5 extension region (offset
+ *	56..503) from `prev` into a freshly filled `slot` and recompute the
+ *	CRC.  fill memsets the whole slot, so without this every owner write
+ *	(publish/refresh/stopped) would zero checkpoint_redo_lsn /
+ *	fpw_was_off / merge_recovered_lsn / refresh_interval_ms every tick
+ *	(§3.3d.4, round-5 P0-2).  prev must be an OK read-back; on EMPTY/
+ *	CORRUPT the region stays zero (the fill default), which classifies
+ *	as "unknown" and is fail-closed at the merge gate.
+ */
+static void
+preserve_ext_region(ClusterWalStateSlot *slot, const ClusterWalStateSlot *prev)
+{
+	memcpy((char *)slot + offsetof(ClusterWalStateSlot, checkpoint_redo_lsn),
+		   (const char *)prev + offsetof(ClusterWalStateSlot, checkpoint_redo_lsn),
+		   offsetof(ClusterWalStateSlot, crc) - offsetof(ClusterWalStateSlot, checkpoint_redo_lsn));
+	slot->crc = cluster_wal_state_block_crc(slot);
+}
+
 static bool
 write_own_slot(const ClusterWalStateSlot *slot)
 {
@@ -326,6 +345,16 @@ cluster_wal_state_publish_active(void)
 						 "another node is configured with the same cluster.node_id.")));
 
 	fill_own_slot(&slot, CLUSTER_WAL_SLOT_STATE_ACTIVE, (int64)GetCurrentTimestamp());
+	/*
+	 * Preserve the 4.5 extension region from the prior incarnation, but
+	 * CLEAR merge_recovered_lsn: reaching RUNNING means this node has
+	 * finished its own recovery, so any coordinator-set authority bound
+	 * is spent (§3.3c).  checkpoint_redo_lsn / fpw_was_off survive.
+	 */
+	if (cluster_wal_state_read_slot(cluster_wal_thread_id(), &cur) == CLUSTER_WAL_SLOT_OK)
+		preserve_ext_region(&slot, &cur);
+	slot.merge_recovered_lsn = 0;
+	slot.crc = cluster_wal_state_block_crc(&slot);
 	if (!write_own_slot(&slot))
 		ereport(FATAL, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
 						errmsg("could not publish ACTIVE to the WAL state registry: %m"),
@@ -373,6 +402,8 @@ cluster_wal_state_publish_stopped(void)
 	started_at = (v == CLUSTER_WAL_SLOT_OK) ? cur.started_at : (int64)GetCurrentTimestamp();
 
 	fill_own_slot(&slot, CLUSTER_WAL_SLOT_STATE_STOPPED, started_at);
+	if (v == CLUSTER_WAL_SLOT_OK)
+		preserve_ext_region(&slot, &cur);
 	if (!write_own_slot(&slot))
 		ereport(WARNING, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
 						  errmsg("could not publish STOPPED to the WAL state registry: %m"),
@@ -403,6 +434,7 @@ cluster_wal_state_refresh_own_slot(void)
 		return;
 
 	fill_own_slot(&slot, CLUSTER_WAL_SLOT_STATE_ACTIVE, cur.started_at);
+	preserve_ext_region(&slot, &cur);
 	if (!write_own_slot(&slot)) {
 		if (cluster_wal_thread_refresh_fail_fetch_add() == 0)
 			ereport(LOG, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
@@ -410,6 +442,67 @@ cluster_wal_state_refresh_own_slot(void)
 						  errhint("Further refresh failures are counted, not logged "
 								  "(cluster.wal_thread.wal_state_refresh_fail_count).")));
 	}
+}
+
+/*
+ * own_slot_modify -- read the own slot OK, apply `mutate`, write back.
+ *	Read-modify-preserve: only the field(s) mutate touches change; the
+ *	rest of the slot (including the other extension fields) is carried
+ *	verbatim.  Best-effort: returns false (caller WARNs) when the slot
+ *	is not a clean own-OK read or the write fails.
+ */
+static bool
+own_slot_modify(void (*mutate)(ClusterWalStateSlot *, uint64), uint64 arg)
+{
+	ClusterWalStateSlot slot;
+
+	if (!registry_configured())
+		return false;
+	if (cluster_wal_state_read_slot(cluster_wal_thread_id(), &slot) != CLUSTER_WAL_SLOT_OK
+		|| slot.node_id != cluster_node_id)
+		return false;
+	mutate(&slot, arg);
+	slot.crc = cluster_wal_state_block_crc(&slot);
+	return write_own_slot(&slot);
+}
+
+static void
+mutate_checkpoint_redo(ClusterWalStateSlot *s, uint64 v)
+{
+	s->checkpoint_redo_lsn = v;
+}
+
+static void
+mutate_fpw_off(ClusterWalStateSlot *s, uint64 v)
+{
+	(void)v;
+	s->fpw_was_off = 1;
+}
+
+void
+cluster_wal_state_publish_checkpoint_redo(uint64 redo_lsn)
+{
+	if (!own_slot_modify(mutate_checkpoint_redo, redo_lsn) && registry_configured())
+		ereport(WARNING, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+						  errmsg("could not publish checkpoint redo to the WAL state registry: %m"),
+						  errhint("Merged recovery may fail-close (53RA3) until the next "
+								  "successful checkpoint publishes a start point.")));
+}
+
+void
+cluster_wal_state_mark_fpw_off(void)
+{
+	/*
+	 * Sticky: set fpw_was_off=1 and never auto-clear.  Persisted on the
+	 * authoritative on->off transition BEFORE off-mode WAL is produced
+	 * (§3.3d.3); a clean own slot that already has it set is left as is.
+	 */
+	if (!own_slot_modify(mutate_fpw_off, 0) && registry_configured())
+		ereport(WARNING,
+				(errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+				 errmsg("could not record full_page_writes=off in the WAL state registry: %m"),
+				 errhint("Merged recovery treats an unrecorded fpw history "
+						 "conservatively.")));
 }
 
 /*
