@@ -240,6 +240,16 @@ extern struct XLogReaderState *cluster_recovery_merge_next(ClusterRecoveryMergeS
 														   uint16 *thread_out, char **errmsg_out);
 extern void cluster_recovery_merge_end(ClusterRecoveryMergeState *st);
 
+/* §3.3b/§3.3d window (startup-process scoped).  enter/leave bracket the
+ * merged replay loop; set_scn publishes the current record's xl_scn so
+ * the freshness skip + central pd_block_scn stamp can read it; the GCS
+ * cold bypass reads window_is_active. */
+extern void cluster_recovery_merge_window_enter(void);
+extern void cluster_recovery_merge_window_leave(void);
+extern void cluster_recovery_merge_set_scn(uint64 scn);
+extern bool cluster_recovery_merge_window_is_active(void);
+extern uint64 cluster_recovery_merge_window_scn(void);
+
 #endif /* !FRONTEND */
 
 #endif /* CLUSTER_RECOVERY_MERGE_H */

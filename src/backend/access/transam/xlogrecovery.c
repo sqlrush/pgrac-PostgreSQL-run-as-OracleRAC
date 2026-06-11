@@ -99,6 +99,7 @@
 #include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_recovery_worker.h"
 #include "cluster/cluster_recovery_merge.h"
+#include "cluster/storage/cluster_smgr.h"
 #include "cluster/cluster_wal_thread.h"
 #endif
 #include "access/xlogarchive.h"
@@ -446,6 +447,11 @@ static bool recoveryStopAfter;
 
 /* prototypes for local functions */
 static void ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *replayTLI);
+#ifdef USE_PGRAC_CLUSTER
+static void cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start,
+										   TimeLineID tli, uint16 own_thread,
+										   TimeLineID *replayTLI);
+#endif
 
 static void EnableStandbyMode(void);
 static void readRecoverySignalFile(void);
@@ -1693,6 +1699,23 @@ PerformWalRecovery(void)
 		if (!StandbyMode)
 			begin_startup_progress_phase();
 
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC spec-4.5 §3.3: when merged recovery engaged, drive the
+		 * whole redo from the k-way SCN merge engine (own thread +
+		 * crash candidates) instead of the single-stream loop below.
+		 */
+		if (cluster_engage == CLUSTER_MERGE_ENGAGE) {
+			cluster_recovery_merged_replay(cluster_merge_bitmap, cluster_merge_start, replayTLI,
+										   cluster_wal_thread_id(), &replayTLI);
+			RmgrCleanup();
+			ereport(LOG, (errmsg("redo done (merged) at %X/%X system usage: %s",
+								 LSN_FORMAT_ARGS(xlogreader->ReadRecPtr), pg_rusage_show(&ru0))));
+			InRedo = false;
+			goto cluster_merged_redo_done;
+		}
+#endif
+
 		/*
 		 * main redo apply loop
 		 */
@@ -1824,6 +1847,9 @@ PerformWalRecovery(void)
 								 timestamptz_to_str(xtime))));
 
 		InRedo = false;
+#ifdef USE_PGRAC_CLUSTER
+	cluster_merged_redo_done:;
+#endif
 	} else {
 		/* there are no WAL records following the checkpoint */
 		ereport(LOG, (errmsg("redo is not required")));
@@ -1837,6 +1863,105 @@ PerformWalRecovery(void)
 		&& !reachedRecoveryTarget)
 		ereport(FATAL, (errmsg("recovery ended before configured recovery target was reached")));
 }
+
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * cluster_recovery_merged_replay -- spec-4.5 §3.3 merged replay loop.
+ *
+ *	Drives the whole redo (own thread + crash candidates) from the
+ *	k-way SCN merge engine instead of the single-stream ReadRecord
+ *	loop.  Each popped record is classified by the §3.3e G/S/L/U
+ *	matrix: the own thread applies everything; a foreign candidate
+ *	stream applies G (global logical state -- the peer's commit bits)
+ *	and S (shared storage pages), SKIPS L (node-local, would clobber
+ *	this node's own files), and FATALs 53RA3 on U.
+ *
+ *	recovery-progress globals track the OWN thread only -- foreign
+ *	streams are applied but do not extend this node's WAL (the gate
+ *	already excludes archive/standby, the single-LSN-space consumers).
+ *	Per candidate, merge_recovered_lsn is published for its later
+ *	self-recovery (§3.3c).
+ */
+static void
+cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, TimeLineID tli,
+							   uint16 own_thread, TimeLineID *replayTLI)
+{
+	ClusterRecoveryMergeState *st;
+	XLogReaderState *r;
+	uint16 thread;
+	uint64 max_recovered[CLUSTER_WAL_STATE_SLOT_COUNT + 1];
+	uint16 t;
+
+	memset(max_recovered, 0, sizeof(max_recovered));
+	st = cluster_recovery_merge_begin(bitmap, start, tli);
+	cluster_recovery_merge_window_enter();
+
+	while ((r = cluster_recovery_merge_next(st, &thread, NULL)) != NULL) {
+		XLogRecord *rec = &r->record->header;
+		bool is_own = (thread == own_thread);
+		bool has_block = XLogRecHasAnyBlockRefs(r);
+		bool first_shared = false;
+		bool same_routing = true;
+		ClusterRecoveryRecordClass cls;
+
+		if (has_block) {
+			int bid;
+			int routed = -1; /* -1 unset, 0 local, 1 shared */
+
+			for (bid = 0; bid <= XLogRecMaxBlockId(r); bid++) {
+				RelFileLocator rl;
+				int this_shared;
+
+				if (!XLogRecGetBlockTagExtended(r, bid, &rl, NULL, NULL, NULL))
+					continue;
+				this_shared = (cluster_smgr_which_for(rl, InvalidBackendId) == 1) ? 1 : 0;
+				if (routed < 0)
+					routed = this_shared;
+				else if (routed != this_shared)
+					same_routing = false;
+			}
+			first_shared = (routed == 1);
+		}
+
+		cls = cluster_recovery_record_class(rec->xl_rmid, has_block, first_shared, same_routing);
+
+		if (!is_own) {
+			if (cls == CLUSTER_RECMERGE_LOCAL)
+				goto advance; /* node-local foreign record: skip */
+			if (cls == CLUSTER_RECMERGE_UNCLASSIFIABLE)
+				ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+								errmsg("merged recovery hit an unclassifiable record on thread %u "
+									   "(rmgr %u)",
+									   (unsigned)thread, (unsigned)rec->xl_rmid),
+								errhint("This foreign record cannot be safely routed; resolve the "
+										"shared storage or recover single-stream "
+										"(cluster.merged_recovery=off).")));
+			/* G or S: apply the peer's record. */
+		}
+
+		cluster_recovery_merge_set_scn(rec->xl_scn);
+		ApplyWalRecord(r, rec, replayTLI);
+
+	advance:
+		if (!is_own && r->EndRecPtr > max_recovered[thread])
+			max_recovered[thread] = r->EndRecPtr;
+	}
+
+	cluster_recovery_merge_window_leave();
+	cluster_recovery_merge_end(st);
+
+	/* §3.3c: record how far each candidate was replayed. */
+	for (t = 1; t <= CLUSTER_WAL_STATE_SLOT_COUNT; t++) {
+		if (t == own_thread)
+			continue;
+		if ((bitmap[(t - 1) / 64] & ((uint64)1 << ((t - 1) % 64))) == 0)
+			continue;
+		cluster_wal_state_publish_merge_recovered(t, max_recovered[t]);
+	}
+	ereport(LOG, (errmsg("cluster merged recovery: replay complete (own thread %u)",
+						 (unsigned)own_thread)));
+}
+#endif
 
 /*
  * Subroutine of PerformWalRecovery, to apply one WAL record.

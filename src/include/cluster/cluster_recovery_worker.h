@@ -204,6 +204,11 @@ extern void cluster_recovery_worker_main(Datum main_arg);
 /* Dump-side snapshot of the pool; false before shmem init. */
 extern bool cluster_recovery_worker_pool_snapshot(ClusterRecoveryWorkerPool *out);
 
+/* spec-4.5 Q6: inline re-validation of one candidate stream (claim +
+ * last-written page) when the worker verdict is NONE/FAILED at the
+ * merge gate.  Reads the slot itself; returns the verdict. */
+extern ClusterRecoveryStreamVerdict cluster_recovery_worker_revalidate(uint16 thread_id);
+
 /* The pool lives inside the spec-4.3 plan shmem wrapper (round-1
  * P1-2): accessor defined in cluster_recovery_plan.c. */
 extern ClusterRecoveryWorkerPool *cluster_recovery_worker_pool_ptr(void);

@@ -506,6 +506,32 @@ cluster_wal_state_mark_fpw_off(void)
 }
 
 /*
+ * cluster_wal_state_publish_merge_recovered -- §3.3c authority write.
+ *	Cross-owner exception: the merge coordinator records recovered_lsn
+ *	in a CRASHED peer's slot (the peer is down, so there is no racing
+ *	owner write).  Read-modify-preserve so the rest of the peer's slot
+ *	is untouched.
+ */
+void
+cluster_wal_state_publish_merge_recovered(uint16 thread_id, uint64 recovered_lsn)
+{
+	char path[MAXPGPATH];
+	ClusterWalStateSlot slot;
+
+	if (!registry_configured())
+		return;
+	if (cluster_wal_state_read_slot(thread_id, &slot) != CLUSTER_WAL_SLOT_OK)
+		return;
+	slot.merge_recovered_lsn = recovered_lsn;
+	slot.crc = cluster_wal_state_block_crc(&slot);
+	registry_path(path, sizeof(path));
+	if (!write_block(path, CLUSTER_WAL_STATE_SLOT_OFFSET(thread_id), &slot))
+		ereport(WARNING, (errcode(ERRCODE_CLUSTER_WAL_STATE_IO_FAILURE),
+						  errmsg("could not record merged-recovery progress for thread %u: %m",
+								 (unsigned)thread_id)));
+}
+
+/*
  * cluster_wal_state_read_slot
  *
  *	Reader-mode pread + classify (expect_node = -1: any owner).

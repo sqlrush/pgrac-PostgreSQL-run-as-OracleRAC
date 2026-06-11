@@ -305,6 +305,12 @@ extern void cluster_wal_state_publish_stopped(void);
 extern void cluster_wal_state_publish_checkpoint_redo(uint64 redo_lsn);
 extern void cluster_wal_state_mark_fpw_off(void);
 
+/* spec-4.5 §3.3c: coordinator records how far it replayed a crashed
+ * peer's stream, so the peer's later self-recovery enters post-merged
+ * mode (own-LSN-bound skip).  The only legitimate cross-owner write,
+ * confined to the merged-recovery window. */
+extern void cluster_wal_state_publish_merge_recovered(uint16 thread_id, uint64 recovered_lsn);
+
 /* cluster_stats periodic refresh (best-effort: LOG-once + counter on
  * failure, never FATAL). */
 extern void cluster_wal_state_refresh_own_slot(void);

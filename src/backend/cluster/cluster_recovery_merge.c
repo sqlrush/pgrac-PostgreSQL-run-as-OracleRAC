@@ -52,6 +52,47 @@
 #include "storage/fd.h"
 #include "utils/wait_event.h"
 
+/*
+ * Merged-replay window state (spec-4.5 §3.3b freshness + §3.3d/D8 GCS
+ * cold bypass).  Single-process (startup): a plain file-scope flag is
+ * enough.  The current record's xl_scn is published per record so the
+ * §3.3b freshness skip and the central pd_block_scn stamp can read it.
+ */
+static bool merge_window_active = false;
+static uint64 merge_window_scn = 0;
+
+void
+cluster_recovery_merge_window_enter(void)
+{
+	merge_window_active = true;
+	merge_window_scn = 0;
+}
+
+void
+cluster_recovery_merge_window_leave(void)
+{
+	merge_window_active = false;
+	merge_window_scn = 0;
+}
+
+void
+cluster_recovery_merge_set_scn(uint64 scn)
+{
+	merge_window_scn = scn;
+}
+
+bool
+cluster_recovery_merge_window_is_active(void)
+{
+	return merge_window_active;
+}
+
+uint64
+cluster_recovery_merge_window_scn(void)
+{
+	return merge_window_scn;
+}
+
 typedef struct MergeStream {
 	uint16 thread_id;
 	XLogReaderState *reader;
@@ -211,10 +252,19 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 			continue; /* own thread: gate items below are peer-only */
 		}
 
-		/* Candidate stream must have validated OK (or SKIPPED is fatal:
-		 * cold premise broke). */
-		if (have_pool) {
-			uint8 v = pool.stream_verdict[tid];
+		/*
+		 * Candidate stream must validate OK.  Use the worker verdict if
+		 * present; NONE means the workers did not finish in time, so
+		 * re-validate inline (Q6).  SKIPPED is fatal -- the peer was
+		 * alive, so the cold premise broke.
+		 */
+		{
+			ClusterRecoveryStreamVerdict v
+				= have_pool ? (ClusterRecoveryStreamVerdict)pool.stream_verdict[tid]
+							: CLUSTER_RECOVERY_STREAM_NONE;
+
+			if (v == CLUSTER_RECOVERY_STREAM_NONE)
+				v = cluster_recovery_worker_revalidate(tid);
 
 			if (v == CLUSTER_RECOVERY_STREAM_SKIPPED)
 				appendStringInfo(&blockers, "%sthread %u stream SKIPPED (peer was alive)",
@@ -222,9 +272,6 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
 			else if (v != CLUSTER_RECOVERY_STREAM_OK)
 				appendStringInfo(&blockers, "%sthread %u stream not OK (verdict %u)",
 								 blockers.len ? "; " : "", (unsigned)tid, (unsigned)v);
-		} else {
-			appendStringInfo(&blockers, "%sno stream-validation result for thread %u",
-							 blockers.len ? "; " : "", (unsigned)tid);
 		}
 
 		/* Candidate start point + fpw history from its slot. */

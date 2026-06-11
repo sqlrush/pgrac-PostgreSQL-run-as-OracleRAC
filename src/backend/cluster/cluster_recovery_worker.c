@@ -179,6 +179,22 @@ validate_stream(uint16 tid, const ClusterWalStateSlot *slot)
 }
 
 /*
+ * cluster_recovery_worker_revalidate -- spec-4.5 Q6 inline path.
+ *	The merge coordinator calls this when the worker pool verdict is
+ *	NONE/FAILED (workers did not finish in time): re-run the same
+ *	validation serially in the startup process.
+ */
+ClusterRecoveryStreamVerdict
+cluster_recovery_worker_revalidate(uint16 thread_id)
+{
+	ClusterWalStateSlot slot;
+
+	if (cluster_wal_state_read_slot(thread_id, &slot) != CLUSTER_WAL_SLOT_OK)
+		return CLUSTER_RECOVERY_STREAM_UNREADABLE;
+	return validate_stream(thread_id, &slot);
+}
+
+/*
  * cluster_recovery_worker_main -- bgworker entry (InternalBGWorkers).
  */
 void
