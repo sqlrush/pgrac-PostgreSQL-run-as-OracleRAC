@@ -149,10 +149,11 @@ UT_TEST(test_pd_has_itl_bit_value)
 	 * PD_HAS_ITL = 0x0008 carved out of pd_flags reserved space
 	 * (PG vanilla used 0x0001-0x0004).  spec-1.22 added
 	 * PD_UNDO_SEG_HEADER = 0x0010, bumping PD_VALID_FLAG_BITS
-	 * 0x000F -> 0x001F.
+	 * 0x000F -> 0x001F; spec-4.5 added PD_CLUSTER_FORCE_FPI = 0x0020
+	 * -> 0x003F.
 	 */
 	UT_ASSERT_EQ(PD_HAS_ITL, 0x0008);
-	UT_ASSERT_EQ(PD_VALID_FLAG_BITS, 0x001F);
+	UT_ASSERT_EQ(PD_VALID_FLAG_BITS, 0x003F);
 }
 
 

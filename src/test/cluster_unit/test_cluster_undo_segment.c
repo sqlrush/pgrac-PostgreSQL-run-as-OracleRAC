@@ -262,9 +262,9 @@ UT_TEST(test_spec122_pd_undo_seg_header_bit_value)
 
 UT_TEST(test_spec122_pd_valid_flag_bits_bumped)
 {
-	/* spec-1.22 cluster mode: PD_VALID_FLAG_BITS = 0x001F (5 bits).
-	 * spec-1.5 had 0x000F; spec-1.22 added 0x0010 = 0x001F mask. */
-	UT_ASSERT_EQ((unsigned)PD_VALID_FLAG_BITS, 0x001Fu);
+	/* spec-1.22 added 0x0010 (0x000F->0x001F); spec-4.5 added
+	 * PD_CLUSTER_FORCE_FPI = 0x0020 -> 0x003F mask (6 bits). */
+	UT_ASSERT_EQ((unsigned)PD_VALID_FLAG_BITS, 0x003Fu);
 }
 
 UT_TEST(test_spec122_pd_has_itl_undo_disjoint)
