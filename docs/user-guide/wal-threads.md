@@ -100,7 +100,14 @@ marked active but not refreshed within
 `cluster.recovery_stale_active_ms`, default 10s), or unreadable.  The
 result appears in the startup log ("recovery plan (not acted upon)")
 and under the `recovery` category of `pg_cluster_state` (`plan_*`
-keys).  This release only reports the classification — cross-thread
+keys).  When crash candidates are found, up to
+`cluster.recovery_workers_max` (default 4, 0 disables) background
+workers additionally validate each candidate stream — the ownership
+claim file and the last written WAL page located from the registry
+watermark — and report per-thread results under the same category
+(`stream_ok_threads`, `stream_suspect_or_unreadable_threads`).  The
+workers never delay startup and never read a live node's stream.
+This release only reports the classification — cross-thread
 merged recovery is not performed.  An `unknown` thread is never treated
 as crashed; if unknowns persist, check the shared WAL storage.  If
 peer nodes run a larger `cluster.cluster_stats_main_loop_interval`,
