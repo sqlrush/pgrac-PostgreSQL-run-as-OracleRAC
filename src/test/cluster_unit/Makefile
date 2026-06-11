@@ -47,7 +47,7 @@ TESTS = test_cluster_basic test_cluster_version test_cluster_backend_types \
         test_cluster_retention test_cluster_undo_cleaner test_cluster_visibility_variants test_cluster_tt_2pc \
         test_cluster_stage3_acceptance test_cluster_undo_buf test_cluster_undo_extent \
         test_cluster_wal_thread test_cluster_wal_state test_cluster_recovery_plan \
-        test_cluster_recovery_worker
+        test_cluster_recovery_worker test_cluster_recovery_merge
 
 # Path to the cluster_version object (no PG deps, safe to link standalone).
 CLUSTER_VERSION_O = $(top_builddir)/src/backend/cluster/cluster_version.o
@@ -945,6 +945,18 @@ test_cluster_undo_record: test_cluster_undo_record.c unit_test.h \
 # the header moves).
 test_cluster_wal_state: test_cluster_wal_state.c unit_test.h \
 		../../../src/include/cluster/cluster_wal_state.h $(CLUSTER_VERSION_O)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
+		$(CLUSTER_VERSION_O) \
+		$(top_builddir)/src/common/libpgcommon_srv.a \
+		$(top_builddir)/src/port/libpgport_srv.a -o $@
+
+# spec-4.5 D11: test_cluster_recovery_merge — 20 pure tests (k-way
+# heap ordering scn->lsn->node, G/S/L/U class matrix, xl_scn layout).
+# Header-only; scn_recovery_cmp stubbed in-test (cluster_scn.o not
+# linked).  Header deps explicit per L229.
+test_cluster_recovery_merge: test_cluster_recovery_merge.c unit_test.h \
+		../../../src/include/cluster/cluster_recovery_merge.h \
+		../../../src/include/access/xlogrecord.h $(CLUSTER_VERSION_O)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< \
 		$(CLUSTER_VERSION_O) \
 		$(top_builddir)/src/common/libpgcommon_srv.a \
