@@ -98,6 +98,22 @@
  *	Why:
  *	  spec-4.5 §3.1/§3.2 cold-crash merged replay (structure ship;
  *	  apply-through deferred to 4.5a).
+ *
+ * PGRAC MODIFICATIONS (spec-4.5a v1.0)
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  1. The merged-loop §3.3e classification is extracted
+ *	               into cluster_record_apply_class (shared with the new
+ *	               §3.3c gate).  2. ApplyWalRecord skips rm_redo (and the
+ *	               consistency check) for this node's OWN shared-block
+ *	               records at or below merge_recovered_lsn -- a peer's
+ *	               merged replay already drove those pages in global SCN
+ *	               order; re-applying would regress them.  3. The merged
+ *	               foreign path applies MATERIALIZE_LOCAL records
+ *	               (RM_CLUSTER_UNDO) so a peer's undo materializes into
+ *	               the local pg_undo/instance_<owner> tree.
+ *	Why:           spec-4.5a-shared-storage-data-backend.md §0 G2 +
+ *	               §3.3a/§3.3c (P0-3).
  */
 
 #include "postgres.h"
@@ -115,6 +131,7 @@
 #include "access/xlog_internal.h"
 #ifdef USE_PGRAC_CLUSTER
 /* PGRAC: spec-4.1 own-stream strict thread-id for crash recovery. */
+#include "cluster/cluster_guc.h" /* PGRAC: spec-4.5a cluster_wal_threads_dir */
 #include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_recovery_merge.h"
 #include "cluster/cluster_recovery_worker.h"
@@ -470,6 +487,15 @@ static bool recoveryStopAfter;
 
 /* prototypes for local functions */
 static void ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *replayTLI);
+#ifdef USE_PGRAC_CLUSTER
+/* PGRAC: spec-4.5a -- shared §3.3e classification (merged loop + §3.3c). */
+static ClusterRecoveryRecordClass cluster_record_apply_class(XLogReaderState *r);
+/* PGRAC: spec-4.5a §3.3c -- own-LSN bound: this node's stream was already
+ * merged-recovered by a peer through this LSN; own shared-block records at
+ * or below it must NOT be re-applied (they would regress shared pages that
+ * carry NEWER cross-thread state).  0 = never merged / not configured. */
+static uint64 cluster_recovery_own_merge_bound = 0;
+#endif
 #ifdef USE_PGRAC_CLUSTER
 static XLogRecPtr cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start,
 												 TimeLineID tli, uint16 own_thread,
@@ -1823,6 +1849,29 @@ PerformWalRecovery(void)
 	else
 		ereport(DEBUG1, (errmsg("cluster merged recovery: not engaged (reason %d)",
 								(int) cluster_engage)));
+
+	/*
+	 * PGRAC: spec-4.5a §3.3c -- read this node's own merge_recovered_lsn
+	 * once.  Non-zero means a peer's merged replay already recovered this
+	 * stream's shared blocks; ApplyWalRecord skips own SHARED-class
+	 * records at or below the bound (G/L records still apply: the peer
+	 * diverted our XACT/CLOG away from its own pg_xact and skipped our
+	 * node-local records, so those are still ours to replay).
+	 */
+	cluster_recovery_own_merge_bound = 0;
+	if (cluster_wal_threads_dir != NULL && cluster_wal_threads_dir[0] != '\0') {
+		uint16		own_tid = cluster_wal_thread_id();
+		ClusterWalStateSlot own_slot;
+
+		if (own_tid != XLP_THREAD_ID_LEGACY
+			&& cluster_wal_state_read_slot(own_tid, &own_slot) == CLUSTER_WAL_SLOT_OK)
+			cluster_recovery_own_merge_bound = own_slot.merge_recovered_lsn;
+	}
+	if (cluster_recovery_own_merge_bound > 0)
+		ereport(LOG,
+				(errmsg("cluster recovery: own stream was merged-recovered through %X/%X; "
+						"own shared-block records at or below that point will be skipped",
+						LSN_FORMAT_ARGS((XLogRecPtr) cluster_recovery_own_merge_bound))));
 #endif
 
 	/*
@@ -2083,31 +2132,7 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 	while ((r = cluster_recovery_merge_next(st, &thread, NULL)) != NULL) {
 		XLogRecord *rec = &r->record->header;
 		bool is_own = (thread == own_thread);
-		bool has_block = XLogRecHasAnyBlockRefs(r);
-		bool first_shared = false;
-		bool same_routing = true;
-		ClusterRecoveryRecordClass cls;
-
-		if (has_block) {
-			int bid;
-			int routed = -1; /* -1 unset, 0 local, 1 shared */
-
-			for (bid = 0; bid <= XLogRecMaxBlockId(r); bid++) {
-				RelFileLocator rl;
-				int this_shared;
-
-				if (!XLogRecGetBlockTagExtended(r, bid, &rl, NULL, NULL, NULL))
-					continue;
-				this_shared = (cluster_smgr_which_for(rl, InvalidBackendId) == 1) ? 1 : 0;
-				if (routed < 0)
-					routed = this_shared;
-				else if (routed != this_shared)
-					same_routing = false;
-			}
-			first_shared = (routed == 1);
-		}
-
-		cls = cluster_recovery_record_class(rec->xl_rmid, has_block, first_shared, same_routing);
+		ClusterRecoveryRecordClass cls = cluster_record_apply_class(r);
 
 		if (!is_own) {
 			if (cls == CLUSTER_RECMERGE_LOCAL)
@@ -2120,7 +2145,10 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 								errhint("This foreign record cannot be safely routed; resolve the "
 										"shared storage or recover single-stream "
 										"(cluster.merged_recovery=off).")));
-			/* G or S: apply the peer's record. */
+			/* G, S or MATERIALIZE_LOCAL: apply the peer's record.
+			 * (MATERIALIZE_LOCAL = RM_CLUSTER_UNDO: its redo handler
+			 * resolves pg_undo/instance_<owner> from the record itself,
+			 * materializing the peer's undo locally -- spec-4.5a P0-3.) */
 		}
 
 		cluster_recovery_merge_set_scn(rec->xl_scn);
@@ -2153,6 +2181,48 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 /*
  * Subroutine of PerformWalRecovery, to apply one WAL record.
  */
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * cluster_record_apply_class -- §3.3e classification of the decoded record
+ *	(spec-4.5 merged loop + spec-4.5a §3.3c own-bound skip share this).
+ *
+ *	Walks the record's block refs through the smgr routing predicate:
+ *	a mixed shared/local set is UNCLASSIFIABLE; otherwise the class is
+ *	decided by cluster_recovery_record_class.
+ */
+static ClusterRecoveryRecordClass
+cluster_record_apply_class(XLogReaderState *r)
+{
+	bool		has_block = XLogRecHasAnyBlockRefs(r);
+	bool		first_shared = false;
+	bool		same_routing = true;
+
+	if (has_block)
+	{
+		int			bid;
+		int			routed = -1;	/* -1 unset, 0 local, 1 shared */
+
+		for (bid = 0; bid <= XLogRecMaxBlockId(r); bid++)
+		{
+			RelFileLocator rl;
+			int			this_shared;
+
+			if (!XLogRecGetBlockTagExtended(r, bid, &rl, NULL, NULL, NULL))
+				continue;
+			this_shared = (cluster_smgr_which_for(rl, InvalidBackendId) == 1) ? 1 : 0;
+			if (routed < 0)
+				routed = this_shared;
+			else if (routed != this_shared)
+				same_routing = false;
+		}
+		first_shared = (routed == 1);
+	}
+
+	return cluster_recovery_record_class(XLogRecGetRmid(r), has_block, first_shared,
+										 same_routing);
+}
+#endif
+
 static void
 ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *replayTLI)
 {
@@ -2237,15 +2307,41 @@ ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *repl
 		xlogrecovery_redo(xlogreader, *replayTLI);
 
 	/* Now apply the WAL record itself */
-	GetRmgr(record->xl_rmid).rm_redo(xlogreader);
+	{
+		bool		cluster_skip_redo = false;
 
-	/*
-	 * After redo, check whether the backup pages associated with the WAL
-	 * record are consistent with the existing pages. This check is done only
-	 * if consistency check is enabled for this record.
-	 */
-	if ((record->xl_info & XLR_CHECK_CONSISTENCY) != 0)
-		verifyBackupPageConsistency(xlogreader);
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC: spec-4.5a §3.3c -- own-LSN-bound shared-block skip.  A
+		 * peer's merged replay already drove this stream's SHARED blocks
+		 * (in cross-thread SCN order) through merge_recovered_lsn;
+		 * re-applying our own copies would regress those pages.  G/L
+		 * records still apply.  The consistency check is skipped with the
+		 * redo: the backup image predates the merged state by design.
+		 */
+		if (cluster_recovery_own_merge_bound > 0
+			&& xlogreader->EndRecPtr <= (XLogRecPtr) cluster_recovery_own_merge_bound
+			&& cluster_record_apply_class(xlogreader) == CLUSTER_RECMERGE_SHARED)
+		{
+			cluster_skip_redo = true;
+			elog(DEBUG2, "cluster recovery: skipping merged-recovered shared record at %X/%X",
+				 LSN_FORMAT_ARGS(xlogreader->ReadRecPtr));
+		}
+#endif
+
+		if (!cluster_skip_redo)
+		{
+			GetRmgr(record->xl_rmid).rm_redo(xlogreader);
+
+			/*
+			 * After redo, check whether the backup pages associated with the
+			 * WAL record are consistent with the existing pages. This check
+			 * is done only if consistency check is enabled for this record.
+			 */
+			if ((record->xl_info & XLR_CHECK_CONSISTENCY) != 0)
+				verifyBackupPageConsistency(xlogreader);
+		}
+	}
 
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;

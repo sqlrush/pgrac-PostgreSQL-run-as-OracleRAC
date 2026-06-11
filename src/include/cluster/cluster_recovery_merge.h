@@ -52,20 +52,32 @@
  * the first block routes to shared storage.
  */
 typedef enum ClusterRecoveryRecordClass {
-	CLUSTER_RECMERGE_GLOBAL = 0,	 /* G: XACT/CLOG/MULTIXACT/STANDBY/COMMIT_TS --
+	CLUSTER_RECMERGE_GLOBAL = 0,		/* G: XACT/CLOG/MULTIXACT/STANDBY/COMMIT_TS --
 								  * per-node replicated logical state; applied on
 								  * BOTH the foreign-merge and self-recovery
 								  * paths (A needs the peer's commit bits) */
-	CLUSTER_RECMERGE_SHARED,		 /* S: block ref routed to shared storage --
+	CLUSTER_RECMERGE_SHARED,			/* S: block ref routed to shared storage --
 								  * the merge body; A applies, B skips <=
 								  * merge_recovered_lsn */
-	CLUSTER_RECMERGE_LOCAL,			 /* L: node-local (catalog pages, RELMAP, XLOG
+	CLUSTER_RECMERGE_LOCAL,				/* L: node-local (catalog pages, RELMAP, XLOG
 								  * housekeeping) -- A skips a foreign stream's
 								  * L record (it would clobber A's own files),
 								  * B applies its own */
-	CLUSTER_RECMERGE_UNCLASSIFIABLE, /* U: cannot be safely routed (DBASE/
+	CLUSTER_RECMERGE_UNCLASSIFIABLE,	/* U: cannot be safely routed (DBASE/
 									  * TBLSPC, or a mixed S/L block set) --
 									  * fail-closed 53RA3 on the foreign path */
+	CLUSTER_RECMERGE_MATERIALIZE_LOCAL, /* spec-4.5a P0-3: RM_CLUSTER_UNDO --
+										 * undo is path-based
+										 * pg_undo/instance_<N>/seg.dat, outside
+										 * the RelFileLocator namespace and NOT
+										 * shared.  The redo handler resolves the
+										 * path from the record's owner_instance
+										 * (not cluster_node_id), so applying a
+										 * PEER's record MATERIALIZES that peer's
+										 * undo into the local pg_undo tree --
+										 * which is exactly what the remote
+										 * UBA/TT readers need.  Applied on BOTH
+										 * the foreign and own paths. */
 } ClusterRecoveryRecordClass;
 
 /*
@@ -82,6 +94,14 @@ static inline ClusterRecoveryRecordClass
 cluster_recovery_record_class(RmgrId rmid, bool has_block_ref, bool first_block_is_shared,
 							  bool all_blocks_same_routing)
 {
+	/*
+	 * spec-4.5a P0-3: cluster undo materializes locally regardless of
+	 * block refs (production undo records carry none -- the redo handler
+	 * pwrites the per-instance segment file directly).
+	 */
+	if (rmid == RM_CLUSTER_UNDO_ID)
+		return CLUSTER_RECMERGE_MATERIALIZE_LOCAL;
+
 	/* G: global logical state carried by WAL, no block reference. */
 	if (!has_block_ref) {
 		switch (rmid) {
@@ -251,5 +271,25 @@ extern bool cluster_recovery_merge_window_is_active(void);
 extern uint64 cluster_recovery_merge_window_scn(void);
 
 #endif /* !FRONTEND */
+
+/*
+ * spec-4.5a §3.3b: merge-window state exported as plain globals so the
+ * PageSetLSN central hook (bufpage.h) and the XLogReadBufferForRedo
+ * freshness gate (xlogutils.c) can read them without pulling cluster
+ * headers into PG core paths.  Written ONLY by the startup process
+ * (window enter/leave/set_scn below); every backend sees false/0.
+ */
+extern bool cluster_recmerge_window_active;
+extern uint64 cluster_recmerge_window_scn;
+
+/*
+ * spec-4.5a: has this node EVER merged-recovered `origin_node`'s stream?
+ * Authority = the per-thread wal-state slot's merge_recovered_lsn (> 0
+ * means a merged replay of that thread completed here) -- persistent and
+ * backend-readable, so the remote UBA/TT read paths (D8/D9/D10) can gate
+ * on it after recovery finishes.  Missing/unreadable slot -> false
+ * (fail-closed).
+ */
+extern bool cluster_merged_instance_is_materialized(int origin_node);
 
 #endif /* CLUSTER_RECOVERY_MERGE_H */

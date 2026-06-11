@@ -59,39 +59,61 @@
  * enough.  The current record's xl_scn is published per record so the
  * §3.3b freshness skip and the central pd_block_scn stamp can read it.
  */
-static bool merge_window_active = false;
-static uint64 merge_window_scn = 0;
+bool cluster_recmerge_window_active = false;
+uint64 cluster_recmerge_window_scn = 0;
 
 void
 cluster_recovery_merge_window_enter(void)
 {
-	merge_window_active = true;
-	merge_window_scn = 0;
+	cluster_recmerge_window_active = true;
+	cluster_recmerge_window_scn = 0;
 }
 
 void
 cluster_recovery_merge_window_leave(void)
 {
-	merge_window_active = false;
-	merge_window_scn = 0;
+	cluster_recmerge_window_active = false;
+	cluster_recmerge_window_scn = 0;
 }
 
 void
 cluster_recovery_merge_set_scn(uint64 scn)
 {
-	merge_window_scn = scn;
+	cluster_recmerge_window_scn = scn;
 }
 
 bool
 cluster_recovery_merge_window_is_active(void)
 {
-	return merge_window_active;
+	return cluster_recmerge_window_active;
 }
 
 uint64
 cluster_recovery_merge_window_scn(void)
 {
-	return merge_window_scn;
+	return cluster_recmerge_window_scn;
+}
+
+/*
+ * cluster_merged_instance_is_materialized -- spec-4.5a remote-read gate.
+ *
+ *	True iff this node has completed a merged replay of origin_node's
+ *	stream: the thread slot's merge_recovered_lsn (§3.3c authority,
+ *	published at the end of merged replay) is non-zero.  Persistent and
+ *	readable from any backend.  Unreadable slot -> false (fail-closed).
+ */
+bool
+cluster_merged_instance_is_materialized(int origin_node)
+{
+	ClusterWalStateSlot slot;
+	uint16 tid;
+
+	if (origin_node < 0 || origin_node >= CLUSTER_WAL_STATE_SLOT_COUNT)
+		return false;
+	tid = (uint16)(origin_node + 1);
+	if (cluster_wal_state_read_slot(tid, &slot) != CLUSTER_WAL_SLOT_OK)
+		return false;
+	return slot.merge_recovered_lsn > 0;
 }
 
 typedef struct MergeStream {

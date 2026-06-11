@@ -14,6 +14,22 @@
  * src/backend/access/transam/xlogutils.c
  *
  *-------------------------------------------------------------------------
+ *
+ * PGRAC MODIFICATIONS
+ *
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  XLogReadBufferForRedoExtended judges block freshness
+ *	by the page's pd_block_scn watermark instead of pd_lsn while the
+ *	merged-recovery window is active (spec-4.5a §3.3b): cross-thread
+ *	pd_lsn values come from different nodes' LSN sequences and are
+ *	incomparable.  Outside the window the function is byte-identical.
+ *
+ *	Why:  spec-4.5a-shared-storage-data-backend.md §3.3b; the window
+ *	state is exported by cluster_recovery_merge.c and stamped by the
+ *	PageSetLSN hook (bufpage.h).
+ *
+ *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
@@ -431,6 +447,27 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 				else
 					LockBuffer(*buf, BUFFER_LOCK_EXCLUSIVE);
 			}
+#ifdef USE_PGRAC_CLUSTER
+
+			/*
+			 * PGRAC: spec-4.5a §3.3b -- inside the merged-replay window the
+			 * page's pd_lsn may have been stamped by ANOTHER node's record
+			 * (a different LSN sequence), so the lsn comparison below is
+			 * meaningless there.  Freshness is judged by the page's
+			 * pd_block_scn watermark instead (stamped by the PageSetLSN
+			 * window hook): an SCN at or below the watermark was already
+			 * applied (first run or crash-rerun) -> BLK_DONE; otherwise
+			 * the record is strictly newer in the global SCN order ->
+			 * BLK_NEEDS_REDO.  Outside the window this block is dead.
+			 */
+			if (cluster_recmerge_window_active)
+			{
+				if (cluster_recmerge_window_scn <=
+					(uint64) ((PageHeader) BufferGetPage(*buf))->pd_block_scn)
+					return BLK_DONE;
+				return BLK_NEEDS_REDO;
+			}
+#endif
 			if (lsn <= PageGetLSN(BufferGetPage(*buf)))
 				return BLK_DONE;
 			else

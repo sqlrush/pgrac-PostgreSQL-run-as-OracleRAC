@@ -105,6 +105,20 @@
  *	               real TT slot allocation and retention.
  *	               See specs/spec-1.22-undo-tablespace-bootstrap.md §2.1
  *	               + §2.2 + §D1, docs/undo-segment-design.md §3.4-§3.6.
+ *
+ * PGRAC MODIFICATIONS (stage 4.5a):
+ *	Modified by: SqlRush <sqlrush@gmail.com>
+ *
+ *	What changed:  When USE_PGRAC_CLUSTER is defined (backend only),
+ *	               PageSetLSN additionally stamps the merged-recovery
+ *	               window SCN into pd_block_scn while the window is
+ *	               active, and the two window globals are declared.
+ *	Why:           spec-4.5a §3.3b -- inside k-way merged replay the
+ *	               page freshness authority is the per-record SCN
+ *	               (cross-thread LSNs are incomparable); the central
+ *	               PageSetLSN hook makes every redo handler stamp it
+ *	               without per-rmgr changes.  Backends never enter the
+ *	               window, so the hook is a predictable-false branch.
  */
 #ifndef BUFPAGE_H
 #define BUFPAGE_H
@@ -556,10 +570,37 @@ PageGetLSN(Page page)
 {
 	return PageXLogRecPtrGet(((PageHeader)page)->pd_lsn);
 }
+#if defined(USE_PGRAC_CLUSTER) && !defined(FRONTEND)
+/*
+ * PGRAC: spec-4.5a §3.3b -- merged-recovery window state, defined in
+ * cluster_recovery_merge.c.  Declared as plain externs so this core
+ * header stays free of cluster includes; outside the startup process's
+ * merged-replay window every reader sees false/0 (backends never enter
+ * the window), so the PageSetLSN hook below is a predictable-false
+ * branch on all hot paths.
+ */
+extern bool cluster_recmerge_window_active;
+extern uint64 cluster_recmerge_window_scn;
+#endif
+
 static inline void
 PageSetLSN(Page page, XLogRecPtr lsn)
 {
 	PageXLogRecPtrSet(((PageHeader)page)->pd_lsn, lsn);
+#if defined(USE_PGRAC_CLUSTER) && !defined(FRONTEND)
+
+	/*
+	 * PGRAC: spec-4.5a §3.3b -- inside the merged-replay window every
+	 * applied record stamps its SCN as the page's freshness watermark.
+	 * Cross-thread pd_lsn values come from different nodes' LSN
+	 * sequences and are incomparable, so pd_block_scn is the window's
+	 * ordering authority (XLogReadBufferForRedoExtended judges
+	 * BLK_DONE/BLK_NEEDS_REDO by it inside the window); the stamp also
+	 * survives a window crash-rerun, making re-applied records skip.
+	 */
+	if (cluster_recmerge_window_active)
+		((PageHeader)page)->pd_block_scn = (SCN)cluster_recmerge_window_scn;
+#endif
 }
 
 static inline bool

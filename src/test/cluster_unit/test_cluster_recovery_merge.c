@@ -246,8 +246,12 @@ UT_TEST(test_class_block_shared)
 {
 	UT_ASSERT_EQ((int)cluster_recovery_record_class(RM_HEAP_ID, true, true, true),
 				 (int)CLUSTER_RECMERGE_SHARED);
+	/* spec-4.5a P0-3: cluster undo materializes locally on BOTH paths --
+	 * regardless of block refs (production undo records carry none). */
 	UT_ASSERT_EQ((int)cluster_recovery_record_class(RM_CLUSTER_UNDO_ID, true, true, true),
-				 (int)CLUSTER_RECMERGE_SHARED);
+				 (int)CLUSTER_RECMERGE_MATERIALIZE_LOCAL);
+	UT_ASSERT_EQ((int)cluster_recovery_record_class(RM_CLUSTER_UNDO_ID, false, false, true),
+				 (int)CLUSTER_RECMERGE_MATERIALIZE_LOCAL);
 }
 
 UT_TEST(test_class_block_local)
