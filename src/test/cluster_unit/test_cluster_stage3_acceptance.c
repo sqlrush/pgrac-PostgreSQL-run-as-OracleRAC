@@ -18,7 +18,7 @@
  *	        string invariants;  runtime emission verified by t/226 L10.
  *	    L4  SQLSTATE 53R97 / 53R9C / 53R9D / 53R9E / 53R9G / 53R9H 全
  *	        encodable via MAKE_SQLSTATE (Stage 3 MVCC error surface).
- *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 97 (spec-3.13 D6
+ *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 98 (spec-4.6 D4
  *	        ship value;  update-required contract — any future spec adding
  *	        wait events MUST bump this snapshot).
  *	    L6  ClusterTTStatus 6-value enum (0-5) + TTSlotStatus 5 functional
@@ -285,14 +285,14 @@ UT_TEST(test_stage3_sqlstate_mvcc_surface_encodable)
 }
 
 
-/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 97 ===== */
+/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 98 ===== */
 
 UT_TEST(test_stage3_wait_events_count_snapshot_97)
 {
 	/* spec-4.2 D5 value (95 + 2 wal-state registry I/O).  Update-required contract:  a future spec
 	 * adding a wait event MUST bump this snapshot (it is current state, not
 	 * "==93 forever"). */
-	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 97);
+	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 98);
 }
 
 

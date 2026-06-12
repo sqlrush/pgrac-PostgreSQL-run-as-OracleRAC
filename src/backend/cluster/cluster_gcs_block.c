@@ -41,10 +41,12 @@
 #include "access/xlog.h"
 #include "access/xlogdefs.h"
 #include "cluster/cluster_conf.h"
+#include "cluster/cluster_cssd.h" /* spec-4.6 D4 — dead-master block-path guard */
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_gcs.h"
 #include "cluster/cluster_gcs_block.h"
 #include "cluster/cluster_gcs_block_dedup.h" /* spec-2.34 D1 — counter forward */
+#include "cluster/cluster_grd.h"			 /* spec-4.6 D4 — block_path_failclosed counter */
 #include "cluster/cluster_grd_outbound.h"
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
@@ -536,6 +538,30 @@ cluster_gcs_send_block_request_and_wait(BufferDesc *buf, PcmLockTransition trans
 	if (buf == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("cluster_gcs_send_block_request_and_wait: NULL BufferDesc")));
+
+	/*
+	 * PGRAC: spec-4.6 D4 / L12 — block-path fail-closed toward a DEAD
+	 * master.
+	 *
+	 *	GCS block routing hashes over the DECLARED node list (it does NOT
+	 *	consult the GRD shard master map), so after a node death the hash
+	 *	still routes this block's master role to the dead node.  spec-4.6
+	 *	rebuilds only the GES/GRD logical-lock layer;  block/PCM state
+	 *	rebuild is Stage 4.7.  Until then a block request whose master is
+	 *	DEAD must fail closed EXPLICITLY (53R9K) instead of burning the
+	 *	full retransmit budget against a corpse and surfacing an opaque
+	 *	53R90 — and must never be served from stale local state.
+	 */
+	if (master_node != cluster_node_id
+		&& cluster_cssd_get_peer_state(master_node) == CLUSTER_CSSD_PEER_DEAD) {
+		cluster_grd_inc_block_path_failclosed();
+		ereport(ERROR,
+				(errcode(ERRCODE_CLUSTER_GCS_BLOCK_PATH_NOT_REBUILT),
+				 errmsg("block-level cache access requires the dead GCS master for this block"),
+				 errhint("Block-state rebuild after node failure lands in Stage 4.7; the "
+						 "GES logical-lock path is unaffected.  Retry after the node "
+						 "rejoins.")));
+	}
 
 	if (transition_id < PCM_TRANS_N_TO_S || transition_id > PCM_TRANS_S_TO_X_CLEANOUT)
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),

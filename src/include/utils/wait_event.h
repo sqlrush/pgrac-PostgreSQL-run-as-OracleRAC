@@ -541,6 +541,9 @@ typedef enum {
 	WAIT_EVENT_CLUSTER_BGPROC_UNDO_CLEANER_MAIN_LOOP,
 	/* spec-3.13 D6: cleaner durable-header segment scan I/O. */
 	WAIT_EVENT_CLUSTER_UNDO_CLEANER_SEGMENT_SCAN,
+	/* spec-4.6 D4: backend short-wait on a FROZEN/REBUILDING GRD shard
+	 * during failure-driven remaster (cluster.grd_remaster_wait_ms). */
+	WAIT_EVENT_CLUSTER_GRD_SHARD_REMASTER,
 } WaitEventCluster;
 
 

@@ -459,6 +459,30 @@ typedef enum ClusterGrdRecoveryState {
 extern void cluster_grd_recovery_lmon_tick(void);
 extern uint64 cluster_grd_redeclare_generation(void);
 
+/* spec-4.6 D4/D5 — recovery counter bumps for out-of-module call sites. */
+extern void cluster_grd_inc_stale_request_drop(void);
+extern void cluster_grd_inc_block_path_failclosed(void);
+
+/* spec-4.6 D5 — bulk snapshot of the 13 grd_recovery counters for the
+ * pg_cluster_state dump (category 'grd_recovery';  one t/249 leg each). */
+typedef struct ClusterGrdRecoveryCounters {
+	uint64 remaster_started;
+	uint64 remaster_done;
+	uint64 remaster_failed;
+	uint64 shards_remastered;
+	uint64 holders_redeclared;
+	uint64 holders_rebound;
+	uint64 waiters_requeued;
+	uint64 converts_requeued;
+	uint64 stale_request_drop;
+	uint64 rebuild_timeout;
+	uint64 block_path_failclosed;
+	uint64 unaffected_holder_survived;
+	uint64 stale_holder_swept;
+} ClusterGrdRecoveryCounters;
+
+extern void cluster_grd_recovery_counters_snapshot(ClusterGrdRecoveryCounters *out);
+
 /* spec-4.6 P0#2 — pre-remaster stale-epoch sweep SCOPED to the affected
  * (dead-master) shards;  affected_shards is a PGRAC_GRD_SHARD_COUNT-bit
  * bitmap (uint64 words).  Global sweeping before the rebind barrier

@@ -828,6 +828,47 @@ cluster_grd_redeclare_generation(void)
 	return pg_atomic_read_u64(&cluster_grd_state->recovery_redeclare_generation);
 }
 
+/* spec-4.6 D4/D5 — recovery counter bump helpers for out-of-module
+ * call sites (S4 stale mapping in cluster_lock_acquire.c;  GCS block
+ * fail-closed guard in cluster_gcs_block.c). */
+void
+cluster_grd_inc_stale_request_drop(void)
+{
+	if (cluster_grd_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_grd_state->stale_request_drop_count, 1);
+}
+
+void
+cluster_grd_inc_block_path_failclosed(void)
+{
+	if (cluster_grd_state != NULL)
+		pg_atomic_fetch_add_u64(&cluster_grd_state->block_path_failclosed_count, 1);
+}
+
+/* spec-4.6 D5 — bulk counter snapshot for the dump path. */
+void
+cluster_grd_recovery_counters_snapshot(ClusterGrdRecoveryCounters *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (cluster_grd_state == NULL)
+		return;
+	out->remaster_started = pg_atomic_read_u64(&cluster_grd_state->remaster_started_count);
+	out->remaster_done = pg_atomic_read_u64(&cluster_grd_state->remaster_done_count);
+	out->remaster_failed = pg_atomic_read_u64(&cluster_grd_state->remaster_failed_count);
+	out->shards_remastered = pg_atomic_read_u64(&cluster_grd_state->shards_remastered_count);
+	out->holders_redeclared = pg_atomic_read_u64(&cluster_grd_state->holders_redeclared_count);
+	out->holders_rebound = pg_atomic_read_u64(&cluster_grd_state->holders_rebound_count);
+	out->waiters_requeued = pg_atomic_read_u64(&cluster_grd_state->waiters_requeued_count);
+	out->converts_requeued = pg_atomic_read_u64(&cluster_grd_state->converts_requeued_count);
+	out->stale_request_drop = pg_atomic_read_u64(&cluster_grd_state->stale_request_drop_count);
+	out->rebuild_timeout = pg_atomic_read_u64(&cluster_grd_state->rebuild_timeout_count);
+	out->block_path_failclosed
+		= pg_atomic_read_u64(&cluster_grd_state->block_path_failclosed_count);
+	out->unaffected_holder_survived
+		= pg_atomic_read_u64(&cluster_grd_state->unaffected_holder_survived_count);
+	out->stale_holder_swept = pg_atomic_read_u64(&cluster_grd_state->stale_holder_swept_count);
+}
+
 /*
  * cluster_grd_cleanup_stale_epoch_scoped — spec-4.6 P0#2 (P3).
  *
@@ -998,6 +1039,17 @@ grd_recovery_barrier_complete(uint64 gen)
 		if (proc == NULL)
 			continue;
 		if (proc->pid == 0 || proc->pid == self_pid)
+			continue;
+
+		/*
+		 * Scope filter:  a proc holding ZERO cluster_registered grants
+		 * has nothing to rebind (any later acquire mints the current
+		 * epoch), and sinval-registered processes that never run the
+		 * generic ProcessInterrupts path (autovacuum launcher, logical
+		 * replication launcher) would otherwise wedge the barrier
+		 * forever.
+		 */
+		if (pg_atomic_read_u32(&proc->cluster_grd_registered_count) == 0)
 			continue;
 		if (pg_atomic_read_u64(&proc->cluster_grd_redeclare_acked) < gen)
 			return false;
@@ -1219,11 +1271,18 @@ cluster_grd_entry_rebind_or_insert_holder(const ClusterResId *resid,
 		if ((uint32)entry->holders[i].node_id == new_holder->node_id
 			&& entry->holders[i].procno == new_holder->procno
 			&& entry->holders[i].mode == (LOCKMODE)lockmode) {
+			uint32 rb_shard = cluster_grd_shard_for_resource(resid);
+
 			entry->holders[i].cluster_epoch = new_holder->cluster_epoch;
 			entry->holders[i].request_id = new_holder->request_id;
 			entry->generation++;
 			SpinLockRelease(&entry->lock);
 			pg_atomic_fetch_add_u64(&cluster_grd_state->holders_rebound_count, 1);
+			/* L13 evidence:  an in-place rebind on a NORMAL-phase shard
+			 * is a surviving holder on an UNAFFECTED shard — it was not
+			 * deleted by the scoped sweep and stays operable. */
+			if (cluster_grd_shard_phase(rb_shard) == GRD_SHARD_NORMAL)
+				pg_atomic_fetch_add_u64(&cluster_grd_state->unaffected_holder_survived_count, 1);
 			return CLUSTER_GRD_ENTRY_OK;
 		}
 	}

@@ -27,7 +27,7 @@
  *	    L10 Total backoff = initial × (2^N - 1) = 1500ms default
  *	    L11 LWTRANCHE_CLUSTER_GCS_BLOCK_DEDUP distinct from CLUSTER_GCS_BLOCK
  *	    L12 2 NEW wait events distinct values
- *	    L13 CLUSTER_WAIT_EVENTS_COUNT == 97 (current spec-4.2 snapshot)
+ *	    L13 CLUSTER_WAIT_EVENTS_COUNT == 98 (current spec-4.6 snapshot)
  *	    L14 53R90 SQLSTATE: hardcoded raw value cross-check
  *	    L15 BLCKSZ == GCS_BLOCK_DATA_SIZE invariant (defensive)
  *	    L16 Dedup key offsets — origin/backend/req_id/epoch
@@ -202,7 +202,7 @@ UT_TEST(test_cluster_wait_events_count_97)
 	 * spec-3.13 D6: 91 → 93 (+ 2 undo cleaner wait events).
 	 * spec-4.1 D7: 93 → 95 (+ 2 wal-thread claim I/O events).
 	 * spec-4.2 D5: 95 → 97 (+ 2 wal-state registry I/O events). */
-	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 97);
+	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 98);
 }
 
 

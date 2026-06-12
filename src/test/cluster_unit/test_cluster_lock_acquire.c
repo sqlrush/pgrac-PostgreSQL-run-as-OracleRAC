@@ -172,6 +172,39 @@ cluster_epoch_get_current(void)
  * LocalLockHash symbols are link-only and never reached at runtime. */
 bool cluster_enabled = false;
 
+/* spec-4.6 D4 stubs — the freeze gate consults the shard phase (NORMAL
+ * stub → gate never waits), so the latch / interrupt symbols are
+ * link-only here. */
+int cluster_grd_remaster_wait_ms = 200;
+volatile sig_atomic_t InterruptPending = 0;
+struct Latch;
+struct Latch *MyLatch = NULL;
+
+ClusterGrdShardPhase
+cluster_grd_shard_phase(uint32 shard_id pg_attribute_unused())
+{
+	return GRD_SHARD_NORMAL;
+}
+
+void
+cluster_grd_inc_stale_request_drop(void)
+{}
+
+int
+WaitLatch(struct Latch *latch pg_attribute_unused(), int wakeEvents pg_attribute_unused(),
+		  long timeout pg_attribute_unused(), uint32 wait_event_info pg_attribute_unused())
+{
+	return 0;
+}
+
+void
+ResetLatch(struct Latch *latch pg_attribute_unused())
+{}
+
+void
+ProcessInterrupts(void)
+{}
+
 uint64
 cluster_grd_redeclare_generation(void)
 {

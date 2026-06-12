@@ -948,6 +948,21 @@ LockAcquireExtended(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock,
 			ereport(ERROR,
 					(errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("cluster lock acquire timeout"),
 					 errhint("Consider increasing cluster.ges_request_timeout_ms.")));
+		case CLUSTER_LOCK_ACQUIRE_FAIL_SHARD_REMASTERING:
+			/* PGRAC: spec-4.6 D4 — shard frozen by failure-driven remaster. */
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_GRD_SHARD_REMASTERING),
+					 errmsg("GRD shard is being remastered after a node failure"),
+					 errhint("Retry the transaction; the shard reopens once the holder "
+							 "rebuild completes (cluster.grd_remaster_wait_ms bounds the "
+							 "in-line wait).")));
+		case CLUSTER_LOCK_ACQUIRE_FAIL_STALE_GENERATION:
+			/* PGRAC: spec-4.6 D4 — stale routing generation / epoch. */
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_GRD_STALE_MASTER_GENERATION),
+					 errmsg("cluster GES request carried a stale master generation"),
+					 errhint("The GRD master moved during reconfiguration; retry to route "
+							 "to the new master.")));
 		case CLUSTER_LOCK_ACQUIRE_FAIL_DEADLOCK:
 			ereport(
 				ERROR,
@@ -1050,6 +1065,8 @@ LockAcquireExtended(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock,
 				locallock->cluster_request_id = cluster_req.request_id;
 				memcpy(locallock->cluster_holder_raw, &cluster_req.holder,
 					   sizeof(locallock->cluster_holder_raw));
+				/* PGRAC: spec-4.6 D3 — rebind-barrier scope count. */
+				pg_atomic_fetch_add_u32(&MyProc->cluster_grd_registered_count, 1);
 			}
 #endif
 			return LOCKACQUIRE_OK;
@@ -1257,6 +1274,8 @@ LockAcquireExtended(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock,
 		locallock->cluster_request_id = cluster_req.request_id;
 		memcpy(locallock->cluster_holder_raw, &cluster_req.holder,
 			   sizeof(locallock->cluster_holder_raw));
+		/* PGRAC: spec-4.6 D3 — rebind-barrier scope count. */
+		pg_atomic_fetch_add_u32(&MyProc->cluster_grd_registered_count, 1);
 	}
 #endif
 	return LOCKACQUIRE_OK;
@@ -2094,6 +2113,8 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 		crel.cluster_registered = true;
 		cluster_lock_release(&crel);
 		locallock->cluster_registered = false;
+		/* PGRAC: spec-4.6 D3 — rebind-barrier scope count. */
+		pg_atomic_fetch_sub_u32(&MyProc->cluster_grd_registered_count, 1);
 	}
 #endif
 
@@ -2294,6 +2315,8 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 			crel.cluster_registered = true;
 			cluster_lock_release(&crel);
 			locallock->cluster_registered = false;
+			/* PGRAC: spec-4.6 D3 — rebind-barrier scope count. */
+			pg_atomic_fetch_sub_u32(&MyProc->cluster_grd_registered_count, 1);
 		}
 #endif
 

@@ -51,7 +51,7 @@
  *	internal table in cluster_views.c stays in sync with the enum.
  */
 #define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
-	97 /* spec-4.2 D5: +2 WAL state registry read/write; was 95 (spec-4.1) */
+	98 /* spec-4.6 D4: +1 GRD shard remaster short-wait; was 97 (spec-4.2) */
 
 
 /*

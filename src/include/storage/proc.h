@@ -328,6 +328,16 @@ struct PGPROC {
 	pg_atomic_uint64 cluster_grd_redeclare_acked;
 
 	/*
+	 * spec-4.6 D3 — live count of this backend's cluster_registered
+	 * LOCALLOCKs (S5 promote ++ / S6 release --).  The rebind barrier
+	 * skips procs with count == 0:  they hold nothing to rebind, and
+	 * sinval-registered processes that never run the generic
+	 * ProcessInterrupts path (e.g. the autovacuum launcher) would
+	 * otherwise wedge the barrier forever.
+	 */
+	pg_atomic_uint32 cluster_grd_registered_count;
+
+	/*
 	 * spec-3.12 D1 — undo/TT-slot retention horizon.  Min CLUSTER-source
 	 * read_scn over this backend's live snapshots (active stack + registered);
 	 * InvalidScn when this backend holds no live cluster snapshot.  Published in

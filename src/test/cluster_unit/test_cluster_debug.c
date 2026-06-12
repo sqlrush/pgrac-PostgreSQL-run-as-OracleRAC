@@ -2046,6 +2046,17 @@ cluster_grd_deadlock_chunk_oo_buffer_overflow_count(void)
 	return 0;
 }
 
+/* spec-4.6 D5 stub:  dump_grd_recovery consumes the bulk counter
+ * snapshot.  Zero-fill;  layout = 13 × uint64 (must track the
+ * ClusterGrdRecoveryCounters struct in cluster_grd.h). */
+struct ClusterGrdRecoveryCounters;
+void cluster_grd_recovery_counters_snapshot(struct ClusterGrdRecoveryCounters *out);
+void
+cluster_grd_recovery_counters_snapshot(struct ClusterGrdRecoveryCounters *out)
+{
+	memset(out, 0, 13 * sizeof(uint64));
+}
+
 uint32
 cluster_grd_outbound_ring_depth(void)
 {

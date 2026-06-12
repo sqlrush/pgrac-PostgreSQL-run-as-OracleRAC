@@ -923,6 +923,33 @@ dump_grd(ReturnSetInfo *rsinfo)
 			 fmt_int64((int64)cluster_grd_deadlock_chunk_oo_buffer_overflow_count()));
 }
 
+/* ============================================================
+ * dump_grd_recovery -- spec-4.6 D5 failure-driven remaster
+ *	observability (13 counters;  each has a t/249 acceptance leg).
+ * ============================================================ */
+static void
+dump_grd_recovery(ReturnSetInfo *rsinfo)
+{
+	ClusterGrdRecoveryCounters c;
+
+	cluster_grd_recovery_counters_snapshot(&c);
+	emit_row(rsinfo, "grd_recovery", "remaster_started", fmt_int64((int64)c.remaster_started));
+	emit_row(rsinfo, "grd_recovery", "remaster_done", fmt_int64((int64)c.remaster_done));
+	emit_row(rsinfo, "grd_recovery", "remaster_failed", fmt_int64((int64)c.remaster_failed));
+	emit_row(rsinfo, "grd_recovery", "shards_remastered", fmt_int64((int64)c.shards_remastered));
+	emit_row(rsinfo, "grd_recovery", "holders_redeclared", fmt_int64((int64)c.holders_redeclared));
+	emit_row(rsinfo, "grd_recovery", "holders_rebound", fmt_int64((int64)c.holders_rebound));
+	emit_row(rsinfo, "grd_recovery", "waiters_requeued", fmt_int64((int64)c.waiters_requeued));
+	emit_row(rsinfo, "grd_recovery", "converts_requeued", fmt_int64((int64)c.converts_requeued));
+	emit_row(rsinfo, "grd_recovery", "stale_request_drop", fmt_int64((int64)c.stale_request_drop));
+	emit_row(rsinfo, "grd_recovery", "rebuild_timeout", fmt_int64((int64)c.rebuild_timeout));
+	emit_row(rsinfo, "grd_recovery", "block_path_failclosed",
+			 fmt_int64((int64)c.block_path_failclosed));
+	emit_row(rsinfo, "grd_recovery", "unaffected_holder_survived",
+			 fmt_int64((int64)c.unaffected_holder_survived));
+	emit_row(rsinfo, "grd_recovery", "stale_holder_swept", fmt_int64((int64)c.stale_holder_swept));
+}
+
 /*
  * dump_lms -- spec-2.18 Sprint A Step 4 D10.
  *
@@ -1939,6 +1966,7 @@ cluster_dump_state(PG_FUNCTION_ARGS)
 		dump_scn(rsinfo);
 		dump_ges(rsinfo);
 		dump_grd(rsinfo);
+		dump_grd_recovery(rsinfo);
 		dump_lmd(rsinfo);
 		dump_lms(rsinfo);
 		dump_undo(rsinfo);

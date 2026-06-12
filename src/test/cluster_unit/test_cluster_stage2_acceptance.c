@@ -15,7 +15,7 @@
  *	        dump_gcs + dump_ges accessors)
  *	    L4  5 fault inject point names listed (compile-time string
  *	        invariants; runtime arm verified by t/201 TAP)
- *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 97 (spec-3.13
+ *	    L5  CLUSTER_WAIT_EVENTS_COUNT current snapshot = 98 (spec-4.6
  *	        D13 ship value;  any future spec adding wait events must
  *	        update this snapshot — update-required contract per spec
  *	        v0.2 F5 fix)
@@ -208,14 +208,14 @@ UT_TEST(test_stage2_fault_inject_point_names)
 }
 
 
-/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 97 ===== */
+/* ===== L5 — CLUSTER_WAIT_EVENTS_COUNT current snapshot 98 ===== */
 
 UT_TEST(test_stage2_wait_events_count_snapshot_97)
 {
 	/* spec-2.39 D13 ship value.  Future spec adding wait events MUST
 	 * update this snapshot (update-required contract per spec v0.2 F5
 	 * — current state, not "==93 forever"). */
-	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 97);
+	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 98);
 }
 
 

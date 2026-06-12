@@ -34,11 +34,17 @@
 #      L4  (D2-D4 flipped) a NEW request for a previously-dead-mastered
 #          resource succeeds.  Pinned gap was: bounded GES wait then
 #          FAIL_INTERNAL(16) via the stale S4 reject mapping.
-#      L5  (D3 flipped) the rebound holder's release lands on the new
-#          master and the resource is immediately re-acquirable.
-#          Pinned gap was: release silently swallowed, resource wedged.
-#      L7  XFAIL-gap: no grd_recovery observability category exists.
-#          D5 flips: 13 counters under category='grd_recovery'.
+#      L13 (D3/P0#3, 2-node form) a holder on an UNAFFECTED shard
+#          (master survived) is rebound IN PLACE — the epoch bump
+#          staled its identity too; holders_rebound +
+#          unaffected_holder_survived counters fire.
+#      L5  (D3 flipped) the rebound holders release against their
+#          current-epoch masters and both resources are immediately
+#          re-acquirable.  Pinned gap was: release silently swallowed.
+#      L7  (D5 flipped) grd_recovery dump category: 13 counters, key
+#          roster per spec-4.6 §2.4, episode trail asserted
+#          (remaster_started/done, shards_remastered=2048,
+#          holders_redeclared>=1, rebuild_timeout=0).
 #
 #    Discipline notes:
 #      - poll_query_until_timeout pattern + producer-before-actor
@@ -206,6 +212,22 @@ BAIL_OUT('L1 discovery found fewer than 2 node0-mastered keys; '
 my $K_hold  = $n0[0];
 my $K_probe = $n0[1];
 
+# An UNAFFECTED-shard holder (node1-mastered key): exercises the
+# in-place identity rebind (P0#3) — the epoch bump stales this holder's
+# identity even though its master survives, so without the cluster-wide
+# rebind its release would be rejected forever.
+my $node1_keys = $pair->node1->safe_psql('postgres', qq{
+	SELECT field3 FROM pg_cluster_grd_entries
+	 WHERE type = 10 AND lockmethodid = 2 AND field4 = 1
+	   AND field3 BETWEEN @{[$KEY_BASE + 1]} AND @{[$KEY_BASE + $KEY_COUNT]}
+	   AND ngranted > 0
+	 ORDER BY field3
+});
+my @n1 = split(/\n/, $node1_keys // '');
+ok(scalar(@n1) >= 1, 'L1 discovery found >=1 node1-mastered (unaffected-shard) key');
+BAIL_OUT('no node1-mastered key found') if scalar(@n1) < 1;
+my $K_unaff = $n1[0];
+
 # Shard + map cross-check for the held key's resource.
 my $S_hold = $pair->node0->safe_psql('postgres', qq{
 	SELECT shard_id FROM pg_cluster_grd_entries
@@ -216,11 +238,12 @@ is($pair->node1->safe_psql('postgres',
 		"SELECT master_node_id FROM pg_cluster_grd_shards WHERE shard_id = $S_hold"),
 	'0', 'L1 node1 master map confirms shard S is node0-mastered');
 
-# Release the discovery batch; re-acquire only K_hold in the session
-# that will survive the kill.
+# Release the discovery batch; re-acquire K_hold (dead-master shard)
+# and K_unaff (unaffected shard) in the session that survives the kill.
 $discovery->query_safe('COMMIT');
 $discovery->query_safe('BEGIN');
 $discovery->query("SELECT pg_advisory_xact_lock($K_hold)");
+$discovery->query("SELECT pg_advisory_xact_lock($K_unaff)");
 
 ok(poll_query_until_timeout($pair->node0, 'postgres',
 		qq{SELECT ngranted = 1 FROM pg_cluster_grd_entries
@@ -287,6 +310,18 @@ ok(poll_query_until_timeout($pair->node1, 'postgres',
 
 
 # ----------
+# Episode completion gate: P7 unfreeze reached (remaster_done >= 1).
+#     The freeze gate would absorb a sub-200ms window, but the LMON
+#     tick cadence is not contractual — wait for the explicit signal.
+# ----------
+ok(poll_query_until_timeout($pair->node1, 'postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'remaster_done'},
+		't', 20, 'episode completion (remaster_done >= 1)'),
+	'recovery episode completed through P7 unfreeze (remaster_done >= 1)');
+
+
+# ----------
 # L4 (FLIPPED by D2-D4): a NEW request for the previously-dead-mastered
 #     probe key now succeeds — the shard is locally mastered by node1.
 # ----------
@@ -298,29 +333,76 @@ is($rc4, 0,
 
 
 # ----------
+# L13 (2-node form, P0#3): the UNAFFECTED-shard holder was rebound IN
+#     PLACE — its master (node1) survived, but the epoch bump staled
+#     the stored identity; without the cluster-wide rebind its release
+#     would be rejected by inbound validation forever.
+# ----------
+ok(poll_query_until_timeout($pair->node1, 'postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'holders_rebound'},
+		't', 20, 'L13 in-place rebind happened'),
+	'L13 unaffected-shard holder rebound in place (holders_rebound >= 1)');
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'unaffected_holder_survived'}),
+	't', 'L13 unaffected_holder_survived counter fired');
+
+
+# ----------
 # L5 (FLIPPED by D3): the rebound holder releases against the NEW
 #     master (rebind made cluster_holder_raw current-epoch, so the
-#     release is not rejected), and the resource is immediately
-#     re-acquirable by a fresh session.
+#     release is not rejected), and BOTH resources are immediately
+#     re-acquirable by a fresh session (affected + unaffected shard).
 # ----------
 $discovery->query('COMMIT');
-ok(1, 'L5 holder COMMIT completes (release now lands on the new master)');
+ok(1, 'L5 holder COMMIT completes (releases land on current-epoch masters)');
 $discovery->quit;
 
 my ($rc5, $out5, $err5) = $pair->node1->psql('postgres',
-	"BEGIN;\nSELECT pg_advisory_xact_lock($K_hold);\nCOMMIT;",
+	"BEGIN;\nSELECT pg_advisory_xact_lock($K_hold);\nSELECT pg_advisory_xact_lock($K_unaff);\nCOMMIT;",
 	timeout => 60);
 is($rc5, 0,
-	"L5 re-acquire of the released resource succeeds post-rebind (err=$err5)");
+	"L5 re-acquire of both released resources succeeds post-rebind (err=$err5)");
 
 
 # ----------
-# L7: XFAIL-gap — no grd_recovery observability yet (D5 flips: 13
-#     counters under category='grd_recovery').
+# L7 (FLIPPED by D5): grd_recovery dump category exposes 13 counters
+#     and the recovery episode left the expected trail.
 # ----------
 is($pair->node1->safe_psql('postgres',
 		q{SELECT count(*) FROM cluster_dump_state() WHERE category = 'grd_recovery'}),
-	'0', 'L7 XFAIL-gap pinned: grd_recovery dump category absent (D5 adds 13 counters)');
+	'13', 'L7 grd_recovery dump category exposes 13 counters (D5)');
+
+is($pair->node1->safe_psql('postgres', q{
+	SELECT string_agg(key, ',' ORDER BY key) FROM cluster_dump_state()
+	 WHERE category = 'grd_recovery'}),
+	'block_path_failclosed,converts_requeued,holders_rebound,holders_redeclared,'
+	. 'rebuild_timeout,remaster_done,remaster_failed,remaster_started,'
+	. 'shards_remastered,stale_holder_swept,stale_request_drop,'
+	. 'unaffected_holder_survived,waiters_requeued',
+	'L7 grd_recovery key roster matches spec-4.6 §2.4');
+
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'remaster_started'}),
+	't', 'L7 remaster_started >= 1');
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'remaster_done'}),
+	't', 'L7 remaster_done >= 1 (P7 reached)');
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'shards_remastered'}),
+	'2048', 'L7 shards_remastered = 2048 (every dead-owned shard moved)');
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value::bigint >= 1 FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'holders_redeclared'}),
+	't', 'L7 holders_redeclared >= 1 (rebuild insert on the new master)');
+is($pair->node1->safe_psql('postgres',
+		q{SELECT value FROM cluster_dump_state()
+		   WHERE category = 'grd_recovery' AND key = 'rebuild_timeout'}),
+	'0', 'L7 rebuild_timeout = 0 (barrier completed in time)');
 
 
 $pair->stop_pair;

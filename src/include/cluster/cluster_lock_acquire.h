@@ -98,7 +98,12 @@ typedef enum ClusterLockAcquireResult {
 	CLUSTER_LOCK_ACQUIRE_FAIL_CANCEL = 15,	 /* S4 53R73 cluster_ges_cancel_pending */
 	CLUSTER_LOCK_ACQUIRE_FAIL_INTERNAL = 16, /* S5/S6/S7 internal error */
 	CLUSTER_LOCK_ACQUIRE_FAIL_LMD_WAIT_EDGE_FULL
-	= 17 /* spec-2.22 D7: LMD wait-edge cap exhausted; caller maps to 53R82 fail-closed */
+	= 17, /* spec-2.22 D7: LMD wait-edge cap exhausted; caller maps to 53R82 fail-closed */
+	/* spec-4.6 D4 — failure-driven remaster request surfaces. */
+	CLUSTER_LOCK_ACQUIRE_FAIL_SHARD_REMASTERING
+	= 18, /* shard FROZEN/REBUILDING past wait budget → 53R9I retry */
+	CLUSTER_LOCK_ACQUIRE_FAIL_STALE_GENERATION
+	= 19 /* stale epoch/master generation on the wire → 53R9J retry */
 } ClusterLockAcquireResult;
 
 

@@ -56,8 +56,10 @@
 #include "cluster/cluster_lock_acquire.h"
 #include "cluster/cluster_native_lock_probe.h"
 #include "cluster/cluster_signal.h" /* cluster_ges_cancel_pending sig_atomic_t */
+#include "storage/latch.h"			/* spec-4.6 D4 — freeze-gate WaitLatch */
 #include "storage/lock.h"			/* spec-4.6 D3 — LOCALLOCK + GetLockMethodLocalHash */
 #include "utils/hsearch.h"			/* spec-4.6 D3 — hash_seq over LocalLockHash */
+#include "utils/wait_event.h"		/* spec-4.6 D4 — ClusterGrdShardRemaster */
 #include "access/htup_details.h"	/* GETSTRUCT */
 #include "access/xact.h"			/* GetTopTransactionIdIfAny */
 #include "catalog/pg_class.h"		/* Form_pg_class for HC25 relpersistence */
@@ -293,24 +295,42 @@ cluster_lock_acquire_s4_remote_request_wait(const ClusterLockAcquireRequest *req
 	pg_atomic_fetch_add_u64(&stub_s4_remote_count, 1);
 
 	/*
-	 * spec-2.21 D8 minimal real remote-master path.  Single-node MVP:
-	 * helper currently returns 0 (GRANT) for ADVISORY — spec-2.23 BAST
-	 * 配套 wires real send/reply pipeline + 2-node ClusterPair routing.
+	 * Remote-master send-and-wait (real wire since spec-2.23/2.27).
 	 */
 	reject = cluster_ges_send_request_and_wait(&req->resid, (uint32)req->lockmode, &req->holder,
 											   req->request_id,
 											   /* timeout_ms */ 0);
-	if (reject == 0)
+	if (reject == GES_REJECT_REASON_NONE)
 		return CLUSTER_LOCK_ACQUIRE_NEED_PG_NATIVE_LOCK;
 
-	/* Non-zero reject reasons mapped per spec-2.21 §3.3. */
-	if (reject == 1 /* GES_REJECT_TIMEOUT placeholder */)
+	/*
+	 * spec-4.6 D4 — map the REAL GesRejectReason enum.  The previous
+	 * mapping used spec-2.21-era placeholder values (1/2/3) that no
+	 * longer matched the enum:  a dead-master timeout (TIMEOUT=4)
+	 * surfaced as FAIL_INTERNAL "result=16" (pinned by t/249 L4 before
+	 * the remaster work landed).
+	 */
+	switch ((GesRejectReason)reject) {
+	case GES_REJECT_REASON_WORK_QUEUE_FULL:
+		/* Transient master-side capacity — retryable timeout surface. */
 		return CLUSTER_LOCK_ACQUIRE_FAIL_TIMEOUT;
-	if (reject == 2 /* GES_REJECT_DEADLOCK placeholder */)
-		return CLUSTER_LOCK_ACQUIRE_FAIL_DEADLOCK;
-	if (reject == 3 /* GES_REJECT_CANCEL placeholder */)
-		return CLUSTER_LOCK_ACQUIRE_FAIL_CANCEL;
-	return CLUSTER_LOCK_ACQUIRE_FAIL_INTERNAL;
+	case GES_REJECT_REASON_EPOCH_MISMATCH:
+		/* Stale epoch/generation on the wire (reconfig moved on). */
+		cluster_grd_inc_stale_request_drop();
+		return CLUSTER_LOCK_ACQUIRE_FAIL_STALE_GENERATION;
+	case GES_REJECT_REASON_TIMEOUT:
+		return CLUSTER_LOCK_ACQUIRE_FAIL_TIMEOUT;
+	case GES_REJECT_REASON_SHARD_FROZEN:
+		/* Master-side recovery gate (the requester-side gate makes this
+		 * a narrow race window) — same 53R9I retry surface. */
+		return CLUSTER_LOCK_ACQUIRE_FAIL_SHARD_REMASTERING;
+	case GES_REJECT_REASON_LOCK_CONFLICT:
+	case GES_REJECT_REASON_NONE:
+	default:
+		/* LOCK_CONFLICT on a REQUEST is anomalous (conflicts enqueue a
+		 * waiter, they do not REJECT) — fail closed. */
+		return CLUSTER_LOCK_ACQUIRE_FAIL_INTERNAL;
+	}
 }
 
 
@@ -487,6 +507,43 @@ cluster_lock_acquire_seven_step(const ClusterLockAcquireRequest *req)
 	r = cluster_lock_acquire_s2_identity(req);
 	if (r != CLUSTER_LOCK_ACQUIRE_OK_GRANTED)
 		return r;
+
+	/*
+	 * spec-4.6 D4 — shard recovery freeze gate (requester side).
+	 *
+	 *	A shard in FROZEN/REBUILDING phase must not accept new grants:
+	 *	the holder rebuild (D3) is still filling holders[], and a grant
+	 *	decided against the partial set could double grant.  Short-wait
+	 *	up to cluster.grd_remaster_wait_ms (wait event
+	 *	ClusterGrdShardRemaster) — most remasters complete sub-second —
+	 *	then fail closed (53R9I at the lock.c caller; application
+	 *	retries).  dontwait (ConditionalLock) requests fail immediately.
+	 *	The CFI inside the wait loop also lets this backend run its own
+	 *	cooperative rebind if it is part of the same recovery episode.
+	 */
+	{
+		uint32 gate_shard = cluster_grd_shard_for_resource(&req->resid);
+
+		if (cluster_grd_shard_phase(gate_shard) != GRD_SHARD_NORMAL) {
+			TimestampTz gate_deadline;
+
+			if (req->dontwait)
+				return CLUSTER_LOCK_ACQUIRE_FAIL_SHARD_REMASTERING;
+
+			gate_deadline
+				= TimestampTzPlusMilliseconds(GetCurrentTimestamp(), cluster_grd_remaster_wait_ms);
+			for (;;) {
+				if (cluster_grd_shard_phase(gate_shard) == GRD_SHARD_NORMAL)
+					break;
+				if (GetCurrentTimestamp() >= gate_deadline)
+					return CLUSTER_LOCK_ACQUIRE_FAIL_SHARD_REMASTERING;
+				(void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 10,
+								WAIT_EVENT_CLUSTER_GRD_SHARD_REMASTER);
+				ResetLatch(MyLatch);
+				CHECK_FOR_INTERRUPTS();
+			}
+		}
+	}
 
 	/*
 	 * S3 partition + reservation.  Returns:
