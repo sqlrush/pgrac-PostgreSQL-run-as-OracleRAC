@@ -35,13 +35,37 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 
-#include "cluster/cluster_guc.h"		 /* cluster_node_id, subtrans depth */
-#include "cluster/cluster_itl.h"		 /* get_tt_ref / lock ref / multixact origin */
-#include "cluster/cluster_itl_slot.h"	 /* CLUSTER_ITL_SLOT_UNALLOCATED */
-#include "cluster/cluster_remote_xact.h" /* spec-4.5a G6: wrap-checked authority */
-#include "cluster/cluster_subtrans.h"	 /* SUBCOMMITTED parent follow */
-#include "cluster/cluster_tt_status.h"	 /* lookup_exact / Key / Result */
+#include "cluster/cluster_guc.h"			/* cluster_node_id, subtrans depth */
+#include "cluster/cluster_itl.h"			/* get_tt_ref / lock ref / multixact origin */
+#include "cluster/cluster_itl_slot.h"		/* CLUSTER_ITL_SLOT_UNALLOCATED */
+#include "cluster/cluster_recovery_merge.h" /* spec-4.5a G6: materialized authority gate */
+#include "cluster/cluster_remote_xact.h"	/* spec-4.5a G6: wrap-checked authority */
+#include "cluster/cluster_subtrans.h"		/* SUBCOMMITTED parent follow */
+#include "cluster/cluster_tt_status.h"		/* lookup_exact / Key / Result */
 #include "cluster/cluster_visibility_resolve.h"
+#include "cluster/cluster_wal_state.h" /* CLUSTER_WAL_STATE_SLOT_COUNT */
+
+/*
+ * Backend-lifetime cache over cluster_merged_instance_is_materialized().
+ * The STALE branch consults it per foreign recycled ref; the marker is the
+ * authority that this origin's heap state COMPLETELY covers the merge window
+ * (a partial-merge residual store/durable without a marker must NOT be read,
+ * per the cluster_recovery_merge.c marker contract).  Materialization only
+ * happens during startup recovery, so the cache cannot go stale in the unsafe
+ * (false-negative) direction.
+ */
+static int8 vis_origin_materialized_cache[CLUSTER_WAL_STATE_SLOT_COUNT]; /* 0 ? / 1 / -1 */
+
+static bool
+vis_origin_materialized(int origin)
+{
+	if (origin < 0 || origin >= CLUSTER_WAL_STATE_SLOT_COUNT)
+		return false;
+	if (vis_origin_materialized_cache[origin] == 0)
+		vis_origin_materialized_cache[origin]
+			= cluster_merged_instance_is_materialized(origin) ? 1 : -1;
+	return vis_origin_materialized_cache[origin] == 1;
+}
 
 
 /*
@@ -147,8 +171,16 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		 * exactly one wrap-qualified match is the proof, so a same-valued
 		 * wrapped xid (different generation) cannot alias.  INDOUBT (no proof)
 		 * stays fail-closed (53R97) -- never a bare (origin,xid) guess.
+		 *
+		 * Gate on the materialized marker FIRST (mirroring the tt_status /
+		 * CR-tier-3 consumers): the marker proves this origin's merge COMPLETED,
+		 * so its on-disk outcome store + durable TT cover the whole window.  A
+		 * partial-merge residual (FATAL mid-replay, then cluster.merged_recovery
+		 * =off) leaves a store/durable WITHOUT a marker; reading it would surface
+		 * pre-FATAL xids as COMMITTED while post-FATAL committed changes never
+		 * materialized -> torn-history false-visible.  No marker -> fail closed.
 		 */
-		{
+		if (vis_origin_materialized((int)ref->origin_node_id)) {
 			SCN scn;
 
 			switch (

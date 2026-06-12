@@ -82,19 +82,19 @@
 
 #ifdef USE_PGRAC_CLUSTER
 /* spec-3.2 D5:  MVCC cluster visibility fork. */
-#include "cluster/cluster_epoch.h"			   /* cluster_epoch_get_current (spec-3.3 D10) */
-#include "cluster/cluster_guc.h"			   /* cluster_enabled, cluster_node_id */
-#include "cluster/cluster_itl.h"			   /* cluster_itl_get_tt_ref */
-#include "cluster/cluster_itl_cleanout.h"	   /* cluster_itl_cleanout_lazy (spec-3.4c D4) */
-#include "cluster/cluster_itl_slot.h"		   /* CLUSTER_ITL_SLOT_UNALLOCATED */
-#include "cluster/cluster_tt_slot.h"		   /* ClusterUndoTTSlotRef */
-#include "cluster/cluster_subtrans.h"		   /* spec-3.5 D8 lookup_parent */
-#include "cluster/cluster_multixact.h"		   /* spec-3.6 D6 reader overlay */
-#include "cluster/cluster_tt_status.h"		   /* lookup_exact / Key / Result */
-#include "cluster/cluster_visibility_inject.h" /* D5b test-only inject helper */
-#include "cluster/cluster_cr.h"				   /* spec-3.9 D5 CR 3-tier MVCC gate */
+#include "cluster/cluster_epoch.h"				/* cluster_epoch_get_current (spec-3.3 D10) */
+#include "cluster/cluster_guc.h"				/* cluster_enabled, cluster_node_id */
+#include "cluster/cluster_itl.h"				/* cluster_itl_get_tt_ref */
+#include "cluster/cluster_itl_cleanout.h"		/* cluster_itl_cleanout_lazy (spec-3.4c D4) */
+#include "cluster/cluster_itl_slot.h"			/* CLUSTER_ITL_SLOT_UNALLOCATED */
+#include "cluster/cluster_tt_slot.h"			/* ClusterUndoTTSlotRef */
+#include "cluster/cluster_subtrans.h"			/* spec-3.5 D8 lookup_parent */
+#include "cluster/cluster_multixact.h"			/* spec-3.6 D6 reader overlay */
+#include "cluster/cluster_tt_status.h"			/* lookup_exact / Key / Result */
+#include "cluster/cluster_visibility_inject.h"	/* D5b test-only inject helper */
+#include "cluster/cluster_cr.h"					/* spec-3.9 D5 CR 3-tier MVCC gate */
 #include "cluster/cluster_visibility_resolve.h" /* spec-3.14 D1 单一解析器 */
-#include "cluster/cluster_mode.h"			   /* spec-3.14 storage-mode gate */
+#include "cluster/cluster_mode.h"				/* spec-3.14 storage-mode gate */
 #endif
 
 
@@ -228,8 +228,7 @@ cluster_satisfies_self_fork(HeapTuple htup, Buffer buffer, bool *visible)
 	}
 
 	/* A lock-only or absent xmax never deletes the tuple. */
-	if ((tuple->t_infomask & HEAP_XMAX_INVALID)
-		|| HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask)) {
+	if ((tuple->t_infomask & HEAP_XMAX_INVALID) || HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask)) {
 		*visible = true;
 		return true;
 	}
@@ -256,8 +255,8 @@ cluster_satisfies_self_fork(HeapTuple htup, Buffer buffer, bool *visible)
 		if (xr.evidence == CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS) {
 			raw_xid = raw_xmax;
 			ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-						errmsg("cluster TT status unknown for xid %u", raw_xid),
-						errhint("Remote commit_scn not yet propagated; retry or abort.")));
+							errmsg("cluster TT status unknown for xid %u", raw_xid),
+							errhint("Remote commit_scn not yet propagated; retry or abort.")));
 		}
 		if (xr.evidence == CLUSTER_VIS_EVIDENCE_REMOTE) {
 			switch (cluster_vis_self_verdict(xr.status)) {
@@ -267,8 +266,8 @@ cluster_satisfies_self_fork(HeapTuple htup, Buffer buffer, bool *visible)
 			case CVV_FAILCLOSED_UNKNOWN: {
 				raw_xid = raw_xmax;
 				ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-						errmsg("cluster TT status unknown for xid %u", raw_xid),
-						errhint("Remote commit_scn not yet propagated; retry or abort.")));
+								errmsg("cluster TT status unknown for xid %u", raw_xid),
+								errhint("Remote commit_scn not yet propagated; retry or abort.")));
 				break;
 			}
 			default:
@@ -297,7 +296,7 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 
 #ifdef USE_PGRAC_CLUSTER
 	{
-		bool		cluster_vis;
+		bool cluster_vis;
 
 		if (cluster_satisfies_self_fork(htup, buffer, &cluster_vis)) {
 			cluster_vis_bump_vis_selftoast_fork_count();
@@ -522,7 +521,7 @@ HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 
 #ifdef USE_PGRAC_CLUSTER
 	{
-		bool		cluster_vis;
+		bool cluster_vis;
 
 		if (cluster_satisfies_toast_fork(htup, buffer, &cluster_vis)) {
 			cluster_vis_bump_vis_selftoast_fork_count();
@@ -633,9 +632,9 @@ cluster_satisfies_update_fork(HeapTuple htup, Buffer buffer, TM_Result *res)
 	TransactionId raw_xmin = HeapTupleHeaderGetRawXmin(tuple);
 	TransactionId raw_xmax;
 	ClusterVisResolve r;
-	bool		xmin_remote_visible = false;
-	bool		lock_only;
-	bool		is_delete;
+	bool xmin_remote_visible = false;
+	bool lock_only;
+	bool is_delete;
 	ClusterVisXidKind kind;
 
 	if (!cluster_storage_mode_enabled() || !BufferIsValid(buffer))
@@ -774,7 +773,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid, Buffer buffer)
 
 #ifdef USE_PGRAC_CLUSTER
 	{
-		TM_Result	cluster_res;
+		TM_Result cluster_res;
 
 		if (cluster_satisfies_update_fork(htup, buffer, &cluster_res)) {
 			cluster_vis_bump_vis_update_fork_count();
@@ -1050,17 +1049,18 @@ cluster_satisfies_dirty_fork(HeapTuple htup, Snapshot snapshot, Buffer buffer, b
 	if (r.evidence == CLUSTER_VIS_EVIDENCE_REMOTE) {
 		switch (cluster_vis_dirty_verdict(r.status, false, false)) {
 		case CVV_FAILCLOSED_CONFLICT:
-			ereport(ERROR, (errcode(ERRCODE_CLUSTER_CROSS_NODE_WRITE_CONFLICT),
-							errmsg("cross-node write conflict: remote in-progress xmin %u", raw_xid),
-							errhint("Retry; cross-node wait lands at Stage 5.2.")));
+			ereport(ERROR,
+					(errcode(ERRCODE_CLUSTER_CROSS_NODE_WRITE_CONFLICT),
+					 errmsg("cross-node write conflict: remote in-progress xmin %u", raw_xid),
+					 errhint("Retry; cross-node wait lands at Stage 5.2.")));
 			break;
 		case CVV_INVISIBLE:
 			*visible = false;
 			return true;
 		case CVV_FAILCLOSED_UNKNOWN:
 			ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-						errmsg("cluster TT status unknown for xid %u", raw_xid),
-						errhint("Remote commit_scn not yet propagated; retry or abort.")));
+							errmsg("cluster TT status unknown for xid %u", raw_xid),
+							errhint("Remote commit_scn not yet propagated; retry or abort.")));
 			break;
 		default:
 			break; /* CVV_VISIBLE: xmin committed, check xmax */
@@ -1072,8 +1072,7 @@ cluster_satisfies_dirty_fork(HeapTuple htup, Snapshot snapshot, Buffer buffer, b
 	}
 
 	/* xmin remote committed: judge xmax (cannot fall through). */
-	if ((tuple->t_infomask & HEAP_XMAX_INVALID)
-		|| HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask)) {
+	if ((tuple->t_infomask & HEAP_XMAX_INVALID) || HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask)) {
 		*visible = true;
 		return true;
 	}
@@ -1104,8 +1103,8 @@ cluster_satisfies_dirty_fork(HeapTuple htup, Snapshot snapshot, Buffer buffer, b
 		if (xr.evidence == CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS) {
 			raw_xid = raw_xmax;
 			ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-						errmsg("cluster TT status unknown for xid %u", raw_xid),
-						errhint("Remote commit_scn not yet propagated; retry or abort.")));
+							errmsg("cluster TT status unknown for xid %u", raw_xid),
+							errhint("Remote commit_scn not yet propagated; retry or abort.")));
 		}
 		if (xr.evidence == CLUSTER_VIS_EVIDENCE_REMOTE) {
 			switch (cluster_vis_dirty_verdict(xr.status, true, false)) {
@@ -1122,8 +1121,8 @@ cluster_satisfies_dirty_fork(HeapTuple htup, Snapshot snapshot, Buffer buffer, b
 			case CVV_FAILCLOSED_UNKNOWN:
 				raw_xid = raw_xmax;
 				ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-						errmsg("cluster TT status unknown for xid %u", raw_xid),
-						errhint("Remote commit_scn not yet propagated; retry or abort.")));
+								errmsg("cluster TT status unknown for xid %u", raw_xid),
+								errhint("Remote commit_scn not yet propagated; retry or abort.")));
 				break;
 			default:
 				*visible = true;
@@ -1157,7 +1156,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 
 #ifdef USE_PGRAC_CLUSTER
 	{
-		bool		cluster_vis;
+		bool cluster_vis;
 
 		if (cluster_satisfies_dirty_fork(htup, snapshot, buffer, &cluster_vis)) {
 			cluster_vis_bump_vis_dirty_fork_count();
@@ -1353,11 +1352,20 @@ cluster_remote_live_xmax_keeps_visible(Buffer buffer, HeapTupleHeader tuple, Sna
 		uint16 marker_origin = 0;
 
 		/*
-		 * A multixact id is node-local: its members may be decoded from the
-		 * LOCAL pg_multixact only when the page marker proves the multi is
-		 * OURS.  An in-window foreign multi FATALs the merge (D10b), but a
-		 * pre-window foreign multi can sit on a checkpoint-flushed page;
-		 * decoding its id locally would alias (AD-012 例外 9) -- fail closed.
+		 * A multixact id is node-local; its members come from the LOCAL
+		 * pg_multixact, which aliases for a FOREIGN multi (AD-012 例外 9).
+		 *
+		 * Today a foreign multi cannot REACH this gate: an in-window foreign
+		 * multi FATALs the merge (RM_MULTIXACT divert), and a pre-window
+		 * foreign tuple is rejected upstream at the xmin resolve -- its
+		 * creator committed before the merge window, so it has no materialized
+		 * durable TT slot and resolves INDOUBT -> 53R97 BEFORE this xmax test.
+		 * The marker helper below cannot itself distinguish origin (spec-3.6
+		 * D7b stamps marker_origin = self), so it is NOT a real guard -- the
+		 * upstream fail-closed is.  XXX spec-4.6/4.7: once warm cross-instance
+		 * reads make a pre-window foreign tuple legitimately visible, this gate
+		 * MUST gain an on-page origin marker and fail closed on a foreign multi
+		 * here directly (the local decode below would otherwise alias).
 		 */
 		if (cluster_itl_find_multixact_origin_by_xmax(BufferGetPage(buffer),
 													  (MultiXactId)HeapTupleHeaderGetRawXmax(tuple),
@@ -1381,8 +1389,7 @@ cluster_remote_live_xmax_keeps_visible(Buffer buffer, HeapTupleHeader tuple, Sna
 	cluster_visibility_resolve_tuple(buffer, tuple, xmax, CLUSTER_VIS_XMAX_UPDATE, &xr);
 
 	if (xr.evidence == CLUSTER_VIS_EVIDENCE_REMOTE) {
-		if (xr.status == CLUSTER_TT_STATUS_COMMITTED
-			|| xr.status == CLUSTER_TT_STATUS_CLEANED_OUT)
+		if (xr.status == CLUSTER_TT_STATUS_COMMITTED || xr.status == CLUSTER_TT_STATUS_CLEANED_OUT)
 			scn_decision = cluster_visibility_decide_by_scn(xr.commit_scn, snapshot->read_scn);
 
 		switch (cluster_vis_cr_xmax_verdict(xr.status, scn_decision)) {
@@ -1532,8 +1539,7 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 				cr_eligible = false;
 #endif
 
-			if (cr_eligible)
-			{
+			if (cr_eligible) {
 				/*
 				 * PGRAC: spec-4.5a D8 (P0-2) -- the CR gate is tri-state.
 				 * FAILCLOSED means a materialized-remote chain could not be
@@ -1542,12 +1548,11 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 				 * native paths would answer from the wrong model, so error
 				 * out instead (规则 8.A).
 				 */
-				switch (cluster_cr_satisfies_mvcc(htup, snapshot, buffer, &cr_visible))
-				{
-					case CLUSTER_CR_DECIDED:
-						return cr_visible;
-					case CLUSTER_CR_FAILCLOSED:
-						/*
+				switch (cluster_cr_satisfies_mvcc(htup, snapshot, buffer, &cr_visible)) {
+				case CLUSTER_CR_DECIDED:
+					return cr_visible;
+				case CLUSTER_CR_FAILCLOSED:
+					/*
 						 * spec-4.5a G5 complete: the per-origin authority IS
 						 * consulted (D10c), so a FAILCLOSED here is a genuine
 						 * IN-DOUBT outcome -- the peer stamped its durable TT
@@ -1557,17 +1562,16 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 						 * invisible.  Same 53R97 surface as the steady-state TT
 						 * path below so callers see one fail-closed contract.
 						 */
-						ereport(ERROR,
-								(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-								 errmsg("cluster TT status unknown for a materialized "
-										"remote-origin tuple"),
-								 errhint("The peer's transaction was materialized by merged "
-										 "recovery but its commit outcome is in-doubt (stamped "
-										 "then crashed before commit/abort); retry after the "
-										 "origin completes recovery, or abort.")));
-						break;	/* unreachable */
-					case CLUSTER_CR_NOT_APPLICABLE:
-						break;	/* continue to the remote-xid / native paths */
+					ereport(ERROR, (errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+									errmsg("cluster TT status unknown for a materialized "
+										   "remote-origin tuple"),
+									errhint("The peer's transaction was materialized by merged "
+											"recovery but its commit outcome is in-doubt (stamped "
+											"then crashed before commit/abort); retry after the "
+											"origin completes recovery, or abort.")));
+					break; /* unreachable */
+				case CLUSTER_CR_NOT_APPLICABLE:
+					break; /* continue to the remote-xid / native paths */
 				}
 			}
 		}
@@ -1646,8 +1650,8 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 								= &ClusterPageGetItlSlots(page)[tuple->t_itl_slot_idx];
 
 							if (slot->flags == ITL_FLAG_ACTIVE)
-								(void) cluster_itl_cleanout_lazy(buffer, tuple->t_itl_slot_idx,
-																 raw_xmin, res.commit_scn);
+								(void)cluster_itl_cleanout_lazy(buffer, tuple->t_itl_slot_idx,
+																raw_xmin, res.commit_scn);
 						}
 
 						/*
@@ -1664,11 +1668,11 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 							return false;
 						default:
 							ereport(ERROR,
-								(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
-								 errmsg("cluster TT status unknown for deleting xmax of xid %u",
-									raw_xmin),
-								 errhint("Remote deleter commit state not yet propagated; "
-									 "retry or abort.")));
+									(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+									 errmsg("cluster TT status unknown for deleting xmax of xid %u",
+											raw_xmin),
+									 errhint("Remote deleter commit state not yet propagated; "
+											 "retry or abort.")));
 						}
 						return true; /* unreachable */
 					}
@@ -2002,8 +2006,7 @@ HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer, TransactionId *de
 	 * vacuum-coordination spec (spec-3.14 §10).  spec wrote RECENTLY_DEAD;
 	 * LIVE is the implementation-time correction (dead_after re-test hazard).
 	 */
-	if (cluster_storage_mode_enabled()
-		&& cluster_tuple_has_remote_evidence(buffer, tuple)) {
+	if (cluster_storage_mode_enabled() && cluster_tuple_has_remote_evidence(buffer, tuple)) {
 		cluster_vis_bump_prune_remote_keep_count();
 		return HEAPTUPLE_LIVE;
 	}
@@ -2206,8 +2209,7 @@ HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot, Buffer buffer
 
 #ifdef USE_PGRAC_CLUSTER
 	/* spec-3.14 D5: remote writer evidence -> not removable (keep). */
-	if (cluster_storage_mode_enabled()
-		&& cluster_tuple_has_remote_evidence(buffer, htup->t_data)) {
+	if (cluster_storage_mode_enabled() && cluster_tuple_has_remote_evidence(buffer, htup->t_data)) {
 		cluster_vis_bump_prune_remote_keep_count();
 		return true;
 	}
@@ -2374,8 +2376,7 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	/* spec-3.14 D6: logical decoding of cluster-modified tuples is not
 	 * supported until Stage 6/#95 (cross-node CID mapping).  Local tuples
 	 * are unaffected. */
-	if (cluster_storage_mode_enabled()
-		&& cluster_tuple_has_remote_evidence(buffer, tuple))
+	if (cluster_storage_mode_enabled() && cluster_tuple_has_remote_evidence(buffer, tuple))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("logical decoding of cluster-modified tables is not supported"),
 						errhint("Cross-node historic visibility lands at Stage 6/#95.")));

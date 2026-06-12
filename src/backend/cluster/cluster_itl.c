@@ -460,6 +460,17 @@ cluster_itl_slot_is_protected_foreign(const ClusterItlSlotData *slot)
 	if (UBA_is_invalid(slot->undo_segment_head))
 		return false; /* FREE / lock-only / placeholder: no data-origin anchor */
 
+	/*
+	 * Only completed DATA slots anchor a live tuple's origin: a heap tuple's
+	 * t_itl_slot_idx never points at a lock-only slot, so a lock-only slot
+	 * (even one that took a TT binding) carries no origin evidence to
+	 * protect.  Pinning it would only over-restrict the lock allocator on a
+	 * merged page (still fail-closed, never false-visible) -- exclude it so
+	 * the pin stays precise.
+	 */
+	if (ITL_FLAG_IS_LOCK_ONLY_COMPLETED(slot->flags))
+		return false;
+
 	if (itl_any_materialized_cache == 0)
 		itl_any_materialized_cache = cluster_merged_any_remote_materialized() ? 1 : -1;
 	if (itl_any_materialized_cache != 1)
