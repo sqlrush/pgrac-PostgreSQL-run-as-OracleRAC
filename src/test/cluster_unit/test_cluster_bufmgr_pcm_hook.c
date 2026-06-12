@@ -407,6 +407,15 @@ typedef struct MockBufferDesc {
 /* Test-controlled toggle to force the ereport branch at LWLock acquire. */
 static bool fake_ereport_at_lwlock = false;
 
+/* bufpage.h PageSetLSN merged-window hook globals (spec-4.5a §3.3b):
+ * normally defined by cluster_recovery_merge.c, which this standalone
+ * binary does not link.  Inactive stubs keep the inline's window gate
+ * permanently false here. */
+bool cluster_recmerge_window_active = false;
+uint64 cluster_recmerge_window_scn = 0;
+uint64 cluster_recmerge_window_own_lsn = 0;
+bool cluster_recmerge_apply_foreign = false;
+
 /* ============================================================
  * Fake LockBuffer wrapper — mirrors spec-2.31 D3 hook body verbatim.
  *

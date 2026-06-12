@@ -73,8 +73,10 @@ struct XLogReaderState; /* forward; avoid xlogreader.h in this header */
 static inline int
 cluster_remote_xact_pageno(int origin_node, TransactionId xid)
 {
-	return (origin_node << CLUSTER_REMOTE_XACT_ORIGIN_PAGE_SHIFT)
-		   | (int)(xid / CLUSTER_REMOTE_XACT_ENTRIES_PER_PAGE);
+	/* Unsigned shift: origin_node is validated non-negative by every
+	 * caller, but a signed LHS is technically UB (cppcheck portability). */
+	return (int)(((uint32)origin_node << CLUSTER_REMOTE_XACT_ORIGIN_PAGE_SHIFT)
+				 | (uint32)(xid / CLUSTER_REMOTE_XACT_ENTRIES_PER_PAGE));
 }
 
 static inline int
