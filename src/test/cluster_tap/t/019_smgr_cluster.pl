@@ -240,15 +240,19 @@ is($node->safe_psql(
 
 
 # ----------
-# L10: smgr_active_relations is non-zero (system catalogs already
-# routed through cluster_smgr at this point).
+# L10: smgr_active_relations is non-zero once a USER relation is opened.
+# smgr_active_relations is a per-backend HTAB count, so the measuring query
+# must touch a user table in the SAME backend: spec-4.5a G6 routes catalogs
+# to per-node md.c, so a catalog-only backend reports 0.  Touch t1 (\g
+# discards output), then read the counter in one session.
 # ----------
 my $active = $node->safe_psql(
 	'postgres',
-	q{SELECT value::int FROM pg_cluster_state
+	"SELECT count(*) FROM persistent \\g /dev/null\n"
+	  . q{SELECT value::int FROM pg_cluster_state
 	   WHERE category = 'shared_fs' AND key = 'smgr_active_relations'});
 ok($active > 0,
-   "L10 smgr_active_relations > 0 (got $active; system catalogs routed through cluster_smgr)");
+   "L10 smgr_active_relations > 0 (got $active; a user relation routed through cluster_smgr)");
 
 
 # ----------

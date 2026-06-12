@@ -130,8 +130,8 @@ is($node->safe_psql(
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'122',
-	'L9 total injection registry size is 122 (spec-4.2 +2 wal-state points)');
+	'123',
+	'L9 total injection registry size is 123 (spec-4.5a +1 cr_force_read_scn)');
 
 
 # ----------
@@ -149,8 +149,8 @@ is($node->safe_psql(
 		'postgres',
 		q{SELECT value FROM pg_cluster_state
 		   WHERE category = 'shared_fs' AND key = 'registered_backends'}),
-	'stub,local',
-	'L11 registered_backends lists both built-in backends');
+	'stub,local,shared_fs',
+	'L11 registered_backends lists all built-in backends (spec-4.5a adds shared_fs)');
 
 
 # ----------

@@ -179,34 +179,37 @@ is( $node->safe_psql(
 	'L5 pg_cluster_state.shared_fs.smgr_user_relations = t (Q4 path proof a)'
 );
 
-# Path proof (b): smgr_active_relations > 0 in the same backend that
-# just inserted.  smgr_active_relations is a per-backend HTAB count
-# of cluster_smgr-routed SMgrRelations; > 0 means cluster_smgr_which_
-# for() returned 1 and cluster_smgr_create / cluster_smgr_open were
-# actually exercised for non-temp permanent relations.
+# Path proof (b): smgr_active_relations > 0.  smgr_active_relations is a
+# per-backend HTAB count of cluster_smgr-routed SMgrRelations; > 0 means
+# cluster_smgr_which_for() returned 1 and cluster_smgr_create / _open were
+# exercised for a non-temp permanent USER relation.  The count MUST be read
+# in the SAME backend that touches t1: spec-4.5a G6 routes catalogs (relNumber
+# < FirstNormalObjectId) to per-node md.c (they are NOT shared), so a backend
+# that reads only pg_cluster_state opens no cluster_smgr relation and would
+# legitimately report 0.  Touch t1 first (\g discards its output), then read
+# the counter -- same session, same HTAB.
 my $active_after_insert = $node->safe_psql(
 	'postgres',
-	"SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
+	"SELECT count(*) FROM t1 \\g /dev/null\n"
+	  . "SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
 );
 ok( $active_after_insert > 0,
-	"L5 smgr_active_relations > 0 after INSERT (got $active_after_insert; Q4 path proof b)"
+	"L5 smgr_active_relations > 0 after a USER-relation open (got $active_after_insert; Q4 path proof b)"
 );
 
 
 # ----------
-# L6: SELECT count(*) read path also engages cluster_smgr.
-#
-# Same backend (each safe_psql opens a fresh connection on PG; this
-# query sits in a new backend whose HTAB starts empty -- but the
-# SELECT itself opens pg_class etc. via cluster_smgr if GUC=on, and
-# those should populate active_relations > 0 in the new backend too).
+# L6: the read path also engages cluster_smgr for a user relation.  Same
+# same-session discipline as L5 (a fresh backend's HTAB starts empty, and
+# catalog-only reads no longer count after the G6 catalog guard).
 # ----------
 is($node->safe_psql('postgres', 'SELECT count(*) FROM t1'),
 	'1000', 'L6 SELECT count returns expected total');
 
 my $active_in_select = $node->safe_psql(
 	'postgres',
-	"SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
+	"SELECT count(*) FROM t1 \\g /dev/null\n"
+	  . "SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
 );
 ok( $active_in_select > 0,
 	"L6 smgr_active_relations > 0 in read backend (got $active_in_select; read path also engaged)"

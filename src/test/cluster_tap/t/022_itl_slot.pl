@@ -200,8 +200,8 @@ SKIP: {
 is($node->safe_psql(
 		'postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-   '122',
-   'L12a pg_stat_cluster_injections is 122 (spec-4.2 +2 wal-state points)');
+   '123',
+   'L12a pg_stat_cluster_injections is 123 (spec-4.5a +1 cr_force_read_scn)');
 
 is($node->safe_psql(
 		'postgres',

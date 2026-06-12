@@ -302,7 +302,7 @@ ok(defined $postgres_bin && -x $postgres_bin,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_injections'),
-	'122', 'M1 122 injection points (spec-4.2 adds 2 wal-state points; was 120)');
+	'123', 'M1 123 injection points (spec-4.5a +1 cr_force_read_scn; was 122)');
 
 is($node->safe_psql('postgres',
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections WHERE name LIKE 'cluster-init-%'}),
@@ -332,8 +332,8 @@ ok( $node->safe_psql(
 		'postgres',
 		q{SELECT count(DISTINCT key) FROM pg_cluster_state
 		   WHERE category='inject' AND (key LIKE '%.fault_type' OR key LIKE '%.hits')}
-	) eq '244',
-	'M5 inject category has 122×2 = 244 sub-keys (.fault_type + .hits; spec-4.2 +2 points)');
+	) eq '246',
+	'M5 inject category has 123×2 = 246 sub-keys (.fault_type + .hits; spec-4.5a +1 point)');
 
 is($node->get_cluster_state_value('inject', 'armed_count'),
 	'0', 'M6 inject.armed_count starts at 0 in fresh backend');
@@ -539,9 +539,15 @@ $node->restart;
 
 $node->safe_psql('postgres',
 	'CREATE TABLE r1_smoke (id int); INSERT INTO r1_smoke VALUES (1)');
+# smgr_active_relations is a per-backend HTAB count; it must be read in the
+# SAME backend that opens the USER relation.  spec-4.5a G6 routes catalogs to
+# per-node md.c, so a backend that reads only pg_cluster_state opens no
+# cluster_smgr relation -- touch r1_smoke first (\g discards output), then
+# read the counter in one session.
 my $r1_active = $node->safe_psql(
 	'postgres',
-	"SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
+	"SELECT count(*) FROM r1_smoke \\g /dev/null\n"
+	  . "SELECT value::int FROM pg_cluster_state WHERE category = 'shared_fs' AND key = 'smgr_active_relations'"
 );
 ok( $r1_active > 0,
 	"R1 stage-1.8 milestone: cluster_smgr engaged when GUC=on (smgr_active_relations=$r1_active; spec-1.8 end-to-end verified at 030 acceptance level)"
