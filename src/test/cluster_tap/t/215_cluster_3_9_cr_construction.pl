@@ -82,8 +82,8 @@ my $node0 = $pair->node0;
 		q{SELECT string_agg(name, ',' ORDER BY name) FROM pg_stat_cluster_injections
 		   WHERE name LIKE 'cr_%'});
 	is( $points,
-		'cr_construct_delay_us,cr_corruption,cr_cross_instance,cr_snapshot_too_old',
-		'L1d 4 CR injection points registered');
+		'cr_construct_delay_us,cr_corruption,cr_cross_instance,cr_force_read_scn,cr_snapshot_too_old',
+		'L1d 5 CR injection points registered (spec-4.5a +1 cr_force_read_scn)');
 }
 
 

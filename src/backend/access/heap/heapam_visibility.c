@@ -1505,11 +1505,23 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	 * wrong hint bits onto the shared page.  A foreign-origin tuple always
 	 * takes the cluster fork; its per-origin gates fail closed (53R97)
 	 * when this node holds no authority for that origin.
+	 *
+	 * Hot-standby reads stand DOWN the per-tuple escape: a physical
+	 * standby continuously replays its primary's WHOLE state -- including
+	 * pg_xact -- so the local CLOG IS authoritative for every replayed
+	 * xid regardless of the ITL slot's origin stamp (t/242 L9 RL1; the
+	 * AD-012 例外 9 premise does not hold on a same-xid-space replica).
+	 * Merged recovery cannot overlap this: it runs only in crash
+	 * recovery, where no hot-standby backends exist.  Residual: a standby
+	 * OF a merged survivor would see materialized foreign tuples with no
+	 * replicated authority (pg_xact_remote / markers are not WAL-logged);
+	 * that combo is out of the cold-crash scope -- 4.6/4.7.
 	 */
 	if (cluster_enabled && BufferIsValid(buffer)
 		&& snapshot->cluster_source == (uint8)SNAPSHOT_SOURCE_CLUSTER
 		&& (!cluster_cr_no_peer_fastpath_eligible(snapshot)
-			|| cluster_tuple_has_remote_evidence(buffer, tuple))) {
+			|| (!RecoveryInProgress()
+				&& cluster_tuple_has_remote_evidence(buffer, tuple)))) {
 		TransactionId raw_xmin = HeapTupleHeaderGetRawXmin(tuple);
 		ClusterUndoTTSlotRef ref;
 		bool ref_filled = false;

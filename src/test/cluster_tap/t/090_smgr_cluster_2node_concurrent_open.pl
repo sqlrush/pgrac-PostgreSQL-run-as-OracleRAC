@@ -67,11 +67,17 @@ sub remote_invalidation_count
 
 sub active_relation_count
 {
+	# smgr_active_relations is a per-backend HTAB count; spec-4.5a G6 routes
+	# catalogs to per-node md.c, so a backend that only reads
+	# cluster_dump_state() opens no cluster_smgr relation and reports 0.
+	# Touch t1 in the SAME session first (\g discards the output).
 	my ($node) = @_;
 	return $node->safe_psql(
 		'postgres',
-		"SELECT value FROM cluster_dump_state() "
-		. "WHERE category = 'shared_fs' AND key = 'smgr_active_relations'");
+		"SELECT count(*) FROM t1 \\g /dev/null
+"
+		  . "SELECT value FROM cluster_dump_state() "
+		  . "WHERE category = 'shared_fs' AND key = 'smgr_active_relations'");
 }
 
 
