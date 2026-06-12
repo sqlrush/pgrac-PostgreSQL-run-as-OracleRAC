@@ -1371,7 +1371,13 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 		if (remote_materialized) {
 			SCN rscn;
 
-			switch (cluster_remote_commit_outcome(remote_origin, live_xmin, &rscn)) {
+			/*
+			 * spec-4.5a G6 (P1 #2): wrap-check the creator's outcome against
+			 * the origin's durable TT slots (by-xid scan, wrap-qualified) -- a
+			 * bare (origin,xid) verdict could alias a same-xid wraparound
+			 * overwrite of the outcome store.  Unprovable -> fail closed.
+			 */
+			switch (cluster_remote_outcome_durable_checked(remote_origin, live_xmin, &rscn)) {
 			case CLUSTER_REMOTE_XACT_COMMITTED:
 				break; /* finished creator -> construct CR image below */
 			case CLUSTER_REMOTE_XACT_ABORTED:
@@ -1517,10 +1523,15 @@ cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snapshot, Buffer buffer, bool
 			 * table the own-instance path uses (decide_by_scn(commit_scn,
 			 * read_scn) VISIBLE => the delete is visible at read_scn =>
 			 * tuple INVISIBLE), so the direction is the audited one.
+			 *
+			 * spec-4.5a G6 (P1 #2): wrap-check the deleter against the
+			 * origin's durable TT slots (by-xid scan, wrap-qualified), so a
+			 * same-xid wraparound overwrite of the outcome store cannot alias
+			 * the deleter; unprovable -> fail closed (规则 8.A).
 			 */
 			SCN rscn;
 
-			switch (cluster_remote_commit_outcome(remote_origin, cr_xmax, &rscn)) {
+			switch (cluster_remote_outcome_durable_checked(remote_origin, cr_xmax, &rscn)) {
 			case CLUSTER_REMOTE_XACT_COMMITTED:
 				xmax_status = CLUSTER_TT_STATUS_COMMITTED;
 				scn_decision = cluster_visibility_decide_by_scn(rscn, snapshot->read_scn);

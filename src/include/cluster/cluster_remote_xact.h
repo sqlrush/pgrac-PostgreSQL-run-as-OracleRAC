@@ -133,6 +133,11 @@ extern void cluster_remote_xact_flush(void);
  *	COMMITTED additionally returns the commit record's SCN via *commit_scn.
  *	Missing dir/segment/page or a zeroed entry -> INDOUBT (fail-closed).
  */
+extern ClusterRemoteXactOutcome cluster_remote_commit_outcome_ex(int origin_node, TransactionId xid,
+																 SCN *commit_scn, uint16 *out_wrap,
+																 bool *out_wrap_valid);
+extern ClusterRemoteXactOutcome
+cluster_remote_outcome_durable_checked(int origin_node, TransactionId xid, SCN *out_scn);
 extern ClusterRemoteXactOutcome cluster_remote_commit_outcome(int origin_node, TransactionId xid,
 															  SCN *commit_scn);
 

@@ -274,13 +274,14 @@ my $nb        = $pair->node1;    # node_id 1, thread 2, instance 2
 make_single_node($na, 0, $pair->ic_port(0));
 make_single_node($nb, 1, $pair->ic_port(1));
 
-my @tables = qw(t_a t_b t_pp t_doubt t_l4);
+my @tables = qw(t_a t_b t_pp t_doubt t_l4 t_slot);
 my $ddl = join('; ',
 	'CREATE TABLE t_a (v int)',
 	'CREATE TABLE t_b (v int)',
 	'CREATE TABLE t_pp (v int)',
 	'CREATE TABLE t_doubt (v int)',
-	'CREATE TABLE t_l4 (k int, v int)');
+	'CREATE TABLE t_l4 (k int, v int)',
+	'CREATE TABLE t_slot (v int)');
 
 # ================================================================
 # Phase 1: node A alone -- own rows + L4b abort bait + L11 first write.
@@ -357,6 +358,15 @@ if ($burn > 0)
 $nb->safe_psql('postgres', 'INSERT INTO t_b VALUES (101)');
 my $bxmin = $nb->safe_psql('postgres', 'SELECT xmin FROM t_b WHERE v = 101');
 is($bxmin, $k4b, 'L4b B committed at exactly the xid value A aborted');
+
+# L16 setup: B fills t_slot's first heap page with all 8 ITL slots, each
+# claimed by a SEPARATE committed transaction (one INSERT per txn).  The 8
+# rows are tiny and pack onto page 0, so its 8-slot ITL array is fully
+# occupied by COMMITTED B-origin slots with 0 FREE.  Post-merge these are
+# pinned foreign slots; A's first write to that page must hit ITL OVERFLOW
+# (fail-closed) rather than recycle one (which would strip a live B tuple's
+# origin -> alias into A's CLOG, P1 #1).
+$nb->safe_psql('postgres', "INSERT INTO t_slot VALUES ($_)") for (501 .. 508);
 
 # Rest of B's row set + the L4/L8 update-chain material.
 $nb->safe_psql('postgres', 'INSERT INTO t_b SELECT generate_series(102, 200)');
@@ -648,6 +658,26 @@ is($na->safe_psql('postgres',
 		"DELETE FROM t_b WHERE v = 200;\n"
 	  . 'SELECT count(*) FROM t_b'),
 	'99', 'L15 A deletes a materialized remote row; the row stays gone');
+
+# ----------------------------------------------------------------
+# L16 (P1 #1): the materialized foreign ITL slot pin.  t_slot's first
+# page holds 8 COMMITTED B-origin ITL slots (filled by 8 separate B
+# transactions in phase 2) with no FREE slot.  Those slots are the ONLY
+# origin evidence for the live B tuples on the page -- a PG heap tuple's
+# bare 32-bit xmin carries no origin.  A local write to that page needs
+# an ITL slot; with the pin it must fail closed (ITL OVERFLOW) instead of
+# recycling a foreign slot (old behaviour), which would strip a live B
+# tuple's origin and alias its xid into A's CLOG.  Either way the 8 B
+# rows must stay readable by B's authority.
+# ----------------------------------------------------------------
+is(query_retry($na, 'SELECT count(*) FROM t_slot'), '8',
+	'L16 all 8 materialized B rows on the pinned page are visible');
+my $ovf = query_fails($na, 'UPDATE t_slot SET v = v + 1000 WHERE v = 501');
+ok(defined $ovf && $ovf =~ /ITL slot OVERFLOW/,
+	'L16 a local write to the fully-pinned foreign page fails closed (ITL OVERFLOW), '
+	  . 'never recycling a foreign slot');
+is($na->safe_psql('postgres', 'SELECT count(*), sum(v) FROM t_slot'), '8|4036',
+	'L16 after the refused write every B row still reads by B authority (origin intact)');
 $pair->stop_pair;
 
 done_testing();

@@ -41,11 +41,12 @@
 #include "cluster/cluster_itl_slot.h"
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_tt_slot.h"
-#include "cluster/cluster_uba.h"   /* uba_decode / uba_origin_node_id (spec-3.4b D7) */
-#include "cluster/cluster_shmem.h" /* cluster_shmem_register_region (spec-3.4e D6) */
-#include "miscadmin.h"			   /* IsBootstrapProcessingMode (spec-3.4e D6) */
-#include "port/atomics.h"		   /* pg_atomic_uint64 (spec-3.4d D11 counters) */
-#include "storage/ipc.h"		   /* ShmemInitStruct (spec-3.4e D6) */
+#include "cluster/cluster_uba.h"			/* uba_decode / uba_origin_node_id (spec-3.4b D7) */
+#include "cluster/cluster_recovery_merge.h" /* spec-4.5a G6: materialized-origin slot pin */
+#include "cluster/cluster_shmem.h"			/* cluster_shmem_register_region (spec-3.4e D6) */
+#include "miscadmin.h"						/* IsBootstrapProcessingMode (spec-3.4e D6) */
+#include "port/atomics.h"					/* pg_atomic_uint64 (spec-3.4d D11 counters) */
+#include "storage/ipc.h"					/* ShmemInitStruct (spec-3.4e D6) */
 #include "storage/shmem.h"
 
 #ifdef USE_PGRAC_CLUSTER
@@ -431,6 +432,51 @@ cluster_itl_slot_is_completed_reusable(uint8 flags)
 		   || flags == ITL_FLAG_NEEDS_CLEANOUT || ITL_FLAG_IS_LOCK_ONLY_COMPLETED(flags);
 }
 
+/*
+ * spec-4.5a G6 (P1 #1): a completed DATA slot whose undo anchor points at a
+ * foreign origin this node MATERIALIZED during merged recovery is the ONLY
+ * surviving origin/wrap evidence for any live tuple still pointing at it (a
+ * PG heap tuple carries a bare 32-bit xmin -- no origin, no wrap).  Recycling
+ * it would strip that evidence and make a foreign tuple look local, aliasing
+ * its raw xid into THIS node's CLOG (AD-012 例外 9 -> false-visible).  Pin
+ * such slots: no allocator path may reuse one.  Lock-only / placeholder slots
+ * (no data UBA) carry no tuple-origin evidence and are not pinned.
+ *
+ * Backend-lifetime caches keep the hot write path cheap: the any-materialized
+ * gate short-circuits every non-merged node (no marker file I/O at all), and
+ * a per-origin cache amortizes the marker read.  Materialization only happens
+ * during startup recovery (no live backends), so neither cache can go stale
+ * in the unsafe direction.
+ */
+static int8 itl_any_materialized_cache = 0;								 /* 0 ? / 1 yes / -1 no */
+static int8 itl_origin_materialized_cache[CLUSTER_WAL_STATE_SLOT_COUNT]; /* 0 ? / 1 / -1 */
+
+static inline bool
+cluster_itl_slot_is_protected_foreign(const ClusterItlSlotData *slot)
+{
+	NodeId origin;
+	int o;
+
+	if (UBA_is_invalid(slot->undo_segment_head))
+		return false; /* FREE / lock-only / placeholder: no data-origin anchor */
+
+	if (itl_any_materialized_cache == 0)
+		itl_any_materialized_cache = cluster_merged_any_remote_materialized() ? 1 : -1;
+	if (itl_any_materialized_cache != 1)
+		return false; /* this node materialized nothing -> nothing to pin */
+
+	origin = uba_origin_node_id(slot->undo_segment_head);
+	if (origin == InvalidNodeId || (int32)origin == cluster_node_id)
+		return false; /* own-origin (or unreadable) slot: freely reusable */
+
+	o = (int)origin;
+	if (o < 0 || o >= CLUSTER_WAL_STATE_SLOT_COUNT)
+		return false;
+	if (itl_origin_materialized_cache[o] == 0)
+		itl_origin_materialized_cache[o] = cluster_merged_instance_is_materialized(o) ? 1 : -1;
+	return itl_origin_materialized_cache[o] == 1;
+}
+
 bool
 cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_slot_idx)
 {
@@ -469,8 +515,9 @@ cluster_itl_alloc_or_reuse_slot(Buffer buf, TransactionId top_xid, uint8 *out_sl
 		}
 		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
 			free_idx = i;
-		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0)
-			reusable_idx = i;
+		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0
+				 && !cluster_itl_slot_is_protected_foreign(&slots[i]))
+			reusable_idx = i; /* spec-4.5a G6: never reuse a pinned foreign slot */
 	}
 
 	if (free_idx >= 0) {
@@ -522,8 +569,9 @@ cluster_itl_alloc_or_reuse_lock_slot(Buffer buf, TransactionId top_xid, uint8 *o
 		}
 		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
 			free_idx = i;
-		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0)
-			reusable_idx = i;
+		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0
+				 && !cluster_itl_slot_is_protected_foreign(&slots[i]))
+			reusable_idx = i; /* spec-4.5a G6: never reuse a pinned foreign slot */
 	}
 
 	if (free_idx >= 0) {
@@ -622,8 +670,9 @@ cluster_itl_stamp_multixact_marker(Buffer buf, MultiXactId multixact_id)
 		}
 		if (slots[i].flags == ITL_FLAG_FREE && free_idx < 0)
 			free_idx = (int)i;
-		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0)
-			reusable_idx = (int)i;
+		else if (cluster_itl_slot_is_completed_reusable(slots[i].flags) && reusable_idx < 0
+				 && !cluster_itl_slot_is_protected_foreign(&slots[i]))
+			reusable_idx = (int)i; /* spec-4.5a G6: never reuse a pinned foreign slot */
 	}
 
 	if (found_idx >= 0)

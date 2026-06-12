@@ -35,35 +35,13 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 
-#include "cluster/cluster_guc.h"			/* cluster_node_id, subtrans depth */
-#include "cluster/cluster_itl.h"			/* get_tt_ref / lock ref / multixact origin */
-#include "cluster/cluster_itl_slot.h"		/* CLUSTER_ITL_SLOT_UNALLOCATED */
-#include "cluster/cluster_recovery_merge.h" /* spec-4.5a G6: materialized gate */
-#include "cluster/cluster_remote_xact.h"	/* spec-4.5a G6: outcome fallback */
-#include "cluster/cluster_subtrans.h"		/* SUBCOMMITTED parent follow */
-#include "cluster/cluster_tt_status.h"		/* lookup_exact / Key / Result */
+#include "cluster/cluster_guc.h"		 /* cluster_node_id, subtrans depth */
+#include "cluster/cluster_itl.h"		 /* get_tt_ref / lock ref / multixact origin */
+#include "cluster/cluster_itl_slot.h"	 /* CLUSTER_ITL_SLOT_UNALLOCATED */
+#include "cluster/cluster_remote_xact.h" /* spec-4.5a G6: wrap-checked authority */
+#include "cluster/cluster_subtrans.h"	 /* SUBCOMMITTED parent follow */
+#include "cluster/cluster_tt_status.h"	 /* lookup_exact / Key / Result */
 #include "cluster/cluster_visibility_resolve.h"
-#include "cluster/cluster_wal_state.h" /* CLUSTER_WAL_STATE_SLOT_COUNT */
-
-/*
- * Backend-lifetime cache over cluster_merged_instance_is_materialized().
- * The STALE fallback below runs per TUPLE on recycled remote-origin slots;
- * the uncached check opens the authority-marker file each time.  An origin
- * only becomes materialized during startup recovery (no live backends), so
- * a cached verdict cannot go stale in the unsafe (false-negative) direction.
- */
-static int8 materialized_origin_cache[CLUSTER_WAL_STATE_SLOT_COUNT]; /* 0 ? / 1 yes / -1 no */
-
-static bool
-merged_origin_materialized_cached(int origin)
-{
-	if (origin < 0 || origin >= CLUSTER_WAL_STATE_SLOT_COUNT)
-		return false;
-	if (materialized_origin_cache[origin] == 0)
-		materialized_origin_cache[origin]
-			= cluster_merged_instance_is_materialized(origin) ? 1 : -1;
-	return materialized_origin_cache[origin] == 1;
-}
 
 
 /*
@@ -161,26 +139,24 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		 * to this tuple-side xid.  Do NOT fall through to PG-native local CLOG;
 		 * that is the false-resolve this resolver exists to prevent.
 		 *
-		 * spec-4.5a G6: when this node MATERIALIZED the origin's state, the
-		 * per-origin outcome store still speaks for raw_xid even though the
-		 * page slot was recycled -- it is keyed by (origin, xid), not by
-		 * slot.  A recycled slot is the NORM on a merged page (the dead peer
-		 * never refreshes it), so without this fallback the first slot reuse
-		 * turns every read of the OLDER version into a permanent 53R97.
-		 * INDOUBT / no entry keeps today's fail-closed verdict.  Residual:
-		 * the store spans one cold-crash window, so a same-valued pre-window
-		 * xid would need a full 32-bit wraparound inside that window's pages
-		 * (task#90 wrap-generation family, same posture as WRAP_ANY readers).
+		 * spec-4.5a G6 (P1 #1/#3): a foreign STALE ref (the peer reused this
+		 * heap slot for a later xid before crashing -- normal within an undo
+		 * chain) is resolved by the WRAP-CHECKED by-xid authority, NOT a bare
+		 * (origin,xid) lookup.  cluster_remote_outcome_durable_checked scans
+		 * the origin's durable TT slots for raw_xid with the outcome's wrap;
+		 * exactly one wrap-qualified match is the proof, so a same-valued
+		 * wrapped xid (different generation) cannot alias.  INDOUBT (no proof)
+		 * stays fail-closed (53R97) -- never a bare (origin,xid) guess.
 		 */
-		if (merged_origin_materialized_cached((int)ref->origin_node_id)) {
-			SCN outcome_scn;
+		{
+			SCN scn;
 
 			switch (
-				cluster_remote_commit_outcome((int)ref->origin_node_id, raw_xid, &outcome_scn)) {
+				cluster_remote_outcome_durable_checked((int)ref->origin_node_id, raw_xid, &scn)) {
 			case CLUSTER_REMOTE_XACT_COMMITTED:
 				out->evidence = CLUSTER_VIS_EVIDENCE_REMOTE;
 				out->status = CLUSTER_TT_STATUS_COMMITTED;
-				out->commit_scn = outcome_scn;
+				out->commit_scn = scn;
 				return;
 			case CLUSTER_REMOTE_XACT_ABORTED:
 				out->evidence = CLUSTER_VIS_EVIDENCE_REMOTE;
@@ -189,7 +165,7 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 				return;
 			case CLUSTER_REMOTE_XACT_INDOUBT:
 			default:
-				break; /* fall through to STALE fail-closed */
+				break; /* unprovable -> STALE fail-closed below */
 			}
 		}
 		out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;

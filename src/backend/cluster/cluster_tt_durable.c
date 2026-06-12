@@ -329,6 +329,25 @@ cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset, Transactio
 ClusterTTDurableResolve
 cluster_tt_slot_durable_resolve_by_xid(TransactionId xid, uint32 expected_wrap, SCN *commit_scn)
 {
+	/* spec-3.22 own-instance entry; the origin-qualified scan backs it. */
+	return cluster_tt_slot_durable_resolve_by_xid_origin(cluster_node_id, xid, expected_wrap,
+														 commit_scn);
+}
+
+/*
+ * cluster_tt_slot_durable_resolve_by_xid_origin -- spec-4.5a G6 (P1 #2): the
+ * origin-qualified durable by-xid scan.  A materialized foreign read cannot
+ * derive the durable slot offset from the live/CR-image ITL slot (the 8-slot
+ * heap cache is reused, so the tuple's slot may point at a NEWER xact's
+ * durable slot -- the spec-3.11 offset path is unreliable here).  Scan the
+ * origin's whole segment range for COMMITTED slots owning (xid, expected_wrap)
+ * instead: exactly one resolved match is the authority, anything else (0 /
+ * >1 / unstamped / incomplete scan) fails closed at the caller.
+ */
+ClusterTTDurableResolve
+cluster_tt_slot_durable_resolve_by_xid_origin(int origin_node, TransactionId xid,
+											  uint32 expected_wrap, SCN *commit_scn)
+{
 	int node;
 	uint8 owner;
 	uint32 seg_lo;
@@ -346,10 +365,10 @@ cluster_tt_slot_durable_resolve_by_xid(TransactionId xid, uint32 expected_wrap, 
 	*commit_scn = InvalidScn;
 	if (!TransactionIdIsNormal(xid))
 		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE;
-	if (cluster_node_id < 0)
+	if (origin_node < 0)
 		return CLUSTER_TT_DURABLE_SCAN_UNAVAILABLE; /* single-node degraded: no scan */
 
-	node = cluster_node_id;
+	node = origin_node;
 	owner = (uint8)(node + 1);
 	seg_lo = (uint32)node * CLUSTER_UNDO_SEGS_PER_INSTANCE + 1;
 	seg_hi = seg_lo + CLUSTER_UNDO_SEGS_PER_INSTANCE - 1;

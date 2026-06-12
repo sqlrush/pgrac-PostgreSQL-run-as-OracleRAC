@@ -383,22 +383,21 @@ cluster_tt_status_lookup_exact(const ClusterTTStatusKey *key, ClusterTTStatusRes
 			&& cluster_merged_instance_is_materialized((int)key->origin_node_id)) {
 			SCN outcome_scn;
 
-			switch (cluster_remote_commit_outcome((int)key->origin_node_id, key->local_xid,
-												  &outcome_scn)) {
+			/*
+			 * spec-4.5a G6 (P1 #2): exact authority -- the outcome store
+			 * (keyed origin,xid) AND the independent durable TT slot must
+			 * agree on commit_scn AND wrap; a same-xid wraparound that
+			 * overwrote the store no longer matches the still-bound durable
+			 * slot's wrap -> fail closed (no CLUSTER_TT_WRAP_ANY).
+			 */
+			switch (cluster_remote_outcome_durable_checked((int)key->origin_node_id, key->local_xid,
+														   &outcome_scn)) {
 			case CLUSTER_REMOTE_XACT_COMMITTED: {
-				SCN durable_scn;
-
-				if (cluster_tt_slot_durable_lookup(
-						key->undo_segment_id, cluster_tt_slot_id_to_offset(key->tt_slot_id),
-						key->local_xid, CLUSTER_TT_WRAP_ANY, &durable_scn)
-					&& durable_scn == outcome_scn) {
-					result->status = CLUSTER_TT_STATUS_COMMITTED;
-					result->commit_scn = outcome_scn;
-					result->status_epoch = current_epoch;
-					result->authoritative = true;
-					return true;
-				}
-				return false; /* cross-check failed -> UNKNOWN (53R97) */
+				result->status = CLUSTER_TT_STATUS_COMMITTED;
+				result->commit_scn = outcome_scn;
+				result->status_epoch = current_epoch;
+				result->authoritative = true;
+				return true;
 			}
 			case CLUSTER_REMOTE_XACT_ABORTED:
 				result->status = CLUSTER_TT_STATUS_ABORTED;

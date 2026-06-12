@@ -163,6 +163,10 @@ extern void cluster_tt_slot_durable_abort(uint32 segment_id, uint16 slot_offset,
  */
 extern bool cluster_tt_slot_durable_lookup(uint32 segment_id, uint16 slot_offset, TransactionId xid,
 										   uint32 expected_wrap, SCN *commit_scn);
+extern ClusterTTDurableResolve cluster_tt_slot_durable_resolve_by_xid_origin(int origin_node,
+																			 TransactionId xid,
+																			 uint32 expected_wrap,
+																			 SCN *commit_scn);
 
 /*
  * cluster_tt_slot_durable_lookup_by_xid -- scan the local node's undo segment
