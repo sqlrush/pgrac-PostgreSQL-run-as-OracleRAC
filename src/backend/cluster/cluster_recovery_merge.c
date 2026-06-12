@@ -38,6 +38,7 @@
 
 #ifdef USE_PGRAC_CLUSTER
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "access/xlog.h"
@@ -50,6 +51,8 @@
 #include "cluster/cluster_wal_thread.h"
 #include "cluster/storage/cluster_shared_fs.h" /* spec-4.5a D4: capability gate */
 #include "lib/stringinfo.h"
+#include "miscadmin.h" /* DataDir (authority marker path) */
+#include "port/pg_crc32c.h"
 #include "storage/fd.h"
 #include "utils/wait_event.h"
 
@@ -61,12 +64,22 @@
  */
 bool cluster_recmerge_window_active = false;
 uint64 cluster_recmerge_window_scn = 0;
+/* spec-4.5a: pd_lsn clamp for foreign pages.  A foreign record's EndRecPtr
+ * lives in the PEER's WAL sequence and is INCOMPARABLE to (and usually beyond)
+ * this node's own WAL flush point; stamping it as a materialized page's pd_lsn
+ * makes the end-of-recovery checkpoint flush demand a WAL flush this node can
+ * never satisfy.  While applying a foreign record we clamp pd_lsn to this
+ * node's own recovery checkpoint redo (always <= own WAL flush end, already
+ * durable); pd_block_scn remains the window's freshness authority. */
+uint64 cluster_recmerge_window_own_lsn = 0;
+bool cluster_recmerge_apply_foreign = false;
 
 void
 cluster_recovery_merge_window_enter(void)
 {
 	cluster_recmerge_window_active = true;
 	cluster_recmerge_window_scn = 0;
+	cluster_recmerge_apply_foreign = false;
 }
 
 void
@@ -74,12 +87,26 @@ cluster_recovery_merge_window_leave(void)
 {
 	cluster_recmerge_window_active = false;
 	cluster_recmerge_window_scn = 0;
+	cluster_recmerge_window_own_lsn = 0;
+	cluster_recmerge_apply_foreign = false;
 }
 
 void
 cluster_recovery_merge_set_scn(uint64 scn)
 {
 	cluster_recmerge_window_scn = scn;
+}
+
+void
+cluster_recovery_merge_set_own_lsn(uint64 lsn)
+{
+	cluster_recmerge_window_own_lsn = lsn;
+}
+
+void
+cluster_recovery_merge_set_apply_foreign(bool foreign)
+{
+	cluster_recmerge_apply_foreign = foreign;
 }
 
 bool
@@ -95,25 +122,161 @@ cluster_recovery_merge_window_scn(void)
 }
 
 /*
+ * Node-LOCAL merged-authority marker (spec-4.5a G6).
+ *
+ *	"This node materialized origin X's state" is knowledge about THIS
+ *	node's pgdata (pg_undo/instance_<origin> + pg_xact_remote), so it
+ *	must live in a node-local marker, NOT in the shared WAL-state
+ *	registry.  The registry's per-stream merge_recovered_lsn serves a
+ *	DIFFERENT consumer with a different lifecycle: the crashed origin
+ *	reads it for the own-bound skip and CLEARS it on reaching RUNNING
+ *	(§3.3c "the bound is spent").  Keying reader authority off that
+ *	field severs this node's still-valid materialized authority the
+ *	moment the peer self-recovers (t/248 L12 -> L1), and on a >2-node
+ *	cluster would make EVERY node claim authority a single merging node
+ *	published (false authority, 规则 8.A).
+ *
+ *	The marker is written at merged-replay completion, after the
+ *	per-origin outcome flush; a crash before it re-merges (cold rerun),
+ *	so a missing/torn marker is always sound: readers fail closed.
+ */
+typedef struct ClusterMergedAuthorityFile {
+	uint32 magic;
+	uint32 origin;		  /* 0-based origin node id */
+	uint64 recovered_lsn; /* last merged record EndRecPtr, > 0 */
+	pg_crc32c crc;		  /* over the three fields above */
+} ClusterMergedAuthorityFile;
+
+#define CLUSTER_MERGED_AUTHORITY_MAGIC 0x4d524741 /* "AGRM" */
+
+static int
+merged_authority_path(int origin_node, char *buf, size_t buf_size)
+{
+	int ret;
+
+	ret = snprintf(buf, buf_size, "%s/pg_undo/instance_%d/merged.authority", DataDir, origin_node);
+	if (ret < 0 || (size_t)ret >= buf_size)
+		return -1;
+	return 0;
+}
+
+/*
+ * cluster_merged_authority_publish -- record local read authority for one
+ *	materialized origin (startup process, end of merged replay).  FATAL on
+ *	any failure: the materialized state would otherwise be unreachable to
+ *	readers, and a clean FATAL re-merges on the next start.
+ */
+void
+cluster_merged_authority_publish(int origin_node, uint64 recovered_lsn)
+{
+	ClusterMergedAuthorityFile f;
+	char dir[MAXPGPATH];
+	char path[MAXPGPATH];
+	int fd;
+	int dret;
+
+	Assert(origin_node >= 0 && origin_node < CLUSTER_WAL_STATE_SLOT_COUNT);
+	Assert(recovered_lsn > 0);
+
+	f.magic = CLUSTER_MERGED_AUTHORITY_MAGIC;
+	f.origin = (uint32)origin_node;
+	f.recovered_lsn = recovered_lsn;
+	INIT_CRC32C(f.crc);
+	COMP_CRC32C(f.crc, &f, offsetof(ClusterMergedAuthorityFile, crc));
+	FIN_CRC32C(f.crc);
+
+	/* The instance subdir normally exists (undo materialization created it);
+	 * an origin merged without undo records still gets its marker. */
+	dret = snprintf(dir, sizeof(dir), "%s/pg_undo/instance_%d", DataDir, origin_node);
+	if (dret < 0 || (size_t)dret >= sizeof(dir)
+		|| merged_authority_path(origin_node, path, sizeof(path)) < 0)
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+						errmsg("merged recovery: authority marker path too long for origin %d",
+							   origin_node)));
+	if (mkdir(dir, S_IRWXU) != 0 && errno != EEXIST)
+		ereport(FATAL, (errcode_for_file_access(),
+						errmsg("merged recovery: could not create \"%s\": %m", dir)));
+
+	fd = OpenTransientFile(path, O_CREAT | O_TRUNC | O_WRONLY | PG_BINARY);
+	if (fd < 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("merged recovery: could not create authority marker \"%s\": %m", path)));
+	if (write(fd, &f, sizeof(f)) != sizeof(f) || pg_fsync(fd) != 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("merged recovery: could not write authority marker \"%s\": %m", path)));
+	if (CloseTransientFile(fd) != 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("merged recovery: could not close authority marker \"%s\": %m", path)));
+	fsync_fname(dir, true);
+}
+
+/*
  * cluster_merged_instance_is_materialized -- spec-4.5a remote-read gate.
  *
- *	True iff this node has completed a merged replay of origin_node's
- *	stream: the thread slot's merge_recovered_lsn (§3.3c authority,
- *	published at the end of merged replay) is non-zero.  Persistent and
- *	readable from any backend.  Unreadable slot -> false (fail-closed).
+ *	True iff THIS node completed a merged replay of origin_node's stream,
+ *	per the node-local authority marker written at merged-replay
+ *	completion (see ClusterMergedAuthorityFile above for why this is NOT
+ *	the shared registry's merge_recovered_lsn).  Persistent across this
+ *	node's restarts; survives the origin's own restart.  Missing, torn,
+ *	or mismatched marker -> false (fail-closed).
  */
 bool
 cluster_merged_instance_is_materialized(int origin_node)
 {
-	ClusterWalStateSlot slot;
-	uint16 tid;
+	ClusterMergedAuthorityFile f;
+	pg_crc32c crc;
+	char path[MAXPGPATH];
+	int fd;
+	ssize_t got;
 
 	if (origin_node < 0 || origin_node >= CLUSTER_WAL_STATE_SLOT_COUNT)
 		return false;
-	tid = (uint16)(origin_node + 1);
-	if (cluster_wal_state_read_slot(tid, &slot) != CLUSTER_WAL_SLOT_OK)
+	if (merged_authority_path(origin_node, path, sizeof(path)) < 0)
 		return false;
-	return slot.merge_recovered_lsn > 0;
+
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+		return false; /* no marker -> never merged here (fail-closed) */
+	got = read(fd, &f, sizeof(f));
+	CloseTransientFile(fd);
+	if (got != (ssize_t)sizeof(f))
+		return false;
+
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, &f, offsetof(ClusterMergedAuthorityFile, crc));
+	FIN_CRC32C(crc);
+	if (f.magic != CLUSTER_MERGED_AUTHORITY_MAGIC || f.origin != (uint32)origin_node
+		|| !EQ_CRC32C(f.crc, crc) || f.recovered_lsn == 0)
+		return false;
+	return true;
+}
+
+/*
+ * cluster_merged_any_remote_materialized -- is ANY remote stream merged here?
+ *
+ *	True iff at least one foreign origin's stream was merged-replayed by
+ *	this node (cluster_merged_instance_is_materialized over every
+ *	possible origin except our own).  Opens the per-origin authority
+ *	marker (one open+read each) -- hot-path callers must cache the
+ *	answer; an origin only becomes materialized during startup recovery
+ *	(no live backends), so a backend-lifetime cache cannot go stale in
+ *	the unsafe (false-negative) direction.
+ */
+bool
+cluster_merged_any_remote_materialized(void)
+{
+	int origin;
+
+	for (origin = 0; origin < CLUSTER_WAL_STATE_SLOT_COUNT; origin++) {
+		if (origin == cluster_node_id)
+			continue;
+		if (cluster_merged_instance_is_materialized(origin))
+			return true;
+	}
+	return false;
 }
 
 typedef struct MergeStream {
@@ -156,10 +319,24 @@ merge_segment_open(XLogReaderState *state, XLogSegNo nextSegNo, TimeLineID *tli_
 	XLogFileName(fname, *tli_p, nextSegNo, state->segcxt.ws_segsize);
 	snprintf(fpath, sizeof(fpath), "%s/%s", ms->dir, fname);
 	ms->seg_fd = BasicOpenFile(fpath, O_RDONLY | PG_BINARY);
-	if (ms->seg_fd < 0)
+	if (ms->seg_fd < 0) {
+		/*
+		 * spec-4.5a: a MISSING next segment is end-of-stream, not a hard
+		 * error.  A crashed peer's WAL can stop exactly at a segment
+		 * boundary (e.g. it forced a WAL switch then died before writing
+		 * the next segment).  Leave seg_fd = -1; merge_page_read returns -1
+		 * so the decode stops here.  Whether that is a clean torn tail or
+		 * corruption BELOW the validated end is then decided by
+		 * merge_compute_valid_end's highest_lsn / first-record checks (hard
+		 * obligation 2) -- this never silently drops a peer's committed WAL.
+		 * A non-ENOENT failure (real I/O error) is still fatal.
+		 */
+		if (errno == ENOENT)
+			return;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open WAL segment \"%s\" for merged recovery: %m", fpath)));
+	}
 	ms->seg_no = nextSegNo;
 	state->seg.ws_file = ms->seg_fd;
 }
@@ -188,6 +365,8 @@ merge_page_read(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 	XLByteToSeg(targetPagePtr, segno, state->segcxt.ws_segsize);
 	if (ms->seg_fd < 0 || segno != ms->seg_no)
 		merge_segment_open(state, segno, &state->seg.ws_tli);
+	if (ms->seg_fd < 0)
+		return -1; /* missing segment -> stream end (segment_open ENOENT) */
 
 	offset = XLogSegmentOffset(targetPagePtr, state->segcxt.ws_segsize);
 	pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
@@ -405,7 +584,8 @@ cluster_recovery_merge_decide(uint16 own_thread, XLogRecPtr own_redo, uint64 out
  * release/acquire is involved; the P1-3 torn-snapshot hazard cannot arise.
  */
 static XLogRecPtr
-merge_compute_valid_end(const char *dir, XLogRecPtr start_lsn, TimeLineID tli)
+merge_compute_valid_end(const char *dir, XLogRecPtr start_lsn, XLogRecPtr validated_min,
+						bool is_candidate, uint16 tid, TimeLineID tli)
 {
 	MergeStream tmp;
 	XLogReaderState *reader;
@@ -432,12 +612,47 @@ merge_compute_valid_end(const char *dir, XLogRecPtr start_lsn, TimeLineID tli)
 		tmp.seg_fd = -1;
 	}
 	XLogReaderFree(reader);
+
+	/*
+	 * spec-4.5a hard obligation 2 (foreign candidate streams only -- the own
+	 * thread keeps PG-native torn-tail semantics).  A crashed peer that we are
+	 * merging published a checkpoint_redo_lsn into the registry, which proves
+	 * it durably wrote at least a valid checkpoint at start_lsn.  Two
+	 * fail-closed checks keep a corrupt/truncated peer stream from being
+	 * silently treated as a short torn tail (which would drop the peer's
+	 * committed WAL and let this node start up "clean"):
+	 *
+	 *   (a) valid_end == start_lsn: not a single complete record decoded from
+	 *       the registered checkpoint redo point.  The checkpoint record alone
+	 *       must decode in a healthy stream, so zero records = corruption AT
+	 *       the start (the worst case -- it would drop EVERYTHING).  This is
+	 *       reliable regardless of the observational highest_lsn cadence.
+	 *
+	 *   (b) valid_end < validated_min: the registry's highest_lsn watermark
+	 *       (refreshed AFTER the bytes were written, hence a safe lower bound)
+	 *       sits past where decode stopped -> mid-stream corruption.  Only
+	 *       enforced when the watermark is fresh enough to exceed start_lsn;
+	 *       otherwise (a) is the floor.
+	 */
+	if (is_candidate
+		&& (valid_end == start_lsn
+			|| (validated_min != InvalidXLogRecPtr && valid_end < validated_min)))
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+						errmsg("merged recovery: thread %u WAL is corrupt below the validated end",
+							   (unsigned)tid),
+						errdetail("decoded through %X/%X from checkpoint redo %X/%X; the registry "
+								  "recorded durable writes through %X/%X.",
+								  LSN_FORMAT_ARGS(valid_end), LSN_FORMAT_ARGS(start_lsn),
+								  LSN_FORMAT_ARGS(validated_min)),
+						errhint("A crashed peer's WAL stream is truncated or corrupt before its "
+								"recorded end; recover this node's own stream with "
+								"cluster.merged_recovery=off.")));
 	return valid_end;
 }
 
 ClusterRecoveryMergeState *
 cluster_recovery_merge_begin(const uint64 merge_bitmap[2], const XLogRecPtr *start_lsn,
-							 TimeLineID tli)
+							 uint16 own_thread, TimeLineID tli)
 {
 	ClusterRecoveryMergeState *st;
 	uint16 tid;
@@ -472,7 +687,20 @@ cluster_recovery_merge_begin(const uint64 merge_bitmap[2], const XLogRecPtr *sta
 							errmsg("out of memory allocating merged-recovery reader")));
 		ms->reader->seg.ws_tli = tli;
 		XLogBeginRead(ms->reader, start_lsn[tid]);
-		ms->valid_end = merge_compute_valid_end(ms->dir, start_lsn[tid], tli);
+		{
+			/* spec-4.5a hard obligation 2: bound the validated end by the
+			 * candidate's registry-recorded highest_lsn (durable write end).
+			 * A stream whose decode stops short of it is corrupt below the
+			 * validated end, not a torn tail -- fail-closed in the helper. */
+			ClusterWalStateSlot slot;
+			XLogRecPtr validated_min = InvalidXLogRecPtr;
+
+			if (cluster_wal_state_read_slot(tid, &slot) == CLUSTER_WAL_SLOT_OK
+				&& slot.highest_lsn > (uint64)start_lsn[tid])
+				validated_min = (XLogRecPtr)slot.highest_lsn;
+			ms->valid_end = merge_compute_valid_end(ms->dir, start_lsn[tid], validated_min,
+													tid != own_thread, tid, tli);
+		}
 		ms->last_end = start_lsn[tid];
 		idx++;
 	}

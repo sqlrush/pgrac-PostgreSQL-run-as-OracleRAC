@@ -133,7 +133,9 @@
 /* PGRAC: spec-4.1 own-stream strict thread-id for crash recovery. */
 #include "cluster/cluster_guc.h" /* PGRAC: spec-4.5a cluster_wal_threads_dir */
 #include "cluster/cluster_remote_xact.h" /* PGRAC: spec-4.5a G5 */
+#include "cluster/cluster_tt_status.h" /* PGRAC: spec-4.5a D11 merged counters */
 #include "cluster/cluster_recovery_plan.h"
+#include "cluster/cluster_scn.h" /* PGRAC: spec-4.5a G6 checkpoint SCN seed */
 #include "cluster/cluster_recovery_merge.h"
 #include "cluster/cluster_recovery_worker.h"
 #include "cluster/storage/cluster_smgr.h"
@@ -815,6 +817,16 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 		{
 			memcpy(&checkPoint, XLogRecGetData(xlogreader), sizeof(CheckPoint));
 			wasShutdown = ((record->xl_info & ~XLR_INFO_MASK) == XLOG_CHECKPOINT_SHUTDOWN);
+#ifdef USE_PGRAC_CLUSTER
+			/* PGRAC (spec-4.5a G6): restore the SCN clock from the checkpoint
+			 * record's stamp.  Replay-side observes (xact_redo) only fire for
+			 * records replayed AFTER this point; without this seed a start
+			 * that replays no commit (clean shutdown, or an idle crash
+			 * window) boots with SCN 0 -- snapshots then carry an invalid
+			 * read_scn and every commit_scn comparison fails closed (and a
+			 * later commit would mint SCNs below already-durable ones). */
+			cluster_scn_recovery_replay_observe(record->xl_scn);
+#endif
 			ereport(DEBUG1,
 					(errmsg_internal("checkpoint record is at %X/%X",
 									 LSN_FORMAT_ARGS(CheckPointLoc))));
@@ -979,6 +991,11 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 		}
 		memcpy(&checkPoint, XLogRecGetData(xlogreader), sizeof(CheckPoint));
 		wasShutdown = ((record->xl_info & ~XLR_INFO_MASK) == XLOG_CHECKPOINT_SHUTDOWN);
+#ifdef USE_PGRAC_CLUSTER
+		/* PGRAC (spec-4.5a G6): seed the SCN clock from the checkpoint record
+		 * (see the backup_label arm above for why). */
+		cluster_scn_recovery_replay_observe(record->xl_scn);
+#endif
 
 		/* Make sure that REDO location exists. */
 		if (checkPoint.redo < CheckPointLoc)
@@ -1894,7 +1911,20 @@ PerformWalRecovery(void)
 		record = ReadRecord(xlogprefetcher, LOG, false, replayTLI);
 	}
 
-	if (record != NULL)
+	/*
+	 * PGRAC spec-4.5a: enter the redo phase whenever merged recovery
+	 * engaged, EVEN IF this node's own thread has no record after its
+	 * checkpoint (record == NULL).  A surviving node recovering a crashed
+	 * peer must still drive the k-way merge to replay the PEER's committed
+	 * WAL; gating solely on the own thread's first record would silently
+	 * skip the merge and let the node start up without the peer's data.
+	 * The merged path (below) uses cluster_merge_start, not `record`.
+	 */
+	if (record != NULL
+#ifdef USE_PGRAC_CLUSTER
+		|| cluster_engage == CLUSTER_MERGE_ENGAGE
+#endif
+	)
 	{
 		TimestampTz xtime;
 		PGRUsage	ru0;
@@ -2120,6 +2150,7 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 							   uint16 own_thread, TimeLineID *replayTLI)
 {
 	XLogRecPtr own_end = InvalidXLogRecPtr;
+	XLogRecPtr own_read = InvalidXLogRecPtr;
 	ClusterRecoveryMergeState *st;
 	XLogReaderState *r;
 	uint16 thread;
@@ -2127,8 +2158,11 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 	uint16 t;
 
 	memset(max_recovered, 0, sizeof(max_recovered));
-	st = cluster_recovery_merge_begin(bitmap, start, tli);
+	st = cluster_recovery_merge_begin(bitmap, start, own_thread, tli);
 	cluster_recovery_merge_window_enter();
+	/* A foreign record's page is stamped with this node's own recovery redo
+	 * (start[own_thread]) instead of the peer's incomparable LSN (§3.3b). */
+	cluster_recovery_merge_set_own_lsn((uint64)start[own_thread]);
 
 	while ((r = cluster_recovery_merge_next(st, &thread, NULL)) != NULL) {
 		XLogRecord *rec = &r->record->header;
@@ -2136,8 +2170,10 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 		ClusterRecoveryRecordClass cls = cluster_record_apply_class(r);
 
 		if (!is_own) {
-			if (cls == CLUSTER_RECMERGE_LOCAL)
-				goto advance; /* node-local foreign record: skip */
+			if (cls == CLUSTER_RECMERGE_LOCAL) {
+				cluster_vis_bump_merged_skipped_local(); /* D11 */
+				goto advance;							 /* node-local foreign record: skip */
+			}
 			if (cls == CLUSTER_RECMERGE_UNCLASSIFIABLE)
 				ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
 								errmsg("merged recovery hit an unclassifiable record on thread %u "
@@ -2156,18 +2192,33 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 			 * pg_xact by raw xid, which aliases across instances and would
 			 * corrupt this node's own visibility.  Divert it into the
 			 * per-origin pg_xact_remote store (fail-closed on any
-			 * cross-instance side effect, P1-1) and consume the record. */
-			if (rec->xl_rmid == RM_XACT_ID || rec->xl_rmid == RM_CLOG_ID) {
+			 * cross-instance side effect, P1-1) and consume the record.
+			 *
+			 * MULTIXACT and COMMIT_TS are the same pollution class (their
+			 * redo writes the LOCAL pg_multixact/pg_commit_ts by raw xid)
+			 * but carry state this store cannot absorb -- the divert FATALs
+			 * 53RA3 on them rather than letting them alias.  RM_STANDBY
+			 * stays on ApplyWalRecord: merged replay only runs in crash
+			 * recovery, where standbyState == STANDBY_DISABLED makes
+			 * standby_redo a no-op. */
+			if (rec->xl_rmid == RM_XACT_ID || rec->xl_rmid == RM_CLOG_ID ||
+				rec->xl_rmid == RM_MULTIXACT_ID || rec->xl_rmid == RM_COMMIT_TS_ID) {
 				cluster_recovery_merge_set_scn(rec->xl_scn);
 				cluster_remote_xact_apply((int)thread - 1, r);
+				cluster_vis_bump_merged_records_applied(); /* D11 */
 				goto advance;
 			}
 		}
 
 		cluster_recovery_merge_set_scn(rec->xl_scn);
+		cluster_recovery_merge_set_apply_foreign(!is_own);
 		ApplyWalRecord(r, rec, replayTLI);
-		if (is_own)
+		cluster_recovery_merge_set_apply_foreign(false);
+		if (is_own) {
 			own_end = r->EndRecPtr;
+			own_read = r->ReadRecPtr;
+		} else
+			cluster_vis_bump_merged_records_applied(); /* D11 */
 
 	advance:
 		if (!is_own && r->EndRecPtr > max_recovered[thread])
@@ -2177,17 +2228,39 @@ cluster_recovery_merged_replay(const uint64 *bitmap, const XLogRecPtr *start, Ti
 	cluster_recovery_merge_window_leave();
 	cluster_recovery_merge_end(st);
 
+	/*
+	 * spec-4.5a: restore the recovery position to the OWN thread's last
+	 * applied record.  ApplyWalRecord updated lastReplayedReadRecPtr for the
+	 * foreign records too, but their ReadRecPtr is in the PEER's WAL space --
+	 * FinishWalRecovery re-reads lastReplayedReadRecPtr through THIS node's
+	 * own xlogreader to determine end-of-log, and a foreign position there
+	 * decodes as garbage (invalid magic) and PANICs.  Own records define this
+	 * node's WAL extent; pin the recovery ctl to the own last record.
+	 */
+	if (own_read != InvalidXLogRecPtr) {
+		SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+		XLogRecoveryCtl->lastReplayedReadRecPtr = own_read;
+		XLogRecoveryCtl->lastReplayedEndRecPtr = own_end;
+		XLogRecoveryCtl->lastReplayedTLI = *replayTLI;
+		SpinLockRelease(&XLogRecoveryCtl->info_lck);
+	}
+
 	/* spec-4.5a G5: persist the per-origin outcomes materialized above so
 	 * backends can read them after recovery finishes. */
 	cluster_remote_xact_flush();
 
-	/* §3.3c: record how far each candidate was replayed. */
+	/* §3.3c: record how far each candidate was replayed.  The registry
+	 * bound feeds the candidate's own-bound skip (it clears it on reaching
+	 * RUNNING); this node's READER authority over the materialized copy is
+	 * the node-local marker, with its own lifecycle (G6). */
 	for (t = 1; t <= CLUSTER_WAL_STATE_SLOT_COUNT; t++) {
 		if (t == own_thread)
 			continue;
 		if ((bitmap[(t - 1) / 64] & ((uint64)1 << ((t - 1) % 64))) == 0)
 			continue;
 		cluster_wal_state_publish_merge_recovered(t, max_recovered[t]);
+		if (max_recovered[t] > 0)
+			cluster_merged_authority_publish((int)t - 1, max_recovered[t]);
 	}
 	ereport(LOG, (errmsg("cluster merged recovery: replay complete (own thread %u)",
 						 (unsigned)own_thread)));
@@ -2341,6 +2414,7 @@ ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *repl
 			&& cluster_record_apply_class(xlogreader) == CLUSTER_RECMERGE_SHARED)
 		{
 			cluster_skip_redo = true;
+			cluster_vis_bump_merged_own_bound_skips(); /* D11 */
 			elog(DEBUG2, "cluster recovery: skipping merged-recovered shared record at %X/%X",
 				 LSN_FORMAT_ARGS(xlogreader->ReadRecPtr));
 		}

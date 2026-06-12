@@ -1197,10 +1197,15 @@ cluster_visibility_decide_cr_tuple(HeapTuple htup, Snapshot snapshot)
  * yields to a forced-CR test override.  See cluster_cr.h for the soundness
  * contract (AD-012 例外 9 row #1).
  */
+/* Backend-lifetime cache for cluster_merged_any_remote_materialized(). */
+static bool fastpath_any_materialized_known = false;
+static bool fastpath_any_materialized = false;
+
 bool
-cluster_cr_no_peer_fastpath_decide(bool gate_on, bool has_peers, bool session_local)
+cluster_cr_no_peer_fastpath_decide(bool gate_on, bool has_peers, bool session_local,
+								   bool has_materialized_remote)
 {
-	return gate_on && !has_peers && session_local;
+	return gate_on && !has_peers && session_local && !has_materialized_remote;
 }
 
 bool
@@ -1234,9 +1239,23 @@ cluster_cr_no_peer_fastpath_eligible(Snapshot snapshot)
 	if (cluster_conf_node_count() != 1)
 		return false;
 
-	return cluster_cr_no_peer_fastpath_decide(cluster_cr_gate_no_peer_fastpath,
-											  cluster_conf_has_peers(),
-											  snapshot->cluster_snapshot_session_local != 0);
+	/*
+	 * spec-4.5a G6 (8.A): merged recovery may have materialized a dead
+	 * peer's data on this node.  Those tuples carry foreign xids that must
+	 * resolve through the origin-qualified authority (durable TT /
+	 * pg_xact_remote); the PG-native body would alias them into this
+	 * node's own CLOG (AD-012 例外 9).  One registry scan per backend:
+	 * materialization only changes during startup recovery (no live
+	 * backends), so the cache cannot go stale in the unsafe direction.
+	 */
+	if (!fastpath_any_materialized_known) {
+		fastpath_any_materialized = cluster_merged_any_remote_materialized();
+		fastpath_any_materialized_known = true;
+	}
+
+	return cluster_cr_no_peer_fastpath_decide(
+		cluster_cr_gate_no_peer_fastpath, cluster_conf_has_peers(),
+		snapshot->cluster_snapshot_session_local != 0, fastpath_any_materialized);
 }
 
 ClusterCrVerdict

@@ -146,20 +146,31 @@ extern int cluster_pcm_grd_max_entries;
  *	     hook entirely until a node id is assigned)
  *	  4. cluster_conf_has_peers() (single-node fallback pays no PCM tax)
  *	  5. cluster_pcm_grd_max_entries != 0 (spec-1.7 disable path)
+ *	  6. NOT inside the cold merged-recovery window (spec-4.5a G6): the
+ *	     engage gate proved every peer DEAD (all-cold premise), so no
+ *	     remote holder exists to coordinate with, the GRD this startup
+ *	     just rebuilt is empty, and a dead peer can never answer a
+ *	     master request; the startup process also has no backend
+ *	     identity for the GCS data plane (MyBackendId = -1 FATALs).
+ *	     WARM crash recovery on a peer-configured node stays on the
+ *	     PCM path (and currently fail-closes -- roadmap 4.7 instance
+ *	     recovery / CF freeze; see t/243 L4 scope note).
  *
- *	Inline expansion yields 4 global reads + predictable branch (default
+ *	Inline expansion yields 5 global reads + predictable branch (default
  *	cluster_enabled=true + max_entries=-1 → NBuffers + node_id set during
- *	postmaster startup before any LockBuffer is reachable, so branch
- *	predictor 99%+ taken in the steady state).
+ *	postmaster startup before any LockBuffer is reachable, and the merged
+ *	window flag is false outside startup redo, so branch predictor 99%+
+ *	taken in the steady state).
  */
 extern bool cluster_enabled;
 extern int cluster_node_id;
+extern bool cluster_recmerge_window_active; /* cluster_recovery_merge.c */
 
 static inline bool
 cluster_pcm_is_active(void)
 {
 	return cluster_enabled && cluster_node_id >= 0 && cluster_conf_has_peers()
-		   && cluster_pcm_grd_max_entries != 0;
+		   && cluster_pcm_grd_max_entries != 0 && !cluster_recmerge_window_active;
 }
 
 

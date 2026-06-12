@@ -255,7 +255,7 @@ extern ClusterMergeEngage cluster_recovery_merge_decide(uint16 own_thread, XLogR
 
 extern ClusterRecoveryMergeState *cluster_recovery_merge_begin(const uint64 merge_bitmap[2],
 															   const XLogRecPtr *start_lsn,
-															   TimeLineID tli);
+															   uint16 own_thread, TimeLineID tli);
 extern struct XLogReaderState *cluster_recovery_merge_next(ClusterRecoveryMergeState *st,
 														   uint16 *thread_out, char **errmsg_out);
 extern void cluster_recovery_merge_end(ClusterRecoveryMergeState *st);
@@ -267,6 +267,8 @@ extern void cluster_recovery_merge_end(ClusterRecoveryMergeState *st);
 extern void cluster_recovery_merge_window_enter(void);
 extern void cluster_recovery_merge_window_leave(void);
 extern void cluster_recovery_merge_set_scn(uint64 scn);
+extern void cluster_recovery_merge_set_own_lsn(uint64 lsn);
+extern void cluster_recovery_merge_set_apply_foreign(bool foreign);
 extern bool cluster_recovery_merge_window_is_active(void);
 extern uint64 cluster_recovery_merge_window_scn(void);
 
@@ -291,5 +293,7 @@ extern uint64 cluster_recmerge_window_scn;
  * (fail-closed).
  */
 extern bool cluster_merged_instance_is_materialized(int origin_node);
+extern bool cluster_merged_any_remote_materialized(void);
+extern void cluster_merged_authority_publish(int origin_node, uint64 recovered_lsn);
 
 #endif /* CLUSTER_RECOVERY_MERGE_H */

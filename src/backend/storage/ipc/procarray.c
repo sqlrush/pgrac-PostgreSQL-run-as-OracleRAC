@@ -72,6 +72,7 @@
 #include "cluster/cluster_conf.h"
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_guc.h"
+#include "cluster/cluster_inject.h" /* spec-4.5a L4: cr_force_read_scn */
 #include "cluster/cluster_mode.h"
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_undo_retention.h" /* spec-3.12 D1: retention horizon */
@@ -2150,6 +2151,22 @@ ClusterSnapshotRefreshFields(Snapshot snapshot)
 		snapshot->cluster_source = (uint8) SNAPSHOT_SOURCE_CLUSTER;
 		snapshot->read_scn = cluster_scn_current();
 		snapshot->read_epoch = cluster_epoch_get_current();
+
+		/*
+		 * PGRAC (spec-4.5a §4.2 L4): test-only forced read point.  Guarded
+		 * by the injection fast-path gate (one global int read when nothing
+		 * is armed -- same cost class as CLUSTER_INJECTION_POINT).  Lets a
+		 * merged-recovery TAP hold a snapshot older than a peer's commit,
+		 * which no natural post-recovery session can produce.
+		 */
+		if (cluster_injection_armed_count > 0)
+		{
+			uint64		forced;
+
+			if (cluster_cr_injection_armed("cr_force_read_scn", &forced)
+				&& SCN_VALID((SCN) forced))
+				snapshot->read_scn = (SCN) forced;
+		}
 	}
 	else
 	{

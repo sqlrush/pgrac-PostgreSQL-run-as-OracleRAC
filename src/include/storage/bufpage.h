@@ -581,22 +581,35 @@ PageGetLSN(Page page)
  */
 extern bool cluster_recmerge_window_active;
 extern uint64 cluster_recmerge_window_scn;
+extern uint64 cluster_recmerge_window_own_lsn;
+extern bool cluster_recmerge_apply_foreign;
 #endif
 
 static inline void
 PageSetLSN(Page page, XLogRecPtr lsn)
 {
+#if defined(USE_PGRAC_CLUSTER) && !defined(FRONTEND)
+	/*
+	 * PGRAC: spec-4.5a §3.3b -- a FOREIGN record's lsn is in the peer's
+	 * WAL sequence and lies beyond this node's own WAL flush point, so
+	 * clamp the materialized page's pd_lsn to the own recovery redo
+	 * (durable, comparable).  Otherwise the end-of-recovery checkpoint's
+	 * FlushBuffer would demand an unsatisfiable XLogFlush of the peer's
+	 * LSN.  pd_block_scn (below) stays the window's freshness authority.
+	 */
+	if (cluster_recmerge_window_active && cluster_recmerge_apply_foreign)
+		lsn = (XLogRecPtr) cluster_recmerge_window_own_lsn;
+#endif
 	PageXLogRecPtrSet(((PageHeader)page)->pd_lsn, lsn);
 #if defined(USE_PGRAC_CLUSTER) && !defined(FRONTEND)
 
 	/*
-	 * PGRAC: spec-4.5a §3.3b -- inside the merged-replay window every
-	 * applied record stamps its SCN as the page's freshness watermark.
-	 * Cross-thread pd_lsn values come from different nodes' LSN
-	 * sequences and are incomparable, so pd_block_scn is the window's
-	 * ordering authority (XLogReadBufferForRedoExtended judges
-	 * BLK_DONE/BLK_NEEDS_REDO by it inside the window); the stamp also
-	 * survives a window crash-rerun, making re-applied records skip.
+	 * Inside the merged-replay window every applied record stamps its SCN
+	 * as the page's freshness watermark.  Cross-thread pd_lsn values are
+	 * incomparable, so pd_block_scn is the window's ordering authority
+	 * (XLogReadBufferForRedoExtended judges BLK_DONE/BLK_NEEDS_REDO by it
+	 * inside the window); the stamp also survives a window crash-rerun,
+	 * making re-applied records skip.
 	 */
 	if (cluster_recmerge_window_active)
 		((PageHeader)page)->pd_block_scn = (SCN)cluster_recmerge_window_scn;

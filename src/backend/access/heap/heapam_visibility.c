@@ -1315,6 +1315,67 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	return false; /* updated by other */
 }
 
+#ifdef USE_PGRAC_CLUSTER
+/*
+ * cluster_remote_live_xmax_keeps_visible -- spec-4.5a G6 steady-state xmax gate.
+ *
+ *	The cluster xmin-resolution branch of HeapTupleSatisfiesMVCC returns its
+ *	verdict directly and NEVER falls through to the PG-native xmax check, so a
+ *	tuple whose remote xmin resolved visible has not yet been tested for a
+ *	committed remote DELETER.  Without this, every superseded version on a
+ *	merged-materialized page stays visible (all chain versions returned at
+ *	once).  Mirrors the non-CR xmax arm of cluster_cr_satisfies_mvcc, on the
+ *	LIVE tuple (the block is at/before read_scn, so the live row IS the
+ *	as-of-snapshot row -- no CR construction needed).
+ *
+ *	Returns: 1 keep the xmin verdict (no committed-before-read_scn deleter);
+ *	0 the deleter committed at/before read_scn -> tuple invisible; -1 deleter
+ *	outcome unknown -> caller fail-closes (53R97, 规则 8.A).
+ */
+static int
+cluster_remote_live_xmax_keeps_visible(Buffer buffer, HeapTupleHeader tuple, Snapshot snapshot)
+{
+	TransactionId xmax;
+	ClusterVisResolve xr;
+	ClusterVisibilityDecision scn_decision = CLUSTER_VISIBILITY_UNKNOWN;
+
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)
+		return 1;
+	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+		return 1; /* a lock-only xmax never deletes the row */
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+		xmax = HeapTupleGetUpdateXid(tuple);
+	else
+		xmax = HeapTupleHeaderGetRawXmax(tuple);
+	if (!TransactionIdIsValid(xmax) || TransactionIdIsCurrentTransactionId(xmax))
+		return 1; /* lockers-only multi, or our own delete (native self) */
+
+	cluster_visibility_resolve_tuple(buffer, tuple, xmax, CLUSTER_VIS_XMAX_UPDATE, &xr);
+
+	/*
+	 * Only a REMOTE deleter is this branch's concern: the xmin path reaches
+	 * here for a remote-origin tuple, whose deleter on a cold-merge page is
+	 * also remote.  A non-remote deleter (own-instance / no ITL evidence)
+	 * cannot be resolved here without the native CLOG path the cluster branch
+	 * deliberately bypassed -- fail closed rather than guess (规则 8.A).
+	 */
+	if (xr.evidence != CLUSTER_VIS_EVIDENCE_REMOTE)
+		return -1;
+
+	if (xr.status == CLUSTER_TT_STATUS_COMMITTED || xr.status == CLUSTER_TT_STATUS_CLEANED_OUT)
+		scn_decision = cluster_visibility_decide_by_scn(xr.commit_scn, snapshot->read_scn);
+
+	switch (cluster_vis_cr_xmax_verdict(xr.status, scn_decision)) {
+	case CVV_VISIBLE:
+		return 1;
+	case CVV_INVISIBLE:
+		return 0;
+	default:
+		return -1; /* unknown / unresolved -> fail closed */
+	}
+}
+#endif
+
 /*
  * HeapTupleSatisfiesMVCC
  *		True iff heap tuple is valid for the given MVCC snapshot.
@@ -1384,10 +1445,21 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 	 * the older one (spec-3.21 lost-update), whereas the PG-native body finds
 	 * the correct older version via the heap update chain.  Defaults off
 	 * (fail-closed) and yields to a forced-CR test override.
+	 *
+	 * spec-4.5a G6 (8.A): the fast path is additionally void per TUPLE
+	 * when the tuple carries remote-writer evidence (foreign-origin ITL
+	 * ref).  A single-node-form instance can read shared pages written by
+	 * a peer (merged-materialized here, or simply present on the shared
+	 * root); judging such a tuple PG-native would consult the LOCAL
+	 * pg_xact by raw xid (cross-instance alias, AD-012 例外 9) and stamp
+	 * wrong hint bits onto the shared page.  A foreign-origin tuple always
+	 * takes the cluster fork; its per-origin gates fail closed (53R97)
+	 * when this node holds no authority for that origin.
 	 */
 	if (cluster_enabled && BufferIsValid(buffer)
 		&& snapshot->cluster_source == (uint8)SNAPSHOT_SOURCE_CLUSTER
-		&& !cluster_cr_no_peer_fastpath_eligible(snapshot)) {
+		&& (!cluster_cr_no_peer_fastpath_eligible(snapshot)
+			|| cluster_tuple_has_remote_evidence(buffer, tuple))) {
 		TransactionId raw_xmin = HeapTupleHeaderGetRawXmin(tuple);
 		ClusterUndoTTSlotRef ref;
 		bool ref_filled = false;
@@ -1432,13 +1504,24 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 					case CLUSTER_CR_DECIDED:
 						return cr_visible;
 					case CLUSTER_CR_FAILCLOSED:
+						/*
+						 * spec-4.5a G5 complete: the per-origin authority IS
+						 * consulted (D10c), so a FAILCLOSED here is a genuine
+						 * IN-DOUBT outcome -- the peer stamped its durable TT
+						 * slot then crashed before its commit/abort record, so
+						 * the transaction is neither committed nor aborted.
+						 * Fail closed (规则 8.A): never visible, never silently
+						 * invisible.  Same 53R97 surface as the steady-state TT
+						 * path below so callers see one fail-closed contract.
+						 */
 						ereport(ERROR,
-								(errcode(ERRCODE_CLUSTER_CR_CROSS_INSTANCE_UNSUPPORTED),
-								 errmsg("cluster CR cannot resolve a materialized remote-origin tuple"),
-								 errhint("The peer's undo was materialized by merged recovery, but "
-										 "its commit outcome is not yet readable here (spec-4.5a "
-										 "G4/G5 authority pending in this build); retry later or "
-										 "rebuild the snapshot.")));
+								(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+								 errmsg("cluster TT status unknown for a materialized "
+										"remote-origin tuple"),
+								 errhint("The peer's transaction was materialized by merged "
+										 "recovery but its commit outcome is in-doubt (stamped "
+										 "then crashed before commit/abort); retry after the "
+										 "origin completes recovery, or abort.")));
 						break;	/* unreachable */
 					case CLUSTER_CR_NOT_APPLICABLE:
 						break;	/* continue to the remote-xid / native paths */
@@ -1523,7 +1606,28 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 								(void) cluster_itl_cleanout_lazy(buffer, tuple->t_itl_slot_idx,
 																 raw_xmin, res.commit_scn);
 						}
-						return true;
+
+						/*
+						 * spec-4.5a G6: xmin visible, but a remote tuple's
+						 * delete (xmax) side has not been checked -- the
+						 * cluster path returns here and never falls through
+						 * to the native xmax test, so resolve a committed
+						 * remote deleter before answering visible.
+						 */
+						switch (cluster_remote_live_xmax_keeps_visible(buffer, tuple, snapshot)) {
+						case 1:
+							return true;
+						case 0:
+							return false;
+						default:
+							ereport(ERROR,
+								(errcode(ERRCODE_CLUSTER_TT_STATUS_UNKNOWN),
+								 errmsg("cluster TT status unknown for deleting xmax of xid %u",
+									raw_xmin),
+								 errhint("Remote deleter commit state not yet propagated; "
+									 "retry or abort.")));
+						}
+						return true; /* unreachable */
 					}
 					case CLUSTER_VISIBILITY_INVISIBLE:
 						return false;

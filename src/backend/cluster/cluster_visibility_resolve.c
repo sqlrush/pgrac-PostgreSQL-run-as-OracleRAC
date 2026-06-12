@@ -35,11 +35,13 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 
-#include "cluster/cluster_guc.h"	   /* cluster_node_id, subtrans depth */
-#include "cluster/cluster_itl.h"	   /* get_tt_ref / lock ref / multixact origin */
-#include "cluster/cluster_itl_slot.h"  /* CLUSTER_ITL_SLOT_UNALLOCATED */
-#include "cluster/cluster_subtrans.h"  /* SUBCOMMITTED parent follow */
-#include "cluster/cluster_tt_status.h" /* lookup_exact / Key / Result */
+#include "cluster/cluster_guc.h"			/* cluster_node_id, subtrans depth */
+#include "cluster/cluster_itl.h"			/* get_tt_ref / lock ref / multixact origin */
+#include "cluster/cluster_itl_slot.h"		/* CLUSTER_ITL_SLOT_UNALLOCATED */
+#include "cluster/cluster_recovery_merge.h" /* spec-4.5a G6: materialized gate */
+#include "cluster/cluster_remote_xact.h"	/* spec-4.5a G6: outcome fallback */
+#include "cluster/cluster_subtrans.h"		/* SUBCOMMITTED parent follow */
+#include "cluster/cluster_tt_status.h"		/* lookup_exact / Key / Result */
 #include "cluster/cluster_visibility_resolve.h"
 
 
@@ -137,7 +139,38 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		 * The available evidence says REMOTE, but the slot no longer belongs
 		 * to this tuple-side xid.  Do NOT fall through to PG-native local CLOG;
 		 * that is the false-resolve this resolver exists to prevent.
+		 *
+		 * spec-4.5a G6: when this node MATERIALIZED the origin's state, the
+		 * per-origin outcome store still speaks for raw_xid even though the
+		 * page slot was recycled -- it is keyed by (origin, xid), not by
+		 * slot.  A recycled slot is the NORM on a merged page (the dead peer
+		 * never refreshes it), so without this fallback the first slot reuse
+		 * turns every read of the OLDER version into a permanent 53R97.
+		 * INDOUBT / no entry keeps today's fail-closed verdict.  Residual:
+		 * the store spans one cold-crash window, so a same-valued pre-window
+		 * xid would need a full 32-bit wraparound inside that window's pages
+		 * (task#90 wrap-generation family, same posture as WRAP_ANY readers).
 		 */
+		if (cluster_merged_instance_is_materialized((int)ref->origin_node_id)) {
+			SCN outcome_scn;
+
+			switch (
+				cluster_remote_commit_outcome((int)ref->origin_node_id, raw_xid, &outcome_scn)) {
+			case CLUSTER_REMOTE_XACT_COMMITTED:
+				out->evidence = CLUSTER_VIS_EVIDENCE_REMOTE;
+				out->status = CLUSTER_TT_STATUS_COMMITTED;
+				out->commit_scn = outcome_scn;
+				return;
+			case CLUSTER_REMOTE_XACT_ABORTED:
+				out->evidence = CLUSTER_VIS_EVIDENCE_REMOTE;
+				out->status = CLUSTER_TT_STATUS_ABORTED;
+				out->commit_scn = InvalidScn;
+				return;
+			case CLUSTER_REMOTE_XACT_INDOUBT:
+			default:
+				break; /* fall through to STALE fail-closed */
+			}
+		}
 		out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;
 		cluster_vis_bump_vis_variant_unknown_failclosed_count();
 		return;

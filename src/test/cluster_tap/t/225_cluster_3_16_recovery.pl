@@ -170,7 +170,8 @@ is($node->safe_psql('postgres', q{SELECT v FROM t316 WHERE id = 900}),
 # recovery observability surface present.
 my $rec_rows = $node->safe_psql('postgres',
 	q{SELECT count(*) FROM pg_cluster_state WHERE category = 'recovery'});
-is($rec_rows, '25', 'L6 recovery category: 4 counters + 13 plan + 8 worker keys (spec-4.4 D6)');
+is($rec_rows, '33',
+	'L6 recovery category: 4 counters + 13 plan + 8 worker + 8 merged keys (spec-4.5a D11)');
 
 $node->stop;
 done_testing();

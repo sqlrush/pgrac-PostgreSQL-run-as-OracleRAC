@@ -75,6 +75,7 @@
 #include "cluster/cluster_scn.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_tt_slot.h"	  /* spec-3.12 D2b: TT allocator rollover */
+#include "cluster/cluster_tt_status.h"	  /* spec-4.5a D11: remote_uba_resolved */
 #include "cluster/cluster_undo_cleaner.h" /* Q8 pressure wakeup (3.13) */
 #include "cluster/cluster_uba.h"
 #include "cluster/cluster_undo_format.h"
@@ -1310,6 +1311,8 @@ cluster_undo_get_record(UBA uba, void *out_buffer, size_t buffer_size)
 				 errhint("cross-instance undo read 推 spec-3.9 CR construction / Cache Fusion")));
 		return 0;
 	}
+	if (owner_instance != (uint8)(cluster_node_id + 1))
+		cluster_vis_bump_remote_uba_resolved(); /* spec-4.5a D11 */
 
 	if (!read_undo_block(segment_id, owner_instance, block_no, block_buf))
 		return 0;

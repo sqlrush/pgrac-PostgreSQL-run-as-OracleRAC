@@ -18,8 +18,8 @@
 #      L5   CRC-corrupt peer slot -> UNKNOWN, never a candidate
 #      L6   forged CRC-valid slot with node_id != tid-1 (identity
 #           invariant violation) -> UNKNOWN, never ALIVE/CRASHED (P2)
-#      L7   recovery category exposes 4 + 13 + 8 = 25 keys (3.16
-#           counters + 4.3 plan + 4.4 worker surface)
+#      L7   recovery category exposes 4 + 13 + 8 + 8 = 33 keys (3.16
+#           counters + 4.3 plan + 4.4 worker + 4.5a merged surface)
 #      L8   flat node (no wal_threads_dir) -> plan_state=none, keys '-'
 #
 #    The standby-mode gate (no plan in standby) is asserted in t/242 L9
@@ -154,11 +154,12 @@ is(plankey($node0, 'plan_n_alive') + plankey($node0, 'plan_n_crashed_candidate')
 	'L6 impossible owner is neither ALIVE nor a candidate (P2)');
 
 # ============================================================
-# L7: recovery category = 25 keys (4 spec-3.16 + 13 plan + 8 worker).
+# L7: recovery category = 33 keys (4 spec-3.16 + 13 plan + 8 worker
+#     + 8 merged/remote, spec-4.5a D11).
 # ============================================================
 is($node0->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_cluster_state WHERE category = 'recovery'}),
-	'25', 'L7 recovery category: 4 counters + 13 plan + 8 worker keys (spec-4.4)');
+	'33', 'L7 recovery category: 4 counters + 13 plan + 8 worker + 8 merged keys');
 
 $node0->stop;
 write_file_raw($regfile, $image);             # leave the registry intact

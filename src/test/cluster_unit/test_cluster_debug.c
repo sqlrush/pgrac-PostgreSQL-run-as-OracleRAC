@@ -1000,6 +1000,51 @@ cluster_vis_get_recovery_overlay_rebuild_count(void)
 	return 0;
 }
 
+/* spec-4.5a D11 merged-replay / remote-read accessor stubs (dump_recovery
+ * rows; the real counters live in cluster_tt_status.c / cluster_remote_xact.c
+ * / cluster_recovery_merge.c, none of which are linked here). */
+uint64
+cluster_vis_get_merged_records_applied(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_merged_skipped_local(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_merged_own_bound_skips(void)
+{
+	return 0;
+}
+uint64
+cluster_vis_get_remote_uba_resolved(void)
+{
+	return 0;
+}
+uint64
+cluster_remote_xact_diverted_commit_count(void)
+{
+	return 0;
+}
+uint64
+cluster_remote_xact_diverted_abort_count(void)
+{
+	return 0;
+}
+uint64
+cluster_remote_xact_outcome_indoubt_count(void)
+{
+	return 0;
+}
+bool
+cluster_merged_instance_is_materialized(int origin_node)
+{
+	(void)origin_node;
+	return false;
+}
+
 /* spec-3.15 D9 2PC counter accessor stubs (dump_tt_2pc rows). */
 uint64
 cluster_vis_get_twopc_prepare_records(void)

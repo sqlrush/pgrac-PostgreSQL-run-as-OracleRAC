@@ -59,6 +59,8 @@
 
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_guc.h"
+#include "cluster/cluster_recovery_merge.h" /* spec-4.5a G5: is_materialized */
+#include "cluster/cluster_remote_xact.h"	/* spec-4.5a G5: outcome authority */
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_tt_durable.h" /* spec-3.11 D5: overlay-miss durable lookup */
 #include "cluster/cluster_tt_slot.h"	/* cluster_tt_slot_id_to_offset, TT_SLOTS_PER_SEGMENT */
@@ -133,6 +135,12 @@ typedef struct ClusterTTStatusShmem {
 	pg_atomic_uint64 recovery_undo_redo_skips;
 	pg_atomic_uint64 recovery_2pc_standby_rebuilds;
 	pg_atomic_uint64 recovery_overlay_rebuild_count;
+
+	/* spec-4.5a D11: merged-recovery + remote-read observability. */
+	pg_atomic_uint64 merged_records_applied; /* foreign records applied/diverted */
+	pg_atomic_uint64 merged_skipped_local;	 /* foreign L-class records skipped  */
+	pg_atomic_uint64 merged_own_bound_skips; /* §3.3c own-LSN-bound redo skips   */
+	pg_atomic_uint64 remote_uba_resolved;	 /* materialized remote undo reads   */
 } ClusterTTStatusShmem;
 
 #ifdef USE_PGRAC_CLUSTER
@@ -206,6 +214,11 @@ cluster_tt_status_shmem_init(void)
 		pg_atomic_init_u64(&ClusterTTStatusState->recovery_undo_redo_skips, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->recovery_2pc_standby_rebuilds, 0);
 		pg_atomic_init_u64(&ClusterTTStatusState->recovery_overlay_rebuild_count, 0);
+		/* PGRAC (spec-4.5a D11) */
+		pg_atomic_init_u64(&ClusterTTStatusState->merged_records_applied, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->merged_skipped_local, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->merged_own_bound_skips, 0);
+		pg_atomic_init_u64(&ClusterTTStatusState->remote_uba_resolved, 0);
 	}
 
 	/* Lock. */
@@ -347,6 +360,55 @@ cluster_tt_status_lookup_exact(const ClusterTTStatusKey *key, ClusterTTStatusRes
 				result->status_epoch = current_epoch;
 				result->authoritative = true;
 				return true;
+			}
+		}
+
+		/*
+		 * spec-4.5a G5 (D10c): overlay miss for a REMOTE origin whose state
+		 * this node MATERIALIZED during cold merged recovery.  The dead peer
+		 * never hinted this overlay, so the per-origin outcome store is the
+		 * commit authority: pg_xact_remote/<origin> holds the peer's real
+		 * commit/abort records (diverted by D10b) -- NEVER the local CLOG
+		 * for a foreign xid (AD-012 例外 9; raw xids alias across
+		 * instances).  COMMITTED additionally cross-checks the outcome SCN
+		 * against the materialized durable TT slot's pre-commit stamp
+		 * (§3.3b): a mismatch means the slot no longer belongs to this
+		 * incarnation of the xid -> stay UNKNOWN (caller fail-closes,
+		 * 53R97).  INDOUBT (stamped-then-crashed, no outcome record) also
+		 * stays UNKNOWN -- 规则 8.A: never visible, never silent invisible.
+		 */
+		if (cluster_tt_durable_lookup && cluster_node_id >= 0
+			&& key->origin_node_id != (uint16)cluster_node_id && key->tt_slot_id >= 1
+			&& key->tt_slot_id <= TT_SLOTS_PER_SEGMENT
+			&& cluster_merged_instance_is_materialized((int)key->origin_node_id)) {
+			SCN outcome_scn;
+
+			switch (cluster_remote_commit_outcome((int)key->origin_node_id, key->local_xid,
+												  &outcome_scn)) {
+			case CLUSTER_REMOTE_XACT_COMMITTED: {
+				SCN durable_scn;
+
+				if (cluster_tt_slot_durable_lookup(
+						key->undo_segment_id, cluster_tt_slot_id_to_offset(key->tt_slot_id),
+						key->local_xid, CLUSTER_TT_WRAP_ANY, &durable_scn)
+					&& durable_scn == outcome_scn) {
+					result->status = CLUSTER_TT_STATUS_COMMITTED;
+					result->commit_scn = outcome_scn;
+					result->status_epoch = current_epoch;
+					result->authoritative = true;
+					return true;
+				}
+				return false; /* cross-check failed -> UNKNOWN (53R97) */
+			}
+			case CLUSTER_REMOTE_XACT_ABORTED:
+				result->status = CLUSTER_TT_STATUS_ABORTED;
+				result->commit_scn = InvalidScn;
+				result->status_epoch = current_epoch;
+				result->authoritative = true;
+				return true;
+			case CLUSTER_REMOTE_XACT_INDOUBT:
+			default:
+				return false; /* in-doubt -> UNKNOWN (53R97) */
 			}
 		}
 		return false;
@@ -663,6 +725,12 @@ CLUSTER_VIS_BUMP(recovery_undo_redo_applies)
 CLUSTER_VIS_BUMP(recovery_undo_redo_skips)
 CLUSTER_VIS_BUMP(recovery_2pc_standby_rebuilds)
 CLUSTER_VIS_BUMP(recovery_overlay_rebuild_count)
+
+/* spec-4.5a D11: merged-recovery + remote-read counters. */
+CLUSTER_VIS_BUMP(merged_records_applied)
+CLUSTER_VIS_BUMP(merged_skipped_local)
+CLUSTER_VIS_BUMP(merged_own_bound_skips)
+CLUSTER_VIS_BUMP(remote_uba_resolved)
 
 #else /* !USE_PGRAC_CLUSTER */
 

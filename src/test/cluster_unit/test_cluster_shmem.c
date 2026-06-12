@@ -639,6 +639,23 @@ void
 cluster_recovery_plan_shmem_register(void)
 {}
 
+/* spec-4.5a D10a stubs: per-origin remote-xact SLRU (self-managed,
+ * not a registry region; cluster_shmem.c calls all three). */
+Size cluster_remote_xact_shmem_size(void);
+Size
+cluster_remote_xact_shmem_size(void)
+{
+	return 0;
+}
+void cluster_remote_xact_shmem_request(void);
+void
+cluster_remote_xact_shmem_request(void)
+{}
+void cluster_remote_xact_shmem_init(void);
+void
+cluster_remote_xact_shmem_init(void)
+{}
+
 
 UT_DEFINE_GLOBALS();
 

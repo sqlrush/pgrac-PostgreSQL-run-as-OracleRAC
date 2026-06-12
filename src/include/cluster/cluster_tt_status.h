@@ -312,6 +312,16 @@ extern void cluster_vis_bump_recovery_2pc_standby_rebuilds(void);
 extern uint64 cluster_vis_get_recovery_2pc_standby_rebuilds(void);
 extern void cluster_vis_bump_recovery_overlay_rebuild_count(void);
 extern uint64 cluster_vis_get_recovery_overlay_rebuild_count(void);
+
+/* spec-4.5a D11: merged-recovery + remote-read counters. */
+extern void cluster_vis_bump_merged_records_applied(void);
+extern uint64 cluster_vis_get_merged_records_applied(void);
+extern void cluster_vis_bump_merged_skipped_local(void);
+extern uint64 cluster_vis_get_merged_skipped_local(void);
+extern void cluster_vis_bump_merged_own_bound_skips(void);
+extern uint64 cluster_vis_get_merged_own_bound_skips(void);
+extern void cluster_vis_bump_remote_uba_resolved(void);
+extern uint64 cluster_vis_get_remote_uba_resolved(void);
 extern uint64 cluster_tt_status_get_lookup_miss_count(void);
 extern uint64 cluster_tt_status_get_evict_count(void);
 extern uint64 cluster_tt_status_get_flush_count(void);

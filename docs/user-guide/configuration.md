@@ -187,7 +187,7 @@ Number of unacked keepalive probes before the kernel declares the connection dea
 | | |
 |---|---|
 | Type | enum |
-| Allowed values | `stub` (default), `local` |
+| Allowed values | `stub` (default), `local`, `cluster_fs` |
 | Context | postmaster |
 | Boot setting | `postgresql.conf` |
 
@@ -199,11 +199,58 @@ is enabled.
 |---|---|
 | `stub` (default) | The cluster_smgr vtable is wired but no I/O paths route through it.  Setting `cluster.smgr_user_relations = on` while this is `stub` causes the postmaster to refuse to start. |
 | `local` | Routes cluster-aware relation I/O through the local filesystem under PGDATA.  Useful for single-host smoke testing and for the two-instance concurrent-open path that exercises every relation through the cluster_smgr stack. |
+| `cluster_fs` | Routes cluster-aware relation I/O into a shared directory tree (`cluster.shared_data_dir`) that every cluster node mounts.  Relation files live at `<shared_data_dir>/base/<dboid>/<relfilenode>`, so all participating nodes read and write the same physical files.  Requires `cluster.shared_data_dir`. |
 
 ```text
 # postgresql.conf
-cluster.shared_storage_backend = local
+cluster.shared_storage_backend = cluster_fs
+cluster.shared_data_dir = '/mnt/pgrac-shared/data'
 ```
+
+### `cluster.shared_data_dir`
+
+| | |
+|---|---|
+| Type | string |
+| Default | `''` |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` |
+
+Absolute path of the shared data root used by the `cluster_fs`
+backend.  Must be the same filesystem location (the same shared
+mount) on every node of the cluster.  Required (non-empty) when
+`cluster.shared_storage_backend = cluster_fs`; a relative path is
+rejected at startup.
+
+On first attach a node creates a control file
+(`pgrac_shared.control`) at the root that records the storage
+identity and the set of node ids that have attached.  Each node
+adds itself to that participant set when it starts.
+
+### `cluster.shared_storage_uuid`
+
+| | |
+|---|---|
+| Type | string |
+| Default | `''` (auto-generated) |
+| Context | postmaster |
+| Boot setting | `postgresql.conf` |
+
+Optional expected identity of the shared data root.  When empty,
+the first node to attach generates an identity and records it in
+`pgrac_shared.control`.  When set, the node verifies that the
+control file's identity matches before attaching, and refuses to
+start otherwise — use this to guard against pointing a node at the
+wrong (or a stale) shared directory.
+
+> **Production warning.**  Sharing one data root between nodes
+> requires that the same relation maps to the same file name on
+> every node.  The current release does not yet coordinate catalog
+> naming across nodes: identical file naming holds only when every
+> node runs the identical DDL in the identical order on a freshly
+> initialized cluster.  Cross-node DDL coordination is currently
+> not supported; deviating DDL across nodes leaves the shared tree
+> inconsistent.  Treat `cluster_fs` deployments as experimental.
 
 ### `cluster.smgr_user_relations`
 

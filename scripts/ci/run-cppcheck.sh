@@ -135,6 +135,11 @@ SHAREDFS_SUPP=(
   # CRC covers [0, offsetof(crc)), so padding must be zeroed, not omitted);
   # cppcheck cannot see the raw-I/O use of the member.
   --suppress=unusedStructMember:src/backend/cluster/storage/cluster_shared_fs_sharedfs.c
+  # Reason: spec-4.5a D12 the unit test's MirrorSharedControl deliberately
+  # mirrors the on-disk PgracSharedControl ABI byte-for-byte (_pad / crc
+  # included) so sizeof/offset asserts pin the layout; the mirror members
+  # are never read by name -- same false-positive class as above.
+  --suppress=unusedStructMember:src/test/cluster_unit/test_cluster_shared_fs_sharedfs.c
   # Reason: stage-1.3 cluster_shmem_register_region uses the same
   # Assert(region != NULL); region->name pattern that triggers the
   # PG-Assert false positive (PG's Assert is non-trapping to cppcheck).

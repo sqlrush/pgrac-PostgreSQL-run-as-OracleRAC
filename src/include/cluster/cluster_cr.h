@@ -183,10 +183,16 @@ extern ClusterCrVerdict cluster_cr_satisfies_mvcc(HeapTuple htup, Snapshot snaps
  *                   is void -> PG-native verdict == SCN/CR verdict
  *     session_local snapshot taken by this backend's GetSnapshotData (AD-012
  *                   row #1); an imported/restored snapshot (row #2) is excluded
+ *     !has_materialized_remote
+ *                   no dead peer's stream was merged-materialized on this node
+ *                   (spec-4.5a G6); materialized tuples carry foreign xids that
+ *                   alias in the local CLOG, so they must take the cluster fork
  *   Fail-closed: any uncertainty returns false -> the CR/SCN cluster path runs.
- *   Dependency-free so the full truth table is unit-tested without a backend.
+ *   Dependency-free pure verdict; exercised end-to-end by t/239 (fastpath on)
+ *   and t/248 (materialized-remote premise voids it).
  */
-extern bool cluster_cr_no_peer_fastpath_decide(bool gate_on, bool has_peers, bool session_local);
+extern bool cluster_cr_no_peer_fastpath_decide(bool gate_on, bool has_peers, bool session_local,
+											   bool has_materialized_remote);
 
 /*
  * cluster_cr_no_peer_fastpath_eligible -- live-state wrapper over the pure

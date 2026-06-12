@@ -121,6 +121,49 @@ ensure_undo_instance_subdir(uint8 owner_instance)
 
 
 /*
+ * cluster_undo_redo_open_segment -- open an undo segment for redo,
+ *	MATERIALIZING it (parent dir + O_CREAT + ftruncate to the full segment
+ *	size) when it is missing and the record can rebuild the touched block on
+ *	its own.
+ *
+ *	spec-4.5a: a crashed peer's undo segment is materialized on the SURVIVING
+ *	node from the merged-replay window, which begins at the peer's last
+ *	checkpoint.  The segment's XLOG_UNDO_SEGMENT_INIT can predate that window,
+ *	so the FIRST post-checkpoint touch -- a full-page-image block write, or the
+ *	folded TT commit stamp that read-modify-writes block 0 -- has to create the
+ *	file.  These records are self-contained (the FPI carries the whole block;
+ *	the TT stamp overwrites only its slot, and the durable-TT reader keys on
+ *	the slot, not the header magic).  A DELTA (non-FPI) block write must NOT
+ *	create the file: it needs the prior block content, so a genuine
+ *	INIT-before-WRITE ordering violation still fails closed.  Returns the fd, or
+ *	-1 with errno set (the caller PANICs with its own message).
+ */
+static int
+cluster_undo_redo_open_segment(uint8 instance, uint32 segment_id, const char *path,
+							   bool create_if_missing)
+{
+	int fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+
+	if (fd >= 0 || errno != ENOENT || !create_if_missing)
+		return fd;
+
+	(void)segment_id; /* path already encodes it; arg kept for symmetry */
+	ensure_undo_instance_subdir(instance);
+	fd = BasicOpenFile(path, O_CREAT | O_RDWR | PG_BINARY);
+	if (fd < 0)
+		return fd;
+	if (ftruncate(fd, (off_t)UNDO_SEGMENT_SIZE_BYTES) != 0) {
+		int save = errno;
+
+		close(fd);
+		errno = save;
+		return -1;
+	}
+	return fd;
+}
+
+
+/*
  * cluster_undo_emit_segment_init
  *
  *   Backend caller emits XLOG_UNDO_SEGMENT_INIT for the just-written
@@ -625,7 +668,10 @@ cluster_tt_durable_redo_stamp_slot(uint8 instance, uint32 segment_id, uint16 slo
 		ereport(PANIC,
 				(errmsg("undo segment path too long: instance=%u seg=%u", instance, segment_id)));
 
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	/* spec-4.5a: materialize block 0 if missing -- a peer's TT commit can be
+	 * the first post-checkpoint touch of a segment whose INIT predates the
+	 * merge window.  The RMW below overwrites only the slot. */
+	fd = cluster_undo_redo_open_segment(instance, segment_id, path, true);
 	if (fd < 0)
 		ereport(
 			PANIC,
@@ -1073,7 +1119,10 @@ cluster_undo_redo_block_write(XLogReaderState *record)
 		ereport(PANIC, (errmsg("undo segment path too long: instance=%u seg=%u", rec->instance,
 							   rec->segment_id)));
 
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	/* spec-4.5a: an FPI block write is self-contained, so materialize a missing
+	 * segment (peer's INIT predates the merge window).  A delta needs the prior
+	 * block, so it must NOT create -- a real ordering violation still PANICs. */
+	fd = cluster_undo_redo_open_segment(rec->instance, rec->segment_id, path, rec->has_fpi == 1);
 	if (fd < 0)
 		ereport(
 			PANIC,
@@ -1188,7 +1237,9 @@ cluster_undo_redo_block_write_multi(XLogReaderState *record)
 		ereport(PANIC, (errmsg("undo segment path too long: instance=%u seg=%u", rec->instance,
 							   rec->segment_id)));
 
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+	/* spec-4.5a: see cluster_undo_redo_block_write -- FPI materializes a missing
+	 * peer segment; a delta still requires INIT-before-WRITE. */
+	fd = cluster_undo_redo_open_segment(rec->instance, rec->segment_id, path, rec->has_fpi == 1);
 	if (fd < 0)
 		ereport(
 			PANIC,

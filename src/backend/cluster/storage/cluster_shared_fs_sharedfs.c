@@ -238,15 +238,22 @@ cluster_shared_fs_sharedfs_create(RelFileLocator rlocator, ForkNumber forknum, b
 	cluster_shared_fs_sharedfs_ensure_parent(path);
 
 	/*
-	 * md.c mdcreate (md.c:218) semantics, identical to the local backend:
-	 *   !isRedo -> O_CREAT|O_EXCL (error on an existing file -- a stale
-	 *              relfilenode file from a crashed CREATE must not be
-	 *              silently reused with its old block contents);
-	 *   isRedo  -> idempotent (reopen an existing file).
+	 * Owner-agnostic create (spec-4.5a §3.1).  Unlike md.c mdcreate's
+	 * O_EXCL (a per-node data dir, where an existing file can only be a
+	 * stale crashed CREATE), the shared root is written by EVERY
+	 * participant: a peer that ran the same DDL has legitimately created
+	 * this relfilenode file already, and its blocks ARE the shared
+	 * relation.  Adopting the existing file is the point of a shared-data
+	 * backend; per-relation creation ownership needs the cluster catalog
+	 * protocol (feature #11), not file-level O_EXCL.  isRedo keeps the
+	 * same open-existing behaviour.
 	 */
 	vfd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
-	if (vfd < 0 && isRedo && errno == EEXIST)
+	if (vfd < 0 && errno == EEXIST) {
 		vfd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+		if (vfd >= 0 && !isRedo)
+			elog(DEBUG1, "cluster_shared_fs.shared_fs: adopting existing shared file \"%s\"", path);
+	}
 	if (vfd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),

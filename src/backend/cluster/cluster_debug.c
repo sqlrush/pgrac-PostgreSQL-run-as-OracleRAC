@@ -99,6 +99,8 @@ PG_FUNCTION_INFO_V1(cluster_dump_state);
 #include "catalog/pg_control.h" /* DBState (spec-4.3 plan dump) */
 #include "cluster/cluster_recovery_plan.h"
 #include "cluster/cluster_recovery_worker.h"
+#include "cluster/cluster_recovery_merge.h" /* is_materialized (spec-4.5a D11) */
+#include "cluster/cluster_remote_xact.h"	/* remote outcome counters (spec-4.5a D11) */
 #include "cluster/cluster_ic.h"				/* ClusterICOps_Active, ClusterICTier */
 #include "cluster/cluster_ic_tier1.h"		/* listener metadata accessors (Hardening v1.0.1 F3) */
 #include "cluster/cluster_scn.h"			/* SCN typedef (stage 1.4) */
@@ -1520,7 +1522,8 @@ verdict_csv(const ClusterRecoveryPlan *plan, ClusterRecoveryThreadVerdict want)
 /*
  * dump_recovery -- spec-3.16 D5 recovery observability (4 rows) +
  *	spec-4.3 D5 recovery plan surface (13 rows) + spec-4.4 D6 worker
- *	pool surface (8 rows; 25 total).
+ *	pool surface (8 rows) + spec-4.5a D11 merged-replay / remote-read
+ *	surface (8 rows; 33 total).
  */
 static void
 dump_recovery(ReturnSetInfo *rsinfo)
@@ -1632,6 +1635,38 @@ dump_recovery(ReturnSetInfo *rsinfo)
 		emit_row(rsinfo, "recovery", "workers_failed", have_pool ? fmt_int64(failed) : "-");
 		emit_row(rsinfo, "recovery", "stream_ok_threads", okcsv.data);
 		emit_row(rsinfo, "recovery", "stream_suspect_or_unreadable_threads", badcsv.data);
+	}
+
+	/* spec-4.5a D11: merged-replay + remote-read observability (8 rows).
+	 * materialized_remote_instances derives from the persistent wal_state
+	 * registry (merge_recovered_lsn > 0), the same authority the remote
+	 * read gates consult -- no separate bookkeeping to drift. */
+	{
+		StringInfoData matcsv;
+		int origin;
+
+		initStringInfo(&matcsv);
+		for (origin = 0; origin < CLUSTER_WAL_STATE_SLOT_COUNT; origin++) {
+			if (cluster_merged_instance_is_materialized(origin))
+				appendStringInfo(&matcsv, "%s%d", matcsv.len > 0 ? "," : "", origin);
+		}
+		emit_row(rsinfo, "recovery", "merged_records_applied",
+				 fmt_int64((int64)cluster_vis_get_merged_records_applied()));
+		emit_row(rsinfo, "recovery", "merged_skipped_local",
+				 fmt_int64((int64)cluster_vis_get_merged_skipped_local()));
+		emit_row(rsinfo, "recovery", "merged_own_bound_skips",
+				 fmt_int64((int64)cluster_vis_get_merged_own_bound_skips()));
+		emit_row(rsinfo, "recovery", "materialized_remote_instances",
+				 matcsv.len > 0 ? matcsv.data : "-");
+		emit_row(rsinfo, "recovery", "remote_uba_resolved",
+				 fmt_int64((int64)cluster_vis_get_remote_uba_resolved()));
+		emit_row(rsinfo, "recovery", "remote_outcome_committed",
+				 fmt_int64((int64)cluster_remote_xact_diverted_commit_count()));
+		emit_row(rsinfo, "recovery", "remote_outcome_aborted",
+				 fmt_int64((int64)cluster_remote_xact_diverted_abort_count()));
+		emit_row(rsinfo, "recovery", "remote_authority_53ra",
+				 fmt_int64((int64)cluster_remote_xact_outcome_indoubt_count()));
+		pfree(matcsv.data);
 	}
 }
 

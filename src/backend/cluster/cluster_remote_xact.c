@@ -40,6 +40,7 @@
 #include "access/xlogreader.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
+#include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/sync.h"
@@ -47,6 +48,8 @@
 
 #include "cluster/cluster_elog.h"
 #include "cluster/cluster_remote_xact.h"
+#include "cluster/cluster_scn.h"			   /* recovery_replay_observe (G6) */
+#include "cluster/storage/cluster_undo_xlog.h" /* redo_stamp_slot (G6) */
 
 #ifdef USE_PGRAC_CLUSTER
 
@@ -114,6 +117,16 @@ cluster_remote_xact_shmem_init(void)
 		pg_atomic_init_u64(&RemoteXactShared->diverted_commit_count, 0);
 		pg_atomic_init_u64(&RemoteXactShared->diverted_abort_count, 0);
 		pg_atomic_init_u64(&RemoteXactShared->outcome_indoubt_count, 0);
+
+		/*
+		 * Create the SLRU directory (postmaster-once).  Unlike pg_xact, this
+		 * custom per-origin store is not laid down by initdb, so without this
+		 * the first segment write fails with ENOENT on the directory itself
+		 * (SlruInternalWritePage O_CREAT creates the FILE, not the DIR).
+		 */
+		if (MakePGDirectory("pg_xact_remote") < 0 && errno != EEXIST)
+			ereport(FATAL, (errcode_for_file_access(),
+							errmsg("could not create directory \"pg_xact_remote\": %m")));
 	} else {
 		Assert(found);
 	}
@@ -134,15 +147,33 @@ static int
 remote_xact_open_page(int origin_node, TransactionId xid, bool create)
 {
 	int pageno = cluster_remote_xact_pageno(origin_node, xid);
+	SlruShared shared = ClusterRemoteXactCtl->shared;
+	int slotno;
 
-	LWLockAcquire(ClusterRemoteXactCtl->shared->ControlLock, LW_EXCLUSIVE);
-	if (!create && !SimpleLruDoesPhysicalPageExist(ClusterRemoteXactCtl, pageno)) {
-		/* Probe-only miss: keep the lock-held contract, caller maps to
-		 * INDOUBT after releasing. */
-		return -1;
+	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+
+	/*
+	 * Buffer first.  During merged replay a zeroed page lives ONLY in the
+	 * SLRU buffer pool -- the file materializes at the end-of-replay flush
+	 * (cluster_remote_xact_flush).  Probing the PHYSICAL file to decide
+	 * "zero vs read" would re-zero the page on EVERY set(), wiping all
+	 * previously recorded outcomes on it but the last one (every earlier
+	 * peer commit then reads INDOUBT -> 53R97).  A buffered page also
+	 * satisfies the probe-only read path.
+	 */
+	for (slotno = 0; slotno < shared->num_slots; slotno++) {
+		if (shared->page_number[slotno] == pageno && shared->page_status[slotno] != SLRU_PAGE_EMPTY)
+			return SimpleLruReadPage(ClusterRemoteXactCtl, pageno, true, xid);
 	}
-	if (create && !SimpleLruDoesPhysicalPageExist(ClusterRemoteXactCtl, pageno))
+
+	if (!SimpleLruDoesPhysicalPageExist(ClusterRemoteXactCtl, pageno)) {
+		if (!create) {
+			/* Probe-only miss: keep the lock-held contract, caller maps to
+			 * INDOUBT after releasing. */
+			return -1;
+		}
 		return SimpleLruZeroPage(ClusterRemoteXactCtl, pageno);
+	}
 	return SimpleLruReadPage(ClusterRemoteXactCtl, pageno, true, xid);
 }
 
@@ -234,6 +265,22 @@ cluster_remote_xact_apply(int origin_node, XLogReaderState *record)
 	uint8 info = XLogRecGetInfo(record) & XLOG_XACT_OPMASK;
 	TransactionId xid = XLogRecGetXid(record);
 
+	if (rmid == RM_MULTIXACT_ID || rmid == RM_COMMIT_TS_ID) {
+		/*
+		 * spec-4.5a G6 (F1 closure): foreign MULTIXACT/COMMIT_TS redo
+		 * writes the LOCAL pg_multixact/pg_commit_ts by raw xid -- the
+		 * same aliasing as pg_xact -- but this store has no per-origin
+		 * representation for either.  Fail closed, never apply locally.
+		 */
+		ereport(FATAL, (errcode(ERRCODE_CLUSTER_MERGED_RECOVERY_BLOCKED),
+						errmsg("merged recovery: foreign %s record cannot be materialized "
+							   "(origin node %d, xid %u)",
+							   rmid == RM_MULTIXACT_ID ? "multixact" : "commit-timestamp",
+							   origin_node, xid),
+						errhint("Cross-instance multixact / commit-timestamp state is not yet "
+								"mergeable; recover with cluster.merged_recovery=off.")));
+	}
+
 	if (rmid == RM_CLOG_ID) {
 		/*
 		 * CLOG records are page-extend/truncate housekeeping for B's OWN
@@ -246,6 +293,21 @@ cluster_remote_xact_apply(int origin_node, XLogReaderState *record)
 	}
 
 	Assert(rmid == RM_XACT_ID);
+
+	/*
+	 * Only a commit/abort keyed by a NORMAL xid materializes a per-origin
+	 * outcome.  A foreign XACT record with a non-normal xl_xid (e.g. a
+	 * standalone invalidations/assignment sub-record, or a commit whose
+	 * real xid lives in the parsed body) carries nothing to key the store
+	 * by -- consume it rather than open an SLRU page for xid 0.
+	 */
+	if (!TransactionIdIsNormal(xid)) {
+		elog(DEBUG1,
+			 "cluster_remote_xact_apply: consumed foreign XACT info 0x%02x with non-normal xid %u "
+			 "(origin %d)",
+			 (unsigned)info, xid, origin_node);
+		return;
+	}
 
 	switch (info) {
 	case XLOG_XACT_COMMIT: {
@@ -284,7 +346,28 @@ cluster_remote_xact_apply(int origin_node, XLogReaderState *record)
 							errhint("spec-1.18 stamps every commit record; a missing SCN means "
 									"a pre-cluster WAL stream, which cannot be merged.")));
 
+		/*
+		 * Mirror the two cluster side effects xact_redo_commit would have
+		 * driven for this record (the divert consumed it, so they must be
+		 * replicated here -- everything ELSE in xact_redo_commit is what
+		 * the divert exists to prevent):
+		 *
+		 *	1. Lamport observe (spec-1.18): A's SCN state must catch up to
+		 *	   the peer's commit SCN, or post-recovery snapshots could read
+		 *	   below a merged commit.
+		 *	2. TT stamp fold (spec-3.18 D4.1): the commit record carries
+		 *	   the durable TT slot delta; the redo stamp resolves its path
+		 *	   from tt_commit.instance, so it lands in the MATERIALIZED
+		 *	   pg_undo/instance_<origin> copy -- which is what the remote
+		 *	   readers' commit_scn cross-check (G5) reads.
+		 */
+		cluster_scn_recovery_replay_observe(parsed.scn);
 		cluster_remote_xact_set(origin_node, xid, CLUSTER_REMOTE_XACT_COMMITTED, parsed.scn);
+		if (parsed.has_tt_commit)
+			cluster_tt_durable_redo_stamp_slot(parsed.tt_commit.instance,
+											   parsed.tt_commit.segment_id,
+											   parsed.tt_commit.slot_offset, parsed.tt_commit.wrap,
+											   parsed.tt_commit.xid, parsed.tt_commit.commit_scn);
 		pg_atomic_fetch_add_u64(&RemoteXactShared->diverted_commit_count, 1);
 		break;
 	}
@@ -301,6 +384,8 @@ cluster_remote_xact_apply(int origin_node, XLogReaderState *record)
 								   origin_node, xid),
 							errhint("Recover with cluster.merged_recovery=off.")));
 
+		/* Mirror xact_redo_abort's Lamport observe (see the commit arm). */
+		cluster_scn_recovery_replay_observe(parsed.scn);
 		cluster_remote_xact_set(origin_node, xid, CLUSTER_REMOTE_XACT_ABORTED, InvalidScn);
 		pg_atomic_fetch_add_u64(&RemoteXactShared->diverted_abort_count, 1);
 		break;

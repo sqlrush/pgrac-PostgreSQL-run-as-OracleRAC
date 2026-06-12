@@ -282,8 +282,6 @@ cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend)
 {
 	CLUSTER_INJECTION_POINT("cluster-smgr-which-decision");
 
-	(void)rlocator;
-
 	if (backend != InvalidBackendId)
 		return 0; /* temp relation: always md.c */
 
@@ -292,6 +290,21 @@ cluster_smgr_which_for(RelFileLocator rlocator, BackendId backend)
 
 	if (!cluster_smgr_user_relations)
 		return 0; /* opt-in GUC off: keep default safe */
+
+	/*
+	 * USER relations only (spec-4.5a G6).  Catalogs -- including the
+	 * shared ones under global/ -- are per-node state: every node runs
+	 * its own catalog copy (cross-node catalog coordination is feature
+	 * #11), so routing them into a genuinely shared root would point a
+	 * node at files initdb wrote into a DIFFERENT node's PGDATA.  The
+	 * local/stub backends masked this (their paths resolve inside the
+	 * node's own PGDATA either way); cluster_fs does not.  Same
+	 * relfilenumber boundary as cluster_bufmgr_should_pcm_track; a
+	 * rewritten catalog (VACUUM FULL pg_class) moving above
+	 * FirstNormalObjectId is out of harness scope until feature #11.
+	 */
+	if (rlocator.relNumber < FirstNormalObjectId)
+		return 0; /* catalog / system relation: per-node md.c */
 
 	return 1; /* cluster_smgr */
 }

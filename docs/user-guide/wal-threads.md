@@ -108,14 +108,26 @@ watermark — and report per-thread results under the same category
 (`stream_ok_threads`, `stream_suspect_or_unreadable_threads`).  The
 workers never delay startup and never read a live node's stream.
 When `cluster.merged_recovery` is on and a crash candidate is found,
-the node currently refuses to start with a clear error: cross-node
-merged recovery needs a shared data-file storage backend, which this
-release does not provide (the cluster filesystem is per-node).
-Recover such a node with `cluster.merged_recovery = off` (its own WAL
-stream); merged recovery across nodes is a later milestone.
+the behavior depends on the data storage backend.  With
+`cluster.shared_storage_backend = cluster_fs` (a genuinely shared
+data root, see `cluster.shared_data_dir`), the surviving node merges
+the crashed peers' WAL streams with its own in cross-node commit
+order and drives the shared data files forward — afterwards the
+peers' committed rows are readable on the survivor, and a crashed
+peer that restarts later skips the work the survivor already applied.
+This requires that every crashed peer attached to the same shared
+root (it must appear in the root's participant set) and that all
+peers are down (cold cluster); anything the merge cannot resolve —
+an unreadable peer stream, a peer transaction whose outcome never
+reached the WAL, or a peer commit carrying cross-node side effects
+such as a table drop — makes the node refuse to start (or the read
+fail) with a clear error rather than guessing.  On the `stub` and
+`local` backends the node refuses to start with a clear error:
+merged recovery needs a shared data-file storage backend.  In either
+case a node can always be recovered alone with
+`cluster.merged_recovery = off` (its own WAL stream only).
 
-This release only reports the classification — cross-thread
-merged recovery is not performed.  An `unknown` thread is never treated
+An `unknown` thread is never treated
 as crashed; if unknowns persist, check the shared WAL storage.  If
 peer nodes run a larger `cluster.cluster_stats_main_loop_interval`,
 raise `cluster.recovery_stale_active_ms` accordingly so live peers are

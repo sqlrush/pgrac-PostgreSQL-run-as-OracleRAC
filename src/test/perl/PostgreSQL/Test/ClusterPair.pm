@@ -59,6 +59,17 @@ use PostgreSQL::Test::Utils;
 #	                           cluster.wal_threads_dir is set on both
 #	                           nodes.  Use ->wal_threads_root to reach
 #	                           the root (cross-thread pg_waldump etc.).
+#	  shared_data            : boolean — opt-in spec-4.5a shared-data
+#	                           backend harness.  Creates one shared data
+#	                           root tempdir; BOTH nodes get
+#	                           cluster.shared_storage_backend=cluster_fs
+#	                           + cluster.shared_data_dir=<root> +
+#	                           cluster.smgr_user_relations=on, so user
+#	                           relations land in ONE shared file tree
+#	                           (the same-DDL/same-relfilenode harness
+#	                           premise; production naming is feature
+#	                           #11).  Use ->shared_data_root to reach
+#	                           the root (sentinel inspection etc.).
 #-----------------------------------------------------------------------
 sub new_pair
 {
@@ -110,6 +121,17 @@ sub new_pair
 		$wal_threads_root = PostgreSQL::Test::Utils::tempdir();
 	}
 
+	# spec-4.5a opt-in: shared data root.  One tempdir both postmasters
+	# write user-relation blocks into through the cluster_fs shared_fs
+	# backend (cluster_smgr passthrough).  The shared-root sentinel
+	# (pgrac_shared.control) is created by the first node to attach and
+	# records both node_ids as participants.
+	my $shared_data_root;
+	if ($opts{shared_data})
+	{
+		$shared_data_root = PostgreSQL::Test::Utils::tempdir();
+	}
+
 	my $wal_node_index = 0;
 	for my $node ($node0, $node1)
 	{
@@ -125,6 +147,16 @@ sub new_pair
 			$node->init;
 		}
 		$wal_node_index++;
+
+		if (defined $shared_data_root)
+		{
+			$node->append_conf('postgresql.conf',
+				"cluster.shared_storage_backend = cluster_fs\n");
+			$node->append_conf('postgresql.conf',
+				"cluster.shared_data_dir = '$shared_data_root'\n");
+			$node->append_conf('postgresql.conf',
+				"cluster.smgr_user_relations = on\n");
+		}
 
 		# spec-2.2 §3.3 -- enable cluster + tier1.  per L59 first-time
 		# GUC writes use append_conf (adjust_conf is replace-only).
@@ -212,6 +244,7 @@ EOC
 		ic_ports    => [ $ic_port_0, $ic_port_1 ],
 		voting_disk_paths => \@voting_disk_paths,
 		wal_threads_root  => $wal_threads_root,
+		shared_data_root  => $shared_data_root,
 	}, $class;
 }
 
@@ -252,6 +285,9 @@ sub ic_port { return $_[0]->{ic_ports}[ $_[1] ]; }
 
 # spec-4.1: shared per-thread WAL root (undef unless wal_threads_root => 1).
 sub wal_threads_root { return $_[0]->{wal_threads_root}; }
+
+# spec-4.5a: shared data root (undef unless shared_data => 1).
+sub shared_data_root { return $_[0]->{shared_data_root}; }
 
 #-----------------------------------------------------------------------
 # voting_disk_paths($self)

@@ -442,6 +442,21 @@ static ClusterInjectPoint cluster_injection_points[] = {
 	 */
 	{ .name = "cluster-wal-state-ensure-pre" },
 	{ .name = "cluster-wal-state-write-fail" },
+
+	/*
+	 * spec-4.5a §4.2 L4 (F4) — forced snapshot read_scn (1 NEW point).
+	 *
+	 *	cr_force_read_scn (param = absolute SCN):
+	 *	  Precondition provider in the cr_* mould: when armed, every
+	 *	  cluster-source snapshot this node builds takes read_scn = param
+	 *	  instead of cluster_scn_current() (ClusterSnapshotRefreshFields).
+	 *	  A cold-crash merged-recovery TAP has no natural way to hold a
+	 *	  snapshot older than the peer's commit (every session post-dates
+	 *	  recovery), so t/248 injects the older read point to drive the
+	 *	  CR inverse-apply machinery; the natural consumers of old
+	 *	  read_scns are runtime/warm cross-instance reads (4.6/4.7).
+	 */
+	{ .name = "cr_force_read_scn" },
 };
 
 #define CLUSTER_INJECTION_COUNT lengthof(cluster_injection_points)
