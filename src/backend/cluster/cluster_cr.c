@@ -1129,6 +1129,25 @@ cluster_cr_resolve_xmax_commit_scn(const char *cr_page, uint8 itl_idx, Transacti
 	 */
 	switch (cluster_tt_slot_durable_resolve_by_xid(cr_xmax, expected_wrap, out_scn)) {
 	case CLUSTER_TT_DURABLE_RESOLVED_SCN:
+		/*
+		 * spec-4.8 D3 (task#90): the durable scan above ran WRAP_ANY (a
+		 * recycled scratch ITL slot carries no binding wrap here), so a single
+		 * COMMITTED match cannot tell a genuine commit from a 2^32-wrapped
+		 * raw-xid collision.  When retention is unreliable AND the match is
+		 * below the horizon it is wrap-suspect -> fail closed (narrowed
+		 * AMBIGUOUS_WRAP), never resolve to its commit_scn (规则 8.A: a wrong
+		 * deleter scn would false-hide a live row).  With retention reliable a
+		 * below-horizon collision's slot is already recycled (0-match), so a
+		 * below-horizon 1-match is a legit recycle-lag commit -> trusted.
+		 */
+		if (cluster_tt_recovery_wrap_suspect(
+				expected_wrap, *out_scn, cluster_undo_retention_horizon(),
+				cluster_undo_retention_horizon_enabled
+					&& cluster_tt_slot_retention_off_recycle_count() == 0)) {
+			*out_scn = InvalidScn;
+			cluster_tt_recovery_count_wrap_generation_disambiguated();
+			return CLUSTER_CR_XMAX_INVALID_OR_AMBIGUOUS;
+		}
 		return CLUSTER_CR_XMAX_RESOLVED_SCN; /* *out_scn set by the resolve */
 	case CLUSTER_TT_DURABLE_RECYCLED_ZERO_MATCH:
 		*out_scn = InvalidScn;

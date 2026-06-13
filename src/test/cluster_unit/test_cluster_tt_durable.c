@@ -760,11 +760,50 @@ UT_TEST(test_remote_authority_under_recovered_failclosed)
 	UT_ASSERT(!cluster_tt_recovery_remote_authority_covers(0, 1));
 }
 
+/* ============================================================
+ *	spec-4.8 D3 (task#90): WRAP_ANY by-xid wrap-suspect gate
+ * ============================================================ */
+UT_TEST(test_wrap_suspect_wrap_checked_never_suspect)
+{
+	/* expected_wrap != WRAP_ANY (already disambiguated) -> never suspect. */
+	UT_ASSERT(!cluster_tt_recovery_wrap_suspect(5, scn_encode(1, 10), scn_encode(1, 20), false));
+}
+UT_TEST(test_wrap_suspect_retention_reliable_never_suspect)
+{
+	/* retention reliable: below-horizon 1-match is a legit recycle-lag commit
+	 * (a wrapped collision's slot would already be recycled) -> not suspect. */
+	UT_ASSERT(!cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, scn_encode(1, 10),
+												scn_encode(1, 20), true));
+}
+UT_TEST(test_wrap_suspect_below_horizon_unreliable_is_suspect)
+{
+	/* WRAP_ANY + unreliable retention + below horizon -> wrap-suspect. */
+	UT_ASSERT(cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, scn_encode(1, 10),
+											   scn_encode(1, 20), false));
+}
+UT_TEST(test_wrap_suspect_at_or_above_horizon_not_suspect)
+{
+	/* WRAP_ANY + unreliable + match at/above horizon -> not below -> trusted. */
+	UT_ASSERT(!cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, scn_encode(1, 20),
+												scn_encode(1, 20), false));
+	UT_ASSERT(!cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, scn_encode(1, 30),
+												scn_encode(1, 20), false));
+}
+UT_TEST(test_wrap_suspect_unjudgeable_unreliable_failclosed)
+{
+	/* WRAP_ANY + unreliable + invalid horizon/scn -> cannot judge -> suspect
+	 * (fail-closed). */
+	UT_ASSERT(cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, scn_encode(1, 10), InvalidScn,
+											   false));
+	UT_ASSERT(cluster_tt_recovery_wrap_suspect(CLUSTER_TT_WRAP_ANY, InvalidScn, scn_encode(1, 20),
+											   false));
+}
+
 
 int
 main(int argc, char **argv)
 {
-	UT_PLAN(46);
+	UT_PLAN(51);
 
 	UT_RUN(test_layout_sizes);
 
@@ -822,6 +861,12 @@ main(int argc, char **argv)
 	UT_RUN(test_remote_authority_recovered_covers_anchor);
 	UT_RUN(test_remote_authority_recovered_equal_anchor);
 	UT_RUN(test_remote_authority_under_recovered_failclosed);
+
+	UT_RUN(test_wrap_suspect_wrap_checked_never_suspect);
+	UT_RUN(test_wrap_suspect_retention_reliable_never_suspect);
+	UT_RUN(test_wrap_suspect_below_horizon_unreliable_is_suspect);
+	UT_RUN(test_wrap_suspect_at_or_above_horizon_not_suspect);
+	UT_RUN(test_wrap_suspect_unjudgeable_unreliable_failclosed);
 
 	UT_DONE();
 	return ut_failed_count != 0 ? 1 : 0;

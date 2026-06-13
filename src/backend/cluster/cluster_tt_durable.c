@@ -386,6 +386,43 @@ cluster_tt_recovery_remote_authority_covers(uint64 recovered_through, uint64 anc
 	return recovered_through >= anchor_lsn;
 }
 
+
+/*
+ * cluster_tt_recovery_wrap_suspect -- spec-4.8 D3 pure gate (task#90).
+ *
+ *	A WRAP_ANY by-xid resolve that found exactly one COMMITTED match cannot tell
+ *	a genuine commit from a 2^32-wrapped raw-xid collision (no generation key to
+ *	compare).  Returns true (the 1-match is wrap-suspect; the caller must fail
+ *	closed -- a narrowed AMBIGUOUS_WRAP -- never resolve to its commit_scn) iff:
+ *	  - the resolve had no generation expectation (expected_wrap == WRAP_ANY;
+ *	    a wrap-checked caller is already disambiguated -> never suspect), AND
+ *	  - retention is NOT reliable (retention_reliable == false), AND
+ *	  - the matched commit_scn is strictly below the retention horizon, OR the
+ *	    horizon/scn cannot be judged (fail-closed under unreliable retention).
+ *
+ *	Why the retention_reliable short-circuit (规则 8.A + healthy-op liveness):
+ *	with retention reliable, a below-horizon COMMITTED slot is recycled
+ *	(spec-3.12), so a 2^32-wrapped collision's old slot is already gone (the
+ *	resolve sees 0-match, not this 1-match) and a surviving below-horizon
+ *	1-match is a LEGIT recent commit in the recycle-lag window -> trusting it
+ *	avoids a spurious 53R9F in healthy operation.  Only when retention is
+ *	unreliable (sticky retention_off_recycle_count > 0, mirroring spec-3.22)
+ *	can a long-unrecycled wrapped collision survive -> a below-horizon 1-match
+ *	is then genuinely ambiguous -> fail closed.  Pure; no I/O; unit-tested.
+ */
+bool
+cluster_tt_recovery_wrap_suspect(uint32 expected_wrap, SCN matched_scn, SCN horizon,
+								 bool retention_reliable)
+{
+	if (expected_wrap != CLUSTER_TT_WRAP_ANY)
+		return false;
+	if (retention_reliable)
+		return false;
+	if (!SCN_VALID(horizon) || !SCN_VALID(matched_scn))
+		return true; /* unreliable retention + unjudgeable -> fail closed */
+	return scn_time_cmp(matched_scn, horizon) < 0;
+}
+
 /*
  * cluster_tt_slot_durable_resolve_by_xid_origin -- spec-4.5a G6 (P1 #2): the
  * origin-qualified durable by-xid scan.  A materialized foreign read cannot

@@ -241,6 +241,18 @@ extern bool cluster_tt_recovery_remote_authority_covers(uint64 recovered_through
 														uint64 anchor_lsn);
 
 /*
+ * cluster_tt_recovery_wrap_suspect -- spec-4.8 D3 pure gate (task#90): is a
+ *	WRAP_ANY by-xid 1-match a 2^32-wrapped raw-xid collision?  True (fail-closed,
+ *	narrowed AMBIGUOUS_WRAP) iff expected_wrap == WRAP_ANY AND retention is NOT
+ *	reliable AND the matched commit_scn is below the horizon (or unjudgeable).
+ *	retention_reliable short-circuits to false (a below-horizon collision's slot
+ *	is already recycled, so a surviving below-horizon 1-match is a legit
+ *	recycle-lag commit).  Pure; no I/O.
+ */
+extern bool cluster_tt_recovery_wrap_suspect(uint32 expected_wrap, SCN matched_scn, SCN horizon,
+											 bool retention_reliable);
+
+/*
  * cluster_tt_recovery_xact_liveness -- backend wrapper that consults PG's CLOG
  *	(TransactionIdDidCommit) and proc array (TransactionIdIsInProgress) for xid,
  *	then classifies via cluster_tt_recovery_classify_liveness.  Implemented in
