@@ -41,6 +41,7 @@
 #include "cluster/cluster_recovery_merge.h" /* spec-4.5a G6: materialized authority gate */
 #include "cluster/cluster_remote_xact.h"	/* spec-4.5a G6: wrap-checked authority */
 #include "cluster/cluster_subtrans.h"		/* SUBCOMMITTED parent follow */
+#include "cluster/cluster_tt_durable.h"		/* spec-4.8 D2 remote_active_failclosed counter */
 #include "cluster/cluster_tt_status.h"		/* lookup_exact / Key / Result */
 #include "cluster/cluster_visibility_resolve.h"
 #include "cluster/cluster_wal_state.h" /* CLUSTER_WAL_STATE_SLOT_COUNT */
@@ -131,7 +132,8 @@ resolve_from_remote_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
  *	  origin != self            -> REMOTE (overlay resolve).
  */
 static void
-classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisResolve *out)
+classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, XLogRecPtr anchor_lsn,
+			 ClusterVisResolve *out)
 {
 	if (out == NULL || ref == NULL)
 		return;
@@ -183,6 +185,29 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 		if (vis_origin_materialized((int)ref->origin_node_id)) {
 			SCN scn;
 
+			/*
+			 * spec-4.8 D2: tighten the coarse bool is_materialized gate to an
+			 * LSN gate (4.7 D5 / Q5 lesson -- "materialized" alone is too weak).
+			 * is_materialized only proves the origin's merge published a marker;
+			 * a materialized-but-under-recovered origin may yield a STALE TT
+			 * outcome for a page version its redo has not yet reconciled.  If
+			 * this tuple's page LSN is beyond the origin's recovered_through
+			 * (the lost-write / under-recovery window, spec-2.37 / 4.7 D5), the
+			 * durable outcome -- COMMITTED *or* ABORTED -- is untrustworthy:
+			 * trusting it risks a false-visible (stale COMMITTED) or a
+			 * false-invisible (a commit record the origin has not yet replayed
+			 * read as a 0-match ABORTED).  Fail closed (规则 8.A), never resolve.
+			 * anchor_lsn == 0 (unwritten page) skips the gate -> pre-D2
+			 * is_materialized-only behaviour (no regression).
+			 */
+			if (!cluster_tt_recovery_remote_authority_covers(
+					cluster_merged_instance_recovered_through((int)ref->origin_node_id),
+					(uint64)anchor_lsn)) {
+				out->evidence = CLUSTER_VIS_EVIDENCE_STALE_OR_AMBIGUOUS;
+				cluster_tt_recovery_count_remote_active_failclosed();
+				return;
+			}
+
 			switch (
 				cluster_remote_outcome_durable_checked((int)ref->origin_node_id, raw_xid, &scn)) {
 			case CLUSTER_REMOTE_XACT_COMMITTED:
@@ -211,7 +236,7 @@ classify_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref, ClusterVisR
 
 void
 cluster_visibility_resolve_from_ref(TransactionId raw_xid, const ClusterUndoTTSlotRef *ref,
-									ClusterVisResolve *out)
+									XLogRecPtr anchor_lsn, ClusterVisResolve *out)
 {
 	if (out == NULL)
 		return;
@@ -221,7 +246,7 @@ cluster_visibility_resolve_from_ref(TransactionId raw_xid, const ClusterUndoTTSl
 	out->status = CLUSTER_TT_STATUS_UNKNOWN;
 	out->commit_scn = InvalidScn;
 
-	classify_ref(raw_xid, ref, out);
+	classify_ref(raw_xid, ref, anchor_lsn, out);
 }
 
 
@@ -231,6 +256,7 @@ cluster_visibility_resolve_tuple(Buffer buffer, HeapTupleHeader htup, Transactio
 {
 	Page page;
 	ClusterUndoTTSlotRef ref;
+	XLogRecPtr anchor_lsn;
 
 	if (out == NULL)
 		return;
@@ -248,20 +274,24 @@ cluster_visibility_resolve_tuple(Buffer buffer, HeapTupleHeader htup, Transactio
 	if (!PageHasItl(page))
 		return;
 
+	/* spec-4.8 D2: the tuple's page LSN is the recovered_through anchor for the
+	 * cross-node TT authority gate (classify_ref). */
+	anchor_lsn = PageGetLSN(page);
+
 	switch (which) {
 	case CLUSTER_VIS_XMIN:
 	case CLUSTER_VIS_XMAX_UPDATE:
 		/* The tuple's own ITL slot records the last writer of this version. */
 		if (htup->t_itl_slot_idx != CLUSTER_ITL_SLOT_UNALLOCATED
 			&& cluster_itl_get_tt_ref(page, htup->t_itl_slot_idx, &ref))
-			classify_ref(raw_xid, &ref, out);
+			classify_ref(raw_xid, &ref, anchor_lsn, out);
 		break;
 
 	case CLUSTER_VIS_XMAX_LOCK_ONLY:
 		/* Lock-only xmax: the writer slot is found by xmax, not by the
 		 * tuple's own slot index (spec-3.4d D1). */
 		if (cluster_itl_find_lock_tt_ref_by_xmax(page, raw_xid, &ref))
-			classify_ref(raw_xid, &ref, out);
+			classify_ref(raw_xid, &ref, anchor_lsn, out);
 		break;
 
 	case CLUSTER_VIS_XMAX_MULTI: {

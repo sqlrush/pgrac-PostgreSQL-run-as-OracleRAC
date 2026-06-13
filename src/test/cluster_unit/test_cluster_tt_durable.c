@@ -734,11 +734,37 @@ UT_TEST(test_recovery_liveness_dead_and_ambiguous_both_abort)
 			  != CLUSTER_TT_RECOVERY_LIVE);
 }
 
+/* ============================================================
+ *	spec-4.8 D2: cross-node TT authority recovered_through LSN gate
+ * ============================================================ */
+UT_TEST(test_remote_authority_anchor_zero_skips_gate)
+{
+	/* anchor_lsn 0 (unwritten page) -> is_materialized-only (pre-D2). */
+	UT_ASSERT(cluster_tt_recovery_remote_authority_covers(0, 0));
+	UT_ASSERT(cluster_tt_recovery_remote_authority_covers(100, 0));
+}
+UT_TEST(test_remote_authority_recovered_covers_anchor)
+{
+	/* recovered_through >= anchor -> trust the durable outcome. */
+	UT_ASSERT(cluster_tt_recovery_remote_authority_covers(200, 100));
+}
+UT_TEST(test_remote_authority_recovered_equal_anchor)
+{
+	/* boundary: recovered_through == anchor -> covered (>=). */
+	UT_ASSERT(cluster_tt_recovery_remote_authority_covers(100, 100));
+}
+UT_TEST(test_remote_authority_under_recovered_failclosed)
+{
+	/* recovered_through < anchor -> NOT covered -> caller fail-closes. */
+	UT_ASSERT(!cluster_tt_recovery_remote_authority_covers(99, 100));
+	UT_ASSERT(!cluster_tt_recovery_remote_authority_covers(0, 1));
+}
+
 
 int
 main(int argc, char **argv)
 {
-	UT_PLAN(42);
+	UT_PLAN(46);
 
 	UT_RUN(test_layout_sizes);
 
@@ -791,6 +817,11 @@ main(int argc, char **argv)
 	UT_RUN(test_recovery_liveness_inprogress_is_live);
 	UT_RUN(test_recovery_liveness_neither_is_dead);
 	UT_RUN(test_recovery_liveness_dead_and_ambiguous_both_abort);
+
+	UT_RUN(test_remote_authority_anchor_zero_skips_gate);
+	UT_RUN(test_remote_authority_recovered_covers_anchor);
+	UT_RUN(test_remote_authority_recovered_equal_anchor);
+	UT_RUN(test_remote_authority_under_recovered_failclosed);
 
 	UT_DONE();
 	return ut_failed_count != 0 ? 1 : 0;

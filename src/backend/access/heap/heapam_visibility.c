@@ -1621,7 +1621,8 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 			ClusterVisResolve res;
 
 			if (ref_filled)
-				cluster_visibility_resolve_from_ref(raw_xmin, &ref, &res);
+				cluster_visibility_resolve_from_ref(raw_xmin, &ref,
+													PageGetLSN(BufferGetPage(buffer)), &res);
 			else
 				cluster_visibility_resolve_tuple(buffer, tuple, raw_xmin, CLUSTER_VIS_XMIN, &res);
 

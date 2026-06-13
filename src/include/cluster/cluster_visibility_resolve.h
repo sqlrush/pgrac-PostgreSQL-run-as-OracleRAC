@@ -51,6 +51,7 @@
 
 #include "c.h"
 #include "access/htup.h"
+#include "access/xlogdefs.h" /* XLogRecPtr (spec-4.8 D2 anchor_lsn) */
 #include "storage/buf.h"
 
 #include "cluster/cluster_scn.h"	   /* SCN */
@@ -117,10 +118,12 @@ extern void cluster_visibility_resolve_tuple(Buffer buffer, HeapTupleHeader htup
  * Resolve directly from a caller-supplied ITL ref (e.g. the spec-3.2 D5b
  * test inject hook).  Same classification + remote resolve as
  * cluster_visibility_resolve_tuple but without re-reading the page slot.
+ * anchor_lsn = the tuple's page LSN (spec-4.8 D2 cross-node recovered_through
+ * gate); pass InvalidXLogRecPtr to skip the LSN gate (is_materialized only).
  */
 extern void cluster_visibility_resolve_from_ref(TransactionId raw_xid,
 												const ClusterUndoTTSlotRef *ref,
-												ClusterVisResolve *out);
+												XLogRecPtr anchor_lsn, ClusterVisResolve *out);
 
 
 /*

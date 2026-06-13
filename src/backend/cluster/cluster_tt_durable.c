@@ -362,6 +362,30 @@ cluster_tt_recovery_classify_liveness(bool determinable, bool did_commit, bool i
 	return CLUSTER_TT_RECOVERY_DEAD;
 }
 
+
+/*
+ * cluster_tt_recovery_remote_authority_covers -- spec-4.8 D2 pure gate.
+ *
+ *	True iff a survivor may trust a crashed-and-materialized origin's durable TT
+ *	outcome for a tuple whose page LSN is `anchor_lsn`.  is_materialized (the
+ *	4.5a G6 bool gate, checked by the caller) only proves a merge marker was
+ *	published; this LSN gate (4.7 D5 / Q5 lesson) additionally requires the
+ *	origin's recovery to have reconciled THROUGH the tuple's page version.  If
+ *	the page LSN is beyond recovered_through, the page carries a version the
+ *	origin's redo has not reached -- the durable outcome (COMMITTED or ABORTED)
+ *	is untrustworthy and the caller must fail closed (规则 8.A).
+ *
+ *	anchor_lsn == 0 (InvalidXLogRecPtr -- an unwritten page) skips the LSN gate
+ *	(is_materialized-only, pre-D2 behaviour).  Pure; no I/O; unit-tested.
+ */
+bool
+cluster_tt_recovery_remote_authority_covers(uint64 recovered_through, uint64 anchor_lsn)
+{
+	if (anchor_lsn == 0)
+		return true;
+	return recovered_through >= anchor_lsn;
+}
+
 /*
  * cluster_tt_slot_durable_resolve_by_xid_origin -- spec-4.5a G6 (P1 #2): the
  * origin-qualified durable by-xid scan.  A materialized foreign read cannot

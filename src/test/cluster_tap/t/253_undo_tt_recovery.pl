@@ -184,10 +184,21 @@ $nb->stop;
 # Signatures (b) cross-node materialized read, (c) wrap-generation: not
 # harness-reproducible (L239) -- unit-proven + D2/D3 acceptance legs.
 # ======================================================================
+# sig(b) cross-node TT authority — D2 LANDED.  The recovered_through LSN gate
+# (cluster_tt_recovery_remote_authority_covers) tightens the 4.5a G6 bool
+# is_materialized gate: a materialized-but-under-recovered origin (tuple page
+# LSN beyond recovered_through) fails closed (remote_active_failclosed counter),
+# never trusting a stale COMMITTED/ABORTED outcome (规则 8.A).  The gate
+# decision is unit-proven (test_cluster_tt_durable D2 truth table: anchor==0
+# skip / recovered>=anchor trust / recovered<anchor fail-closed).  The e2e
+# materialized-under-recovered scenario needs a real shared-storage crash+merge
+# with a page LSN beyond the merge's recovered_through, which the current
+# harness cannot force deterministically (mirrors 4.7 D5) -> honest SKIP (L239).
 SKIP:
 {
-	skip 'sig(b) cross-node materialized in-flight read needs the D2 authority '
-	  . 'gate + ClusterTriple shared_data harness (L239 — covered by D2 leg)', 1;
+	skip 'sig(b) D2 cross-node recovered_through gate is unit-proven; the '
+	  . 'materialized-under-recovered e2e needs real shared-storage crash+merge '
+	  . '(not harness-deterministic, mirrors 4.7 D5 / L239)', 1;
 	ok(1, 'sig(b) placeholder');
 }
 SKIP:

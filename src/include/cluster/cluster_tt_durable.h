@@ -232,6 +232,15 @@ extern ClusterTtRecoveryLiveness
 cluster_tt_recovery_classify_liveness(bool determinable, bool did_commit, bool is_in_progress);
 
 /*
+ * cluster_tt_recovery_remote_authority_covers -- spec-4.8 D2 pure gate: may a
+ *	survivor trust a materialized origin's durable TT outcome for a tuple at
+ *	page LSN anchor_lsn?  Requires recovered_through >= anchor_lsn (4.7 D5 LSN
+ *	gate); anchor_lsn == 0 skips the gate (is_materialized-only).  Pure; no I/O.
+ */
+extern bool cluster_tt_recovery_remote_authority_covers(uint64 recovered_through,
+														uint64 anchor_lsn);
+
+/*
  * cluster_tt_recovery_xact_liveness -- backend wrapper that consults PG's CLOG
  *	(TransactionIdDidCommit) and proc array (TransactionIdIsInProgress) for xid,
  *	then classifies via cluster_tt_recovery_classify_liveness.  Implemented in
