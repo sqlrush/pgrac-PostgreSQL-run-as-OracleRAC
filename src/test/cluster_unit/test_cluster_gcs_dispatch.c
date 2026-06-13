@@ -353,16 +353,29 @@ cluster_pcm_lock_clear_pending_x(BufferTag tag pg_attribute_unused())
  * hash mod-N) calls cluster_conf_lookup_node.  Single-node fixture: return
  * NULL for all slots except 0 to keep declared_count = 1 (HC72 self short-
  * circuit). */
+/* spec-4.7 D7 — controllable declared-node count (default 1 = the original
+ * single-node fixture;  the D7 routing test raises it to exercise re-route). */
+static int fake_declared_count = 1;
 const ClusterNodeInfo *
 cluster_conf_lookup_node(int32 node_id)
 {
-	static ClusterNodeInfo info_self = { 0 };
+	static ClusterNodeInfo infos[CLUSTER_MAX_NODES];
 
-	if (node_id == 0) {
-		info_self.node_id = 0;
-		return &info_self;
+	if (node_id >= 0 && node_id < fake_declared_count) {
+		infos[node_id].node_id = node_id;
+		return &infos[node_id];
 	}
 	return NULL;
+}
+
+/* spec-4.7 D7 (L238) — cluster_gcs.o's recovery-aware lookup_master reads peer
+ * liveness;  controllable dead node (default -1 = all alive → re-route never
+ * triggers → healthy static routing unchanged for the existing tests). */
+static int32 fake_dead_node = -1;
+ClusterCssdPeerState
+cluster_cssd_get_peer_state(int32 peer_id)
+{
+	return (peer_id == fake_dead_node) ? CLUSTER_CSSD_PEER_DEAD : CLUSTER_CSSD_PEER_ALIVE;
 }
 
 
@@ -448,6 +461,48 @@ UT_TEST(test_gcs_reply_status_enum_count_is_4)
 UT_TEST(test_gcs_lookup_master_symbol_linkable)
 {
 	UT_ASSERT_NOT_NULL((void *)cluster_gcs_lookup_master);
+}
+
+/*
+ * spec-4.7 D7 — recovery-aware GCS routing remaster.  Healthy (no dead node):
+ * lookup_master == lookup_master_static (zero behaviour change).  When the
+ * STATIC declared master is DEAD: lookup_master re-routes to a LIVE survivor
+ * (never the dead node), while lookup_master_static still returns the original
+ * (dead) master for the recovery-phase gate.
+ */
+UT_TEST(test_gcs_d7_recovery_aware_reroute)
+{
+	BufferTag tag;
+	int static_m = 0;
+	int routed;
+	int blk;
+
+	fake_declared_count = 3; /* nodes 0,1,2;  self = 0 */
+	fake_dead_node = -1;
+
+	/* Find a tag whose STATIC master is a non-self node (1 or 2). */
+	memset(&tag, 0, sizeof(tag));
+	for (blk = 0; blk < 256; blk++) {
+		tag.blockNum = (BlockNumber)blk;
+		static_m = cluster_gcs_lookup_master_static(tag);
+		if (static_m != 0)
+			break;
+	}
+	UT_ASSERT(static_m != 0);
+
+	/* Healthy: recovery-aware lookup returns the static master UNCHANGED. */
+	UT_ASSERT_EQ(cluster_gcs_lookup_master(tag), static_m);
+
+	/* Kill the static master → re-route to a live survivor (never the dead). */
+	fake_dead_node = static_m;
+	routed = cluster_gcs_lookup_master(tag);
+	UT_ASSERT(routed != static_m);
+	UT_ASSERT_EQ((int)cluster_cssd_get_peer_state(routed), (int)CLUSTER_CSSD_PEER_ALIVE);
+	/* static lookup still reports the original (dead) master for the gate. */
+	UT_ASSERT_EQ(cluster_gcs_lookup_master_static(tag), static_m);
+
+	fake_declared_count = 1;
+	fake_dead_node = -1;
 }
 
 
@@ -617,13 +672,14 @@ UT_TEST(test_gcs_module_init_helpers_linkable)
 int
 main(void)
 {
-	UT_PLAN(18);
+	UT_PLAN(19);
 	UT_RUN(test_gcs_msg_type_enum_values_no_collision);
 	UT_RUN(test_gcs_payload_sizes_locked);
 	UT_RUN(test_gcs_payload_field_offsets);
 	UT_RUN(test_gcs_handler_symbols_linkable);
 	UT_RUN(test_gcs_reply_status_enum_count_is_4);
 	UT_RUN(test_gcs_lookup_master_symbol_linkable);
+	UT_RUN(test_gcs_d7_recovery_aware_reroute);
 	UT_RUN(test_gcs_send_transition_and_wait_symbol_linkable);
 	UT_RUN(test_gcs_register_msg_types_symbol_linkable);
 	UT_RUN(test_gcs_dump_accessors_all_linkable);

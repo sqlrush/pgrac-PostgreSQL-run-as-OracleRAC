@@ -6145,6 +6145,77 @@ cluster_bufmgr_copy_block_for_gcs(BufferTag tag, XLogRecPtr *out_page_lsn, char 
 	return stable;
 }
 
+/*
+ * cluster_bufmgr_redeclare_scan_chunk -- spec-4.7 D2 (Q6-A' worker-centric).
+ *
+ *	Scan a bounded chunk [start_buf, start_buf + max_scan) of the shared
+ *	buffer pool;  for every locally-resident buffer that holds a covering PCM
+ *	mode (BM_VALID ∧ !BM_IO_IN_PROGRESS ∧ pcm_state ∈ {S,X} ∧ PCM-tracked ∧
+ *	valid page_lsn) invoke cb(tag, mode, page_lsn, arg).  Returns the next
+ *	cursor (== NBuffers once the whole pool has been scanned), so the LMON
+ *	reconfig tick can drive it in bounded chunks across ticks without
+ *	blocking the heartbeat (§6 risk mitigation).
+ *
+ *	pcm_state + tag are read under the buffer-header spinlock (the shared
+ *	authoritative per-node PCM state — Q6-A', not backend-private);  page_lsn
+ *	is read under content_lock SHARED after a raw pin (mirrors
+ *	cluster_bufmgr_copy_block_for_gcs, minus the HC82 WAL flush / HC89
+ *	revalidation — the re-declare page_lsn is a watermark hint, D5 does the
+ *	authoritative lost-write check).  No PCM state is mutated.
+ */
+int
+cluster_bufmgr_redeclare_scan_chunk(int start_buf, int max_scan,
+									ClusterGcsRedeclareCallback cb, void *arg)
+{
+	int			i;
+	int			end;
+
+	Assert(cb != NULL);
+
+	if (start_buf < 0)
+		start_buf = 0;
+	end = start_buf + max_scan;
+	if (end > NBuffers)
+		end = NBuffers;
+
+	for (i = start_buf; i < end; i++)
+	{
+		BufferDesc *buf = GetBufferDescriptor(i);
+		uint32		buf_state;
+		uint8		mode;
+		BufferTag	tag;
+		LWLock	   *content_lock;
+		XLogRecPtr	page_lsn;
+
+		buf_state = LockBufHdr(buf);
+		mode = buf->pcm_state;
+		if ((buf_state & BM_VALID) == 0
+			|| (buf_state & BM_IO_IN_PROGRESS) != 0
+			|| (mode != (uint8) PCM_STATE_S && mode != (uint8) PCM_STATE_X)
+			|| !cluster_bufmgr_should_pcm_track(buf))
+		{
+			UnlockBufHdr(buf, buf_state);
+			continue;
+		}
+		tag = buf->tag;
+		/* pin + unlock header (raw pin, mirrors copy_block_for_gcs). */
+		cluster_bufmgr_pin_for_gcs_locked(buf, buf_state);
+
+		content_lock = BufferDescriptorGetContentLock(buf);
+		LWLockAcquire(content_lock, LW_SHARED);
+		page_lsn = PageGetLSN((Page) BufHdrGetBlock(buf));
+		LWLockRelease(content_lock);
+
+		cluster_bufmgr_unpin_for_gcs(buf);
+
+		/* P1#2: only re-declare a buffer with a valid pd_lsn. */
+		if (!XLogRecPtrIsInvalid(page_lsn))
+			cb(tag, mode, page_lsn, arg);
+	}
+
+	return end;
+}
+
 /* ========================================================================
  * PGRAC MODIFICATIONS by SqlRush — spec-2.36 D4 (HC118 / HC123).
  *

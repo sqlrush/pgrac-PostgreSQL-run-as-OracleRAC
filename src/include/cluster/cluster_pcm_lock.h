@@ -398,6 +398,17 @@ extern bool cluster_pcm_master_requester_is_holder(BufferTag tag, int32 node,
  * DEAD holders excluded (warm-recovery path).  See cluster_pcm_lock.c. */
 extern bool cluster_pcm_master_other_live_holder_exists(BufferTag tag, int32 sender);
 
+/* PGRAC: spec-4.7 D2/D3 — master-side rebuild of the minimal block-resource
+ * view from one survivor re-declare.  Primitive args (not the wire payload)
+ * to avoid a cluster_gcs_block.h ↔ cluster_pcm_lock.h include cycle; the
+ * GCS_BLOCK_REDECLARE handler extracts the fields and calls this.  D2 records
+ * the holder + max PI watermark;  D3 adds conflict detection (two X
+ * declarers = protocol anomaly → fail-closed) + the not-double-X invariant.
+ * source_node must equal the declared holder_node_id (the sender). */
+extern bool cluster_gcs_block_master_rebuild_from_redeclare(BufferTag tag, uint8 held_mode,
+															XLogRecPtr page_lsn, int32 source_node,
+															uint64 cluster_epoch);
+
 /*
  * cluster_pcm_mode_covers — spec-4.7a D2.
  *

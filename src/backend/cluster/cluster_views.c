@@ -94,7 +94,7 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_GES_MASTER_QUERY,
 	WAIT_EVENT_GES_LOCAL_FAST_PATH,
 
-	/* Cluster: PCM (16; base 6 + spec-2.30 2 + spec-2.31 1 + spec-2.32 1 + spec-2.33 4 + spec-2.34 2) */
+	/* Cluster: PCM (20; base 6 + spec-2.30 2 + spec-2.31 1 + spec-2.32 1 + spec-2.33 4 + spec-2.34 2 + spec-2.36 3 + spec-4.7 1) */
 	WAIT_EVENT_PCM_BLOCK_READ_N_S,
 	WAIT_EVENT_PCM_BLOCK_READ_N_X,
 	WAIT_EVENT_PCM_BLOCK_WRITE_S_X,
@@ -114,6 +114,7 @@ static const uint32 cluster_wait_event_infos[CLUSTER_WAIT_EVENTS_COUNT] = {
 	WAIT_EVENT_GCS_BLOCK_INVALIDATE_BROADCAST, /* PGRAC spec-2.36 D8 */
 	WAIT_EVENT_GCS_BLOCK_INVALIDATE_ACK_WAIT,  /* PGRAC spec-2.36 D8 */
 	WAIT_EVENT_GCS_BLOCK_STARVATION_RETRY,	   /* PGRAC spec-2.36 D8 */
+	WAIT_EVENT_GCS_BLOCK_RECOVERING,		   /* PGRAC spec-4.7 D1 */
 
 	/* Cluster: BufferShip (5) */
 	WAIT_EVENT_BUFFER_SHIP_CR_BUILD,

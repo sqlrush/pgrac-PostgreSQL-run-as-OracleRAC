@@ -42,6 +42,7 @@
 #include "postgres.h"
 
 #include "cluster/cluster_buffer_desc.h"
+#include "cluster/cluster_gcs_block.h" /* spec-4.7 D1 — ClusterGcsBlockPhase + phase_for_tag proto */
 #include "cluster/cluster_inject.h"
 #include "cluster/cluster_pcm_lock.h"
 #include "cluster/cluster_shmem.h"
@@ -86,6 +87,35 @@ cluster_cssd_get_peer_state(int32 peer_id pg_attribute_unused())
 {
 	return 0; /* CLUSTER_CSSD_PEER_ALIVE */
 }
+
+/*
+ * spec-4.7 D1 (L238) — cluster_pcm_lock.o's acquire_buffer now opens with a
+ * RECOVERING gate referencing cluster_gcs_block_phase_for_tag,
+ * cluster_gcs_block_recovery_wait_ms and CHECK_FOR_INTERRUPTS.  This test
+ * links cluster_pcm_lock.o but not cluster_gcs_block.o / cluster_guc.o /
+ * postmaster core.  phase_for_tag → NORMAL keeps the gate a no-op so the
+ * bufmgr PCM hook tests exercise the local hold-until-revoked path, not the
+ * recovery path (covered e2e by t/251).
+ */
+volatile sig_atomic_t InterruptPending = false;
+void ProcessInterrupts(void);
+void
+ProcessInterrupts(void)
+{}
+int cluster_gcs_block_recovery_wait_ms = 200;
+ClusterGcsBlockPhase
+cluster_gcs_block_phase_for_tag(BufferTag tag pg_attribute_unused())
+{
+	return GCS_BLOCK_NORMAL;
+}
+
+/* spec-4.7 D3 (L238) — rebuild fn's not-double-X branch references this 4.6
+ * counter via cluster_pcm_lock.o;  stub no-op. */
+void cluster_grd_inc_block_path_failclosed(void);
+void
+cluster_grd_inc_block_path_failclosed(void)
+{}
+
 static ClusterConf fake_cluster_conf = {
 	.magic = PGRAC_CLUSTER_CONF_MAGIC,
 	.node_count = 2,

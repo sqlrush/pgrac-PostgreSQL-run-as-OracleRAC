@@ -174,7 +174,16 @@ typedef enum ClusterICMsgType {
 		   * (L172 family).  Sent by LMON drain of ClusterTTStatusHintOutbound;
 		   * fire-and-forget(无 ack);receiver install_local to spec-3.1
 		   * overlay using sender_node_id as origin.  spec-3.2 v1.0 FROZEN. */
-	/* values 21..255 available for future sub-spec; never reuse 0..20 */
+	,
+	PGRAC_IC_MSG_GCS_BLOCK_REDECLARE = 21 /* PGRAC: spec-4.7 D2 — survivor →
+		   * (remastered) master block re-declare after reconfiguration
+		   * (GcsBlockRedeclarePayload 64B fixed;  fire-and-forget announce of a
+		   * locally-held S/X buffer + its page_lsn so the new master can rebuild
+		   * the minimal block-resource view — D3).  Producer mask = BUFFER
+		   * clients + LMON (the P5 chunked scan runs in the LMON reconfig tick).
+		   * recv-time envelope version reject (P1#5) is centralized in
+		   * cluster_ic_envelope.c. */
+	/* values 22..255 available for future sub-spec; never reuse 0..21 */
 } ClusterICMsgType;
 
 

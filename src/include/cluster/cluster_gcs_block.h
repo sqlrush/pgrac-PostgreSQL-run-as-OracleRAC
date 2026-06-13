@@ -259,6 +259,70 @@ GcsBlockInvalidateAckPayloadGetPageLsn(const GcsBlockInvalidateAckPayload *p)
 
 
 /* ============================================================
+ *   GcsBlockRedeclarePayload -- wire ABI for PGRAC_IC_MSG_GCS_BLOCK_REDECLARE
+ *   (spec-4.7 D2;  survivor → remastered master).
+ *
+ *   After a reconfiguration, each survivor's P5 chunked scan (in the LMON
+ *   reconfig tick) re-declares every locally-held S/X buffer to the block's
+ *   current GCS master so the master can rebuild the minimal block-resource
+ *   view (holder bitmap / mode / PI watermark — D3).  Fire-and-forget
+ *   announce (no ACK):  the master is authoritative once rebuilt and a lost
+ *   announce just leaves a holder unrecorded (re-sent next tick until the
+ *   barrier completes).  64B fixed;  checksum at offset 48 (request/ack
+ *   convention) covers [0,48) which includes the page_lsn (so a corrupted
+ *   holder page_lsn cannot poison the rebuilt PI watermark / lost-write
+ *   required_lsn).  cluster_epoch is the episode epoch (L235 coherence gate;
+ *   the master drops a re-declare whose epoch != its accepted episode epoch).
+ * ============================================================ */
+typedef struct GcsBlockRedeclarePayload {
+	uint64 cluster_epoch;	 /*  8B [  0,   8) episode epoch (L235) */
+	BufferTag tag;			 /* 20B [  8,  28) PG-fact */
+	uint8 page_lsn_bytes[8]; /*  8B [ 28,  36) LE XLogRecPtr (PI watermark + required_lsn) */
+	int32 holder_node_id;	 /*  4B [ 36,  40) = sender node */
+	uint8 held_mode;		 /*  1B [ 40,  41) PcmState: PCM_STATE_S / PCM_STATE_X */
+	uint8 reserved_0[7];	 /*  7B [ 41,  48) */
+	uint32 checksum;		 /*  4B [ 48,  52) */
+	uint8 reserved_1[12];	 /* 12B [ 52,  64) pad to 64B */
+} GcsBlockRedeclarePayload;
+
+StaticAssertDecl(sizeof(GcsBlockRedeclarePayload) == 64,
+				 "spec-4.7 D2 GcsBlockRedeclarePayload wire ABI 64B");
+StaticAssertDecl(offsetof(GcsBlockRedeclarePayload, checksum) == 48,
+				 "spec-4.7 D2 GcsBlockRedeclarePayload checksum must land at offset 48");
+
+static inline void
+GcsBlockRedeclarePayloadSetPageLsn(GcsBlockRedeclarePayload *p, XLogRecPtr lsn)
+{
+	uint64 v = (uint64)lsn;
+
+	p->page_lsn_bytes[0] = (uint8)(v & 0xff);
+	p->page_lsn_bytes[1] = (uint8)((v >> 8) & 0xff);
+	p->page_lsn_bytes[2] = (uint8)((v >> 16) & 0xff);
+	p->page_lsn_bytes[3] = (uint8)((v >> 24) & 0xff);
+	p->page_lsn_bytes[4] = (uint8)((v >> 32) & 0xff);
+	p->page_lsn_bytes[5] = (uint8)((v >> 40) & 0xff);
+	p->page_lsn_bytes[6] = (uint8)((v >> 48) & 0xff);
+	p->page_lsn_bytes[7] = (uint8)((v >> 56) & 0xff);
+}
+
+static inline XLogRecPtr
+GcsBlockRedeclarePayloadGetPageLsn(const GcsBlockRedeclarePayload *p)
+{
+	uint64 v = 0;
+
+	v |= (uint64)p->page_lsn_bytes[0];
+	v |= (uint64)p->page_lsn_bytes[1] << 8;
+	v |= (uint64)p->page_lsn_bytes[2] << 16;
+	v |= (uint64)p->page_lsn_bytes[3] << 24;
+	v |= (uint64)p->page_lsn_bytes[4] << 32;
+	v |= (uint64)p->page_lsn_bytes[5] << 40;
+	v |= (uint64)p->page_lsn_bytes[6] << 48;
+	v |= (uint64)p->page_lsn_bytes[7] << 56;
+	return (XLogRecPtr)v;
+}
+
+
+/* ============================================================
  * GcsBlockRequestPayload -- wire ABI for PGRAC_IC_MSG_GCS_BLOCK_REQUEST.
  *
  *  Layout (64B; HC80; Sprint A Step 1 PG-fact discovery: struct natural
@@ -492,6 +556,17 @@ extern bool cluster_bufmgr_copy_block_for_gcs(BufferTag tag, XLogRecPtr *out_pag
 extern bool cluster_bufmgr_invalidate_block_for_gcs(BufferTag tag, PcmLockMode expected_mode,
 													XLogRecPtr *out_page_lsn);
 
+/* PGRAC: spec-4.7 D2 (Q6-A' worker-centric) — bounded chunked scan of the
+ * shared buffer pool that re-declares each locally-held S/X buffer.  The
+ * callback receives (tag, held_mode, page_lsn, arg) per qualifying buffer;
+ * cluster_bufmgr_redeclare_scan_chunk returns the next cursor (== NBuffers
+ * once the whole pool has been scanned) so the LMON reconfig tick can drive
+ * it in bounded chunks without blocking the heartbeat. */
+typedef void (*ClusterGcsRedeclareCallback)(BufferTag tag, uint8 held_mode, XLogRecPtr page_lsn,
+											void *arg);
+extern int cluster_bufmgr_redeclare_scan_chunk(int start_buf, int max_scan,
+											   ClusterGcsRedeclareCallback cb, void *arg);
+
 
 /* ============================================================
  * Public API.
@@ -535,6 +610,54 @@ extern bool cluster_bufmgr_invalidate_block_for_gcs(BufferTag tag, PcmLockMode e
 extern void cluster_gcs_send_block_request_and_wait(BufferDesc *buf,
 													PcmLockTransition transition_id,
 													int master_node);
+
+/*
+ * spec-4.7 D1 — GCS/PCM block resource recovery phase.
+ *
+ *	AD-002 资源级 {GRANTED, CONVERTING, RECOVERING} 的 RECOVERING 兑现.
+ *	A block resource is RECOVERING when its GCS master is being recovered
+ *	after a reconfiguration: the master node is DEAD, and block-protocol
+ *	state (holders / mode / PI watermark) is volatile shmem with no
+ *	transition log, so it must be REBUILT (spec-4.7 D2/D3), not recovered.
+ *	cluster_gcs_lookup_master hashes over the STATIC declared node list
+ *	(cluster_gcs.c), so a dead master still routes here;  spec-4.6 GRD/GES
+ *	remaster rebuilds only the logical-lock layer, NOT block/PCM state.
+ *
+ *	The bufmgr acquire gate (cluster_pcm_lock_acquire_buffer) fail-closes
+ *	53R9L (ERRCODE_CLUSTER_GCS_BLOCK_RESOURCE_RECOVERING) for a RECOVERING
+ *	block after a bounded cluster.gcs_block_recovery_wait_ms wait — never a
+ *	stale local / old-master fallback.  master == self (own master or
+ *	single-node fallback) is NOT RECOVERING (it is the clean-restart
+ *	lazy-rebuild path landed by spec-4.7 D3).
+ */
+typedef enum ClusterGcsBlockPhase {
+	GCS_BLOCK_NORMAL = 0,
+	GCS_BLOCK_RECOVERING = 1,
+} ClusterGcsBlockPhase;
+
+extern ClusterGcsBlockPhase cluster_gcs_block_phase_for_tag(BufferTag tag);
+
+/*
+ * spec-4.7 D5 — redo-before-unfreeze gate (Q5):  true iff the dead origin's
+ * merged WAL recovery on this node reached >= required_lsn (the survivor's
+ * observed max page_lsn).  Below that → lost-write risk → fail-closed 53R9M.
+ */
+extern bool cluster_gcs_block_redo_lsn_covered(int dead_origin, XLogRecPtr required_lsn);
+
+/*
+ * spec-4.7 D2 — survivor block re-declare wire (PGRAC_IC_MSG_GCS_BLOCK_REDECLARE).
+ *	cluster_gcs_block_send_redeclare:  the P5 chunked scan sends one
+ *		fire-and-forget announce per locally-held S/X buffer to the block's
+ *		current (remastered) master.
+ *	cluster_gcs_handle_block_redeclare_envelope:  master-side receive —
+ *		validate checksum + episode epoch (L235/L236), then rebuild the
+ *		minimal block-resource view via
+ *		cluster_gcs_block_master_rebuild_from_redeclare (cluster_pcm_lock.c).
+ */
+extern void cluster_gcs_block_send_redeclare(BufferTag tag, uint8 held_mode, XLogRecPtr page_lsn,
+											 uint64 cluster_epoch, int master_node);
+extern void cluster_gcs_handle_block_redeclare_envelope(const struct ClusterICEnvelope *env,
+														const void *payload);
 
 /*
  * cluster_gcs_register_block_msg_types -- postmaster-once registration of
@@ -646,6 +769,16 @@ extern uint64 cluster_gcs_get_pi_watermark_advance_count(void);
 extern uint64 cluster_gcs_get_pi_watermark_retire_count(void);
 extern uint64 cluster_gcs_get_lost_write_detected_count(void);
 extern uint64 cluster_gcs_get_lost_write_avoid_count(void);
+
+/* PGRAC: spec-4.7 D6 — 8 warm-recovery observability accessors. */
+extern uint64 cluster_gcs_get_recovery_block_resources_recovering(void);
+extern uint64 cluster_gcs_get_recovery_buffers_redeclared(void);
+extern uint64 cluster_gcs_get_recovery_block_state_rebuilt(void);
+extern uint64 cluster_gcs_get_recovery_redo_boundary_waits(void);
+extern uint64 cluster_gcs_get_recovery_redo_boundary_reached(void);
+extern uint64 cluster_gcs_get_recovery_stale_block_drop(void);
+extern uint64 cluster_gcs_get_recovery_ambiguous_owner_failclosed(void);
+extern uint64 cluster_gcs_get_recovery_before_boundary_failclosed(void);
 
 /*
  * PGRAC: spec-2.35 D3 (HC110) — counter bump invoked from cluster_pcm_

@@ -39,6 +39,7 @@
 
 #include "access/xlogdefs.h"
 #include "cluster/cluster_conf.h"
+#include "cluster/cluster_cssd.h" /* spec-4.7 D7 — peer liveness for recovery-aware routing */
 #include "cluster/cluster_epoch.h"
 #include "cluster/cluster_gcs.h"
 #include "cluster/cluster_guc.h"
@@ -235,6 +236,34 @@ cluster_gcs_module_init(void)
  * returns that override unconditionally to drive remote-master code paths
  * in single-node test setups.
  */
+/*
+ * cluster_gcs_lookup_master_static -- spec-4.7 D7.
+ *
+ *	The PURE static declared-list hash master (NO recovery re-route, NO
+ *	test-force, NO counters).  This is the block's ORIGINAL master — possibly
+ *	a dead node.  The recovery-phase gate (cluster_gcs_block_phase_for_tag)
+ *	uses it to identify which origin's merged WAL recovery must materialize
+ *	before a re-routed survivor master may serve the block (D7).
+ */
+int
+cluster_gcs_lookup_master_static(BufferTag tag)
+{
+	int declared[CLUSTER_MAX_NODES];
+	int declared_count = 0;
+	uint32 h;
+	int i;
+
+	for (i = 0; i < CLUSTER_MAX_NODES; i++)
+		if (cluster_conf_lookup_node(i) != NULL)
+			declared[declared_count++] = i;
+
+	if (declared_count <= 1)
+		return cluster_node_id; /* single-node fallback (HC72) */
+
+	h = hash_bytes((const unsigned char *)&tag, sizeof(tag));
+	return declared[h % (uint32)declared_count];
+}
+
 int
 cluster_gcs_lookup_master(BufferTag tag)
 {
@@ -270,6 +299,40 @@ cluster_gcs_lookup_master(BufferTag tag)
 
 	h = hash_bytes((const unsigned char *)&tag, sizeof(tag));
 	master_node = declared[h % (uint32)declared_count];
+
+	/*
+	 * spec-4.7 D7 — recovery-aware re-route.  If the STATIC declared master is
+	 * DEAD, route to a live survivor by re-hashing over the live declared
+	 * nodes (self is always live).  The HEALTHY path (static master alive)
+	 * skips this entirely and returns the static master UNCHANGED — behaviour
+	 * is identical to pre-D7 in normal operation;  only the dead-master
+	 * recovery case re-routes.  Convergence note:  this routes over the LIVE
+	 * CSSD set read per-call (not an epoch-locked snapshot), so during a window
+	 * where a peer is SUSPECTED on one survivor but already DEAD on another the
+	 * two could pick different survivor masters for the same block.  That does
+	 * NOT cause a double-serve:  cross-survivor agreement is enforced DOWNSTREAM
+	 * by the RECOVERING gate (cluster_gcs_block_phase_for_tag fail-closes until
+	 * the dead origin materializes, by which point CSSD has converged on the
+	 * dead set), not by this routing function.  SCOPE (D7):  dead-master recovery routing
+	 * ONLY — NO normal-operation dynamic remaster, NO affinity DRM, NO writer
+	 * transfer.  Whether the re-routed survivor may actually SERVE the block is
+	 * separately gated by cluster_gcs_block_phase_for_tag (RECOVERING until the
+	 * dead origin's merged WAL recovery materializes — redo-before-unfreeze).
+	 */
+	if (master_node != cluster_node_id
+		&& cluster_cssd_get_peer_state(master_node) == CLUSTER_CSSD_PEER_DEAD) {
+		int live[CLUSTER_MAX_NODES];
+		int live_count = 0;
+
+		for (i = 0; i < declared_count; i++)
+			if (declared[i] == cluster_node_id
+				|| cluster_cssd_get_peer_state(declared[i]) != CLUSTER_CSSD_PEER_DEAD)
+				live[live_count++] = declared[i];
+		if (live_count >= 1)
+			master_node = live[h % (uint32)live_count];
+		/* else (all declared dead but self excluded — impossible since self is
+		 * live): keep static master; downstream dead-master guard fail-closes. */
+	}
 
 	if (ClusterGcs != NULL) {
 		if (master_node == cluster_node_id)

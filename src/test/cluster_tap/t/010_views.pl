@@ -50,8 +50,8 @@ $node->start;
 # ----------
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'98',
-	'pg_stat_cluster_wait_events returns 98 rows (spec-4.6 +1 GRD shard remaster)');
+	'99',
+	'pg_stat_cluster_wait_events returns 99 rows (spec-4.6 +1 GRD shard remaster)');
 
 
 # ----------
@@ -69,7 +69,7 @@ is($node->safe_psql('postgres',
 # ----------
 my %expected = (
 	'Cluster: GES' => 5,
-	'Cluster: PCM' => 19,
+	'Cluster: PCM' => 20,	# spec-4.7 D1: +ClusterGCSBlockRecovering
 	'Cluster: BufferShip' => 5,
 	'Cluster: SCN' => 4,
 	'Cluster: Reconfig' => 6,    # spec-4.6: +ClusterGrdShardRemaster

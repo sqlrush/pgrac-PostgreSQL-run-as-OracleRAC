@@ -41,6 +41,8 @@
 #include "cluster/cluster_guc.h"		  /* cluster_node_id, cluster_grd_max_entries */
 #include "cluster/cluster_lms.h"		  /* spec-4.6 D2 — Q3-C wire routing token */
 #include "cluster/cluster_pcm_lock.h"	  /* spec-2.36 HC124 pending_x node-dead cleanup */
+#include "cluster/cluster_gcs.h"		  /* spec-4.7 D2 — cluster_gcs_lookup_master */
+#include "cluster/cluster_gcs_block.h"	  /* spec-4.7 D2 — block re-declare scan + send */
 #include "cluster/cluster_signal.h"
 #include "cluster/cluster_shmem.h"
 #include "cluster/cluster_cssd.h"	  /* spec-2.16 D8 newly-dead bitmap diff */
@@ -839,6 +841,26 @@ cluster_grd_redeclare_episode_epoch(void)
 	return pg_atomic_read_u64(&cluster_grd_state->recovery_episode_epoch);
 }
 
+/*
+ * cluster_grd_recovery_in_progress -- spec-4.7 D7 (P0 code-review fix).
+ *
+ *	True while this node's reconfig recovery FSM is NOT idle, i.e. an episode
+ *	is freezing / rebinding / awaiting the cluster REDECLARE_DONE barrier.
+ *	The block-resource phase gate uses this to keep every dead-static-master
+ *	block fail-closed (RECOVERING) for the whole episode:  until this node
+ *	reaches IDLE it has not seen every survivor's REDECLARE_DONE (now gated on
+ *	their block re-declare scans completing), so a held block may not yet have
+ *	been re-declared to its recovery-aware master — serving it would risk an
+ *	8.A double-grant.  Reaching IDLE implies all survivor scans completed.
+ */
+bool
+cluster_grd_recovery_in_progress(void)
+{
+	if (cluster_grd_state == NULL)
+		return false;
+	return pg_atomic_read_u32(&cluster_grd_state->recovery_state) != (uint32)GRD_RECOVERY_IDLE;
+}
+
 /* spec-4.6 D4/D5 — recovery counter bump helpers for out-of-module
  * call sites (S4 stale mapping in cluster_lock_acquire.c;  GCS block
  * fail-closed guard in cluster_gcs_block.c). */
@@ -1150,6 +1172,84 @@ grd_recovery_abort_to_idle(void)
 							 "mid-recovery); shards stay frozen, re-running under the new epoch")));
 }
 
+
+/*
+ * spec-4.7 D2 — survivor block re-declare scan (Q6-A' worker-centric).
+ *
+ *	BufferDesc.pcm_state is shared per-node authoritative state (not the
+ *	backend-private GES LocalLockHash), so the block re-declare is NOT a
+ *	backend-cooperative protocol like the GES rebind — the LMON reconfig tick
+ *	itself scans the shared buffer pool in bounded chunks and sends one
+ *	GCS_BLOCK_REDECLARE per locally-held S/X buffer to the block's current
+ *	(remastered) master.  The cursor is LMON-process-local (the LMON aux
+ *	process is the sole tick driver — no shmem needed);  it re-arms to 0 each
+ *	time a reconfig episode locks a new episode epoch and advances by
+ *	GRD_BLOCK_REDECLARE_CHUNK per tick until it reaches NBuffers, so a large
+ *	pool scan never blocks the heartbeat (§6 risk mitigation).  Epoch
+ *	coherence (L235) is enforced by the WAIT_BARRIER/WAIT_CLUSTER epoch guards
+ *	that abort the episode on a mid-episode bump.
+ */
+#define GRD_BLOCK_REDECLARE_CHUNK 256
+static int grd_block_redeclare_cursor = 0;
+static uint64 grd_block_redeclare_epoch = 0;
+static bool grd_block_redeclare_done = false;
+
+static void
+grd_block_redeclare_cb(BufferTag tag, uint8 held_mode, XLogRecPtr page_lsn, void *arg)
+{
+	uint64 episode_epoch = *(const uint64 *)arg;
+	int master = cluster_gcs_lookup_master(tag);
+
+	cluster_gcs_block_send_redeclare(tag, held_mode, page_lsn, episode_epoch, master);
+}
+
+/* Non-static (exposed via cluster_grd.h) so the unit test can drive the scan
+ * cursor + assert grd_block_redeclare_scan_complete tracks NBuffers without
+ * spinning up the full reconfig FSM. */
+void
+grd_block_redeclare_step(uint64 episode_epoch)
+{
+	int next;
+
+	/* Re-arm to the start of the pool whenever a fresh episode locks a new
+	 * epoch (the previous episode's partial scan is abandoned — the new epoch
+	 * re-stamps every re-declare). */
+	if (grd_block_redeclare_epoch != episode_epoch) {
+		grd_block_redeclare_epoch = episode_epoch;
+		grd_block_redeclare_cursor = 0;
+		grd_block_redeclare_done = false;
+	}
+
+	if (grd_block_redeclare_done)
+		return;
+
+	/* Bounded chunk;  scan_chunk caps the cursor at NBuffers and returns the
+	 * cursor unchanged once the whole pool has been scanned this episode. */
+	next
+		= cluster_bufmgr_redeclare_scan_chunk(grd_block_redeclare_cursor, GRD_BLOCK_REDECLARE_CHUNK,
+											  grd_block_redeclare_cb, &episode_epoch);
+	if (next == grd_block_redeclare_cursor)
+		grd_block_redeclare_done = true; /* reached NBuffers — whole pool scanned */
+	grd_block_redeclare_cursor = next;
+}
+
+/*
+ * grd_block_redeclare_scan_complete -- spec-4.7 D2/D7 (P0 code-review fix).
+ *
+ *	True iff THIS survivor's block re-declare scan for `episode_epoch` has
+ *	swept the whole buffer pool (every locally-held S/X block has been
+ *	re-declared to its recovery-aware master).  This MUST be a precondition of
+ *	announcing REDECLARE_DONE:  otherwise a held block whose buffer sits after
+ *	the scan cursor is never re-declared, the episode reaches IDLE, the new
+ *	master treats it as cold, and serves it from shared storage while the
+ *	original holder still holds X → 8.A double-grant.
+ */
+bool
+grd_block_redeclare_scan_complete(uint64 episode_epoch)
+{
+	return grd_block_redeclare_epoch == episode_epoch && grd_block_redeclare_done;
+}
+
 void
 cluster_grd_recovery_lmon_tick(void)
 {
@@ -1306,7 +1406,23 @@ cluster_grd_recovery_lmon_tick(void)
 			return;
 		}
 
-		if (grd_recovery_barrier_complete(gen, episode_epoch)) {
+		/* spec-4.7 D2 — advance the survivor block re-declare scan one chunk
+		 * while the GES rebind barrier is still pending (worker-centric, runs
+		 * in this tick;  epoch-coherent via the guard just above). */
+		grd_block_redeclare_step(episode_epoch);
+
+		/*
+		 * spec-4.7 D2/D7 (P0 code-review fix) — REDECLARE_DONE may be announced
+		 * ONLY after BOTH the GES rebind barrier AND this survivor's block
+		 * re-declare scan are complete.  Without the scan-complete conjunct, a
+		 * fast GES barrier would let the episode reach IDLE before a held block
+		 * (buffer after the scan cursor) was re-declared → the new master
+		 * serves it as cold while the original node still holds X → 8.A
+		 * double-grant.  The scan advances one chunk per tick above, so this
+		 * just defers the announce until the whole pool is swept.
+		 */
+		if (grd_recovery_barrier_complete(gen, episode_epoch)
+			&& grd_block_redeclare_scan_complete(episode_epoch)) {
 			/*
 			 * Local rebind barrier complete:  announce to every survivor
 			 * (REDECLARE_DONE) and record self for the LOCKED episode
@@ -1373,6 +1489,11 @@ cluster_grd_recovery_lmon_tick(void)
 			grd_recovery_abort_to_idle();
 			return;
 		}
+
+		/* spec-4.7 D2 — keep advancing the block re-declare scan after the GES
+		 * rebind barrier completed, so a large pool is fully re-declared within
+		 * the recovery window (no-op once the cursor reaches NBuffers). */
+		grd_block_redeclare_step(episode_epoch);
 
 		for (i = 0; i < (CLUSTER_MAX_NODES + 63) / 64; i++)
 			dead[i] = pg_atomic_read_u64(&cluster_grd_state->recovery_dead_bitmap[i]);

@@ -51,7 +51,7 @@
  *	internal table in cluster_views.c stays in sync with the enum.
  */
 #define CLUSTER_WAIT_EVENTS_COUNT                                                                  \
-	98 /* spec-4.6 D4: +1 GRD shard remaster short-wait; was 97 (spec-4.2) */
+	99 /* spec-4.7 D1: +1 GCS block RECOVERING short-wait; was 98 (spec-4.6 D4) */
 
 
 /*

@@ -1421,6 +1421,24 @@ dump_gcs(ReturnSetInfo *rsinfo)
 	emit_row(rsinfo, "gcs", "lost_write_avoid_count",
 			 fmt_int64((int64)cluster_gcs_get_lost_write_avoid_count()));
 
+	/* PGRAC: spec-4.7 D6 — 8 NEW counter rows for GCS/PCM warm recovery. */
+	emit_row(rsinfo, "gcs_recovery", "block_resources_recovering",
+			 fmt_int64((int64)cluster_gcs_get_recovery_block_resources_recovering()));
+	emit_row(rsinfo, "gcs_recovery", "buffers_redeclared",
+			 fmt_int64((int64)cluster_gcs_get_recovery_buffers_redeclared()));
+	emit_row(rsinfo, "gcs_recovery", "block_state_rebuilt",
+			 fmt_int64((int64)cluster_gcs_get_recovery_block_state_rebuilt()));
+	emit_row(rsinfo, "gcs_recovery", "redo_boundary_waits",
+			 fmt_int64((int64)cluster_gcs_get_recovery_redo_boundary_waits()));
+	emit_row(rsinfo, "gcs_recovery", "redo_boundary_reached",
+			 fmt_int64((int64)cluster_gcs_get_recovery_redo_boundary_reached()));
+	emit_row(rsinfo, "gcs_recovery", "stale_block_drop",
+			 fmt_int64((int64)cluster_gcs_get_recovery_stale_block_drop()));
+	emit_row(rsinfo, "gcs_recovery", "ambiguous_owner_failclosed",
+			 fmt_int64((int64)cluster_gcs_get_recovery_ambiguous_owner_failclosed()));
+	emit_row(rsinfo, "gcs_recovery", "before_boundary_failclosed",
+			 fmt_int64((int64)cluster_gcs_get_recovery_before_boundary_failclosed()));
+
 	/* PGRAC: spec-2.38 D10 — 9 NEW counter rows for SI Broadcaster. */
 	emit_row(rsinfo, "sinval", "broadcast_send_count",
 			 fmt_int64((int64)cluster_sinval_get_broadcast_send_count()));

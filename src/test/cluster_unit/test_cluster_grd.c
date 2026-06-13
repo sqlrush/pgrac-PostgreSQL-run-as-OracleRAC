@@ -48,6 +48,8 @@
 #include <string.h>
 
 #include "cluster/cluster_conf.h"
+#include "cluster/cluster_gcs.h"	   /* spec-4.7 D2 (L238) — cluster_gcs_lookup_master proto */
+#include "cluster/cluster_gcs_block.h" /* spec-4.7 D2 (L238) — block re-declare scan/send protos */
 #include "cluster/cluster_grd.h"
 #include "cluster/cluster_reconfig.h" /* spec-4.6 D1 — ReconfigEvent stub type */
 #include "port/atomics.h"
@@ -253,6 +255,45 @@ uint64
 cluster_epoch_get_current(void)
 {
 	return 0;
+}
+
+/*
+ * spec-4.7 D2 (L238) — cluster_grd.o's reconfig tick now references the block
+ * re-declare scan/send (grd_block_redeclare_step / _cb).  This test exercises
+ * only the GES/GRD remaster path, so stub them: scan_chunk returns start
+ * unchanged (no buffers scanned → the callback is never invoked → send/lookup
+ * are never reached in this test).
+ */
+int
+cluster_gcs_lookup_master(BufferTag tag pg_attribute_unused())
+{
+	return 0;
+}
+void
+cluster_gcs_block_send_redeclare(BufferTag tag pg_attribute_unused(),
+								 uint8 held_mode pg_attribute_unused(),
+								 XLogRecPtr page_lsn pg_attribute_unused(),
+								 uint64 cluster_epoch pg_attribute_unused(),
+								 int master_node pg_attribute_unused())
+{}
+/* spec-4.7 D2/D7 (P0 fix) — controllable scan: fake_scan_nbuffers == 0 (default)
+ * means "no buffers → instant done" (the no-op other tests expect);  a test
+ * raises it to model a multi-tick scan so grd_block_redeclare_scan_complete
+ * stays false until the cursor reaches it. */
+static int fake_scan_nbuffers = 0;
+int
+cluster_bufmgr_redeclare_scan_chunk(int start_buf, int max_scan,
+									ClusterGcsRedeclareCallback cb pg_attribute_unused(),
+									void *arg pg_attribute_unused())
+{
+	int end;
+
+	if (start_buf >= fake_scan_nbuffers)
+		return start_buf; /* whole (fake) pool scanned — cursor unchanged = done */
+	end = start_buf + max_scan;
+	if (end > fake_scan_nbuffers)
+		end = fake_scan_nbuffers;
+	return end;
 }
 
 void
@@ -1290,6 +1331,39 @@ UT_TEST(test_grd_shard_phase_accessors)
 	UT_ASSERT_EQ((int)cluster_grd_shard_phase(PGRAC_GRD_SHARD_COUNT), (int)GRD_SHARD_NORMAL);
 }
 
+/*
+ * spec-4.7 D2/D7 (P0 code-review fix) — REDECLARE_DONE must not be announced
+ * while the survivor block re-declare scan is incomplete.  Drive
+ * grd_block_redeclare_step over a multi-tick fake pool and assert
+ * grd_block_redeclare_scan_complete stays FALSE until the whole pool is swept,
+ * and that a new episode epoch re-arms it to incomplete.  (Were the scan-
+ * complete conjunct absent, a fast GES barrier would release the episode with
+ * a held block un-re-declared → the new master serves it as cold → 8.A
+ * double-grant.)
+ */
+UT_TEST(test_grd_d2_redeclare_scan_completion_gate)
+{
+	fake_scan_nbuffers = 600; /* > CHUNK (256) → needs several steps */
+
+	grd_block_redeclare_step(10); /* cursor 0 -> 256 */
+	UT_ASSERT(!grd_block_redeclare_scan_complete(10));
+	grd_block_redeclare_step(10); /* 256 -> 512 */
+	UT_ASSERT(!grd_block_redeclare_scan_complete(10));
+	grd_block_redeclare_step(10); /* 512 -> 600 (== nbuffers, advance) */
+	UT_ASSERT(!grd_block_redeclare_scan_complete(10));
+	grd_block_redeclare_step(10); /* 600 -> 600 (no advance) -> done */
+	UT_ASSERT(grd_block_redeclare_scan_complete(10));
+
+	/* completion is per-episode: a different epoch is not "complete". */
+	UT_ASSERT(!grd_block_redeclare_scan_complete(11));
+
+	/* a fresh episode epoch re-arms the scan to incomplete. */
+	grd_block_redeclare_step(11);
+	UT_ASSERT(!grd_block_redeclare_scan_complete(11));
+
+	fake_scan_nbuffers = 0; /* restore no-op for any later test */
+}
+
 
 int
 /* cppcheck-suppress constParameter
@@ -1297,7 +1371,7 @@ int
  * other cluster_unit binaries; argv is intentionally unused. */
 main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 {
-	UT_PLAN(22);
+	UT_PLAN(23);
 
 	UT_RUN(test_grd_clusterresid_size_16);
 	UT_RUN(test_grd_resid_encode_decode_roundtrip);
@@ -1328,6 +1402,7 @@ main(int argc pg_attribute_unused(), char *argv[] pg_attribute_unused())
 	UT_RUN(test_grd_remaster_no_survivor_fail_closed);
 	UT_RUN(test_grd_lookup_master_gen_q3c_verbatim);
 	UT_RUN(test_grd_shard_phase_accessors);
+	UT_RUN(test_grd_d2_redeclare_scan_completion_gate);
 
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;

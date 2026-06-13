@@ -264,6 +264,50 @@ cluster_merged_instance_is_materialized(int origin_node)
 }
 
 /*
+ * cluster_merged_instance_recovered_through -- spec-4.7 D5 (Q5) redo gate.
+ *
+ *	Like cluster_merged_instance_is_materialized, but returns the actual
+ *	persisted recovered_lsn (the EndRecPtr this node's merged replay of
+ *	origin_node's stream reached) instead of a bool.  The spec-4.7
+ *	redo-before-unfreeze gate compares this against the survivor's observed
+ *	max page_lsn (required_lsn):  recovered_through(origin) >= required_lsn is
+ *	the ONLY safe condition to unfreeze a block resource — a bool "marker
+ *	exists" is too soft (it cannot prove redo covered the version a survivor
+ *	already saw → lost-write, spec-2.37).  Missing / torn / mismatched marker
+ *	-> 0 (fail-closed:  treated as "recovered through nothing").
+ */
+uint64
+cluster_merged_instance_recovered_through(int origin_node)
+{
+	ClusterMergedAuthorityFile f;
+	pg_crc32c crc;
+	char path[MAXPGPATH];
+	int fd;
+	ssize_t got;
+
+	if (origin_node < 0 || origin_node >= CLUSTER_WAL_STATE_SLOT_COUNT)
+		return 0;
+	if (merged_authority_path(origin_node, path, sizeof(path)) < 0)
+		return 0;
+
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+		return 0; /* no marker -> recovered through nothing (fail-closed) */
+	got = read(fd, &f, sizeof(f));
+	CloseTransientFile(fd);
+	if (got != (ssize_t)sizeof(f))
+		return 0;
+
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, &f, offsetof(ClusterMergedAuthorityFile, crc));
+	FIN_CRC32C(crc);
+	if (f.magic != CLUSTER_MERGED_AUTHORITY_MAGIC || f.origin != (uint32)origin_node
+		|| !EQ_CRC32C(f.crc, crc))
+		return 0;
+	return f.recovered_lsn;
+}
+
+/*
  * cluster_merged_any_remote_materialized -- is ANY remote stream merged here?
  *
  *	True iff at least one foreign origin's stream was merged-replayed by

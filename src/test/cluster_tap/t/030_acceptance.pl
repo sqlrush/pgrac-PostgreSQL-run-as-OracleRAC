@@ -146,7 +146,7 @@ ok($phase_val =~ /^(init|running|shutdown|reconfig)$/,
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_cluster_wait_events'),
-	'98', 'E1 pg_stat_cluster_wait_events returns 98 rows (spec-4.6 +1 GRD shard remaster)');
+	'99', 'E1 pg_stat_cluster_wait_events returns 99 rows (spec-4.6 +1 GRD shard remaster)');
 
 ok($node->safe_psql('postgres',
 		q{SELECT count(*) > 0 FROM pg_stat_cluster_wait_events WHERE type='Cluster: GES'})
@@ -158,7 +158,7 @@ ok($node->safe_psql('postgres',
 
 is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_gcluster_wait_events'),
-	'98', 'E4 pg_stat_gcluster_wait_events returns 98 rows (single-node, spec-4.6 baseline)');
+	'99', 'E4 pg_stat_gcluster_wait_events returns 99 rows (single-node, spec-4.6 baseline)');
 
 
 # ============================================================

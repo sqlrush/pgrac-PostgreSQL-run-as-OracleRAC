@@ -535,6 +535,48 @@ cluster_gcs_get_lost_write_avoid_count(void)
 	return 0;
 }
 
+/* spec-4.7 D6 stubs: 8 NEW GCS/PCM warm-recovery counter accessors. */
+uint64
+cluster_gcs_get_recovery_block_resources_recovering(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_buffers_redeclared(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_block_state_rebuilt(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_redo_boundary_waits(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_redo_boundary_reached(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_stale_block_drop(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_ambiguous_owner_failclosed(void)
+{
+	return 0;
+}
+uint64
+cluster_gcs_get_recovery_before_boundary_failclosed(void)
+{
+	return 0;
+}
+
 /* spec-2.38 D10 stubs: 9 NEW SI Broadcaster counter accessors. */
 uint64
 cluster_sinval_get_broadcast_send_count(void)

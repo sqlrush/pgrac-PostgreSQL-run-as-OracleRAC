@@ -293,6 +293,9 @@ extern uint64 cluster_recmerge_window_scn;
  * (fail-closed).
  */
 extern bool cluster_merged_instance_is_materialized(int origin_node);
+/* spec-4.7 D5 (Q5) — actual persisted recovered_lsn (0 = not materialized /
+ * fail-closed) for the redo-before-unfreeze LSN gate. */
+extern uint64 cluster_merged_instance_recovered_through(int origin_node);
 extern bool cluster_merged_any_remote_materialized(void);
 extern void cluster_merged_authority_publish(int origin_node, uint64 recovered_lsn);
 

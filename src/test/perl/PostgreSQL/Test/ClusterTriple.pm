@@ -88,9 +88,52 @@ sub new_triple
 		$voting_disks_csv = join(',', @voting_disk_paths);
 	}
 
+	# spec-4.1 opt-in: shared per-thread WAL root (mirror ClusterPair).
+	# One tempdir all three postmasters can reach;  node N's WAL stream
+	# is relocated to <root>/thread_<N+1> via initdb -X and
+	# cluster.wal_threads_dir points the startup validator at the root.
+	my $wal_threads_root;
+	if ($opts{wal_threads_root})
+	{
+		$wal_threads_root = PostgreSQL::Test::Utils::tempdir();
+	}
+
+	# spec-4.5a opt-in: shared data root (mirror ClusterPair).  One
+	# tempdir all three postmasters write user-relation blocks into
+	# through the cluster_fs shared_fs backend (cluster_smgr passthrough).
+	# Required for spec-4.7 GCS/PCM block-protocol TAPs: only user
+	# relations on the shared backend are PCM-tracked.
+	my $shared_data_root;
+	if ($opts{shared_data})
+	{
+		$shared_data_root = PostgreSQL::Test::Utils::tempdir();
+	}
+
+	my $wal_node_index = 0;
 	for my $node (@nodes)
 	{
-		$node->init;
+		if (defined $wal_threads_root)
+		{
+			my $thread_id = $wal_node_index + 1;
+			$node->init(extra => [ '-X', "$wal_threads_root/thread_$thread_id" ]);
+			$node->append_conf('postgresql.conf',
+				"cluster.wal_threads_dir = '$wal_threads_root'\n");
+		}
+		else
+		{
+			$node->init;
+		}
+		$wal_node_index++;
+
+		if (defined $shared_data_root)
+		{
+			$node->append_conf('postgresql.conf',
+				"cluster.shared_storage_backend = cluster_fs\n");
+			$node->append_conf('postgresql.conf',
+				"cluster.shared_data_dir = '$shared_data_root'\n");
+			$node->append_conf('postgresql.conf',
+				"cluster.smgr_user_relations = on\n");
+		}
 
 		# Enable cluster + tier1, same baseline as ClusterPair (spec-2.2).
 		$node->append_conf('postgresql.conf', "cluster.enabled = on\n");
@@ -153,6 +196,9 @@ EOC
 		cluster_name => $cluster_name,
 		pg_ports    => \@pg_ports,
 		ic_ports    => \@ic_ports,
+		voting_disk_paths => \@voting_disk_paths,
+		wal_threads_root  => $wal_threads_root,
+		shared_data_root  => $shared_data_root,
 	}, $class;
 }
 
@@ -213,6 +259,43 @@ sub node2     { return $_[0]->{nodes}[2]; }
 sub ic_port   { return $_[0]->{ic_ports}[ $_[1] ]; }
 sub pg_port   { return $_[0]->{pg_ports}[ $_[1] ]; }
 sub cluster_name { return $_[0]->{cluster_name}; }
+
+# spec-4.1: shared per-thread WAL root (undef unless wal_threads_root => 1).
+sub wal_threads_root { return $_[0]->{wal_threads_root}; }
+
+# spec-4.5a: shared data root (undef unless shared_data => 1).
+sub shared_data_root { return $_[0]->{shared_data_root}; }
+
+
+#-----------------------------------------------------------------------
+# wait_for_peer_state($self, $from, $to, $expected_state, $timeout_s)
+#
+#	Polls $from's pg_cluster_ic_peers.state for $to until it matches
+#	$expected_state or $timeout_s elapses.  Returns 1 on success, 0 on
+#	timeout.  Mirrors ClusterPair::wait_for_peer_state for the 3-node
+#	recovery TAPs (spec-4.7).
+#-----------------------------------------------------------------------
+sub wait_for_peer_state
+{
+	my ($self, $from, $to, $expected_state, $timeout_s) = @_;
+	$timeout_s //= 10;
+	my $node = $self->{nodes}[$from];
+	my $deadline = time + $timeout_s;
+	my $last_state = '(never-queried)';
+	while (time < $deadline)
+	{
+		my $state = $node->safe_psql('postgres',
+			"SELECT state FROM pg_cluster_ic_peers WHERE node_id = $to");
+		$last_state = $state // '(null)';
+		return 1 if defined $state && $state eq $expected_state;
+		select(undef, undef, undef, 0.25);
+	}
+	Test::More::diag(
+		"ClusterTriple wait_for_peer_state TIMEOUT after ${timeout_s}s: "
+		. "from=node$from to=$to expected='$expected_state' "
+		. "last_observed='$last_state'");
+	return 0;
+}
 
 
 1;

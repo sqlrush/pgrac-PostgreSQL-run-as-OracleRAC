@@ -48,6 +48,7 @@
 #include "cluster/cluster_gcs_block_dedup.h" /* spec-2.34 D1 — counter forward */
 #include "cluster/cluster_grd.h"			 /* spec-4.6 D4 — block_path_failclosed counter */
 #include "cluster/cluster_grd_outbound.h"
+#include "cluster/cluster_recovery_merge.h" /* spec-4.7 D5 — recovered_through redo gate */
 #include "cluster/cluster_guc.h"
 #include "cluster/cluster_inject.h"
 #include "cluster/cluster_ic_envelope.h"
@@ -154,6 +155,16 @@ typedef struct ClusterGcsBlockShared {
 	pg_atomic_uint64 pi_watermark_retire_count;	 /* tag lifecycle + durable-confirm retire */
 	pg_atomic_uint64 lost_write_detected_count;	 /* master direct OR holder forward detect */
 	pg_atomic_uint64 lost_write_avoid_count;	 /* durable-confirm retire avoided false-pos */
+	/* PGRAC: spec-4.7 D6 — GCS/PCM warm-recovery observability (dump category
+	 * 'gcs_recovery').  8 counters per spec §2.4. */
+	pg_atomic_uint64 recovery_block_resources_recovering; /* phase_for_tag → RECOVERING hits */
+	pg_atomic_uint64 recovery_buffers_redeclared;		  /* survivor re-declare sent (D2) */
+	pg_atomic_uint64 recovery_block_state_rebuilt;		  /* master rebuild applied (D2/D3) */
+	pg_atomic_uint64 recovery_redo_boundary_waits;		  /* redo gate: not yet covered (D5) */
+	pg_atomic_uint64 recovery_redo_boundary_reached;	  /* redo gate: covered (D5) */
+	pg_atomic_uint64 recovery_stale_block_drop; /* re-declare dropped: off-epoch/bad (D2) */
+	pg_atomic_uint64 recovery_ambiguous_owner_failclosed; /* not-double-X conflict (D3) */
+	pg_atomic_uint64 recovery_before_boundary_failclosed; /* served-before-redo gate fail (D5) */
 	/* PGRAC: spec-2.36 D3 (HC116) — master broadcast invalidate slot.
 	 * At most one broadcast in-flight per master node (Q-D3 simplification —
 	 * cluster wide single-master serialization;  concurrent X requests on
@@ -197,6 +208,7 @@ static void gcs_block_send_reply(int32 dest_node, const GcsBlockRequestPayload *
 static uint32 gcs_block_compute_checksum(const char *block_data);
 static uint32 gcs_block_compute_invalidate_checksum(const GcsBlockInvalidatePayload *inv);
 static uint32 gcs_block_compute_invalidate_ack_checksum(const GcsBlockInvalidateAckPayload *ack);
+static uint32 gcs_block_compute_redeclare_checksum(const GcsBlockRedeclarePayload *p);
 static void gcs_block_install_block(BufferDesc *buf, const char *block_data, XLogRecPtr page_lsn);
 /* PGRAC: spec-2.36 D3 (HC116) — master synchronous broadcast invalidate.
  * Enumerates `holders_bm` (1 bit per cluster node), emits INVALIDATE
@@ -275,6 +287,15 @@ cluster_gcs_block_shmem_init(void)
 		pg_atomic_init_u64(&ClusterGcsBlock->pi_watermark_retire_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->lost_write_detected_count, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->lost_write_avoid_count, 0);
+		/* PGRAC: spec-4.7 D6 — 8 NEW warm-recovery counters init. */
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_block_resources_recovering, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_buffers_redeclared, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_block_state_rebuilt, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_redo_boundary_waits, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_redo_boundary_reached, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_stale_block_drop, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_ambiguous_owner_failclosed, 0);
+		pg_atomic_init_u64(&ClusterGcsBlock->recovery_before_boundary_failclosed, 0);
 		pg_atomic_init_u64(&ClusterGcsBlock->invalidate_broadcast_request_id, 0);
 		ClusterGcsBlock->invalidate_broadcast_epoch = 0;
 		memset(&ClusterGcsBlock->invalidate_broadcast_tag, 0,
@@ -447,6 +468,23 @@ gcs_block_compute_invalidate_ack_checksum(const GcsBlockInvalidateAckPayload *ac
 }
 
 /*
+ * spec-4.7 D2 — checksum over the GcsBlockRedeclarePayload bytes before the
+ * checksum field [0,48), which includes the page_lsn (so a corrupted holder
+ * page_lsn cannot poison the rebuilt PI watermark / lost-write required_lsn).
+ */
+static uint32
+gcs_block_compute_redeclare_checksum(const GcsBlockRedeclarePayload *p)
+{
+	const char *bytes = (const char *)p;
+	uint32 c = 0;
+	size_t i;
+
+	for (i = 0; i < offsetof(GcsBlockRedeclarePayload, checksum); i++)
+		c = (c * 31u) + (uint8)bytes[i];
+	return c;
+}
+
+/*
  * HC84:  install received block bytes into the requester's buffer under
  * content_lock EXCLUSIVE and PageSetLSN to the master-side LSN so recovery
  * sees a monotonic LSN across nodes.
@@ -514,6 +552,133 @@ gcs_block_backoff_ms_for_retry(int retry_attempt)
 	if (shift > 16)
 		shift = 16; /* defend against pathological max_retries */
 	return base * (1L << shift);
+}
+
+/*
+ * cluster_gcs_block_phase_for_tag -- spec-4.7 D1 block resource recovery phase.
+ *
+ *	Returns GCS_BLOCK_RECOVERING when this block's GCS master is a DEAD
+ *	remote node: the master's volatile block-protocol state was lost with
+ *	it and must be rebuilt (spec-4.7 D2/D3) before the block can be served.
+ *	The bufmgr acquire gate fail-closes 53R9L for a RECOVERING block (see
+ *	cluster_pcm_lock_acquire_buffer).
+ *
+ *	master == self (own master, or single-node fallback when declared_count
+ *	<= 1) is GCS_BLOCK_NORMAL: a clean restart that lost the local master
+ *	state rebuilds lazily on first request (spec-4.7 D3), not via this gate.
+ *	Not cluster-active / PCM-inactive is always NORMAL (no block protocol).
+ *
+ *	NOTE: the survivor's CSSD must have CONVERGED on the master's DEAD edge
+ *	for this to fire;  a node that just restarted optimistically sees a dead
+ *	peer as alive until its own deadband re-fires (measure-first, spec-4.7
+ *	D0 Impl note v0.1) — that window is the clean-restart path, not this one.
+ */
+ClusterGcsBlockPhase
+cluster_gcs_block_phase_for_tag(BufferTag tag)
+{
+	int static_master;
+
+	if (!cluster_pcm_is_active())
+		return GCS_BLOCK_NORMAL;
+
+	/*
+	 * Gate on the STATIC declared master (the block's original master), NOT the
+	 * recovery-aware routed master (which is already re-routed to a live
+	 * survivor by D7).  Healthy operation: static master alive or self → NORMAL
+	 * (unchanged).
+	 */
+	static_master = cluster_gcs_lookup_master_static(tag);
+	if (static_master == cluster_node_id
+		|| cluster_cssd_get_peer_state(static_master) != CLUSTER_CSSD_PEER_DEAD)
+		return GCS_BLOCK_NORMAL;
+
+	/*
+	 * spec-4.7 D7 (P0 code-review fix) — while this node's recovery FSM is
+	 * mid-episode it has NOT yet seen every survivor's REDECLARE_DONE (now
+	 * gated on their block re-declare scans completing), so a held block may
+	 * not have been re-declared to its recovery-aware master yet.  Fence EVERY
+	 * dead-static-master block RECOVERING for the whole episode — only once the
+	 * episode reaches IDLE (all survivor scans complete) may the materialized
+	 * + redo gate below decide NORMAL.  Without this, a held block scanned late
+	 * would be served as cold mid-recovery → 8.A double-grant.
+	 */
+	if (cluster_grd_recovery_in_progress()) {
+		if (ClusterGcsBlock != NULL)
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_block_resources_recovering, 1);
+		return GCS_BLOCK_RECOVERING;
+	}
+
+	/*
+	 * spec-4.7 D7 + D5 — static master is DEAD;  the block is remastered to a
+	 * live survivor (recovery-aware routing).  The survivor may SERVE only
+	 * after the dead origin's merged WAL recovery passes the redo-before-
+	 * unfreeze gate;  before that the shared-storage / re-declared version may
+	 * be stale → fail-closed RECOVERING (never a stale page).
+	 *
+	 * TWO conditions, both required (Q5):
+	 *  (a) is_materialized(origin):  the dead origin's merged replay completed
+	 *      (publish is atomic at end-of-replay with the max EndRecPtr).  This
+	 *      is the cold-block safety door — a block NO survivor observed has no
+	 *      required_lsn to bound it, so the whole stream must be replayed
+	 *      before the on-disk version is trusted current.
+	 *  (b) redo_lsn_covered(origin, pi_watermark(tag)):  for a block some
+	 *      survivor DID observe (rebuilt pi_watermark_lsn > 0), the dead
+	 *      origin's recovered_lsn must reach that observed page_lsn — else the
+	 *      dead node wrote a version a survivor saw but whose WAL never durably
+	 *      reached us → lost-write → fail-closed.  This is the LSN comparison
+	 *      (NOT a bool), live in the serve path;  required_lsn == 0 (cold) is
+	 *      trivially covered and (a) carries the safety.
+	 *
+	 * Once both hold → NORMAL → the re-routed survivor serves (rebuilt-from-
+	 * redeclare for held blocks, lazy minimal view for cold blocks).
+	 */
+	if (!cluster_merged_instance_is_materialized(static_master)) {
+		if (ClusterGcsBlock != NULL)
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_block_resources_recovering, 1);
+		return GCS_BLOCK_RECOVERING;
+	}
+	if (!cluster_gcs_block_redo_lsn_covered(static_master,
+											cluster_pcm_lock_pi_watermark_query(tag))) {
+		/* materialized but a survivor observed a higher page_lsn than redo
+		 * reached → lost-write boundary → fail-closed (53R9M class). */
+		if (ClusterGcsBlock != NULL)
+			pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_before_boundary_failclosed, 1);
+		return GCS_BLOCK_RECOVERING;
+	}
+	return GCS_BLOCK_NORMAL;
+}
+
+/*
+ * cluster_gcs_block_redo_lsn_covered -- spec-4.7 D5 redo-before-unfreeze gate
+ * (Q5, the core safety门).
+ *
+ *	True iff the dead origin's merged WAL recovery on THIS node has reached at
+ *	least required_lsn — the survivor's observed max page_lsn for the block
+ *	(PI watermark / re-declare).  recovered_through(origin) < required_lsn
+ *	means the dead node wrote a version a survivor already saw but whose WAL
+ *	has NOT been merged here yet → lost-write → the block must stay
+ *	fail-closed (53R9M), NEVER served (a stale shared page).  This is the LSN
+ *	comparison the spec demands (Q5):  a bool "marker exists" gate is too soft
+ *	— it cannot prove redo covered the version a survivor already observed.
+ *	required_lsn == 0 (no observed version) is trivially covered;  a missing /
+ *	torn marker yields recovered_through == 0, so any required_lsn > 0 is
+ *	NOT covered (fail-closed).
+ */
+bool
+cluster_gcs_block_redo_lsn_covered(int dead_origin, XLogRecPtr required_lsn)
+{
+	bool covered;
+
+	if (XLogRecPtrIsInvalid(required_lsn))
+		covered = true;
+	else
+		covered = cluster_merged_instance_recovered_through(dead_origin) >= (uint64)required_lsn;
+
+	if (ClusterGcsBlock != NULL)
+		pg_atomic_fetch_add_u64(covered ? &ClusterGcsBlock->recovery_redo_boundary_reached
+										: &ClusterGcsBlock->recovery_redo_boundary_waits,
+								1);
+	return covered;
 }
 
 void
@@ -2192,6 +2357,97 @@ static const ClusterICMsgTypeInfo gcs_block_invalidate_ack_info = {
 };
 
 
+/*
+ * cluster_gcs_block_send_redeclare -- spec-4.7 D2 survivor → master re-declare.
+ *
+ *	One fire-and-forget announce of a locally-held S/X buffer to the block's
+ *	current (remastered) master.  Self-mastered blocks need no wire (their
+ *	master state rebuilds locally — D3 lazy rebuild), so skip master == self.
+ */
+void
+cluster_gcs_block_send_redeclare(BufferTag tag, uint8 held_mode, XLogRecPtr page_lsn,
+								 uint64 cluster_epoch, int master_node)
+{
+	GcsBlockRedeclarePayload p;
+
+	if (master_node < 0 || master_node == cluster_node_id)
+		return;
+
+	memset(&p, 0, sizeof(p));
+	p.cluster_epoch = cluster_epoch;
+	p.tag = tag;
+	GcsBlockRedeclarePayloadSetPageLsn(&p, page_lsn);
+	p.holder_node_id = cluster_node_id;
+	p.held_mode = held_mode;
+	p.checksum = gcs_block_compute_redeclare_checksum(&p);
+
+	(void)cluster_ic_send_envelope(PGRAC_IC_MSG_GCS_BLOCK_REDECLARE, master_node, &p, sizeof(p));
+	if (ClusterGcsBlock != NULL)
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_buffers_redeclared, 1);
+}
+
+
+/*
+ * cluster_gcs_handle_block_redeclare_envelope -- spec-4.7 D2 master-side recv.
+ *
+ *	Validate (checksum + episode epoch + sender identity + mode), then rebuild
+ *	the minimal block-resource view.  Fire-and-forget: every failure is a
+ *	silent drop (the survivor re-sends next reconfig tick) — never a partial
+ *	or off-epoch rebuild (L235/L236: only the current accepted episode epoch
+ *	is trusted;  a stale or mid-episode-bumped declare is dropped).
+ */
+void
+cluster_gcs_handle_block_redeclare_envelope(const ClusterICEnvelope *env, const void *payload)
+{
+	const GcsBlockRedeclarePayload *p = (const GcsBlockRedeclarePayload *)payload;
+	uint64 episode_epoch;
+
+	if (ClusterGcsBlock == NULL)
+		return;
+
+	if (p->checksum != gcs_block_compute_redeclare_checksum(p)) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_stale_block_drop, 1);
+		return;
+	}
+
+	/* L235/L236 epoch-coherent gate: trust only the master's current accepted
+	 * episode epoch (locally-tracked, not a fresh event read). */
+	episode_epoch = cluster_grd_redeclare_episode_epoch();
+	if (p->cluster_epoch != episode_epoch) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_stale_block_drop, 1);
+		return;
+	}
+
+	/* Anti-spoof: the declared holder must be the envelope's source node. */
+	if (p->holder_node_id < 0 || p->holder_node_id >= 32
+		|| (int32)env->source_node_id != p->holder_node_id) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_stale_block_drop, 1);
+		return;
+	}
+
+	if (p->held_mode != (uint8)PCM_STATE_S && p->held_mode != (uint8)PCM_STATE_X) {
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_stale_block_drop, 1);
+		return;
+	}
+
+	if (cluster_gcs_block_master_rebuild_from_redeclare(p->tag, p->held_mode,
+														GcsBlockRedeclarePayloadGetPageLsn(p),
+														p->holder_node_id, p->cluster_epoch))
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_block_state_rebuilt, 1);
+	else
+		pg_atomic_fetch_add_u64(&ClusterGcsBlock->recovery_ambiguous_owner_failclosed, 1);
+}
+
+
+static const ClusterICMsgTypeInfo gcs_block_redeclare_info = {
+	.msg_type = PGRAC_IC_MSG_GCS_BLOCK_REDECLARE,
+	.name = "gcs_block_redeclare",
+	.allowed_producer_mask = CLUSTER_IC_PRODUCER_BUFFER_CLIENTS | CLUSTER_IC_PRODUCER_LMON,
+	.broadcast_ok = false,
+	.handler = cluster_gcs_handle_block_redeclare_envelope,
+};
+
+
 void
 cluster_gcs_register_block_msg_types(void)
 {
@@ -2200,6 +2456,7 @@ cluster_gcs_register_block_msg_types(void)
 	cluster_ic_register_msg_type(&gcs_block_forward_info);
 	cluster_ic_register_msg_type(&gcs_block_invalidate_info);
 	cluster_ic_register_msg_type(&gcs_block_invalidate_ack_info);
+	cluster_ic_register_msg_type(&gcs_block_redeclare_info);
 }
 
 
@@ -2409,6 +2666,56 @@ uint64
 cluster_gcs_get_lost_write_avoid_count(void)
 {
 	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->lost_write_avoid_count) : 0;
+}
+
+/* PGRAC: spec-4.7 D6 — 8 warm-recovery observability accessors (dump category
+ * 'gcs_recovery'). */
+uint64
+cluster_gcs_get_recovery_block_resources_recovering(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_block_resources_recovering)
+			   : 0;
+}
+uint64
+cluster_gcs_get_recovery_buffers_redeclared(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_buffers_redeclared) : 0;
+}
+uint64
+cluster_gcs_get_recovery_block_state_rebuilt(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_block_state_rebuilt) : 0;
+}
+uint64
+cluster_gcs_get_recovery_redo_boundary_waits(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_redo_boundary_waits) : 0;
+}
+uint64
+cluster_gcs_get_recovery_redo_boundary_reached(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_redo_boundary_reached)
+						   : 0;
+}
+uint64
+cluster_gcs_get_recovery_stale_block_drop(void)
+{
+	return ClusterGcsBlock ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_stale_block_drop) : 0;
+}
+uint64
+cluster_gcs_get_recovery_ambiguous_owner_failclosed(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_ambiguous_owner_failclosed)
+			   : 0;
+}
+uint64
+cluster_gcs_get_recovery_before_boundary_failclosed(void)
+{
+	return ClusterGcsBlock
+			   ? pg_atomic_read_u64(&ClusterGcsBlock->recovery_before_boundary_failclosed)
+			   : 0;
 }
 
 /* PGRAC: spec-2.35 D3 (HC110) — extern bump for master_holder lifecycle. */

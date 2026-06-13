@@ -1026,6 +1026,12 @@ pgstat_get_wait_cluster_pcm(WaitEventCluster w)
 		 * exponential backoff). */
 		event_name = "ClusterGCSBlockStarvationRetry";
 		break;
+	case WAIT_EVENT_GCS_BLOCK_RECOVERING:
+		/* PGRAC (spec-4.7 D1): backend bounded sleep while a block resource
+		 * is RECOVERING (survivor re-declare / master rebuild after
+		 * reconfiguration); timeout fail-closes 53R9L. */
+		event_name = "ClusterGCSBlockRecovering";
+		break;
 	default:
 		break;
 	}

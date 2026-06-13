@@ -702,6 +702,100 @@ cluster_pcm_lock_clear_pending_x_for_node(int32 dead_node)
 }
 
 
+/*
+ * cluster_gcs_block_master_rebuild_from_redeclare -- spec-4.7 D2/D3.
+ *
+ *	Rebuild the minimal master block-resource view (holder / mode / PI
+ *	watermark) from ONE survivor re-declare.  The GCS_BLOCK_REDECLARE handler
+ *	calls this after validating checksum + episode epoch + sender identity.
+ *	The block resource is RECOVERING while this runs (the spec-4.7 D1 acquire
+ *	gate fail-closes requests 53R9L), so a transiently-partial view is never
+ *	served;  unfreeze to NORMAL only happens after the rebuild AND the D5 redo
+ *	boundary (P7).
+ *
+ *	D2: record the declared holder + monotone max PI watermark.  Multiple
+ *	survivors re-declaring S merge their residency bits;  an X declare is
+ *	authoritative for the block.  D3 adds the not-double-X invariant (two
+ *	distinct nodes declaring X on the same block = protocol anomaly →
+ *	fail-closed) and full reconciliation of a reused entry.
+ */
+bool
+cluster_gcs_block_master_rebuild_from_redeclare(BufferTag tag, uint8 held_mode, XLogRecPtr page_lsn,
+												int32 source_node, uint64 cluster_epoch)
+{
+	struct GrdEntry *entry;
+	uint32 holder_bit;
+
+	(void)cluster_epoch; /* already gated by the handler (L235/L236);  D3 may re-pin */
+
+	if (cluster_pcm_htab == NULL)
+		return false;
+	if (source_node < 0 || source_node >= 32)
+		return false;
+	if (held_mode != (uint8)PCM_STATE_S && held_mode != (uint8)PCM_STATE_X)
+		return false;
+
+	entry = pcm_get_or_create_entry(tag);
+	if (entry == NULL)
+		return false; /* HC59 cap fail-closed — leave unrebuilt;  survivor re-sends */
+
+	holder_bit = pcm_holder_bit(source_node);
+
+	pcm_entry_lock_exclusive(entry);
+
+	if (held_mode == (uint8)PCM_STATE_X) {
+		int32 cur_x = entry->x_holder_node;
+		uint32 other_s = pg_atomic_read_u32(&entry->s_holders_bitmap) & ~holder_bit;
+
+		/*
+		 * spec-4.7 D3 not-double-X + X-vs-S contradiction (规则 8.A): another
+		 * node already declared X (cur_x), OR another node already declared S
+		 * (other_s), on this block this episode.  Pre-crash the PCM protocol
+		 * guarantees a single X holder with NO concurrent S holders, so either
+		 * is a protocol anomaly.  Fail-closed: do NOT apply (NEVER record two X
+		 * holders nor X-over-a-live-S = never reconstruct a double grant);  the
+		 * caller counts ambiguous_owner_failclosed and the block stays
+		 * RECOVERING.  Same node re-declaring X is idempotent (cur_x ==
+		 * source_node and only its own S bit → falls through and re-applies).
+		 */
+		if ((cur_x >= 0 && cur_x != source_node) || other_s != 0) {
+			cluster_grd_inc_block_path_failclosed();
+			LWLockRelease(&entry->entry_lock.lock);
+			return false;
+		}
+		/* X holder is authoritative for the block (first declarer, or the same
+		 * node re-declaring). */
+		pg_atomic_write_u32(&entry->master_state, (uint32)PCM_STATE_X);
+		entry->x_holder_node = source_node;
+		pg_atomic_write_u32(&entry->s_holders_bitmap, 0);
+	} else if ((PcmState)pg_atomic_read_u32(&entry->master_state) == PCM_STATE_X) {
+		/*
+		 * spec-4.7 D3 S-vs-X contradiction (规则 8.A, code-review P1 fix): the
+		 * block is already X-held by another view, and now a node declares S on
+		 * it — pre-crash an X holder excludes all S holders, so this is a
+		 * protocol anomaly.  Fail-closed: do NOT silently drop-and-succeed (the
+		 * pre-fix bug returned true);  reject so the caller counts ambiguous and
+		 * the block stays RECOVERING rather than serving an ambiguous owner.
+		 */
+		cluster_grd_inc_block_path_failclosed();
+		LWLockRelease(&entry->entry_lock.lock);
+		return false;
+	} else {
+		/* S residency: merge the bit;  raise N→S. */
+		pg_atomic_fetch_or_u32(&entry->s_holders_bitmap, holder_bit);
+		if ((PcmState)pg_atomic_read_u32(&entry->master_state) == PCM_STATE_N)
+			pg_atomic_write_u32(&entry->master_state, (uint32)PCM_STATE_S);
+	}
+
+	/* PI watermark: monotone max (spec-2.37 lost-write source + D5 required_lsn). */
+	if ((uint64)page_lsn > entry->pi_watermark_lsn)
+		entry->pi_watermark_lsn = (uint64)page_lsn;
+
+	LWLockRelease(&entry->entry_lock.lock);
+	return true; /* holder recorded */
+}
+
+
 /* ============================================================
  * PGRAC: spec-2.37 D2/D7/D8/D9 HC125-HC130 — PI watermark helpers.
  *
@@ -1447,6 +1541,40 @@ cluster_pcm_lock_acquire_buffer(BufferDesc *buf, PcmLockMode mode)
 							   (int)mode)));
 
 	tag = buf->tag;
+
+	/*
+	 * PGRAC: spec-4.7 D1 — RECOVERING gate.  A block whose GCS master is
+	 * being recovered after reconfiguration (master DEAD; block-protocol
+	 * state volatile and not yet rebuilt — D2/D3) must NOT be served from
+	 * stale local state nor routed to the dead master.  Wait a bounded
+	 * cluster.gcs_block_recovery_wait_ms for the rebuild, re-checking the
+	 * phase, then fail-closed 53R9L (retryable).  This gate precedes the
+	 * master==self / master!=self routing below, so it covers BOTH the
+	 * local-master fast path and the remote-dispatch path (L240 — a
+	 * fail-closed must be mirrored on every path reaching the same hazard).
+	 */
+	if (cluster_gcs_block_phase_for_tag(tag) == GCS_BLOCK_RECOVERING) {
+		long waited_us = 0;
+		const long step_us = 20000; /* 20 ms */
+		long budget_us = (long)cluster_gcs_block_recovery_wait_ms * 1000L;
+
+		while (cluster_gcs_block_phase_for_tag(tag) == GCS_BLOCK_RECOVERING) {
+			if (waited_us >= budget_us)
+				ereport(ERROR,
+						(errcode(ERRCODE_CLUSTER_GCS_BLOCK_RESOURCE_RECOVERING),
+						 errmsg("block-level cache protocol state is being rebuilt "
+								"after reconfiguration"),
+						 errhint("The block resource is recovering (survivor re-declare / "
+								 "master rebuild after node failure); retry the transaction.")));
+
+			CHECK_FOR_INTERRUPTS();
+			pgstat_report_wait_start(WAIT_EVENT_GCS_BLOCK_RECOVERING);
+			pg_usleep(step_us);
+			pgstat_report_wait_end();
+			waited_us += step_us;
+		}
+	}
+
 	master_node = cluster_gcs_lookup_master(tag);
 
 	if (master_node != cluster_node_id) {

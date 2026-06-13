@@ -666,6 +666,10 @@ extern int cluster_gcs_block_retransmit_initial_backoff_ms;
 extern bool cluster_gcs_block_local_cache;
 extern int cluster_gcs_block_dedup_max_entries;
 
+/* PGRAC: spec-4.7 D1 — bounded wait (ms) on a RECOVERING block resource
+ * before fail-closing 53R9L.  See cluster_guc.c for semantics. */
+extern int cluster_gcs_block_recovery_wait_ms;
+
 /*
  * PGRAC: spec-2.36 D8 — 3 NEW GUC for CF 3-way protocol.
  *

@@ -351,6 +351,13 @@ typedef enum {
 	WAIT_EVENT_GCS_BLOCK_INVALIDATE_BROADCAST,
 	WAIT_EVENT_GCS_BLOCK_INVALIDATE_ACK_WAIT,
 	WAIT_EVENT_GCS_BLOCK_STARVATION_RETRY,
+	/* PGRAC (spec-4.7 D1 NEW 1 wait event; GCS/PCM warm recovery).
+	 * GCS_BLOCK_RECOVERING — backend bounded pg_usleep poll (20ms steps,
+	 * CHECK_FOR_INTERRUPTS each step) while a block resource is RECOVERING
+	 * (survivor re-declare / master rebuild after reconfiguration); on timeout
+	 * the acquire fail-closes 53R9L.  DBA sees 'ClusterGCSBlockRecovering' in
+	 * pg_stat_activity. */
+	WAIT_EVENT_GCS_BLOCK_RECOVERING,
 
 	/* Cluster: BufferShip (5 events) -- subsystem #5 */
 	WAIT_EVENT_BUFFER_SHIP_CR_BUILD = PG_WAIT_CLUSTER_BUFFERSHIP,

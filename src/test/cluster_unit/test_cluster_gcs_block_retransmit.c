@@ -201,8 +201,10 @@ UT_TEST(test_cluster_wait_events_count_97)
 	 * spec-2.36 D8: 85 → 88 (+ 3 CF 3-way wait events).
 	 * spec-3.13 D6: 91 → 93 (+ 2 undo cleaner wait events).
 	 * spec-4.1 D7: 93 → 95 (+ 2 wal-thread claim I/O events).
-	 * spec-4.2 D5: 95 → 97 (+ 2 wal-state registry I/O events). */
-	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 98);
+	 * spec-4.2 D5: 95 → 97 (+ 2 wal-state registry I/O events).
+	 * spec-4.6 D4: 97 → 98 (+ 1 GRD shard remaster short-wait).
+	 * spec-4.7 D1: 98 → 99 (+ 1 GCS block RECOVERING short-wait). */
+	UT_ASSERT_EQ((int)CLUSTER_WAIT_EVENTS_COUNT, 99);
 }
 
 

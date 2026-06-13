@@ -482,6 +482,16 @@ extern void cluster_grd_recovery_lmon_tick(void);
 extern uint64 cluster_grd_redeclare_generation(void);
 /* spec-4.6 P0-1 — the epoch the current episode is locked to (0 = none). */
 extern uint64 cluster_grd_redeclare_episode_epoch(void);
+/* spec-4.7 D7 (P0 fix) — recovery FSM not IDLE → block phase gate keeps every
+ * dead-static-master block RECOVERING for the whole episode (held blocks may
+ * not be re-declared to their recovery-aware master yet). */
+extern bool cluster_grd_recovery_in_progress(void);
+/* spec-4.7 D2/D7 (P0 fix) — survivor block re-declare scan step + completion
+ * predicate.  scan_complete MUST hold before REDECLARE_DONE is announced
+ * (else a late-scanned held block is served as cold → 8.A double-grant).
+ * Exposed for the unit test to drive the cursor without the reconfig FSM. */
+extern void grd_block_redeclare_step(uint64 episode_epoch);
+extern bool grd_block_redeclare_scan_complete(uint64 episode_epoch);
 
 /* spec-4.6 P0#3 cluster gate — REDECLARE_DONE receiver (cluster_ges.c
  * inbound handler):  record that `node` completed its local rebind

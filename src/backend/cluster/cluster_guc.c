@@ -441,6 +441,15 @@ bool cluster_gcs_block_local_cache = true;
 int cluster_gcs_block_dedup_max_entries = 1024;
 
 /*
+ * PGRAC: spec-4.7 D1 — cluster.gcs_block_recovery_wait_ms.  Bounded backend
+ * wait (ms) on a block resource in GCS_BLOCK_RECOVERING (survivor re-declare /
+ * master rebuild after reconfiguration) before fail-closing 53R9L.  Default
+ * 200ms — short enough to retry promptly, long enough to absorb an in-flight
+ * rebuild.  PGC_SIGHUP (operators may tune without restart).
+ */
+int cluster_gcs_block_recovery_wait_ms = 200;
+
+/*
  * PGRAC: spec-2.36 D8 — 3 NEW GUC for CF 3-way protocol (X writer
  * transfer + reader starvation guard).
  *
@@ -2019,6 +2028,22 @@ cluster_init_guc(void)
 					 "ereport(ERRCODE_QUERY_CANCELED) with errhint "
 					 "pointing to spec-2.34 retransmit.  HC85.  PGC_SUSET."),
 		&cluster_gcs_reply_timeout_ms, 5000, 100, 60000, PGC_SUSET, 0, NULL, NULL, NULL);
+
+	/*
+	 * PGRAC: spec-4.7 D1 — cluster.gcs_block_recovery_wait_ms.  Bounded
+	 * backend wait on a block resource in GCS_BLOCK_RECOVERING before
+	 * fail-closing 53R9L (survivor re-declare / master rebuild in progress).
+	 * PGC_SIGHUP — operators tune without restart.
+	 */
+	DefineCustomIntVariable(
+		"cluster.gcs_block_recovery_wait_ms",
+		gettext_noop("Bounded wait (ms) on a recovering GCS block resource before 53R9L."),
+		gettext_noop("After reconfiguration a block resource enters RECOVERING "
+					 "(survivor re-declare / master rebuild).  A backend touching "
+					 "such a block waits up to this long for the rebuild, then "
+					 "fail-closes ERRCODE_CLUSTER_GCS_BLOCK_RESOURCE_RECOVERING "
+					 "(53R9L) — never a stale local / old-master fallback.  spec-4.7 D1."),
+		&cluster_gcs_block_recovery_wait_ms, 200, 0, 60000, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	/*
 	 * PGRAC: spec-2.34 D8 — 3 NEW GUC for GCS block reliability hardening.

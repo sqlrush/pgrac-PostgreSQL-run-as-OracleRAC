@@ -676,6 +676,18 @@ Section: Class 53 - Insufficient Resources (pgrac extension)
 # instead of serving stale block state through the new master map.
 53R9K    E    ERRCODE_CLUSTER_GCS_BLOCK_PATH_NOT_REBUILT                       cluster_gcs_block_path_not_rebuilt
 
+# spec-4.7 D1/D4:  GCS/PCM block-protocol warm recovery.  53R9K (above)
+# is narrowed (spec-4.7 P1#4) to the legacy/permanent "no recovery path"
+# guard;  the normal failure-driven recovery path now flows
+# 53R9L (RECOVERING: survivor re-declare / master rebuild in progress)
+# -> 53R9M (redo boundary not yet reached: the dead instance's merged WAL
+# has not been recovered to a consistent point, so serving the block
+# would risk a stale shared page) -> NORMAL.  Both are retryable
+# (ERRCODE_T_R_* family);  the request path fail-closes with the exact
+# code per state (P1#4 — never "53R9K OR 53R9L").
+53R9L    E    ERRCODE_CLUSTER_GCS_BLOCK_RESOURCE_RECOVERING                    cluster_gcs_block_resource_recovering
+53R9M    E    ERRCODE_CLUSTER_GCS_BLOCK_BEFORE_REDO_BOUNDARY                   cluster_gcs_block_before_redo_boundary
+
 # spec-4.1 D7:  per-thread WAL routing startup validation (53RA0+ opens
 # the Stage-4 WAL/recovery band; 53R70/71 belong to GES).  53RA0 fires
 # at postmaster startup when cluster.wal_threads_dir is configured but

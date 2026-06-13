@@ -153,6 +153,9 @@ StaticAssertDecl(sizeof(GcsReplyPayload) == 24,
  *  attack/misconfig surface).
  */
 extern int cluster_gcs_lookup_master(BufferTag tag);
+/* spec-4.7 D7 — PURE static declared-list master (no recovery re-route);  the
+ * block's original (possibly dead) master, used by the recovery-phase gate. */
+extern int cluster_gcs_lookup_master_static(BufferTag tag);
 
 /*
  * cluster_gcs_send_transition_and_wait — send GCS_REQUEST envelope to

@@ -47,6 +47,7 @@
 #include "cluster/cluster_buffer_desc.h" /* PcmState (1.6) */
 #include "cluster/cluster_cssd.h"		 /* spec-4.7a D4 — ClusterCssdPeerState for stub */
 #include "cluster/cluster_inject.h"
+#include "cluster/cluster_gcs_block.h" /* spec-4.7 D1 — ClusterGcsBlockPhase + phase_for_tag proto */
 #include "cluster/cluster_pcm_lock.h"
 #include "cluster/cluster_shmem.h"
 #include "storage/buf_internals.h" /* BufferTag */
@@ -192,6 +193,38 @@ cluster_cssd_get_peer_state(int32 peer_id)
 {
 	return (peer_id == fake_cssd_dead_node) ? CLUSTER_CSSD_PEER_DEAD : CLUSTER_CSSD_PEER_ALIVE;
 }
+
+/*
+ * spec-4.7 D1 (L238) — cluster_pcm_lock.o's acquire_buffer now opens with a
+ * RECOVERING gate that references cluster_gcs_block_phase_for_tag,
+ * cluster_gcs_block_recovery_wait_ms and CHECK_FOR_INTERRUPTS.  This test
+ * links cluster_pcm_lock.o but not cluster_gcs_block.o / cluster_guc.o /
+ * postmaster core, so provide link-time stubs.  phase_for_tag → NORMAL keeps
+ * the gate a no-op so these tests exercise the local acquire state machine,
+ * not the recovery path (covered e2e by t/251).
+ */
+volatile sig_atomic_t InterruptPending = false;
+void ProcessInterrupts(void);
+void
+ProcessInterrupts(void)
+{}
+int cluster_gcs_block_recovery_wait_ms = 200;
+
+/* Controllable phase: default NORMAL (gate no-op so the state-machine tests
+ * pass straight through);  a test sets it RECOVERING to drive the D1 gate. */
+static ClusterGcsBlockPhase fake_block_phase = GCS_BLOCK_NORMAL;
+ClusterGcsBlockPhase
+cluster_gcs_block_phase_for_tag(BufferTag tag pg_attribute_unused())
+{
+	return fake_block_phase;
+}
+
+/* spec-4.7 D3 (L238) — the rebuild fn's not-double-X branch bumps this 4.6
+ * counter;  stub it no-op for the unit harness. */
+void cluster_grd_inc_block_path_failclosed(void);
+void
+cluster_grd_inc_block_path_failclosed(void)
+{}
 
 void *
 ShmemInitStruct(const char *name pg_attribute_unused(), Size size pg_attribute_unused(),
@@ -1072,10 +1105,129 @@ UT_TEST(test_pcm_b_local_master_remote_x_holder_fail_closed)
 	fake_cssd_dead_node = -1;
 }
 
+/*
+ * spec-4.7 D1 — RECOVERING gate fail-closed.  When a block resource is
+ * RECOVERING, cluster_pcm_lock_acquire_buffer must fail-closed 53R9L after the
+ * bounded wait — never route to the dead master nor serve stale local state.
+ * With cluster.gcs_block_recovery_wait_ms = 0 the gate fail-closes immediately
+ * (deterministic;  the ereport precedes any sleep / CHECK_FOR_INTERRUPTS).
+ * This proves the gate logic that lives in cluster_pcm_lock.o;  the phase
+ * predicate itself (master DEAD → RECOVERING) is e2e-deferred (measure-first,
+ * spec-4.7 D0 Impl note v0.1) and unit-proven with the master-rebuild logic in
+ * spec-4.7 D3 (test_cluster_gcs_recovery).
+ */
+UT_TEST(test_pcm_d1_recovering_gate_fail_closed)
+{
+	BufferDesc buf;
+
+	reset_fake_pcm_runtime(2);
+	buf.tag = make_tag(77);
+
+	fake_block_phase = GCS_BLOCK_RECOVERING;
+	cluster_gcs_block_recovery_wait_ms = 0; /* immediate fail-closed, no sleep */
+	UT_EXPECT_EREPORT(cluster_pcm_lock_acquire_buffer(&buf, PCM_LOCK_MODE_S));
+	fake_block_phase = GCS_BLOCK_NORMAL;
+	cluster_gcs_block_recovery_wait_ms = 200;
+}
+
+/*
+ * spec-4.7 D2 — master rebuild from one survivor re-declare.  Proves the
+ * rebuild records the declared holder (X authoritative) and the monotone-max
+ * PI watermark.  The block-protocol e2e is deferred (measure-first, D0 Impl
+ * note v0.1);  this is the L239 unit-proof of the 8.A-relevant master-view
+ * reconstruction (D3 adds the not-double-X conflict invariant).
+ */
+UT_TEST(test_pcm_d2_rebuild_from_redeclare)
+{
+	BufferTag tagx = make_tag(88);
+	BufferTag tags = make_tag(89);
+
+	reset_fake_pcm_runtime(4);
+	fake_cssd_dead_node = -1;
+
+	/* node 2 re-declares X on tagx with page_lsn 0x5000. */
+	cluster_gcs_block_master_rebuild_from_redeclare(tagx, (uint8)PCM_STATE_X, (XLogRecPtr)0x5000, 2,
+													7);
+	/* The rebuilt master view records node 2 as the (live) X holder. */
+	UT_ASSERT(cluster_pcm_master_other_live_holder_exists(tagx, 3));
+	UT_ASSERT(!cluster_pcm_master_other_live_holder_exists(tagx, 2));
+	UT_ASSERT_EQ((uint64)cluster_pcm_lock_pi_watermark_query(tagx), (uint64)0x5000);
+
+	/* node 1 re-declares S on tags with a higher page_lsn — watermark = max. */
+	cluster_gcs_block_master_rebuild_from_redeclare(tags, (uint8)PCM_STATE_S, (XLogRecPtr)0x9000, 1,
+													7);
+	UT_ASSERT(cluster_pcm_master_other_live_holder_exists(tags, 0));
+	UT_ASSERT_EQ((uint64)cluster_pcm_lock_pi_watermark_query(tags), (uint64)0x9000);
+
+	/* A stale lower-LSN re-declare must NOT regress the watermark. */
+	cluster_gcs_block_master_rebuild_from_redeclare(tags, (uint8)PCM_STATE_S, (XLogRecPtr)0x100, 3,
+													7);
+	UT_ASSERT_EQ((uint64)cluster_pcm_lock_pi_watermark_query(tags), (uint64)0x9000);
+}
+
+/*
+ * spec-4.7 D3 — not-double-X invariant (规则 8.A).  Two distinct nodes
+ * declaring X on the SAME block (pre-crash single-X violated) must NEVER
+ * reconstruct two X holders.  The first X declarer wins;  the conflicting
+ * second is rejected (the rebuilt view keeps node 2, never node 3), so the
+ * recovery path can never produce a cross-node double grant.
+ */
+UT_TEST(test_pcm_d3_not_double_x)
+{
+	BufferTag tag = make_tag(91);
+
+	reset_fake_pcm_runtime(4);
+	fake_cssd_dead_node = -1;
+
+	cluster_gcs_block_master_rebuild_from_redeclare(tag, (uint8)PCM_STATE_X, (XLogRecPtr)0x4000, 2,
+													7);
+	/* Conflicting X from a DIFFERENT node — must be rejected. */
+	cluster_gcs_block_master_rebuild_from_redeclare(tag, (uint8)PCM_STATE_X, (XLogRecPtr)0x4000, 3,
+													7);
+
+	/* x_holder stays node 2 (not 3):  node 2 self-excluded → false;  any other
+	 * sender sees node 2 as the live X holder.  Had the conflicting node-3 X
+	 * been applied, other_live_holder_exists(tag, 2) would be TRUE. */
+	UT_ASSERT(!cluster_pcm_master_other_live_holder_exists(tag, 2));
+	UT_ASSERT(cluster_pcm_master_other_live_holder_exists(tag, 3));
+
+	/* Same node re-declaring X is idempotent (not a conflict). */
+	UT_ASSERT(cluster_gcs_block_master_rebuild_from_redeclare(tag, (uint8)PCM_STATE_X,
+															  (XLogRecPtr)0x4000, 2, 7));
+	UT_ASSERT(!cluster_pcm_master_other_live_holder_exists(tag, 2));
+	UT_ASSERT(cluster_pcm_master_other_live_holder_exists(tag, 3));
+
+	/*
+	 * code-review P1 — X-vs-S contradiction (both directions) must fail-closed
+	 * (return false), not silently keep/overwrite.
+	 */
+	{
+		BufferTag tagxs = make_tag(92);
+		BufferTag tagsx = make_tag(93);
+
+		/* X-held then S from a DIFFERENT node → reject (was: silently dropped,
+		 * returned true). */
+		UT_ASSERT(cluster_gcs_block_master_rebuild_from_redeclare(tagxs, (uint8)PCM_STATE_X,
+																  (XLogRecPtr)0x10, 2, 7));
+		UT_ASSERT(!cluster_gcs_block_master_rebuild_from_redeclare(tagxs, (uint8)PCM_STATE_S,
+																   (XLogRecPtr)0x10, 1, 7));
+		/* still X by node 2 (S not merged). */
+		UT_ASSERT(cluster_pcm_master_other_live_holder_exists(tagxs, 3));
+		UT_ASSERT(!cluster_pcm_master_other_live_holder_exists(tagxs, 2));
+
+		/* S-held by node 1 then X from a DIFFERENT node → reject (X-over-live-S
+		 * = never reconstruct a double grant; was: silently overwrote S). */
+		UT_ASSERT(cluster_gcs_block_master_rebuild_from_redeclare(tagsx, (uint8)PCM_STATE_S,
+																  (XLogRecPtr)0x10, 1, 7));
+		UT_ASSERT(!cluster_gcs_block_master_rebuild_from_redeclare(tagsx, (uint8)PCM_STATE_X,
+																   (XLogRecPtr)0x10, 2, 7));
+	}
+}
+
 int
 main(void)
 {
-	UT_PLAN(35);
+	UT_PLAN(38);
 	UT_RUN(test_pcm_lock_mode_constant_aliases_match_pcm_state);
 	UT_RUN(test_pcm_lock_transition_count_is_9);
 	UT_RUN(test_pcm_lock_transition_enum_values_are_1_to_9);
@@ -1111,6 +1263,9 @@ main(void)
 	UT_RUN(test_pcm_d3_requester_is_holder_strict);
 	UT_RUN(test_pcm_d4_other_live_holder_gate);
 	UT_RUN(test_pcm_b_local_master_remote_x_holder_fail_closed);
+	UT_RUN(test_pcm_d1_recovering_gate_fail_closed);
+	UT_RUN(test_pcm_d2_rebuild_from_redeclare);
+	UT_RUN(test_pcm_d3_not_double_x);
 	UT_DONE();
 	return ut_failed_count == 0 ? 0 : 1;
 }
