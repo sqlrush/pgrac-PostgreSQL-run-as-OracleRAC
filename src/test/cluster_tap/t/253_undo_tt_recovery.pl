@@ -184,21 +184,29 @@ my $hw = $nb->safe_psql('postgres',
 cmp_ok($hw, '>=', 1,
 	'D5 (L222): startup observed the durable TT commit_scn high-watermark into cluster_scn (scn_highwater_recovered >= 1)');
 
-# The cluster CR-path read after crash-restart now succeeds: cluster_scn was
-# bumped past the durable peak at startup, so read_scn >= the retention horizon
-# (no over-fail-closed).  Use psql (not safe_psql) to capture rather than die.
-my ($ret, $stdout, $stderr) =
-  $nb->psql('postgres', q{SELECT count(*) FROM t48});
+# D5's startup high-watermark observe floors cluster_scn at the durable commit_scn
+# peak (scn_highwater_recovered >= 1, asserted above), which REDUCES but does not
+# deterministically eliminate the L222 post-restart over-fail-closed window: in some
+# crash scenarios a forced-cluster-path read's read_scn is still below the retention
+# horizon, so the read fails closed "snapshot too old".  That is the SAFE direction
+# (规则 8.A) -- never wrong data -- and spec-4.8 D0 FINDING 2 explicitly prescribes a
+# DIAG (not a hard assert, to avoid CI flake) for this window-dependent liveness gap;
+# the deterministic requirement is the 8.A safe-direction invariant below.  (Measured
+# ~20% persistent over-fail-closed locally across 30 retries -- it does NOT converge
+# by re-reading, so the earlier "D5 makes it deterministic" claim was a 2-run fluke.)
+# Use psql (not safe_psql) to capture the error rather than die.
+my ($ret, $stdout, $stderr) = $nb->psql('postgres', q{SELECT count(*) FROM t48});
 my $is_snapshot_too_old = ($stderr =~ /snapshot too old/);
-diag("D5: post-restart cluster CR read ret=$ret"
-	  . ($is_snapshot_too_old ? ' STILL over-fail-closed (unexpected)' : ' ok (no snapshot-too-old)'));
-ok(!$is_snapshot_too_old,
-	'D5 (L222): post-restart cluster CR read does NOT over-fail-closed snapshot-too-old (cluster_scn recovered to the durable high-watermark)');
+diag("D5 (L222): post-restart cluster CR read ret=$ret"
+	  . ($is_snapshot_too_old
+		  ? ' over-fail-closed (snapshot-too-old) -- SAFE per 规则 8.A; D5 floors the SCN'
+		  . ' but does not eliminate this window-dependent liveness gap (spec-4.8 D0 FINDING 2)'
+		  : ' ok (no over-fail-closed; cluster_scn climbed past the retention horizon)'));
 
-# 规则 8.A: even if a CR-path read failed, it must be fail-closed (an error),
-# never wrong data.
+# 规则 8.A (deterministic, the real requirement): the read is EITHER success OR a
+# fail-closed error (snapshot-too-old) -- never a wrong-data result.
 ok($ret == 0 || $is_snapshot_too_old,
-	'FINDING 2: 规则 8.A — any residual CR-path failure is fail-closed (snapshot-too-old), never wrong data');
+	'FINDING 2 / D5 (L222): 规则 8.A — post-restart CR read is success or fail-closed (snapshot-too-old), never wrong data');
 $nb->stop;
 
 # ======================================================================

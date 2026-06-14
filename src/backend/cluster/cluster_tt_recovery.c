@@ -268,8 +268,27 @@ cluster_tt_recovery_observe_scn_highwater(void)
 }
 
 /*
+ * TTRevertExpect -- spec-4.8 D7-A (P1#2): the identity an undo record must carry
+ *	to be eligible for physical revert, derived from the scanned ABORTED TT slot.
+ *	An undo record stamps its binding-time (origin, segment, slot, wrap+1)
+ *	(spec-4.5a G4); D7 requires all four to match the slot it is walking from
+ *	before touching the heap, so a 2^32 wrap collision or a record bound to a
+ *	different slot cannot spoof a revert via raw xid alone.
+ */
+typedef struct TTRevertExpect {
+	uint16 origin_node_id;	   /* this node (D7 only scans its own segments) */
+	uint16 tt_slot_segment_id; /* scanned undo segment */
+	uint32 tt_slot_id;		   /* cluster_tt_slot_offset_to_id(scanned offset) */
+	uint16 tt_wrap_plus1;	   /* scanned slot wrap + 1 (0 = unknown -> no match) */
+	TransactionId xid;		   /* scanned ABORTED slot xid */
+} TTRevertExpect;
+
+/*
  * revert_one_delete_record -- spec-4.8 D7 part 2: physically revert one DELETE
  *	undo record of an aborted xact, index-safely.
+ *
+ *	spec-4.8 D7-A (P1#2): before any page read or heap mutation, the record must
+ *	match the scanned slot's full TT identity (exp); raw xid alone is not enough.
  *
  *	INSERT/UPDATE records fail closed immediately (index-unsafe: PG has no
  *	synchronous per-entry index point-delete; the matrix leaves them to MVCC
@@ -284,7 +303,7 @@ cluster_tt_recovery_observe_scn_highwater(void)
  *	reverted, else 0.
  */
 static int
-revert_one_delete_record(const UndoRecordHeader *hdr, TransactionId aborted_xid)
+revert_one_delete_record(const UndoRecordHeader *hdr, const TTRevertExpect *exp)
 {
 	Buffer buf;
 	BufferDesc *desc;
@@ -296,6 +315,20 @@ revert_one_delete_record(const UndoRecordHeader *hdr, TransactionId aborted_xid)
 	bool xmax_already_clear;
 	ClusterTtRecoveryRevertVerdict verdict;
 	int reverted = 0;
+
+	/*
+	 * spec-4.8 D7-A (P1#2): full TT-identity gate FIRST -- before any page read
+	 * or heap mutation.  A 0 on either tt_wrap_plus1 side means "unknown
+	 * generation" (legacy record, no same-slot binding, or a wrap that landed on
+	 * 0xFFFF whose +1 encoding collides with the sentinel) and is never trusted
+	 * to match.  Any mismatch: no heap touch (rule 8.A), count fail-closed.
+	 */
+	if (hdr->origin_node_id != exp->origin_node_id
+		|| hdr->tt_slot_segment_id != exp->tt_slot_segment_id || hdr->tt_slot_id != exp->tt_slot_id
+		|| exp->tt_wrap_plus1 == 0 || hdr->tt_wrap_plus1 != exp->tt_wrap_plus1) {
+		cluster_tt_recovery_count_undo_revert_failclosed();
+		return 0;
+	}
 
 	/* Index-unsafe records never touch the heap (matrix v2: fail-closed). */
 	if (hdr->record_type != (uint8)UNDO_RECORD_DELETE) {
@@ -339,7 +372,7 @@ revert_one_delete_record(const UndoRecordHeader *hdr, TransactionId aborted_xid)
 	 * single-xact xmax.  A multixact xmax is not this deleter alone -> no match. */
 	raw_xmax = HeapTupleHeaderGetRawXmax(htup);
 	xmax_matches
-		= !(htup->t_infomask & HEAP_XMAX_IS_MULTI) && TransactionIdEquals(raw_xmax, aborted_xid);
+		= !(htup->t_infomask & HEAP_XMAX_IS_MULTI) && TransactionIdEquals(raw_xmax, exp->xid);
 	xmax_already_clear = (htup->t_infomask & HEAP_XMAX_INVALID) != 0;
 
 	verdict = cluster_tt_recovery_classify_revert(true /* delete */, true /* slot aborted */,
@@ -369,13 +402,15 @@ revert_one_delete_record(const UndoRecordHeader *hdr, TransactionId aborted_xid)
 /*
  * revert_aborted_undo_chain -- spec-4.8 D7 part 2: walk one aborted xact's undo
  *	chain (prev_uba from the durable TT slot's first_undo_block head) and
- *	physically revert each of its DELETE records.  Only records owned by
- *	aborted_xid are acted on (the chain is per-transaction).  A short/unreadable
- *	record stops the walk (fail-safe); a hard step cap guards a malformed chain.
+ *	physically revert each of its DELETE records.  Only records whose full TT
+ *	identity matches the scanned slot (exp; spec-4.8 D7-A P1#2) are reverted --
+ *	revert_one_delete_record gates before any heap touch; the cheap xid filter
+ *	here just skips foreign records on the chain.  A short/unreadable record
+ *	stops the walk (fail-safe); a hard step cap guards a malformed chain.
  *	Returns the number of tuples reverted.
  */
 static int
-revert_aborted_undo_chain(UBA head, TransactionId aborted_xid)
+revert_aborted_undo_chain(UBA head, const TTRevertExpect *exp)
 {
 	UBA uba = head;
 	int steps = 0;
@@ -395,8 +430,8 @@ revert_aborted_undo_chain(UBA head, TransactionId aborted_xid)
 		hdr = (const UndoRecordHeader *)recbuf.data;
 		next = hdr->prev_uba; /* capture before any work */
 
-		if (TransactionIdEquals(hdr->xid, aborted_xid))
-			reverted += revert_one_delete_record(hdr, aborted_xid);
+		if (TransactionIdEquals(hdr->xid, exp->xid))
+			reverted += revert_one_delete_record(hdr, exp);
 
 		uba = next;
 	}
@@ -462,7 +497,24 @@ cluster_tt_recovery_physical_rollback(void)
 			if (UBA_is_invalid(s->first_undo_block))
 				continue; /* no durable chain head -> not enumerable here */
 
-			reverted += revert_aborted_undo_chain(s->first_undo_block, s->xid);
+			{
+				/*
+				 * spec-4.8 D7-A (P1#2): derive the expected TT identity from the
+				 * scanned slot so the chain walk reverts only records actually
+				 * bound to this (origin, segment, slot, wrap) -- not a raw-xid
+				 * match.  We only scan our own node's segments, so origin =
+				 * cluster_node_id.  A slot whose wrap is 0xFFFF makes wrap+1 == 0
+				 * ("unknown"); revert_one_delete_record then fails closed.
+				 */
+				TTRevertExpect exp;
+
+				exp.origin_node_id = (uint16)cluster_node_id;
+				exp.tt_slot_segment_id = (uint16)segment_id;
+				exp.tt_slot_id = cluster_tt_slot_offset_to_id(i);
+				exp.tt_wrap_plus1 = (uint16)(s->wrap + 1);
+				exp.xid = s->xid;
+				reverted += revert_aborted_undo_chain(s->first_undo_block, &exp);
+			}
 		}
 	}
 

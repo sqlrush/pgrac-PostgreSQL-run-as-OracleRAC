@@ -146,14 +146,23 @@ cluster_tt_durable_classify(int xid_matches, bool match_has_valid_scn, bool scan
 }
 
 
+/* spec-4.8 D7-A (P1#1): canonical invalid chain head for commit/abort stamps. */
+static const UBA InvalidUbaVal = InvalidUba_init;
+
 /*
  * tt_slot_write_committed -- the per-slot 32B targeted RMW shared by the
  * WAL-emitting durable commit (2PC, standalone 0x30) and the spec-3.18 D4.1
  * fold path (no 0x30; the delta rides the commit record).  Read the slot
- * (preserve flags / first_undo_block), stamp COMMITTED + commit_scn, write 32B
- * back.  Lock-free -- this xact is the sole owner of this slot (spec-3.11
+ * (preserve flags), stamp COMMITTED + commit_scn, clear first_undo_block, write
+ * 32B back.  Lock-free -- this xact is the sole owner of this slot (spec-3.11
  * §2.2).  NOT fsync'd (C10): durability comes from the WAL flush of whichever
  * record carries the delta; a crash before that flush leaves neither durable.
+ *
+ * spec-4.8 D7-A (P1#1): clearing first_undo_block here (and in durable_abort +
+ * both redo APPLY paths) keeps the D7 physical-rollback invariant -- an ABORTED
+ * slot carries a non-invalid chain head ONLY if XLOG_UNDO_TT_SLOT_SET_HEAD (0x90)
+ * re-attached one for the slot's current (xid, wrap).  Otherwise a recycled slot
+ * would inherit a prior owner's stale head and D7 would walk a foreign chain.
  */
 static void
 tt_slot_write_committed(uint32 segment_id, uint8 owner, uint16 slot_offset, TransactionId xid,
@@ -175,6 +184,7 @@ tt_slot_write_committed(uint32 segment_id, uint8 owner, uint16 slot_offset, Tran
 	slot.wrap = wrap;
 	slot.status = (uint8)TT_SLOT_COMMITTED;
 	slot.commit_scn = commit_scn;
+	slot.first_undo_block = InvalidUbaVal; /* spec-4.8 D7-A (P1#1): no stale head */
 
 	if (!cluster_undo_smgr_write_header_bytes(segment_id, owner, off, (const char *)&slot,
 											  sizeof(slot))) {
@@ -274,6 +284,7 @@ cluster_tt_slot_durable_abort(uint32 segment_id, uint16 slot_offset, Transaction
 	slot.wrap = wrap;
 	slot.status = (uint8)TT_SLOT_ABORTED;
 	slot.commit_scn = InvalidScn;
+	slot.first_undo_block = InvalidUbaVal; /* spec-4.8 D7-A (P1#1): cleared; 0x90 re-attaches */
 
 	if (!cluster_undo_smgr_write_header_bytes(segment_id, owner, off, (const char *)&slot,
 											  sizeof(slot))) {

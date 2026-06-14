@@ -652,6 +652,9 @@ cluster_undo_redo_segment_init(XLogReaderState *record)
 }
 
 
+/* spec-4.8 D7-A (P1#1): canonical invalid chain head for commit/abort redo. */
+static const UBA InvalidUbaVal = InvalidUba_init;
+
 /*
  * cluster_tt_durable_redo_stamp_slot -- shared block-0 RMW that stamps one
  * TTSlot COMMITTED + commit_scn during recovery (spec-3.11 D3 / spec-3.18 D4.1).
@@ -747,6 +750,7 @@ cluster_tt_durable_redo_stamp_slot(uint8 instance, uint32 segment_id, uint16 slo
 		slot->wrap = wrap;
 		slot->status = TT_SLOT_COMMITTED;
 		slot->commit_scn = commit_scn;
+		slot->first_undo_block = InvalidUbaVal; /* spec-4.8 D7-A (P1#1): no stale head */
 
 		written = pg_pwrite(fd, blockbuf.data, BLCKSZ, 0);
 		if (written != BLCKSZ) {
@@ -870,6 +874,8 @@ cluster_undo_redo_tt_slot_abort(XLogReaderState *record)
 		slot->wrap = rec->wrap;
 		slot->status = TT_SLOT_ABORTED;
 		slot->commit_scn = InvalidScn;
+		slot->first_undo_block
+			= InvalidUbaVal; /* spec-4.8 D7-A (P1#1): cleared; 0x90 re-attaches */
 
 		written = pg_pwrite(fd, blockbuf.data, BLCKSZ, 0);
 		if (written != BLCKSZ) {
