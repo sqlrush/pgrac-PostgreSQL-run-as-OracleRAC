@@ -639,6 +639,13 @@ void
 cluster_recovery_plan_shmem_register(void)
 {}
 
+/* spec-4.10 D6 stub: cluster_init_shmem_module also calls
+ * cluster_block_recovery_shmem_register (block-recovery counters). */
+void cluster_block_recovery_shmem_register(void);
+void
+cluster_block_recovery_shmem_register(void)
+{}
+
 /* spec-4.5a D10a stubs: per-origin remote-xact SLRU (self-managed,
  * not a registry region; cluster_shmem.c calls all three). */
 Size cluster_remote_xact_shmem_size(void);

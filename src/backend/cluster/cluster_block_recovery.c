@@ -169,7 +169,7 @@ static bool
 derive_window(XLogRecPtr *lo, XLogRecPtr *hi)
 {
 	DIR *dir;
-	struct dirent *de;
+	const struct dirent *de;
 	XLogSegNo min_seg = 0;
 	bool found = false;
 	TimeLineID tli;
@@ -240,7 +240,7 @@ cluster_block_recovery_reconstruct(RelFileLocator rlocator, ForkNumber forknum,
 
 	for (;;) {
 		char *errormsg;
-		XLogRecord *record;
+		const XLogRecord *record;
 		int max_id;
 		int block_id;
 

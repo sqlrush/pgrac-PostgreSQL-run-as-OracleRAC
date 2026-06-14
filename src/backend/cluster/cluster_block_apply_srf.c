@@ -125,7 +125,7 @@ cluster_block_apply_redo_test(PG_FUNCTION_ARGS)
 
 	for (;;) {
 		char *errormsg;
-		XLogRecord *record;
+		const XLogRecord *record;
 		int max_id;
 		int block_id;
 

@@ -153,6 +153,7 @@ typedef struct FakeRecord {
 	/* DecodedXLogRecord has a FLEXIBLE_ARRAY_MEMBER blocks[]; reserve two. */
 	union {
 		DecodedXLogRecord dec;
+		/* cppcheck-suppress unusedStructMember */
 		char pad[sizeof(DecodedXLogRecord) + 2 * sizeof(DecodedBkpBlock)];
 	} u;
 } FakeRecord;

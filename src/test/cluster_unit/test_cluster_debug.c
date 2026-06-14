@@ -1062,6 +1062,17 @@ cluster_tt_recovery_undo_revert_failclosed_count(void)
 {
 	return 0;
 }
+/* spec-4.10 D6 stubs: block-recovery counter accessors (dump_recovery rows). */
+uint64
+cluster_block_recovery_get_blocks_recovered(void)
+{
+	return 0;
+}
+uint64
+cluster_block_recovery_get_failclosed(void)
+{
+	return 0;
+}
 /* spec-3.16 D5 recovery counter accessor stubs (dump_recovery rows). */
 uint64
 cluster_vis_get_recovery_undo_redo_applies(void)

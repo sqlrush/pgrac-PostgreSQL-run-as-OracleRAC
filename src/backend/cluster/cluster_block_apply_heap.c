@@ -108,7 +108,8 @@ apply_heap_insert(XLogReaderState *record, uint8 block_id, char *page)
 	xl_heap_header xlhdr;
 	union {
 		HeapTupleHeaderData hdr;
-		char data[MaxHeapTupleSize];
+		/* cppcheck-suppress unusedStructMember */
+		char data[MaxHeapTupleSize]; /* sizes the union for a max tuple */
 	} tbuf;
 	HeapTupleHeader htup;
 	uint32 newlen;
@@ -152,7 +153,7 @@ apply_heap_insert(XLogReaderState *record, uint8 block_id, char *page)
 	data += SizeOfHeapHeader;
 
 	htup = &tbuf.hdr;
-	MemSet((char *)htup, 0, SizeofHeapTupleHeader);
+	memset((char *)htup, 0, SizeofHeapTupleHeader);
 	/* PG73FORMAT: get bitmap [+ padding] [+ oid] + data */
 	memcpy((char *)htup + SizeofHeapTupleHeader, data, newlen);
 	newlen += SizeofHeapTupleHeader;
@@ -276,12 +277,13 @@ apply_heap_update(XLogReaderState *record, uint8 block_id, char *page, bool hot_
 	char *newp;
 	union {
 		HeapTupleHeaderData hdr;
-		char data[MaxHeapTupleSize];
+		/* cppcheck-suppress unusedStructMember */
+		char data[MaxHeapTupleSize]; /* sizes the union for a max tuple */
 	} tbuf;
 	xl_heap_header xlhdr;
 	uint32 newlen;
 	char *recdata;
-	char *recdata_end;
+	const char *recdata_end;
 	Size datalen;
 	Size tuplen;
 	bool cluster_itl_new_replay_active = false;
@@ -368,7 +370,7 @@ apply_heap_update(XLogReaderState *record, uint8 block_id, char *page, bool hot_
 		return CLUSTER_BLKAPPLY_FAILED;
 
 	htup = &tbuf.hdr;
-	MemSet((char *)htup, 0, SizeofHeapTupleHeader);
+	memset((char *)htup, 0, SizeofHeapTupleHeader);
 
 	/*
 	 * Reconstruct the new tuple from the prefix/suffix of the old tuple (on
