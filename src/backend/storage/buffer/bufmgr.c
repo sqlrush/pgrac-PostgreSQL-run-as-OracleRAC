@@ -1199,8 +1199,15 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 #ifdef USE_PGRAC_CLUSTER
 			else if (cluster_online_block_recovery)
 			{
-				/* online recovery on but the block could not be rebuilt */
-				int			elevel = (cluster_block_recovery_on_unrecoverable == CLUSTER_BLKREC_ACTION_PANIC)
+				/*
+				 * Online recovery on but the block could not be rebuilt.
+				 * PANIC escalation (operator opt-in) is restricted to the main
+				 * data fork: VM/FSM and other auxiliary forks are
+				 * reconstructible from scratch, so an unrebuildable one should
+				 * fail the query (ERROR), not crash the instance.
+				 */
+				int			elevel = (cluster_block_recovery_on_unrecoverable == CLUSTER_BLKREC_ACTION_PANIC
+									  && forkNum == MAIN_FORKNUM)
 					? PANIC : ERROR;
 
 				ereport(elevel,

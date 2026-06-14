@@ -370,7 +370,8 @@ cluster_block_recovery_on_read(struct SMgrRelationData *reln, ForkNumber forknum
 	 * so the WAL it depends on is already durable -- XLogFlush is a no-op and no
 	 * new WAL is produced (own-thread no-new-WAL crash-safety).  PageSetChecksum
 	 * stamps the write-time checksum.  A crash/torn write before this completes
-	 * leaves the block corrupt for the next read to re-recover (idempotent);
+	 * leaves the block corrupt for the next read to re-recover (idempotent) --
+	 * or to fail closed if the FPI's WAL segment has since been recycled;
 	 * post-write redo is idempotent too (pd_lsn >= any replayed record).
 	 */
 	XLogFlush(PageGetLSN((Page)buffer));
