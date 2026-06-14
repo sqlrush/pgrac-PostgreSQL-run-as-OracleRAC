@@ -143,8 +143,9 @@ cluster_block_apply_redo_test(PG_FUNCTION_ARGS)
 									   LSN_FORMAT_ARGS(xlogreader->EndRecPtr))));
 		}
 
-		/* Stop once we pass the requested window. */
-		if (xlogreader->ReadRecPtr > end_lsn)
+		/* Stop before applying any record that ENDS past the window (a record
+		 * straddling end_lsn must not be applied -- mirrors reconstruct). */
+		if (xlogreader->EndRecPtr > end_lsn)
 			break;
 
 		max_id = XLogRecMaxBlockId(xlogreader);

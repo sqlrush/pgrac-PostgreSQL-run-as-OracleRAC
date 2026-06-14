@@ -1165,21 +1165,28 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 #ifdef USE_PGRAC_CLUSTER
 		/*
-		 * PGRAC (spec-4.10 D1): try to rebuild a corrupt block from WAL before
-		 * applying the zero/error policy.  Single-node / own-thread only
-		 * (cross-node forward Stage 5).  Q3 (recovery-precedence): with online
-		 * recovery on, also rebuild when ignore_checksum_failure masked a real
-		 * checksum mismatch (PageIsVerifiedExtended returned true); if it
-		 * cannot rebuild, ignore_checksum_failure's "return the page as-is"
-		 * behavior remains the fallback (verified stays true).
+		 * PGRAC (spec-4.10 D1/D4): try to rebuild a corrupt block from WAL
+		 * before applying the zero/error policy.  PERMANENT shared-buffer
+		 * relations only (relpersistence == RELPERSISTENCE_PERMANENT &&
+		 * !isLocalBuf): temp / unlogged relations have no authoritative WAL
+		 * chain -- a reused relfilenode could even match stale WAL of a dropped
+		 * relation -- so they are never WAL-reconstructed.  Single-node /
+		 * own-thread only (cross-node forward Stage 5).  Q3
+		 * (recovery-precedence): with online recovery on, also rebuild when
+		 * ignore_checksum_failure masked a real checksum mismatch
+		 * (PageIsVerifiedExtended returned true); if it cannot rebuild,
+		 * ignore_checksum_failure's "return the page as-is" remains the
+		 * fallback (verified stays true).
 		 */
 		if (!verified)
 		{
-			if (cluster_block_recovery_on_read(smgr, forkNum, blockNum, (char *) bufBlock))
+			if (relpersistence == RELPERSISTENCE_PERMANENT && !isLocalBuf
+				&& cluster_block_recovery_on_read(smgr, forkNum, blockNum, (char *) bufBlock))
 				verified = true;
 		}
-		else if (ignore_checksum_failure && cluster_online_block_recovery &&
-				 cluster_block_recovery_checksum_mismatch((char *) bufBlock, blockNum))
+		else if (relpersistence == RELPERSISTENCE_PERMANENT && !isLocalBuf
+				 && ignore_checksum_failure && cluster_online_block_recovery
+				 && cluster_block_recovery_checksum_mismatch((char *) bufBlock, blockNum))
 		{
 			(void) cluster_block_recovery_on_read(smgr, forkNum, blockNum, (char *) bufBlock);
 		}

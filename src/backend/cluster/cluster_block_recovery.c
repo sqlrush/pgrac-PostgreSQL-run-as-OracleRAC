@@ -252,8 +252,14 @@ cluster_block_recovery_reconstruct(RelFileLocator rlocator, ForkNumber forknum,
 			break;
 		}
 
-		/* stop once we pass the requested window */
-		if (xlogreader->ReadRecPtr > scan_upper)
+		/*
+		 * Stop before applying any record that ENDS past the window: the
+		 * installed version must be the block's last touching record with
+		 * EndRecPtr <= scan_upper (a record straddling scan_upper, e.g. one
+		 * flushed after scan_upper was captured, would otherwise overshoot the
+		 * bound and set target_lsn past it).
+		 */
+		if (xlogreader->EndRecPtr > scan_upper)
 			break;
 
 		max_id = XLogRecMaxBlockId(xlogreader);

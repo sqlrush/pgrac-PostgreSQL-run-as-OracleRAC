@@ -313,5 +313,35 @@ sub seed_and_checkpoint
 		'R3 D2 reconstruct fail-closed: no FPI base in window -> NULL (8.A)');
 }
 
+# ============================================================
+# R4 (D2, P1): scan_upper boundary -- a record that STARTS in-window but ENDS
+#     past scan_upper (ReadRecPtr <= scan_upper < EndRecPtr) must NOT be
+#     applied; the install stops at the last record with EndRecPtr <= scan_upper.
+#     op_A bears the FPI; op_B straddles scan_upper (= op_B start + 4 bytes).
+#     With the fix the recon contains op_A's marker but not op_B's.
+# ============================================================
+{
+	seed_and_checkpoint('t256_r4');
+	my $lo = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
+	$node->safe_psql('postgres', "INSERT INTO t256_r4 VALUES (200, 'ZZAAAMARKERZZ')");
+	my $mid = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');   # = op_B's start
+	$node->safe_psql('postgres', "INSERT INTO t256_r4 VALUES (201, 'ZZBBBMARKERZZ')");
+
+	# scan_upper = mid + 4 lands inside op_B's first record -> op_B excluded.
+	my $res = $node->safe_psql('postgres', qq{
+		WITH r AS (
+			SELECT cluster_block_recovery_reconstruct_test(
+					   't256_r4'::regclass, 0, 0,
+					   '$lo'::pg_lsn, ('$mid'::pg_lsn + 4)) AS recon
+		)
+		SELECT (recon IS NOT NULL)
+		   AND position('ZZAAAMARKERZZ'::bytea in recon) > 0
+		   AND position('ZZBBBMARKERZZ'::bytea in recon) = 0
+		FROM r;
+	});
+	is($res, 't',
+		'R4 D2 scan_upper boundary: straddling record excluded (EndRecPtr <= scan_upper)');
+}
+
 $node->stop;
 done_testing();

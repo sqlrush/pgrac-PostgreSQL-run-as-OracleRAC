@@ -209,6 +209,32 @@ sub flip_in_marker
 }
 
 # ============================================================
+# L6: P2 gate -- unlogged relations are NOT WAL-reconstructed (no authoritative
+#     WAL chain; a reused relfilenode could match stale WAL).  A corrupt
+#     unlogged block fails closed WITHOUT attempting recovery, so the
+#     recovery_failclosed counter stays 0 for this server lifetime.
+# ============================================================
+{
+	$node->safe_psql('postgres', 'CREATE UNLOGGED TABLE u1 (id int, v text)');
+	$node->safe_psql('postgres', "INSERT INTO u1 SELECT g, 'v' || g FROM generate_series(1, 20) g");
+	$node->safe_psql('postgres', 'CHECKPOINT');
+	my $rp = $node->safe_psql('postgres', "SELECT pg_relation_filepath('u1')");
+
+	$node->stop;            # clean stop preserves the unlogged table
+	flip_byte_at($rp, 2000);
+	$node->start;           # online recovery still on
+
+	my ($rc, $out, $err) = $node->psql('postgres', 'SELECT count(*) FROM u1');
+	isnt($rc, 0, 'L6 unlogged corrupt block -> not WAL-reconstructed, fails closed (P2 gate)');
+
+	# the gate skipped recovery entirely: no attempt, so failclosed stays 0.
+	my $fc = $node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		  WHERE category = 'recovery' AND key = 'block_recovery_failclosed'});
+	is($fc, '0', 'L6 P2 gate: recovery not attempted for unlogged (failclosed = 0)');
+}
+
+# ============================================================
 # L3: fail-closed when online recovery is disabled.
 # ============================================================
 {
