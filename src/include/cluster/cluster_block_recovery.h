@@ -79,20 +79,35 @@ typedef enum ClusterBlkRecAction {
 extern bool cluster_online_block_recovery;
 extern int cluster_block_recovery_on_unrecoverable;
 
+struct SMgrRelationData;
+
 /*
- * cluster_block_recovery_on_read -- D1 read-path entry.  On a corrupt block
- *		read, try to rebuild the block from WAL into `buffer`.
+ * cluster_block_recovery_on_read -- D1/D4 read-path entry.  On a corrupt block
+ *		read, try to rebuild the block from WAL into `buffer` and durably
+ *		install it.
  *
- *	Gated: cluster.online_block_recovery on, and SINGLE-NODE only
- *	(cluster_conf_has_peers() -> false; a multi-node block may have a foreign
- *	last-writer that the own-thread reconstruct would rebuild stale -> forward
- *	Stage 5, D5).  Derives the scan window (oldest available WAL .. flush LSN)
- *	and calls cluster_block_recovery_reconstruct.  Returns true iff the block
- *	was rebuilt (caller treats the read as verified); false otherwise (caller
+ *	Gated: cluster.online_block_recovery on, NOT during startup recovery, and
+ *	SINGLE-NODE only (cluster_conf_has_peers() -> false; a multi-node block may
+ *	have a foreign last-writer that the own-thread reconstruct would rebuild
+ *	stale -> forward Stage 5, D5).  Derives the scan window (oldest available
+ *	WAL .. flush LSN) and calls cluster_block_recovery_reconstruct.
+ *
+ *	On success the rebuilt page is left in `buffer` AND written back to disk
+ *	(D4 durable install): the version is own-thread (pd_lsn <= flush), so the
+ *	WAL it depends on is already durable -- XLogFlush is a no-op, no new WAL is
+ *	produced, and a crash/torn write simply leaves the block corrupt for the
+ *	next read to re-recover (idempotent).  Returns true iff the block was
+ *	rebuilt (caller treats the read as verified); false otherwise (caller
  *	falls back to its zero/error policy).  Never installs a possibly-wrong
  *	block (8.A): any uncertainty -> false.
+ *
+ *	The recovering-set / cross-path access gate the spec sketches for D4 is
+ *	subsumed here by the buffer manager's in-progress I/O (concurrent readers
+ *	of the same block wait, never see the corrupt/half-rebuilt page); the
+ *	explicit recovering-set + 53R9L retry is built when its real consumer
+ *	lands -- cross-node coordination (D5).
  */
-extern bool cluster_block_recovery_on_read(RelFileLocator rlocator, ForkNumber forknum,
+extern bool cluster_block_recovery_on_read(struct SMgrRelationData *reln, ForkNumber forknum,
 										   BlockNumber blocknum, char *buffer);
 
 /*

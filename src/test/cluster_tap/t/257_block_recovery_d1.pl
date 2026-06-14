@@ -151,6 +151,30 @@ sub flip_in_marker
 }
 
 # ============================================================
+# L4: D4 durable install -- after recovery the fix is written back to disk,
+#     so a re-read (after restart, even with recovery disabled) succeeds.
+# ============================================================
+{
+	my $rp = setup_table('t4', "INSERT INTO t4 SELECT g, 'v' || g FROM generate_series(1, 20) g");
+	my $exp = $node->safe_psql('postgres', 'SELECT count(*), coalesce(sum(id), 0) FROM t4');
+
+	$node->stop;
+	flip_byte_at($rp, 2000);
+	$node->start;
+	# recovering read rebuilds the block AND writes it back to disk (durable install)
+	$node->safe_psql('postgres', 'SELECT count(*) FROM t4');
+	$node->stop;            # shutdown checkpoint fsyncs the persisted block
+
+	# disable recovery, restart, re-read: succeeds only if the on-disk block
+	# was durably fixed (in-buffer-only recovery would leave disk corrupt -> ERROR).
+	$node->append_conf('postgresql.conf', "cluster.online_block_recovery = off\n");
+	$node->start;
+	my $got = $node->safe_psql('postgres', 'SELECT count(*), coalesce(sum(id), 0) FROM t4');
+	is($got, $exp, 'L4 durable install: fix persisted to disk; re-read with recovery off succeeds');
+	$node->append_conf('postgresql.conf', "cluster.online_block_recovery = on\n");
+}
+
+# ============================================================
 # L3: fail-closed when online recovery is disabled.
 # ============================================================
 {

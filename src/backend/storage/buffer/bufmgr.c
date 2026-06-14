@@ -1175,15 +1175,13 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 */
 		if (!verified)
 		{
-			if (cluster_block_recovery_on_read(smgr->smgr_rlocator.locator,
-											   forkNum, blockNum, (char *) bufBlock))
+			if (cluster_block_recovery_on_read(smgr, forkNum, blockNum, (char *) bufBlock))
 				verified = true;
 		}
 		else if (ignore_checksum_failure && cluster_online_block_recovery &&
 				 cluster_block_recovery_checksum_mismatch((char *) bufBlock, blockNum))
 		{
-			(void) cluster_block_recovery_on_read(smgr->smgr_rlocator.locator,
-												  forkNum, blockNum, (char *) bufBlock);
+			(void) cluster_block_recovery_on_read(smgr, forkNum, blockNum, (char *) bufBlock);
 		}
 #endif
 

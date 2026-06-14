@@ -55,6 +55,7 @@
 #include "storage/checksum.h"
 #include "storage/fd.h"
 #include "storage/relfilelocator.h"
+#include "storage/smgr.h"
 
 #include "cluster/cluster_block_apply.h"
 #include "cluster/cluster_block_recovery.h"
@@ -252,9 +253,10 @@ cluster_block_recovery_checksum_mismatch(char *page, BlockNumber blocknum)
 }
 
 bool
-cluster_block_recovery_on_read(RelFileLocator rlocator, ForkNumber forknum, BlockNumber blocknum,
-							   char *buffer)
+cluster_block_recovery_on_read(struct SMgrRelationData *reln, ForkNumber forknum,
+							   BlockNumber blocknum, char *buffer)
 {
+	RelFileLocator rlocator = reln->smgr_rlocator.locator;
 	XLogRecPtr lo;
 	XLogRecPtr hi;
 	PGAlignedBlock scratch;
@@ -287,11 +289,21 @@ cluster_block_recovery_on_read(RelFileLocator rlocator, ForkNumber forknum, Bloc
 		!= CLUSTER_BLKREC_RECOVERED)
 		return false;
 
-	/*
-	 * Reconstruct validated header-sanity + pd_lsn == target; install it.  The
-	 * page's checksum is (re)computed by FlushBuffer at write time.
-	 */
+	/* Reconstruct validated header-sanity + pd_lsn == target. */
 	memcpy(buffer, scratch.data, BLCKSZ);
+
+	/*
+	 * D4 durable install: persist the rebuilt block so future reads do not
+	 * re-recover.  The version is own-thread (pd_lsn <= scan_upper = flush LSN),
+	 * so the WAL it depends on is already durable -- XLogFlush is a no-op and no
+	 * new WAL is produced (own-thread no-new-WAL crash-safety).  PageSetChecksum
+	 * stamps the write-time checksum.  A crash/torn write before this completes
+	 * leaves the block corrupt for the next read to re-recover (idempotent);
+	 * post-write redo is idempotent too (pd_lsn >= any replayed record).
+	 */
+	XLogFlush(PageGetLSN((Page)buffer));
+	PageSetChecksumInplace((Page)buffer, blocknum);
+	smgrwrite(reln, forknum, blocknum, buffer, false);
 	return true;
 }
 
