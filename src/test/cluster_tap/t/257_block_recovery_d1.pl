@@ -182,6 +182,33 @@ sub flip_in_marker
 }
 
 # ============================================================
+# L5: D7 8.A -- recovery ON but no recoverable FPI base (full_page_writes off
+#     while the block was written) -> fail-closed ERROR, never corrupt data;
+#     recovery_failclosed counter increments.
+# ============================================================
+{
+	$node->append_conf('postgresql.conf', "full_page_writes = off\n");
+	$node->reload;            # subsequent writes carry no full-page image
+	my $rp = setup_table('t5', "INSERT INTO t5 SELECT g, 'v' || g FROM generate_series(1, 20) g");
+
+	$node->stop;
+	flip_byte_at($rp, 2000);
+	$node->start;            # recovery still on; reconstruct finds no FPI base
+
+	my ($rc, $out, $err) = $node->psql('postgres', 'SELECT count(*) FROM t5');
+	isnt($rc, 0, 'L5 no-FPI block + recovery on -> fail-closed (8.A)');
+	like($err, qr/invalid page|corrupt|checksum/i, 'L5 fail-closed error is a corruption error');
+
+	# recovery was attempted (passed all gates) but unrebuildable -> failclosed++
+	my $fc = $node->safe_psql('postgres',
+		q{SELECT value FROM pg_cluster_state
+		  WHERE category = 'recovery' AND key = 'block_recovery_failclosed'});
+	cmp_ok($fc, '>=', 1, 'L5 D6 recovery_failclosed counter incremented');
+
+	$node->append_conf('postgresql.conf', "full_page_writes = on\n");
+}
+
+# ============================================================
 # L3: fail-closed when online recovery is disabled.
 # ============================================================
 {
