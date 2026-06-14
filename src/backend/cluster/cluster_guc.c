@@ -38,8 +38,9 @@
 
 #include "utils/guc.h"
 
-#include "cluster/cluster_conf.h"	  /* cluster_conf_has_peers (spec-3.18 D2b latch) */
-#include "cluster/cluster_cr_cache.h" /* cluster_cr_cache_max_blocks (spec-3.10 D4) */
+#include "cluster/cluster_block_recovery.h" /* spec-4.10 D1 online block recovery GUCs */
+#include "cluster/cluster_conf.h"			/* cluster_conf_has_peers (spec-3.18 D2b latch) */
+#include "cluster/cluster_cr_cache.h"		/* cluster_cr_cache_max_blocks (spec-3.10 D4) */
 #include "cluster/cluster_guc.h"
 #include "cluster/storage/cluster_undo_buf.h" /* cluster_undo_buf_writeback_allowed (spec-3.18 D1) */
 #include "cluster/cluster_ic.h"				  /* ClusterICTier enum values */
@@ -497,6 +498,16 @@ int cluster_gcs_block_lost_write_action = CLUSTER_GCS_LOST_WRITE_ACTION_ERROR;
 static const struct config_enum_entry cluster_gcs_block_lost_write_action_options[]
 	= { { "error", CLUSTER_GCS_LOST_WRITE_ACTION_ERROR, false },
 		{ "warn", CLUSTER_GCS_LOST_WRITE_ACTION_WARN, false },
+		{ NULL, 0, false } };
+
+/* spec-4.10 D1: online single-block recovery (storage defined here; logic in
+ * cluster_block_recovery.c). */
+bool cluster_online_block_recovery = true;
+int cluster_block_recovery_on_unrecoverable = CLUSTER_BLKREC_ACTION_ERROR;
+
+static const struct config_enum_entry cluster_block_recovery_on_unrecoverable_options[]
+	= { { "error", CLUSTER_BLKREC_ACTION_ERROR, false },
+		{ "panic", CLUSTER_BLKREC_ACTION_PANIC, false },
 		{ NULL, 0, false } };
 
 
@@ -2159,6 +2170,30 @@ cluster_init_guc(void)
 					 "not interrupted but silent corruption risk.  HC131.  PGC_SUSET."),
 		&cluster_gcs_block_lost_write_action, CLUSTER_GCS_LOST_WRITE_ACTION_ERROR,
 		cluster_gcs_block_lost_write_action_options, PGC_SUSET, 0, NULL, NULL, NULL);
+
+	/*
+	 * PGRAC: spec-4.10 D1 — online single-block recovery (2 NEW GUC).
+	 */
+	DefineCustomBoolVariable(
+		"cluster.online_block_recovery",
+		gettext_noop("Rebuild a corrupt/lost-write block from WAL on read instead of erroring."),
+		gettext_noop("On (default): a checksum/header failure (single-node / own-thread "
+					 "only) triggers online reconstruction from WAL before the "
+					 "zero_damaged_pages / error policy; takes precedence over "
+					 "ignore_checksum_failure.  Off: corruption falls straight to the "
+					 "existing policy.  Multi-node blocks (foreign last-writer) are not "
+					 "auto-recovered (forward Stage 5)."),
+		&cluster_online_block_recovery, true, PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+	DefineCustomEnumVariable(
+		"cluster.block_recovery_on_unrecoverable",
+		gettext_noop("Action when a corrupt block cannot be rebuilt from WAL."),
+		gettext_noop("error (default): fail the read with ERRCODE_DATA_CORRUPTED.  "
+					 "panic: escalate to PANIC (operator opt-in).  Applies when "
+					 "online_block_recovery is on and reconstruction is not possible "
+					 "(no FPI base / WAL recycled / unsupported delta / cross-node)."),
+		&cluster_block_recovery_on_unrecoverable, CLUSTER_BLKREC_ACTION_ERROR,
+		cluster_block_recovery_on_unrecoverable_options, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	/*
 	 * PGRAC: spec-2.38 D8 — 3 NEW GUC for SI Broadcaster skeleton.

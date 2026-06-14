@@ -55,6 +55,16 @@
 #ifdef USE_PGRAC_CLUSTER
 #include "cluster/cluster_pcm_lock.h"
 #include "cluster/cluster_guc.h"		/* spec-4.7a D2 — cluster_gcs_block_local_cache */
+#include "cluster/cluster_block_recovery.h" /* spec-4.10 D1 — online block recovery */
+
+/*
+ * PGRAC (spec-4.10 D1): ignore_checksum_failure is defined in bufpage.c with
+ * no public extern; the online-recovery read hook consults it to honor Q3
+ * (online recovery takes precedence over ignore_checksum_failure).  Reading
+ * this bool short-circuits the Q3 re-check on the healthy path (default off),
+ * so no extra per-read checksum work.
+ */
+extern bool ignore_checksum_failure;
 #endif
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
@@ -1142,6 +1152,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	else
 	{
 		instr_time	io_start = pgstat_prepare_io_time();
+		bool		verified;
 
 		smgrread(smgr, forkNum, blockNum, bufBlock);
 
@@ -1149,8 +1160,34 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 								IOOP_READ, io_start, 1);
 
 		/* check for garbage data */
-		if (!PageIsVerifiedExtended((Page) bufBlock, blockNum,
-									PIV_LOG_WARNING | PIV_REPORT_STAT))
+		verified = PageIsVerifiedExtended((Page) bufBlock, blockNum,
+										  PIV_LOG_WARNING | PIV_REPORT_STAT);
+
+#ifdef USE_PGRAC_CLUSTER
+		/*
+		 * PGRAC (spec-4.10 D1): try to rebuild a corrupt block from WAL before
+		 * applying the zero/error policy.  Single-node / own-thread only
+		 * (cross-node forward Stage 5).  Q3 (recovery-precedence): with online
+		 * recovery on, also rebuild when ignore_checksum_failure masked a real
+		 * checksum mismatch (PageIsVerifiedExtended returned true); if it
+		 * cannot rebuild, ignore_checksum_failure's "return the page as-is"
+		 * behavior remains the fallback (verified stays true).
+		 */
+		if (!verified)
+		{
+			if (cluster_block_recovery_on_read(smgr->smgr_rlocator.locator,
+											   forkNum, blockNum, (char *) bufBlock))
+				verified = true;
+		}
+		else if (ignore_checksum_failure && cluster_online_block_recovery &&
+				 cluster_block_recovery_checksum_mismatch((char *) bufBlock, blockNum))
+		{
+			(void) cluster_block_recovery_on_read(smgr->smgr_rlocator.locator,
+												  forkNum, blockNum, (char *) bufBlock);
+		}
+#endif
+
+		if (!verified)
 		{
 			if (mode == RBM_ZERO_ON_ERROR || zero_damaged_pages)
 			{
@@ -1161,6 +1198,23 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 								relpath(smgr->smgr_rlocator, forkNum))));
 				MemSet((char *) bufBlock, 0, BLCKSZ);
 			}
+#ifdef USE_PGRAC_CLUSTER
+			else if (cluster_online_block_recovery)
+			{
+				/* online recovery on but the block could not be rebuilt */
+				int			elevel = (cluster_block_recovery_on_unrecoverable == CLUSTER_BLKREC_ACTION_PANIC)
+					? PANIC : ERROR;
+
+				ereport(elevel,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("invalid page in block %u of relation %s",
+								blockNum,
+								relpath(smgr->smgr_rlocator, forkNum)),
+						 errhint("online block recovery could not rebuild this block from WAL "
+								 "(no full-page-image base in retained WAL, an unsupported "
+								 "change, or a cross-node block); restore from backup.")));
+			}
+#endif
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),

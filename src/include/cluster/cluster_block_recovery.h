@@ -67,6 +67,43 @@ typedef enum ClusterBlkRecResult {
 } ClusterBlkRecResult;
 
 /*
+ * cluster.block_recovery_on_unrecoverable: action when a corrupt block cannot
+ * be rebuilt (no FPI base / WAL recycled / unsupported delta / cross-node).
+ */
+typedef enum ClusterBlkRecAction {
+	CLUSTER_BLKREC_ACTION_ERROR = 0, /* fail the read (ERRCODE_DATA_CORRUPTED) */
+	CLUSTER_BLKREC_ACTION_PANIC = 1, /* escalate to PANIC (operator opt-in) */
+} ClusterBlkRecAction;
+
+/* GUCs (registered in cluster_guc.c). */
+extern bool cluster_online_block_recovery;
+extern int cluster_block_recovery_on_unrecoverable;
+
+/*
+ * cluster_block_recovery_on_read -- D1 read-path entry.  On a corrupt block
+ *		read, try to rebuild the block from WAL into `buffer`.
+ *
+ *	Gated: cluster.online_block_recovery on, and SINGLE-NODE only
+ *	(cluster_conf_has_peers() -> false; a multi-node block may have a foreign
+ *	last-writer that the own-thread reconstruct would rebuild stale -> forward
+ *	Stage 5, D5).  Derives the scan window (oldest available WAL .. flush LSN)
+ *	and calls cluster_block_recovery_reconstruct.  Returns true iff the block
+ *	was rebuilt (caller treats the read as verified); false otherwise (caller
+ *	falls back to its zero/error policy).  Never installs a possibly-wrong
+ *	block (8.A): any uncertainty -> false.
+ */
+extern bool cluster_block_recovery_on_read(RelFileLocator rlocator, ForkNumber forknum,
+										   BlockNumber blocknum, char *buffer);
+
+/*
+ * cluster_block_recovery_checksum_mismatch -- true iff the page has a real data
+ *		checksum mismatch (Q3: detect corruption that ignore_checksum_failure
+ *		would otherwise mask, so online recovery still triggers).  Returns false
+ *		when data checksums are disabled or the page is new.
+ */
+extern bool cluster_block_recovery_checksum_mismatch(char *page, BlockNumber blocknum);
+
+/*
  * cluster_block_recovery_reconstruct -- rebuild one block from this node's own
  *		WAL stream within an explicit window, onto a detached page.
  *

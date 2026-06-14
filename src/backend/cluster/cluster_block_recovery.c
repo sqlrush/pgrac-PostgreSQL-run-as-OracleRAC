@@ -47,14 +47,18 @@
 #ifdef USE_PGRAC_CLUSTER
 
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
 #include "access/xlogutils.h"
 #include "storage/bufpage.h"
+#include "storage/checksum.h"
+#include "storage/fd.h"
 #include "storage/relfilelocator.h"
 
 #include "cluster/cluster_block_apply.h"
 #include "cluster/cluster_block_recovery.h"
+#include "cluster/cluster_conf.h"
 
 /*
  * page_header_sane -- header-only validity of a reconstructed page (8.A).
@@ -75,6 +79,54 @@ page_header_sane(Page page)
 		|| p->pd_upper > p->pd_special || p->pd_special > BLCKSZ)
 		return false;
 	return true;
+}
+
+/*
+ * derive_window -- compute the scan window [*lo, *hi] for an online rebuild
+ *		(D1 decision: oldest available WAL .. flush LSN).
+ *
+ *	*hi = GetFlushRecPtr() (the global durable bound).  *lo = the start LSN of
+ *	the OLDEST WAL segment still present in pg_wal.  Scanning from the oldest
+ *	segment locates the latest FPI <= the block's last touch regardless of
+ *	checkpoint boundaries (GetRedoRecPtr / control-file checkpoint redo can
+ *	advance past the target after a post-restart checkpoint).  If the FPI was
+ *	recycled/archived it simply will not be found -> reconstruct fails closed.
+ *
+ *	NOTE: single-timeline scope (the local stream reader follows the current
+ *	timeline); the caller gates on single-node (no failover) -- see
+ *	cluster_block_recovery_on_read.
+ */
+static bool
+derive_window(XLogRecPtr *lo, XLogRecPtr *hi)
+{
+	DIR *dir;
+	struct dirent *de;
+	XLogSegNo min_seg = 0;
+	bool found = false;
+	TimeLineID tli;
+
+	*hi = GetFlushRecPtr(&tli);
+
+	dir = AllocateDir(XLOGDIR);
+	while ((de = ReadDir(dir, XLOGDIR)) != NULL) {
+		TimeLineID seg_tli;
+		XLogSegNo seg;
+
+		if (!IsXLogFileName(de->d_name))
+			continue;
+		XLogFromFileName(de->d_name, &seg_tli, &seg, wal_segment_size);
+		if (!found || seg < min_seg) {
+			min_seg = seg;
+			found = true;
+		}
+	}
+	FreeDir(dir);
+
+	if (!found)
+		return false;
+
+	XLogSegNoOffsetToRecPtr(min_seg, 0, wal_segment_size, *lo);
+	return *lo <= *hi;
 }
 
 ClusterBlkRecResult
@@ -187,6 +239,60 @@ cluster_block_recovery_reconstruct(RelFileLocator rlocator, ForkNumber forknum,
 
 	memcpy(out_page, page, BLCKSZ);
 	return CLUSTER_BLKREC_RECOVERED;
+}
+
+bool
+cluster_block_recovery_checksum_mismatch(char *page, BlockNumber blocknum)
+{
+	if (!DataChecksumsEnabled())
+		return false;
+	if (PageIsNew((Page)page))
+		return false;
+	return pg_checksum_page(page, blocknum) != ((PageHeader)page)->pd_checksum;
+}
+
+bool
+cluster_block_recovery_on_read(RelFileLocator rlocator, ForkNumber forknum, BlockNumber blocknum,
+							   char *buffer)
+{
+	XLogRecPtr lo;
+	XLogRecPtr hi;
+	PGAlignedBlock scratch;
+
+	if (!cluster_online_block_recovery)
+		return false;
+
+	/*
+	 * Not during startup/crash recovery: that path redoes WAL itself (FPI +
+	 * deltas) and a reentrant WAL scan here would be unsafe.  Online recovery
+	 * is a normal-operation feature.
+	 */
+	if (RecoveryInProgress())
+		return false;
+
+	/*
+	 * Own-thread gate (8.A): only auto-recover when this node has no peers.  A
+	 * multi-node block may have a foreign last-writer that the local-stream
+	 * reconstruct would rebuild to a STALE own-thread version; that path is
+	 * forward Stage 5 (D5, authoritative cross-thread target).  Single-node is
+	 * always own-thread, so reconstruct's last own-thread touch IS the latest.
+	 */
+	if (cluster_conf_has_peers())
+		return false;
+
+	if (!derive_window(&lo, &hi))
+		return false;
+
+	if (cluster_block_recovery_reconstruct(rlocator, forknum, blocknum, lo, hi, scratch.data)
+		!= CLUSTER_BLKREC_RECOVERED)
+		return false;
+
+	/*
+	 * Reconstruct validated header-sanity + pd_lsn == target; install it.  The
+	 * page's checksum is (re)computed by FlushBuffer at write time.
+	 */
+	memcpy(buffer, scratch.data, BLCKSZ);
+	return true;
 }
 
 #else /* !USE_PGRAC_CLUSTER */
